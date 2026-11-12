@@ -1,0 +1,25 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  color-scheme: light dark;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --fg: #e6edf3;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+}
+
+#app {
+  height: 100%;
+}

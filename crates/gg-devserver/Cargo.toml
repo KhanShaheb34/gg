@@ -1,0 +1,10 @@
+[package]
+name = "gg-devserver"
+description = "Dev/test-only HTTP bridge to gg-core for running the UI in a browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gg-core = { path = "../gg-core" }

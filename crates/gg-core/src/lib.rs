@@ -3,6 +3,7 @@
 pub mod dto;
 pub mod error;
 pub mod git;
+pub mod graph;
 #[cfg(any(test, feature = "testutil"))]
 pub mod testutil;
 

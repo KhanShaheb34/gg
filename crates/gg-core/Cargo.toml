@@ -5,4 +5,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Exposes `gg_core::testutil` (temp git repositories) to integration tests and dependent crates.
+testutil = ["dep:tempfile"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = { version = "3", optional = true }
+thiserror = "2"
+tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "macros", "time", "sync"] }
+
+[dev-dependencies]
+# Self dev-dependency: turns on `testutil` for the integration tests in `tests/`.
+gg-core = { path = ".", features = ["testutil"] }
+tempfile = "3"

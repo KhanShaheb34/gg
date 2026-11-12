@@ -1,0 +1,237 @@
+//! Throwaway git repositories for tests (compiled for tests and behind the `testutil` feature).
+//!
+//! Every repository lives in its own temp directory and runs git with an empty global config
+//! and no system config, so hooks, signing or templates on the host cannot affect tests.
+//! Commits get fixed, increasing dates, so the same steps always produce the same hashes.
+
+use std::ffi::OsStr;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use tempfile::TempDir;
+
+/// Date of the first commit in every `TestRepo` (unix seconds).
+const FIRST_COMMIT_TIME: i64 = 1_700_000_000;
+/// Seconds between consecutive commits.
+const COMMIT_TIME_STEP: i64 = 60;
+
+/// Host variables that would override the repository, identity or dates of our commands.
+const HOST_GIT_VARS: [&str; 9] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+];
+
+/// A git repository in a temp directory, deleted on drop. The repository is a subdirectory
+/// of `dir`; worktrees are created next to it.
+pub struct TestRepo {
+    pub dir: TempDir,
+    root: PathBuf,
+    global_config: PathBuf,
+    /// Commits created so far; drives commit dates and unique file names.
+    commits: AtomicI64,
+}
+
+impl Default for TestRepo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TestRepo {
+    /// An empty repository on branch `main` with identity `Test <test@example.com>` and
+    /// commit signing off.
+    pub fn new() -> Self {
+        Self::new_in_subdir("repo")
+    }
+
+    /// Like [`TestRepo::new`], with the repository in a directory named `name` (which may
+    /// contain spaces or non-ASCII characters).
+    pub fn new_in_subdir(name: &str) -> Self {
+        let repo = Self::in_new_tempdir(name);
+        repo.git(&["init", "-q", "-b", "main"]);
+        repo.git(&["config", "user.name", "Test"]);
+        repo.git(&["config", "user.email", "test@example.com"]);
+        repo.git(&["config", "commit.gpgsign", "false"]);
+        repo
+    }
+
+    fn in_new_tempdir(name: &str) -> Self {
+        let dir = tempfile::Builder::new()
+            .prefix("gg-test-")
+            .tempdir()
+            .expect("create temp dir");
+        let root = dir.path().join(name);
+        fs::create_dir_all(&root).expect("create repo dir");
+        let global_config = dir.path().join("empty-gitconfig");
+        fs::write(&global_config, "").expect("write empty global git config");
+        Self {
+            dir,
+            root,
+            global_config,
+            commits: AtomicI64::new(0),
+        }
+    }
+
+    /// The repository's working directory (the git dir itself for a bare repository).
+    pub fn path(&self) -> &Path {
+        &self.root
+    }
+
+    /// Runs git in the repository and returns trimmed stdout. Panics if git fails.
+    pub fn git(&self, args: &[&str]) -> String {
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        self.git_with(&args, &[])
+    }
+
+    /// Writes a unique file and commits it; returns the full commit hash.
+    pub fn commit(&self, msg: &str) -> String {
+        self.commit_with(msg, &[])
+    }
+
+    /// Like [`TestRepo::commit`], with `author <email>` as the author (the committer stays
+    /// `Test`).
+    pub fn commit_as(&self, msg: &str, author: &str, email: &str) -> String {
+        self.commit_with(
+            msg,
+            &[("GIT_AUTHOR_NAME", author), ("GIT_AUTHOR_EMAIL", email)],
+        )
+    }
+
+    pub fn branch(&self, name: &str) {
+        self.git(&["branch", name]);
+    }
+
+    pub fn checkout(&self, name: &str) {
+        self.git(&["checkout", "-q", name]);
+    }
+
+    /// Merges `name` into the current branch with `--no-ff`; returns the merge commit hash.
+    pub fn merge(&self, name: &str) -> String {
+        let (_, date) = self.next_commit_slot();
+        self.git_with(
+            &[
+                OsStr::new("merge"),
+                OsStr::new("-q"),
+                OsStr::new("--no-ff"),
+                OsStr::new("--no-edit"),
+                OsStr::new(name),
+            ],
+            &[("GIT_AUTHOR_DATE", &date), ("GIT_COMMITTER_DATE", &date)],
+        );
+        self.git(&["rev-parse", "HEAD"])
+    }
+
+    /// Checks out `branch` (created at HEAD if missing) in a new linked worktree next to
+    /// the repository; returns the worktree path.
+    pub fn add_worktree(&self, branch: &str) -> PathBuf {
+        let path = self
+            .dir
+            .path()
+            .join(format!("wt-{}", branch.replace('/', "-")));
+        let branch_ref = format!("refs/heads/{branch}");
+        let mut args = vec![OsStr::new("worktree"), OsStr::new("add"), OsStr::new("-q")];
+        if self.git_succeeds(&["rev-parse", "--verify", "--quiet", &branch_ref]) {
+            args.extend([path.as_os_str(), OsStr::new(branch)]);
+        } else {
+            args.extend([OsStr::new("-b"), OsStr::new(branch), path.as_os_str()]);
+        }
+        self.git_with(&args, &[]);
+        path
+    }
+
+    /// Creates a bare repository, adds it as remote `origin`, pushes all branches and tags
+    /// to it and fetches. Returns the bare repository, which owns its own temp directory.
+    pub fn clone_as_remote(&self) -> TestRepo {
+        let origin = Self::in_new_tempdir("origin.git");
+        origin.git(&["init", "-q", "--bare", "-b", "main"]);
+        self.git_with(
+            &[
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                origin.path().as_os_str(),
+            ],
+            &[],
+        );
+        self.git(&["push", "-q", "origin", "--all"]);
+        self.git(&["push", "-q", "origin", "--tags"]);
+        self.git(&["fetch", "-q", "origin"]);
+        origin
+    }
+
+    fn commit_with(&self, msg: &str, env: &[(&str, &str)]) -> String {
+        let (n, date) = self.next_commit_slot();
+        let file = format!("file-{n}.txt");
+        fs::write(self.root.join(&file), format!("{msg}\n")).expect("write commit file");
+        self.git(&["add", "--", &file]);
+        let mut env = env.to_vec();
+        env.extend([
+            ("GIT_AUTHOR_DATE", date.as_str()),
+            ("GIT_COMMITTER_DATE", date.as_str()),
+        ]);
+        self.git_with(
+            &[
+                OsStr::new("commit"),
+                OsStr::new("-q"),
+                OsStr::new("-m"),
+                OsStr::new(msg),
+            ],
+            &env,
+        );
+        self.git(&["rev-parse", "HEAD"])
+    }
+
+    /// Takes the next commit slot: its index and its date in git's `<unix> <tz>` format.
+    fn next_commit_slot(&self) -> (i64, String) {
+        let n = self.commits.fetch_add(1, Ordering::SeqCst);
+        let date = format!("{} +0000", FIRST_COMMIT_TIME + n * COMMIT_TIME_STEP);
+        (n, date)
+    }
+
+    fn command(&self, args: &[&OsStr], env: &[(&str, &str)]) -> Command {
+        let mut cmd = Command::new("git");
+        cmd.args(args).current_dir(&self.root).stdin(Stdio::null());
+        for var in HOST_GIT_VARS {
+            cmd.env_remove(var);
+        }
+        cmd.env("GIT_CONFIG_GLOBAL", &self.global_config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", "true")
+            .env("LC_ALL", "C")
+            .envs(env.iter().copied());
+        cmd
+    }
+
+    fn git_with(&self, args: &[&OsStr], env: &[(&str, &str)]) -> String {
+        let out = self
+            .command(args, env)
+            .output()
+            .unwrap_or_else(|e| panic!("could not run git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}: {}",
+            self.root.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    fn git_succeeds(&self, args: &[&str]) -> bool {
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        self.command(&args, &[])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+}

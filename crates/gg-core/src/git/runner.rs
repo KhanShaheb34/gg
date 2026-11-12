@@ -201,22 +201,7 @@ impl GitRunner {
         if out.code == 0 {
             return Ok(out);
         }
-        let message = out
-            .stderr
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .map_or_else(
-                || {
-                    format!(
-                        "git {} exited with code {}",
-                        args.first().unwrap_or(&""),
-                        out.code
-                    )
-                },
-                str::to_owned,
-            );
-        Err(CoreError::new(ErrorCode::GitFailed, message).with_detail(out.stderr))
+        Err(git_failed(args, out.code, &out.stderr))
     }
 
     /// Runs git in `cwd` and returns its output whatever the exit code. Errs only when git
@@ -296,6 +281,25 @@ impl GitRunner {
         }
         cmd
     }
+}
+
+/// The `GitFailed` error for a git command that exited with `code`: the first non-empty
+/// stderr line as `message` and the full stderr as `detail`.
+pub(crate) fn git_failed(args: &[&str], code: i32, stderr: &str) -> CoreError {
+    let message = stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map_or_else(
+            || {
+                format!(
+                    "git {} exited with code {code}",
+                    args.first().unwrap_or(&"")
+                )
+            },
+            str::to_owned,
+        );
+    CoreError::new(ErrorCode::GitFailed, message).with_detail(stderr)
 }
 
 fn spawn_error(cwd: &Path, e: io::Error) -> CoreError {

@@ -106,6 +106,21 @@ impl TestRepo {
         )
     }
 
+    /// Writes `contents` to `rel` (relative to the repository), creating parent directories.
+    pub fn write(&self, rel: &str, contents: impl AsRef<[u8]>) {
+        let path = self.root.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        fs::write(path, contents).expect("write file");
+    }
+
+    /// Stages every change in the working tree and commits it; returns the commit hash.
+    pub fn commit_all(&self, msg: &str) -> String {
+        self.git(&["add", "-A"]);
+        self.commit_staged(msg, &[])
+    }
+
     pub fn branch(&self, name: &str) {
         self.git(&["branch", name]);
     }
@@ -169,10 +184,16 @@ impl TestRepo {
     }
 
     fn commit_with(&self, msg: &str, env: &[(&str, &str)]) -> String {
-        let (n, date) = self.next_commit_slot();
+        let n = self.commits.load(Ordering::SeqCst);
         let file = format!("file-{n}.txt");
         fs::write(self.root.join(&file), format!("{msg}\n")).expect("write commit file");
         self.git(&["add", "--", &file]);
+        self.commit_staged(msg, env)
+    }
+
+    /// Commits the index with the next commit date; returns the commit hash.
+    fn commit_staged(&self, msg: &str, env: &[(&str, &str)]) -> String {
+        let (_, date) = self.next_commit_slot();
         let mut env = env.to_vec();
         env.extend([
             ("GIT_AUTHOR_DATE", date.as_str()),
@@ -226,7 +247,9 @@ impl TestRepo {
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
-    fn git_succeeds(&self, args: &[&str]) -> bool {
+    /// Runs git in the repository with output discarded; returns whether it exited 0.
+    /// For steps expected to fail, such as a conflicting merge.
+    pub fn git_succeeds(&self, args: &[&str]) -> bool {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         self.command(&args, &[])
             .stdout(Stdio::null())

@@ -1,5 +1,6 @@
 //! Git graph core: everything that talks to git and shapes data for the UI.
 
+pub mod dto;
 pub mod error;
 pub mod git;
 #[cfg(any(test, feature = "testutil"))]

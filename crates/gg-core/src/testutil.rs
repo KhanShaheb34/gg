@@ -163,6 +163,25 @@ impl TestRepo {
         self.git(&["rev-parse", "HEAD"])
     }
 
+    /// `git stash push <args>` with the next commit date; returns the new stash's commit hash.
+    pub fn stash(&self, args: &[&str]) -> String {
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        self.stash_os(&args)
+    }
+
+    /// Like [`TestRepo::stash`], with arguments that need not be UTF-8 (a stash message with
+    /// odd bytes).
+    pub fn stash_os(&self, args: &[&OsStr]) -> String {
+        let (_, date) = self.next_commit_slot();
+        let mut all = vec![OsStr::new("stash"), OsStr::new("push"), OsStr::new("-q")];
+        all.extend_from_slice(args);
+        self.git_with(
+            &all,
+            &[("GIT_AUTHOR_DATE", &date), ("GIT_COMMITTER_DATE", &date)],
+        );
+        self.git(&["rev-parse", "refs/stash"])
+    }
+
     /// Checks out `branch` (created at HEAD if missing) in a new linked worktree next to
     /// the repository; returns the worktree path.
     pub fn add_worktree(&self, branch: &str) -> PathBuf {

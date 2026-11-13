@@ -1072,3 +1072,70 @@ async fn state_started_outside_the_app_is_detected() {
     .await
     .expect("a repo-changed without it");
 }
+
+// ---------------------------------------------------------------------------------------
+// stashes
+
+/// Subjects keep whatever git stores: unicode, a unit separator (the field separator) and
+/// what git made of bytes that are not UTF-8 (the parser's lossy decoding of raw bytes is
+/// unit-tested in `git::stash`). Parents, selectors, author and time come through, and a
+/// stash with untracked files has its third parent.
+#[cfg(unix)]
+#[tokio::test]
+async fn stash_list_parses_subjects_with_odd_bytes() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    use gg_core::git::stash::read_stashes;
+
+    let repo = TestRepo::new();
+    let git = runner().await;
+    assert!(
+        read_stashes(&git, repo.path()).await.unwrap().is_empty(),
+        "no commit, no stash"
+    );
+    let base = repo.commit("one");
+    assert!(read_stashes(&git, repo.path()).await.unwrap().is_empty());
+
+    repo.write("file-0.txt", "changed\n");
+    let odd: &[u8] = b"m\xc3\xbcsli \x1f split \xff\xfe end";
+    let mut message = b"--message=".to_vec();
+    message.extend_from_slice(odd);
+    let plain = repo.stash_os(&[OsStr::from_bytes(&message)]);
+    repo.write("file-0.txt", "changed again\n");
+    repo.write("new.txt", "untracked\n");
+    let with_untracked = repo.stash(&["--include-untracked"]);
+
+    let stashes = read_stashes(&git, repo.path()).await.unwrap();
+    assert_eq!(stashes.len(), 2, "{stashes:?}");
+    let (newest, older) = (&stashes[0], &stashes[1]);
+
+    assert_eq!(newest.hash, with_untracked);
+    assert_eq!(newest.selector, "stash@{0}");
+    assert_eq!(newest.base, base);
+    let parents = repo.git(&["rev-list", "--parents", "-n", "1", &with_untracked]);
+    let parents: Vec<&str> = parents.split(' ').skip(1).collect();
+    assert_eq!(parents.len(), 3, "{parents:?}");
+    assert_eq!(newest.index_parent.as_deref(), Some(parents[1]));
+    assert_eq!(newest.untracked_parent.as_deref(), Some(parents[2]));
+    assert_eq!(newest.author, "Test");
+    assert_eq!(newest.email, "test@example.com");
+    assert_eq!(newest.time, 1_700_000_000 + 2 * 60);
+    assert!(
+        newest.subject.starts_with("WIP on main: "),
+        "{}",
+        newest.subject
+    );
+
+    assert_eq!(older.hash, plain);
+    assert_eq!(older.selector, "stash@{1}");
+    assert_eq!(older.base, base);
+    assert!(older.index_parent.is_some());
+    assert_eq!(older.untracked_parent, None);
+    assert_eq!(older.time, 1_700_000_000 + 60);
+    // git stores a message that is not UTF-8 as if it were Latin-1 (`\xff\xfe` is "ÿþ"):
+    // the subject is what git stores, the separator inside it included.
+    assert_eq!(older.subject, "On main: müsli \u{1f} split ÿþ end");
+    let stored = repo.git(&["log", "-1", "--format=%s", &plain]);
+    assert_eq!(older.subject, stored);
+}

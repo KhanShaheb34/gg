@@ -6,6 +6,7 @@ pub mod names;
 pub mod progress;
 pub mod refs;
 pub mod runner;
+pub mod stash;
 pub mod status;
 pub mod worktrees;
 

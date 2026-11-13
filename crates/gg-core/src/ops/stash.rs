@@ -13,7 +13,7 @@ use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::{GitOutput, git_failed};
 use crate::git::stash::{Stash, read_stashes};
 use crate::ops::explain::{file_list, recognised};
-use crate::ops::local::short;
+use crate::ops::local::{current_branch, short};
 use crate::ops::{OpCtx, Step};
 
 /// Said when the stash a request names is no longer in the list.
@@ -172,7 +172,8 @@ pub(crate) async fn branch(ctx: &OpCtx<'_>, hash: &str, name: &str) -> Result<St
     let args = ["stash", "branch", name, stash.selector.as_str()];
     let out = ctx.git(&args).await?;
     if out.code != 0 {
-        return Ok(failed(&args, &out, Some(PutBack::Pop)));
+        let made = current_branch(ctx).await?.as_deref() == Some(name);
+        return Ok(branch_failed(&args, &out, name, made));
     }
     Ok(Step::Done(format!(
         "Created branch {name} at {} from {} and checked it out: the stash's changes are in \
@@ -180,6 +181,43 @@ pub(crate) async fn branch(ctx: &OpCtx<'_>, hash: &str, name: &str) -> Result<St
         short(&stash.base),
         stash.selector
     )))
+}
+
+/// The failed step of `stash branch <name>` (`args`, `out`). git first checks out a new
+/// branch at the stash's base, then applies the stash. `made`: the checkout happened (the
+/// branch exists and is checked out) and applying failed; the stash is kept. Otherwise the
+/// checkout was blocked and nothing was made: told as a checkout's failure.
+fn branch_failed(args: &[&str], out: &GitOutput, name: &str, made: bool) -> Step {
+    let detail = detail(out);
+    let message = if made {
+        match put_back_failure(&detail, PutBack::Apply) {
+            Some(why) => format!(
+                "Created branch {name} and checked it out, but the stash could not be applied: \
+                 {}",
+                lowercase_first(&why)
+            ),
+            None => format!(
+                "Created branch {name} and checked it out, but the stash could not be applied. \
+                 The stash is kept."
+            ),
+        }
+    } else {
+        recognised(&["checkout"], &detail)
+            .unwrap_or_else(|| git_failed(args, out.code, &detail).message)
+    };
+    Step::Failed {
+        message,
+        detail,
+        hints: Vec::new(),
+    }
+}
+
+/// `text` with its first letter in lower case, to follow a colon.
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_lowercase().chain(chars).collect())
 }
 
 /// The step for a stash that went between the turn's check and the command.

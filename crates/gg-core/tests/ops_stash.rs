@@ -409,3 +409,54 @@ async fn saving_a_stash_does_not_end_a_stopped_merge() {
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
     assert!(stashes(&repo).is_empty());
 }
+
+/// Task 5 review, item 7: the branch is made and checked out, but the stash does not apply
+/// (uncommitted changes in the way): the outcome says the branch exists and is checked out,
+/// and that the stash is kept.
+#[tokio::test]
+async fn branch_from_stash_that_does_not_apply_says_the_branch_is_there() {
+    let repo = repo_with_notes();
+    repo.write("notes.txt", "stashed\n");
+    let w = repo.stash(&[]);
+    repo.write("notes.txt", "in the way\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, branch(&w, "rescue")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(current_branch(&repo).as_deref(), Some("rescue"));
+    assert_eq!(stashes(&repo)[0].0, w, "the stash is kept");
+    assert!(
+        out.message.starts_with(
+            "Created branch rescue and checked it out, but the stash could not be applied"
+        ),
+        "{}",
+        out.message
+    );
+    assert!(out.message.contains("The stash is kept"), "{}", out.message);
+    assert!(!out.message.contains("Popping"), "{}", out.message);
+}
+
+/// Item 7: the checkout of the stash's base is blocked: nothing was made; the message is
+/// git's meaning (changes in the way of the checkout), not a pop's.
+#[tokio::test]
+async fn branch_from_stash_blocked_by_the_checkout_says_so() {
+    let repo = repo_with_notes();
+    repo.write("other.txt", "stashed\n");
+    repo.git(&["add", "other.txt"]);
+    let w = repo.stash(&[]);
+    repo.write("notes.txt", "moved on\n");
+    repo.commit_all("later");
+    repo.write("notes.txt", "uncommitted\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, branch(&w, "rescue")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/rescue"]));
+    assert!(out.message.contains("notes.txt"), "{}", out.message);
+    assert!(out.message.contains("checkout"), "{}", out.message);
+    assert!(!out.message.contains("Popping"), "{}", out.message);
+    assert!(!out.message.contains("by the stash"), "{}", out.message);
+}

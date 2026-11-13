@@ -219,6 +219,27 @@ const REPOS: Record<string, RepoScript> = {
     git("reset", "-q", "--hard");
   },
   /**
+   * 600 linear commits ("Big commit 1" the oldest) with labels: a tag on every 7th commit, a
+   * branch on every 11th, and five labels on commit 300.
+   */
+  labelled(git, _write, dir) {
+    git("init", "-q", "-b", "main");
+    let refs = "";
+    for (let i = 1; i <= 600; i++) {
+      if (i % 7 === 0) refs += `reset refs/tags/t${i}\nfrom :${i}\n\n`;
+      if (i % 11 === 0) refs += `reset refs/heads/b${i}\nfrom :${i}\n\n`;
+    }
+    for (const name of ["x1", "x2", "x3", "x4", "x5"]) refs += `reset refs/tags/${name}\nfrom :300\n\n`;
+    execFileSync("git", ["fast-import", "--quiet"], {
+      cwd: dir,
+      input: linearHistory(600) + refs,
+      stdio: ["pipe", "ignore", "pipe"],
+      env: isolatedEnv(),
+    });
+    advanceClock(dir, 601);
+    git("reset", "-q", "--hard");
+  },
+  /**
    * 48 commits on `main`, `develop`, `feature/search`, `feature/ui`, `release/1.0` and a merged
    * `hotfix/crash` that now exists only on the remote, with merges between them; tags `v0.1`,
    * `v0.2`, `v1.0`; a bare `origin` whose `develop` is at the local one, and whose `main` and

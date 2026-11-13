@@ -4,6 +4,11 @@
   branch checked out in the active worktree is bold with a ring, like HEAD's node; tags are
   outlined. Never wraps; the description cell clips what does not fit.
 -->
+<script lang="ts" module>
+  /** Label slots per row: rows are recycled while scrolling, and so are their labels. */
+  const SLOTS = [0, 1, 2] as const;
+</script>
+
 <script lang="ts">
   import { shortenPath } from "../format";
   import type { RefLabel } from "../types";
@@ -19,6 +24,10 @@
 
   let { labels, detachedHead, detachedWorktrees, homeDir }: Props = $props();
 
+  /** Labels with a slot of their own: all of up to 3; else 2, and "+k" for the rest. */
+  const own = $derived(labels.length <= SLOTS.length ? labels.length : SLOTS.length - 1);
+  const rest = $derived(labels.length - own);
+
   function title(label: RefLabel): string {
     const parts = [label.kind === "tag" ? `Tag ${label.name}` : label.kind === "remote" ? `Remote branch ${label.name}` : `Branch ${label.name}`];
     if (label.current) parts.push("checked out");
@@ -29,64 +38,77 @@
     if (label.worktreePath && !label.current) parts.push(`checked out in ${shortenPath(label.worktreePath, homeDir)}`);
     return parts.join(" · ");
   }
+
+  function aheadBehind(label: RefLabel): string {
+    const ahead = label.ahead > 0 ? `↑${label.ahead}` : "";
+    const behind = label.behind > 0 ? `↓${label.behind}` : "";
+    return ahead && behind ? `${ahead}\u2009${behind}` : ahead + behind;
+  }
 </script>
 
-{#if detachedHead}
-  <span class="ref head current" data-ref="HEAD" title="HEAD (detached)">
-    <svg class="icon" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-      <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
-    </svg>
-    <span class="name">HEAD</span>
-  </span>
-{/if}
-{#each labels as label}
+<!-- Every element here is always there, shown or hidden, so a recycled row changes text and
+     attributes only: scrolling creates and destroys nothing. -->
+<span class="ref head current" data-ref="HEAD" title="HEAD (detached)" hidden={!detachedHead}>
+  <svg class="icon" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+    <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
+  </svg>
+  <span class="name">HEAD</span>
+</span>
+{#each SLOTS as k (k)}
+  {@const label = k < own ? labels[k] : undefined}
   <span
-    class="ref {label.kind}"
-    class:current={label.current}
-    data-ref={label.name}
-    data-current={label.current}
-    title={title(label)}
+    class="ref {label?.kind ?? ''}"
+    class:current={label?.current}
+    hidden={!label}
+    data-ref={label?.name}
+    data-current={label?.current}
+    title={label ? title(label) : undefined}
   >
     <svg class="icon" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-      {#if label.current}
+      <g class="i-current">
         <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
-      {:else if label.kind === "tag"}
+      </g>
+      <g class="i-tag">
         <path d="M1.2 1.2h3.6l4 4-3.6 3.6-4-4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
         <circle cx="3.4" cy="3.4" r="0.8" fill="currentColor" />
-      {:else}
+      </g>
+      <g class="i-branch">
         <circle cx="3" cy="2" r="1.25" fill="currentColor" />
         <circle cx="3" cy="8" r="1.25" fill="currentColor" />
         <circle cx="7.2" cy="3.4" r="1.25" fill="currentColor" />
         <path d="M3 2v6M7.2 3.4c0 2.2-4.2 1.6-4.2 3.8" fill="none" stroke="currentColor" stroke-width="1.1" />
-      {/if}
+      </g>
     </svg>
-    <span class="name">{label.name}</span>
-    {#if label.remotes.length > 0}
-      <span class="remotes">{label.remotes.join(", ")}</span>
-    {/if}
-    {#if label.ahead > 0 || label.behind > 0}
-      <span class="ab">
-        {#if label.ahead > 0}↑{label.ahead}{/if}{#if label.ahead > 0 && label.behind > 0}&thinsp;{/if}{#if label.behind > 0}↓{label.behind}{/if}
-      </span>
-    {/if}
-    {#if label.worktreePath && !label.current}
-      <svg class="wt" width="11" height="10" viewBox="0 0 11 10" aria-label="in a worktree">
-        <path d="M1 2.2c0-.5.4-.9.9-.9h2.4l1 1.1h3.8c.5 0 .9.4.9.9v4.6c0 .5-.4.9-.9.9H1.9c-.5 0-.9-.4-.9-.9z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
-      </svg>
-    {/if}
-  </span>
-{/each}
-{#if detachedWorktrees.length > 0}
-  <span
-    class="ref worktree"
-    title="Worktree detached here: {detachedWorktrees.map((p) => shortenPath(p, homeDir)).join(', ')}"
-  >
-    <svg class="icon" width="11" height="10" viewBox="0 0 11 10" aria-hidden="true">
+    <span class="name">{label?.name ?? ""}</span>
+    <span class="remotes">{label ? label.remotes.join(", ") : ""}</span>
+    <span class="ab">{label ? aheadBehind(label) : ""}</span>
+    <svg
+      class="wt"
+      width="11"
+      height="10"
+      viewBox="0 0 11 10"
+      aria-label="in a worktree"
+      display={label?.worktreePath && !label.current ? undefined : "none"}
+    >
       <path d="M1 2.2c0-.5.4-.9.9-.9h2.4l1 1.1h3.8c.5 0 .9.4.9.9v4.6c0 .5-.4.9-.9.9H1.9c-.5 0-.9-.4-.9-.9z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
     </svg>
-    {#if detachedWorktrees.length > 1}<span class="name">{detachedWorktrees.length}</span>{/if}
   </span>
-{/if}
+{/each}
+<span class="ref more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map((l) => l.name).join(", ")}
+  >+{rest}</span
+>
+<span
+  class="ref worktree"
+  hidden={detachedWorktrees.length === 0}
+  title={detachedWorktrees.length === 0
+    ? undefined
+    : `Worktree detached here: ${detachedWorktrees.map((p) => shortenPath(p, homeDir)).join(", ")}`}
+>
+  <svg class="icon" width="11" height="10" viewBox="0 0 11 10" aria-hidden="true">
+    <path d="M1 2.2c0-.5.4-.9.9-.9h2.4l1 1.1h3.8c.5 0 .9.4.9.9v4.6c0 .5-.4.9-.9.9H1.9c-.5 0-.9-.4-.9-.9z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
+  </svg>
+  <span class="name">{detachedWorktrees.length > 1 ? detachedWorktrees.length : ""}</span>
+</span>
 
 <style>
   .ref {
@@ -108,10 +130,36 @@
     white-space: nowrap;
   }
 
+  .ref[hidden] {
+    display: none;
+  }
+
   .icon,
   .wt {
     display: block;
     flex: none;
+  }
+
+  /* One icon of three shows: current (a ring), tag, or branch. */
+  .icon g {
+    display: none;
+  }
+
+  .current .i-current,
+  .tag:not(.current) .i-tag,
+  .ref:not(.current):not(.tag) .i-branch {
+    display: inline;
+  }
+
+  .remotes:empty,
+  .ab:empty,
+  .worktree .name:empty {
+    display: none;
+  }
+
+  .more {
+    --c: var(--text-muted);
+    padding: 0 5px;
   }
 
   .icon {

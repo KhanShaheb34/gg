@@ -527,3 +527,36 @@ test("a row's tooltip goes when its commit changes under a still pointer", async
   await expect(subject(row(page, 0))).toHaveText("Commit under the pointer");
   await expect(cell).not.toHaveAttribute("title", hash);
 });
+
+test("scrolling creates no elements: ref labels use fixed slots, with +k for the rest", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("labelled"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", "601");
+  await expect(subject(row(page, 0))).not.toBeEmpty();
+  const added = await grid(page).evaluate(async (el) => {
+    const group = el.querySelector('[role="rowgroup"]')!;
+    let elements = 0;
+    const observer = new MutationObserver((records) => {
+      for (const r of records) for (const n of r.addedNodes) if (n.nodeType === Node.ELEMENT_NODE) elements++;
+    });
+    observer.observe(group, { childList: true, subtree: true });
+    for (let top = 0; top <= 600 * 26; top += 13) {
+      el.scrollTop = top;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    observer.disconnect();
+    return elements;
+  });
+  expect(added).toBe(0);
+
+  // Commit 300 has five labels: two shown, and "+3" naming the others.
+  await scrollTo(page, (600 - 300) * 26 - 100);
+  const busy = row(page, 300);
+  await expect(busy.locator(".subject")).toHaveText(bigSubject(300));
+  await expect(busy.locator(".ref:not([hidden])")).toHaveCount(3);
+  const more = busy.locator(".ref.more");
+  await expect(more).toHaveText("+3");
+  await expect(more).toHaveAttribute("title", /x3.*x4.*x5|t300|x5/);
+});

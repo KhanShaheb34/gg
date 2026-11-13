@@ -297,8 +297,9 @@ impl GitRunner {
     /// timed out, and the result is `Ok(None)`. On Unix git runs in its own process group
     /// for this; elsewhere only git itself is killed.
     ///
-    /// The group is killed while git is still unreaped, so its id cannot have been reused,
-    /// and then git is waited for. Its own group also means that, under a terminal, a
+    /// The group's id is git's pid, taken at spawn. On timeout the group is killed even when
+    /// git has already exited (a helper it started still holding its output open): a group
+    /// id is not reused while the group has members. Then git is waited for. Its own group also means that, under a terminal, a
     /// helper that tries to read the terminal (an ssh passphrase prompt; git's own prompts are
     /// off) is stopped rather than prompting, until the timeout kills it. In the app there is
     /// no terminal and such a prompt fails at once.
@@ -323,6 +324,7 @@ impl GitRunner {
             err
         };
         let mut child = cmd.spawn().map_err(fail)?;
+        let group = child.id();
         let mut stdout_pipe = child.stdout.take();
         let mut stderr_pipe = child.stderr.take();
         let read = async {
@@ -358,14 +360,15 @@ impl GitRunner {
             }
             Ok((_, _, Err(e))) => Err(fail(e)),
             Err(_) => {
-                // git is not reaped yet, so its pid (the group's id) is still its own.
                 #[cfg(unix)]
-                if let Some(pid) = child.id().and_then(|p| libc::pid_t::try_from(p).ok()) {
+                if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
                     // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
                     unsafe {
                         libc::killpg(pid, libc::SIGKILL);
                     }
                 }
+                #[cfg(not(unix))]
+                let _ = group;
                 let _ = child.kill().await;
                 self.log_timed_out(cwd, args, kind, started);
                 Ok(None)

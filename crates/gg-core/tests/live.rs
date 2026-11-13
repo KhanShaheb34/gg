@@ -604,6 +604,49 @@ async fn a_timed_out_fetch_kills_the_helpers_git_started() {
     );
 }
 
+/// git can finish while a helper it started still holds git's output open: the fetch then
+/// times out waiting for that output, and the helper is killed with git's process group,
+/// though git itself is gone.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_helper_that_outlives_git_is_killed_on_timeout() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    let pid_file = repo.dir.path().join("lingering.pid");
+    // A background sleep that keeps stderr (git's, so the runner's pipe) open; then the real
+    // upload-pack, so the fetch itself completes.
+    upload_pack(
+        &repo,
+        "lingering-upload-pack",
+        &format!(
+            "sleep 600 &\necho $! > '{}'\nexec git-upload-pack \"$@\"",
+            pid_file.display()
+        ),
+    );
+    let h = harness().await;
+    h.m.set_fetch_timeout(Duration::from_millis(1500));
+    let snap = h.open(repo.path()).await;
+    tokio::time::timeout(TIMEOUT, h.m.fetch(snap.repo_id))
+        .await
+        .expect("the fetch was not given up")
+        .unwrap();
+    let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let gone = eventually(Duration::from_secs(5), || !alive()).await;
+    if !gone {
+        let _ = std::process::Command::new("kill").args(["-9", &pid]).status();
+    }
+    assert!(gone, "the helper ({pid}) outlived the timed-out fetch");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn hung_fetch_times_out() {

@@ -24,7 +24,10 @@
 
   let { labels, detachedHead, detachedWorktrees, homeDir }: Props = $props();
 
-  /** Labels with a slot of their own: all of up to 3; else 2, and "+k" for the rest. */
+  /**
+   * Labels with a slot of their own: all of up to 3; else 2, and "+k" for the rest, whose
+   * tooltip describes each hidden label as a shown one's does.
+   */
   const own = $derived(labels.length <= SLOTS.length ? labels.length : SLOTS.length - 1);
   const rest = $derived(labels.length - own);
 
@@ -94,7 +97,7 @@
     </svg>
   </span>
 {/each}
-<span class="ref more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map((l) => l.name).join(", ")}
+<span class="ref more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(title).join("\n")}
   >+{rest}</span
 >
 <span

@@ -565,7 +565,8 @@ test("scrolling creates no elements: ref labels use fixed slots, with +k for the
   await expect(busy.locator(".ref:not([hidden])")).toHaveCount(3);
   const more = busy.locator(".ref.more");
   await expect(more).toHaveText("+3");
-  await expect(more).toHaveAttribute("title", /x3.*x4.*x5|t300|x5/);
+  // The hidden labels, each described as a shown one is.
+  await expect(more).toHaveAttribute("title", "Tag x3\nTag x4\nTag x5");
 });
 
 test("a jump of more than a screen leaves rows unfilled for a moment, then fills them", async ({ gg }) => {

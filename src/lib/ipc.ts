@@ -38,6 +38,7 @@ interface Transport {
   invoke(cmd: string, args: Record<string, unknown>): Promise<unknown>;
   listen(name: EventName, handler: Handler): () => void;
   pickFolder(): Promise<string | null>;
+  closeWindow(): Promise<void>;
   onFolderDrag(handler: (event: FolderDragEvent) => void): () => void;
 }
 
@@ -59,8 +60,8 @@ function unreachable(message: string, cause: unknown): CoreError {
 
 const tauriTransport: Transport = {
   async invoke(cmd, args) {
-    const { invoke } = await import("@tauri-apps/api/core");
     try {
+      const { invoke } = await import("@tauri-apps/api/core");
       return await invoke("invoke_core", { cmd, args });
     } catch (e) {
       throw isCoreErrorDto(e) ? new CoreError(e) : unreachable("The core did not answer", e);
@@ -84,9 +85,23 @@ const tauriTransport: Transport = {
   },
 
   async pickFolder() {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const picked = await open({ directory: true, multiple: false });
+    let picked;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      picked = await open({ directory: true, multiple: false });
+    } catch (e) {
+      throw unreachable("Could not show the folder picker", e);
+    }
     return typeof picked === "string" ? picked : null;
+  },
+
+  async closeWindow() {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().close();
+    } catch (e) {
+      throw unreachable("Could not close the window", e);
+    }
   },
 
   onFolderDrag(handler) {
@@ -208,6 +223,9 @@ const httpTransport: Transport = {
     return path ? path : null;
   },
 
+  // A page cannot close a window it did not open; the browser's own Cmd+W closes the tab.
+  async closeWindow() {},
+
   // A browser page never learns the real path of a dropped folder.
   onFolderDrag() {
     return () => {};
@@ -266,6 +284,8 @@ export const api = {
   },
   /** Git commands run after the one with id `sinceId` (0: all kept), oldest first. */
   commandLog: (sinceId: number) => call<CommandRecord[]>("command_log", { sinceId }),
+  /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
+  closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */
   pickFolder: (): Promise<string | null> => transport().pickFolder(),
 };

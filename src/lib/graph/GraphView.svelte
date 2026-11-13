@@ -156,9 +156,9 @@
   const detachedHead = $derived(view.snapshot.head.branch === null);
   /** Rows matching the search, and how to find the match in their subjects. */
   // The set stays the same object while only load progress changes, so rows do not re-render.
-  const hits = $derived(view.liveHitSet);
+  const hits = $derived(view.search.liveHitSet);
   /** The search query as matched (lowercased), while there are hits to mark. */
-  const needle = $derived(hits.size > 0 ? needleOf(view.searchQuery) : null);
+  const needle = $derived(hits.size > 0 ? needleOf(view.search.query) : null);
 
   /** Rows the grid has right now (skeletons included while waiting). */
   function rowCount(): number {
@@ -213,8 +213,8 @@
     // Loaded only in a perf run, so the probe is not part of the app's main chunk.
     void import("../perf/scrollProbe").then(async ({ runScrollProbe, runClickProbe }) => {
       if (perfSearch) {
-        view.openSearch();
-        await view.runSearch(perfSearch);
+        view.search.show();
+        await view.search.run(perfSearch);
       }
       const mode = perfScrollMode === true ? "jump" : perfScrollMode === "smooth" ? "smooth" : "still";
       const s = await runScrollProbe(scroller, probe!, { mode });

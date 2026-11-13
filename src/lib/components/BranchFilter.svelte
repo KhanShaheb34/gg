@@ -283,7 +283,7 @@
             {@render entry(row)}
           {/each}
           {#if sections.local.length > 0}
-            <div class="group" role="group" aria-label="Branches">
+            <div class="group" role="group" aria-label="Local branches">
               {#each sections.local as row (keyOf(row.item))}
                 {@render entry(row)}
               {/each}

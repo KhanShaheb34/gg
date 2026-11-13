@@ -1,18 +1,24 @@
 // One RepoView per open tab: the repository's latest snapshot, its cache of rows, the
-// selection and where the graph was scrolled to, the view options, search, fetch and refresh.
+// selection and where the graph was scrolled to, the view options, fetch and refresh, and its
+// search (SearchState). View options are remembered per repository (viewOptionsStore).
 // It follows `repo-changed` events, and when the rows change under it, keeps the visible
 // commit and the selection where they were.
 
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
-import { hitPosition, stepHit } from "../search";
 import type { RepoSnapshot, RowsPage, ViewOptions } from "../types";
 import { CommitDetailsLoader } from "./details.svelte";
+import { SearchState } from "./search.svelte";
+import { DEFAULT_OPTIONS, readOptions, sameOptions, visible, writeOptions } from "./viewOptionsStore";
 
-/** Rows fetched around the restored position before a new generation is shown. */
+/**
+ * Rows fetched around the restored position before a new generation is shown. These pages,
+ * the selection's, and a page either side of each (RowCache.ensure) must fit in RowCache's
+ * maxPages (8 pages of 200 rows), or the swap would evict rows it has just loaded.
+ */
 const SWAP_PREFETCH_ROWS = 80;
-/** Attempts to show one generation before keeping the old rows until the next change. */
+/** Attempts to show one generation in place before showing it wherever it can be. */
 const MAX_SWAP_ATTEMPTS = 3;
 /** How long an opening view waits for its remembered view options before showing other rows. */
 const RESTORE_HOLD_MS = 2000;
@@ -20,56 +26,6 @@ const RESTORE_HOLD_MS = 2000;
 const MIN_REFRESH_MS = 400;
 /** How long a fetch shows as starting when the core does not report it running. */
 const FETCH_START_MS = 3000;
-/** localStorage key prefix of the view options remembered per repository path. */
-const OPTIONS_KEY = "gg.view.v1:";
-
-const DEFAULT_OPTIONS: ViewOptions = { branches: null, showRemotes: true, showTags: true };
-
-function sameOptions(a: ViewOptions | undefined, b: ViewOptions | undefined): boolean {
-  if (!a || !b) return a === b;
-  if (a.showRemotes !== b.showRemotes || a.showTags !== b.showTags) return false;
-  if (a.branches === null || b.branches === null) return a.branches === b.branches;
-  return a.branches.length === b.branches.length && a.branches.every((n, i) => n === b.branches![i]);
-}
-
-/** The view options remembered for the repository at `path`, if any (and well formed). */
-function readOptions(path: string): ViewOptions | null {
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem(OPTIONS_KEY + path) ?? "null");
-    if (typeof raw !== "object" || raw === null) return null;
-    const o = raw as Record<string, unknown>;
-    const branches = o.branches;
-    const validBranches =
-      branches === null || (Array.isArray(branches) && branches.every((b) => typeof b === "string"));
-    if (!validBranches || typeof o.showRemotes !== "boolean" || typeof o.showTags !== "boolean") return null;
-    return { branches: branches as string[] | null, showRemotes: o.showRemotes, showTags: o.showTags };
-  } catch {
-    return null;
-  }
-}
-
-function writeOptions(path: string, options: ViewOptions): void {
-  try {
-    if (sameOptions(options, DEFAULT_OPTIONS)) localStorage.removeItem(OPTIONS_KEY + path);
-    else localStorage.setItem(OPTIONS_KEY + path, JSON.stringify(options));
-  } catch {
-    // Not remembered; the choice still applies until the repository is closed.
-  }
-}
-
-/**
- * The part of `options` the graph can show: with remote branches hidden, the selection
- * without them (and all branches when nothing else is selected).
- */
-function visible(options: ViewOptions, remoteBranches: string[] | undefined): ViewOptions {
-  if (options.showRemotes || options.branches === null) return options;
-  const remote = new Set(remoteBranches ?? []);
-  const branches = options.branches.filter((name) => !remote.has(name));
-  if (branches.length === options.branches.length) return options;
-  return { ...options, branches: branches.length > 0 ? branches : null };
-}
-
-const NO_HITS: ReadonlySet<number> = new Set();
 
 /** The newer of two snapshots of one repository (`b` when they are alike). */
 function newer(a: RepoSnapshot | null, b: RepoSnapshot): RepoSnapshot {
@@ -127,16 +83,8 @@ export class RepoView {
    */
   viewOptions: ViewOptions = $state.raw(DEFAULT_OPTIONS);
 
-  /** The search box is open. */
-  searchOpen = $state(false);
-  /** Bumped to ask the search box to take the focus. */
-  searchFocus = $state(0);
-  searchQuery = $state("");
-  /** Ascending row indices of the commits matching `searchQuery`, in `searchGeneration`. */
-  searchHits: number[] = $state.raw([]);
-  searchGeneration = $state(-1);
-  /** The core is looking for `searchQuery`. */
-  searchPending = $state(false);
+  /** The commit search: query, hits, and moving between them. */
+  readonly search: SearchState;
 
   /** A refresh asked for here is underway. */
   refreshing = $state(false);
@@ -158,7 +106,8 @@ export class RepoView {
   onChange: (() => void) | null = null;
 
   private stopEvents: () => void;
-  private disposed = false;
+  /** The view was disposed of (its tab closed). */
+  disposed = false;
   /** Bumped by every generation change being applied; an older one in progress gives up. */
   private applyToken = 0;
   /** The newest snapshot of the generation being applied, while one is. */
@@ -181,20 +130,10 @@ export class RepoView {
   private optionsSending: Promise<void> | null = null;
   /** The next generation change keeps the selection in place (the view options changed). */
   private revealSelection = false;
+  /** The options being sent are the ones remembered for the repository, being restored. */
+  private restoring = false;
   /** The last view options the core is known to have taken (whole, as in `viewOptions`). */
   private confirmedOptions: ViewOptions = DEFAULT_OPTIONS;
-
-  private searchToken = 0;
-  /** Rows there were, and whether they were still loading, when the hits were looked up. */
-  private lookupRows = 0;
-  private lookupWhileLoading = false;
-  /** A lookup of the hits is underway; another is wanted once it is done. */
-  private lookingUp = false;
-  private lookUpAgain = false;
-  private hitSetOf: number[] | null = null;
-  private hitSetCache: ReadonlySet<number> = NO_HITS;
-  /** The hit row being moved to, while its row loads. */
-  private steppingTo: number | null = null;
 
   /** When the fetch asked for here was asked for (ms since the epoch), while it is watched. */
   private fetchAskedAt = 0;
@@ -203,6 +142,7 @@ export class RepoView {
   constructor(repoId: number, initial?: RepoSnapshot) {
     this.repoId = repoId;
     this.details = new CommitDetailsLoader(repoId);
+    this.search = new SearchState(this);
     this.snapshot = placeholder(repoId);
     this.cache = this.newCache(-1, 0);
     this.stopEvents = onEvent<RepoSnapshot>("repo-changed", (s) => {
@@ -262,6 +202,7 @@ export class RepoView {
    * where it was on screen. A failed change goes back to the options the core has.
    */
   setViewOptions(patch: Partial<ViewOptions>): Promise<void> {
+    this.restoring = false;
     const next: ViewOptions = { ...this.viewOptions, ...patch };
     if (next.branches !== null && next.branches.length === 0) next.branches = null;
     this.viewOptions = next;
@@ -301,13 +242,16 @@ export class RepoView {
           this.notice(e, "Could not change the view");
           this.releaseHold();
           if (this.optionsWanted === null) {
-            // Back to what the core has.
+            // Back to what the core has. Options that could not be restored stay remembered
+            // for the next time; a change the user just made that failed is forgotten.
             this.viewOptions = this.confirmedOptions;
-            this.remember(this.confirmedOptions);
+            if (!this.restoring) this.remember(this.confirmedOptions);
             this.revealSelection = false;
+            this.restoring = false;
           }
           continue;
         }
+        this.restoring = false;
         if (this.optionsWanted !== null || this.disposed) continue; // a newer choice follows
         this.adoptOptions(s.viewOptions, s.remoteBranches);
         // Nothing to wait for: the rows did not change.
@@ -341,6 +285,7 @@ export class RepoView {
       return;
     }
     this.hold = { newest: null, ready: null, timer: setTimeout(() => this.releaseHold(), RESTORE_HOLD_MS) };
+    this.restoring = true;
     void this.sendOptions(wanted);
   }
 
@@ -373,149 +318,6 @@ export class RepoView {
     this.hold = null;
     clearTimeout(hold.timer);
     if (hold.newest) void this.applySnapshot(hold.newest);
-  }
-
-  // --- Search -------------------------------------------------------------------------------
-
-  /** Position of the selected row among the hits, or -1. */
-  get searchIndex(): number {
-    return hitPosition(this.liveHits, this.selectedHash === null ? null : this.selectedIndex);
-  }
-
-  /** The hits, when they belong to the rows shown. */
-  get liveHits(): number[] {
-    return this.searchGeneration === this.snapshot.generation ? this.searchHits : [];
-  }
-
-  /** The hits as a set; the same object until the hits change. */
-  get hitSet(): ReadonlySet<number> {
-    const hits = this.searchHits;
-    if (hits !== this.hitSetOf) {
-      this.hitSetOf = hits;
-      this.hitSetCache = hits.length > 0 ? new Set(hits) : NO_HITS;
-    }
-    return this.hitSetCache;
-  }
-
-  /** `hitSet`, when the hits belong to the rows shown. */
-  get liveHitSet(): ReadonlySet<number> {
-    return this.searchGeneration === this.snapshot.generation ? this.hitSet : NO_HITS;
-  }
-
-  openSearch(): void {
-    this.searchOpen = true;
-    this.searchFocus++;
-  }
-
-  closeSearch(): void {
-    this.searchOpen = false;
-    void this.runSearch("");
-  }
-
-  /** Looks for commits matching `query` and selects the first; a blank query clears the hits. */
-  async runSearch(query: string): Promise<void> {
-    this.searchQuery = query;
-    const token = ++this.searchToken;
-    if (query.trim() === "") {
-      this.searchHits = [];
-      this.searchGeneration = -1;
-      this.searchPending = false;
-      this.lookingUp = this.lookUpAgain = false;
-      return;
-    }
-    const generation = this.snapshot.generation;
-    this.searchPending = true;
-    this.startLookup();
-    let hits: number[];
-    try {
-      hits = await api.searchCommits(this.repoId, query);
-    } catch (e) {
-      if (token === this.searchToken) {
-        this.searchPending = false;
-        this.lookupDone();
-        this.notice(e, "Search failed");
-      }
-      return;
-    }
-    if (token !== this.searchToken || this.disposed) return;
-    this.searchPending = false;
-    if (generation !== this.snapshot.generation) return; // looked up again for the new rows
-    this.searchHits = hits;
-    this.searchGeneration = generation;
-    this.lookupDone();
-    if (hits.length > 0) await this.selectRow(hits[0], true);
-  }
-
-  /** Selects the next hit after the selection, wrapping around. */
-  nextHit(): Promise<void> {
-    return this.stepToHit(1);
-  }
-
-  /** Selects the previous hit before the selection, wrapping around. */
-  prevHit(): Promise<void> {
-    return this.stepToHit(-1);
-  }
-
-  private async stepToHit(dir: 1 | -1): Promise<void> {
-    const from = this.steppingTo ?? (this.selectedHash === null ? null : this.selectedIndex);
-    const row = stepHit(this.liveHits, from, dir);
-    if (row === null) return;
-    this.steppingTo = row;
-    try {
-      await this.selectRow(row, true);
-    } finally {
-      if (this.steppingTo === row) this.steppingTo = null;
-    }
-  }
-
-  /** Looks the hits of the current query up again in the rows now shown. */
-  private async refreshHits(): Promise<void> {
-    const query = this.searchQuery;
-    const token = ++this.searchToken;
-    const generation = this.snapshot.generation;
-    this.startLookup();
-    let hits: number[];
-    try {
-      hits = await api.searchCommits(this.repoId, query);
-    } catch {
-      if (token === this.searchToken) {
-        this.searchPending = false;
-        this.lookingUp = this.lookUpAgain = false; // the next change looks again
-      }
-      return;
-    }
-    if (token !== this.searchToken || this.disposed) return;
-    this.searchPending = false;
-    if (generation !== this.snapshot.generation) return;
-    this.searchHits = hits;
-    this.searchGeneration = generation;
-    this.lookupDone();
-  }
-
-  /**
-   * The core searches only the commits it has loaded: while they load, the hits are looked
-   * up again as rows arrive and once more when loading ends; one lookup at a time, with at
-   * most one more for all the rows that arrived meanwhile.
-   */
-  private refreshHitsAfterLoad(): void {
-    if (this.searchQuery.trim() === "" || !this.lookupWhileLoading) return;
-    const s = this.snapshot;
-    if (s.totalRows <= this.lookupRows && s.loading) return;
-    if (this.lookingUp) this.lookUpAgain = true;
-    else void this.refreshHits();
-  }
-
-  private startLookup(): void {
-    this.lookupRows = this.snapshot.totalRows;
-    this.lookupWhileLoading = this.snapshot.loading;
-    this.lookingUp = true;
-  }
-
-  private lookupDone(): void {
-    this.lookingUp = false;
-    if (!this.lookUpAgain) return;
-    this.lookUpAgain = false;
-    this.refreshHitsAfterLoad();
   }
 
   // --- Fetch and refresh --------------------------------------------------------------------
@@ -578,9 +380,14 @@ export class RepoView {
     this.refreshing = false;
   }
 
-  /** Reports `e` as "<message>" with the error's own message below (as a failed fetch is). */
-  private notice(e: unknown, message: string): void {
-    this.onNotice?.(message, e instanceof Error ? e.message : String(e));
+  /**
+   * Reports `e` as "<message>" with the error's own message below (as a failed fetch is), and
+   * under that the core's detail (git's own words), if it has one.
+   */
+  notice(e: unknown, message: string): void {
+    const text = e instanceof Error ? e.message : String(e);
+    const detail = e instanceof CoreError ? e.detail : null;
+    this.onNotice?.(message, detail ? `${text}\n${detail}` : text);
   }
 
   /** Records first paint of real rows, once (`first-rows`). */
@@ -597,7 +404,8 @@ export class RepoView {
    * swaps everything at once, so the view neither jumps nor flashes empty rows. If the rows
    * changed again meanwhile (the loaded window is incomplete, or the anchor or selection is
    * not where `findRow` said), the old rows stay and the newest snapshot is tried instead; a
-   * generation that fails MAX_SWAP_ATTEMPTS times in a row waits for the next change.
+   * generation that fails MAX_SWAP_ATTEMPTS times in a row is shown anyway, at the place
+   * worked out for it, and the user is told the view may have moved.
    */
   async applySnapshot(s: RepoSnapshot): Promise<void> {
     if (this.disposed || s.repoId !== this.repoId) return;
@@ -618,7 +426,6 @@ export class RepoView {
       if (s.totalRows >= this.incoming.totalRows) this.incoming = s;
       return;
     }
-    if (s.generation === this.failedGeneration && this.failures >= MAX_SWAP_ATTEMPTS) return;
     const token = ++this.applyToken;
     this.incoming = s;
 
@@ -663,16 +470,25 @@ export class RepoView {
       (keepSelection || anchorIndex === null || next.get(anchorIndex)?.hash === anchorHash) &&
       (selectedIndex === null || next.get(selectedIndex)?.hash === selected);
     if (!consistent) {
-      this.incoming = null;
       if (this.failedGeneration === target.generation) this.failures++;
       else {
         this.failedGeneration = target.generation;
         this.failures = 1;
       }
-      void this.refreshSnapshot();
-      return;
+      if (this.failures < MAX_SWAP_ATTEMPTS) {
+        this.incoming = null;
+        void this.refreshSnapshot();
+        return;
+      }
+      // The old rows may not be served much longer either: show the new ones where they
+      // should be, loading what is missing, and say why the view may have moved.
+      this.onNotice?.(
+        "Could not keep your place in the history",
+        "The commits kept changing while the graph was being updated; the view may have moved.",
+      );
     }
     this.failures = 0;
+    this.failedGeneration = -1;
 
     // Scrolling done while this was underway moves the restored position along.
     const scrolled = atTop ? 0 : this.scrollTop - startTop;
@@ -684,6 +500,7 @@ export class RepoView {
     this.disposed = true;
     if (this.hold) clearTimeout(this.hold.timer);
     this.hold = null;
+    this.search.dispose();
     this.stopEvents();
     this.details.dispose();
     this.onChange = null;
@@ -728,8 +545,7 @@ export class RepoView {
     // The core's options, unless newer ones are on their way to it.
     if (this.optionsSending === null && this.hold === null) this.adoptOptions(s.viewOptions, s.remoteBranches);
     this.trackFetch(s);
-    if (generationChanged && this.searchQuery.trim() !== "") void this.refreshHits();
-    else this.refreshHitsAfterLoad();
+    this.search.rowsChanged(generationChanged);
     if (!s.loading && !this.markedLoaded) {
       this.markedLoaded = true;
       void api.perfMark("fully-loaded", performance.now()).catch(() => {});

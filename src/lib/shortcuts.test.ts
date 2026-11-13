@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shortcutFor } from "./shortcuts";
+import { repeatable, shortcutFor } from "./shortcuts";
 
 const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "shiftKey" | "altKey", boolean>> = {}) => ({
   key: k,
@@ -17,7 +17,24 @@ describe("shortcutFor on macOS (Cmd)", () => {
     expect(mac(key("o", { metaKey: true }))).toEqual({ kind: "open" });
     expect(mac(key("w", { metaKey: true }))).toEqual({ kind: "close" });
     expect(mac(key("1", { metaKey: true }))).toEqual({ kind: "jump", index: 0 });
-    expect(mac(key("9", { metaKey: true }))).toEqual({ kind: "jump", index: 8 });
+    expect(mac(key("8", { metaKey: true }))).toEqual({ kind: "jump", index: 7 });
+  });
+
+  it("Cmd+9 is the last tab, however many there are", () => {
+    expect(mac(key("9", { metaKey: true }))).toEqual({ kind: "jump", index: -1 });
+  });
+
+  it("ignores keys typed into an input method's composition", () => {
+    expect(shortcutFor({ ...key("w", { metaKey: true }), isComposing: true }, true)).toBeNull();
+    expect(shortcutFor({ ...key("Tab", { ctrlKey: true }), isComposing: true }, true)).toBeNull();
+  });
+
+  it("lets only tab cycling repeat while a key is held", () => {
+    expect(repeatable({ kind: "cycle", delta: 1 })).toBe(true);
+    for (const kind of ["open", "close", "search", "fetch", "refresh"] as const) {
+      expect(repeatable({ kind })).toBe(false);
+    }
+    expect(repeatable({ kind: "jump", index: 0 })).toBe(false);
   });
 
   it("cycles tabs with Ctrl+Tab and Ctrl+Shift+Tab", () => {

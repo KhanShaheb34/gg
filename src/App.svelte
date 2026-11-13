@@ -10,8 +10,8 @@
   import GraphView from "./lib/graph/GraphView.svelte";
   import { api, onFolderDrop } from "./lib/ipc";
   import { isMac } from "./lib/platform";
-  import { shortcutFor } from "./lib/shortcuts";
-  import { activateIndex, app, closeTab, cycleTab, init, openPath, openViaPicker } from "./lib/state/app.svelte";
+  import { repeatable, shortcutFor } from "./lib/shortcuts";
+  import { activateIndex, app, closeTab, cycleTab, init, openPath, openViaPicker, toast } from "./lib/state/app.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
 
@@ -50,14 +50,18 @@
     if (!shortcut) return;
     // Always: Cmd/Ctrl+R must never reload the page, nor Cmd/Ctrl+F open the browser's find.
     e.preventDefault();
-    if (app.gitMissing) return;
+    // Holding Cmd+W must not close one tab after another.
+    if (e.repeat && !repeatable(shortcut)) return;
+    if (app.gitMissing && shortcut.kind !== "close") return;
     const view = active ? repoView(active.repoId) : null;
     switch (shortcut.kind) {
       case "open":
         void openViaPicker();
         break;
       case "close":
+        // With no tab left, Cmd+W closes the window, as in other tabbed apps.
         if (app.activeRepoId !== null) void closeTab(app.activeRepoId);
+        else void api.closeWindow().catch(() => toast("error", "Could not close the window"));
         break;
       case "cycle":
         cycleTab(shortcut.delta);
@@ -66,7 +70,7 @@
         activateIndex(shortcut.index);
         break;
       case "search":
-        view?.openSearch();
+        view?.search.show();
         break;
       case "fetch":
         void view?.fetch();

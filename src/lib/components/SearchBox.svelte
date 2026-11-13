@@ -17,16 +17,16 @@
   const KEYS = isMac() ? "⌘F" : "Ctrl+F";
 
   // The search of this repository may be open already (the tab was in the background).
-  let text = $state(untrack(() => view.searchQuery));
+  let text = $state(untrack(() => view.search.query));
   let input: HTMLInputElement | undefined = $state();
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Where the focus was before the field took it. */
   let returnTo: HTMLElement | null = null;
-  let seenFocus = untrack(() => view.searchFocus);
+  let seenFocus = untrack(() => view.search.focus);
 
-  const pending = $derived(text.trim() !== view.searchQuery.trim() || view.searchPending);
-  const hits = $derived(view.liveHits);
-  const counted = $derived(view.searchQuery.trim() === "" ? "" : countLabel(view.searchIndex, hits.length));
+  const pending = $derived(text.trim() !== view.search.query.trim() || view.search.pending);
+  const hits = $derived(view.search.liveHits);
+  const counted = $derived(view.search.query.trim() === "" ? "" : countLabel(view.search.index, hits.length));
   /** The count shown: the last one known while a search is underway, so it does not flicker. */
   let shown = $state("");
   $effect(() => {
@@ -36,7 +36,7 @@
 
   // Takes the focus whenever asked to (the button, Cmd/Ctrl+F).
   $effect(() => {
-    const ask = view.searchFocus;
+    const ask = view.search.focus;
     if (ask === seenFocus) return;
     seenFocus = ask;
     const from = document.activeElement as HTMLElement | null;
@@ -55,7 +55,7 @@
   function run() {
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    void view.runSearch(text);
+    void view.search.run(text);
   }
 
   function onInput() {
@@ -66,18 +66,18 @@
   }
 
   function step(dir: 1 | -1) {
-    if (timer !== null || text.trim() !== view.searchQuery.trim()) {
+    if (timer !== null || text.trim() !== view.search.query.trim()) {
       run(); // Enter before the pause ends: search now, which selects the first hit
       return;
     }
-    void (dir === 1 ? view.nextHit() : view.prevHit());
+    void (dir === 1 ? view.search.next() : view.search.prev());
   }
 
   function close() {
     if (timer !== null) clearTimeout(timer);
     timer = null;
     text = "";
-    view.closeSearch();
+    view.search.close();
     const target =
       returnTo?.isConnected === true ? returnTo : document.querySelector<HTMLElement>('#repo-panel [role="grid"]');
     returnTo = null;
@@ -93,7 +93,7 @@
   }
 </script>
 
-{#if view.searchOpen}
+{#if view.search.open}
   <div class="search">
     <svg class="glass" width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6" />
@@ -141,7 +141,7 @@
     </button>
   </div>
 {:else}
-  <button class="icon-btn" aria-label="Search commits" title="Search commits ({KEYS})" onclick={() => view.openSearch()}>
+  <button class="icon-btn" aria-label="Search commits" title="Search commits ({KEYS})" onclick={() => view.search.show()}>
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5" />
       <path d="m10.5 10.5 3.2 3.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />

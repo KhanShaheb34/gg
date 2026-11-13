@@ -9,11 +9,16 @@ export type Shortcut =
   | { kind: "fetch" }
   | { kind: "refresh" };
 
-type Keys = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">;
+type Keys = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> &
+  Partial<Pick<KeyboardEvent, "isComposing">>;
 
-/** The shortcut `e` triggers, or null. */
+/**
+ * The shortcut `e` triggers, or null. Cmd+1..8 are tabs 1 to 8 and Cmd+9 is the last tab
+ * (`jump` index -1), as in browsers. Keys that are part of an input method's composition
+ * trigger nothing.
+ */
 export function shortcutFor(e: Keys, isMac: boolean): Shortcut | null {
-  if (e.altKey) return null;
+  if (e.altKey || e.isComposing) return null;
   // Ctrl+Tab / Ctrl+Shift+Tab cycle tabs on every platform.
   if (e.key === "Tab" && e.ctrlKey && !e.metaKey) return { kind: "cycle", delta: e.shiftKey ? -1 : 1 };
 
@@ -25,6 +30,12 @@ export function shortcutFor(e: Keys, isMac: boolean): Shortcut | null {
   if (key === "r") return { kind: "refresh" };
   if (key === "o") return { kind: "open" };
   if (key === "w") return { kind: "close" };
-  if (/^[1-9]$/.test(key)) return { kind: "jump", index: Number(key) - 1 };
+  if (key === "9") return { kind: "jump", index: -1 };
+  if (/^[1-8]$/.test(key)) return { kind: "jump", index: Number(key) - 1 };
   return null;
+}
+
+/** Whether `shortcut` acts again while its keys are held down: only tab cycling does. */
+export function repeatable(shortcut: Shortcut): boolean {
+  return shortcut.kind === "cycle";
 }

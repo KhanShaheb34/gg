@@ -185,6 +185,12 @@ describe("tab navigation", () => {
     s.activateIndex(7);
     expect(s.app.activeRepoId).toBe(2);
   });
+
+  it("index -1 is the last tab", () => {
+    s.activateIndex(0);
+    s.activateIndex(-1);
+    expect(s.app.activeRepoId).toBe(3);
+  });
 });
 
 describe("init", () => {
@@ -199,6 +205,24 @@ describe("init", () => {
     expect(s.app.toasts[0].message).toContain("/gone");
     expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/a", "/r/b"], "/r/a");
     expect(s.app.ready).toBe(true);
+  });
+
+  it("finds out at start that git is missing, before anything is opened", async () => {
+    vi.mocked(ipc.api.getSnapshot).mockImplementation((repoId: number) =>
+      repoId === 0 ? Promise.reject(coreError("git_not_found", "git was not found")) : new Promise(() => {}),
+    );
+    await s.init();
+    expect(s.app.gitMissing).toBe(true);
+    expect(s.app.toasts).toEqual([]);
+  });
+
+  it("with git there, the start-up check shows nothing", async () => {
+    vi.mocked(ipc.api.getSnapshot).mockImplementation((repoId: number) =>
+      repoId === 0 ? Promise.reject(coreError("unknown_repo", "no such repository")) : new Promise(() => {}),
+    );
+    await s.init();
+    expect(s.app.gitMissing).toBe(false);
+    expect(s.app.toasts).toEqual([]);
   });
 
   it("opens the launch path after the session and activates it", async () => {
@@ -239,6 +263,24 @@ describe("init", () => {
   });
 });
 
+describe("repo-error before the tab exists", () => {
+  it("is shown with the repository's name once its tab is added", async () => {
+    await s.init();
+    const call = vi.mocked(ipc.onEvent).mock.calls.find(([name]) => name === "repo-error");
+    const handler = call![1] as (p: { repoId: number; error: CoreErrorDto }) => void;
+    // The core delivers errors held for a repository it opened at start while the UI's
+    // open_repo for it is still being answered.
+    vi.mocked(ipc.api.openRepo).mockImplementation(async (path) => {
+      handler({ repoId: 3, error: { code: "git_failed", message: "Could not read the history", detail: "fatal: x" } });
+      return fakeOpenRepo(path);
+    });
+    await s.openPath("/r/c");
+    expect(s.app.toasts).toMatchObject([
+      { kind: "error", message: "c: Could not read the history", detail: "fatal: x" },
+    ]);
+  });
+});
+
 describe("recents", () => {
   it("removing a recent takes the list the core returns", async () => {
     const rest = [{ path: "/r/b", name: "b", lastOpenedMs: 2 }];
@@ -254,6 +296,21 @@ describe("theme", () => {
     await s.setTheme("dark");
     expect(s.app.settings.theme).toBe("dark");
     expect(ipc.api.updateSettings).toHaveBeenCalledWith({ theme: "dark" });
+  });
+
+  it("keeps the last theme chosen when an earlier choice is answered after it", async () => {
+    const answers: (() => void)[] = [];
+    vi.mocked(ipc.api.updateSettings).mockImplementation(
+      (patch) =>
+        new Promise((resolve) => answers.push(() => resolve({ theme: "system", fetchIntervalSecs: 300, ...patch }))),
+    );
+    const light = s.setTheme("light");
+    const dark = s.setTheme("dark");
+    answers[1]();
+    await dark;
+    answers[0]();
+    await light;
+    expect(s.app.settings.theme).toBe("dark");
   });
 
   it("cycleTheme goes system, light, dark and back", async () => {

@@ -82,7 +82,7 @@ test("the branch filter works from the keyboard", async ({ gg }) => {
   await expect(option(page, "fix/typo")).toHaveAttribute("data-active", "true");
   await expect(input).toHaveAttribute("aria-activedescendant", /.+/);
   // Sections are labelled groups; Home and End go to the first and last option.
-  await expect(filterDialog(page).getByRole("group", { name: "Branches", exact: true }).getByRole("option")).toHaveText(["fix/typo"]);
+  await expect(filterDialog(page).getByRole("group", { name: "Local branches", exact: true }).getByRole("option")).toHaveText(["fix/typo"]);
   await expect(filterDialog(page).getByRole("group", { name: "Remote branches", exact: true }).getByRole("option")).toHaveText([
     "origin/fix/typo",
   ]);

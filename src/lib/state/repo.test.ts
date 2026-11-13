@@ -284,17 +284,21 @@ describe("RepoView.applySnapshot", () => {
     expect(renders[renders.length - 1].anchorRow).toBe(anchorHash);
   });
 
-  it("gives up after a few failed attempts and keeps the old rows", async () => {
+  it("after a few failed attempts shows the new rows anyway, where it can, and says so", async () => {
     const view = await openView(26 * 50);
-    const cacheBefore = view.cache;
+    const notice = vi.fn();
+    view.onNotice = notice;
     commitOnTop(1);
     vi.mocked(ipc.api.getRows).mockImplementation(async () => {
       throw new ipc.CoreError({ code: "stale_generation", message: "stale", detail: null });
     });
     await view.applySnapshot(snapshot());
     await new Promise((r) => setTimeout(r, 20));
-    expect(view.cache).toBe(cacheBefore);
-    expect(view.snapshot.generation).toBe(1);
+    // The old rows cannot be served any more either: the newest generation is shown.
+    expect(view.snapshot.generation).toBe(2);
+    expect(view.scrollTop).toBe(26 * 51); // the anchor's place, as findRow said
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice.mock.calls[0][0]).toBe("Could not keep your place in the history");
     expect(vi.mocked(ipc.api.getSnapshot).mock.calls.length).toBeLessThan(8);
   });
 });
@@ -302,13 +306,13 @@ describe("RepoView.applySnapshot", () => {
 const ALL: ViewOptions = { branches: null, showRemotes: true, showTags: true };
 
 describe("RepoView search", () => {
-  it("runSearch stores the hits and selects the first, scrolled into view", async () => {
+  it("run stores the hits and selects the first, scrolled into view", async () => {
     const view = await openView(0);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([30, 100, 400]);
-    await view.runSearch("fix");
+    await view.search.run("fix");
     expect(ipc.api.searchCommits).toHaveBeenCalledWith(7, "fix");
-    expect(view.searchHits).toEqual([30, 100, 400]);
-    expect(view.searchIndex).toBe(0);
+    expect(view.search.hits).toEqual([30, 100, 400]);
+    expect(view.search.index).toBe(0);
     expect(view.selectedHash).toBe("c30");
     expect(view.selectedIndex).toBe(30);
     const top = view.pendingScroll ?? view.scrollTop;
@@ -316,29 +320,29 @@ describe("RepoView search", () => {
     expect(31 * 26).toBeLessThanOrEqual(top + view.viewportH);
   });
 
-  it("nextHit wraps from the last hit to the first, prevHit the other way", async () => {
+  it("next wraps from the last hit to the first, prev the other way", async () => {
     const view = await openView(0);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10, 40]);
-    await view.runSearch("fix");
-    await view.nextHit();
+    await view.search.run("fix");
+    await view.search.next();
     expect(view.selectedHash).toBe("c10");
-    await view.nextHit();
+    await view.search.next();
     expect(view.selectedHash).toBe("c40");
-    expect(view.searchIndex).toBe(2);
-    await view.nextHit();
+    expect(view.search.index).toBe(2);
+    await view.search.next();
     expect(view.selectedHash).toBe("c3");
-    expect(view.searchIndex).toBe(0);
-    await view.prevHit();
+    expect(view.search.index).toBe(0);
+    await view.search.prev();
     expect(view.selectedHash).toBe("c40");
   });
 
   it("an empty query clears the hits without asking the core", async () => {
     const view = await openView(0);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10]);
-    await view.runSearch("fix");
-    await view.runSearch("   ");
-    expect(view.searchHits).toEqual([]);
-    expect(view.searchIndex).toBe(-1);
+    await view.search.run("fix");
+    await view.search.run("   ");
+    expect(view.search.hits).toEqual([]);
+    expect(view.search.index).toBe(-1);
     expect(ipc.api.searchCommits).toHaveBeenCalledTimes(1);
   });
 
@@ -348,37 +352,37 @@ describe("RepoView search", () => {
     vi.mocked(ipc.api.searchCommits)
       .mockImplementationOnce(() => new Promise((r) => (answerFirst = r)))
       .mockResolvedValueOnce([7]);
-    const first = view.runSearch("fi");
-    await view.runSearch("fix");
+    const first = view.search.run("fi");
+    await view.search.run("fix");
     answerFirst([1, 2, 3]);
     await first;
-    expect(view.searchHits).toEqual([7]);
+    expect(view.search.hits).toEqual([7]);
     expect(view.selectedHash).toBe("c7");
   });
 
   it("looks the hits up again when the rows change, keeping the selection", async () => {
     const view = await openView(0);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10]);
-    await view.runSearch("fix");
+    await view.search.run("fix");
     commitOnTop(2);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([5, 12]);
     await view.applySnapshot(snapshot());
-    await vi.waitFor(() => expect(view.searchHits).toEqual([5, 12]));
+    await vi.waitFor(() => expect(view.search.hits).toEqual([5, 12]));
     expect(view.selectedHash).toBe("c3");
-    expect(view.searchIndex).toBe(0);
-    expect(view.searchGeneration).toBe(2);
+    expect(view.search.index).toBe(0);
+    expect(view.search.generation).toBe(2);
   });
 
   it("closeSearch clears the query and the hits", async () => {
     const view = await openView(0);
-    view.openSearch();
-    expect(view.searchOpen).toBe(true);
+    view.search.show();
+    expect(view.search.open).toBe(true);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([3]);
-    await view.runSearch("fix");
-    view.closeSearch();
-    expect(view.searchOpen).toBe(false);
-    expect(view.searchQuery).toBe("");
-    expect(view.searchHits).toEqual([]);
+    await view.search.run("fix");
+    view.search.close();
+    expect(view.search.open).toBe(false);
+    expect(view.search.query).toBe("");
+    expect(view.search.hits).toEqual([]);
   });
 });
 
@@ -446,6 +450,17 @@ describe("RepoView view options", () => {
     expect(view.viewOptions).toEqual(ALL);
     expect(localStorage.getItem("gg.view.v1:/r")).toBeNull(); // the defaults are not stored
     expect(notice).toHaveBeenCalledWith("Could not change the view", "boom");
+  });
+
+  it("a notice carries the core's detail below its message", async () => {
+    const view = await openView(0);
+    const notice = vi.fn();
+    view.onNotice = notice;
+    vi.mocked(ipc.api.setViewOptions).mockRejectedValue(
+      new ipc.CoreError({ code: "git_failed", message: "git failed", detail: "fatal: bad object" }),
+    );
+    await view.setViewOptions({ showTags: false });
+    expect(notice).toHaveBeenCalledWith("Could not change the view", "git failed\nfatal: bad object");
   });
 
   it("applies the answer to a change only if no event came meanwhile; else asks again", async () => {
@@ -555,57 +570,98 @@ describe("RepoView view options", () => {
     view.onNotice = notice;
     await vi.waitFor(() => expect(view.snapshot.totalRows).toBe(1000));
     expect(notice).toHaveBeenCalled();
+    // What the user chose for this repository is kept for the next time.
+    expect(JSON.parse(localStorage.getItem("gg.view.v1:/r")!)).toEqual({ ...ALL, showTags: false });
+    expect(view.viewOptions).toEqual(ALL);
   });
 });
 
 describe("RepoView search while loading", () => {
   it("looks the hits up again as rows arrive and once loading ends, one lookup at a time", async () => {
-    const loading = (totalRows: number) => snapshot({ loading: true, totalRows });
-    vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => loading(300));
-    const view = repo.repoView(7, loading(300));
-    await settle();
-    const answers: ((hits: number[]) => void)[] = [];
-    vi.mocked(ipc.api.searchCommits).mockImplementation(() => new Promise((r) => answers.push(r)));
-    const first = view.runSearch("fix");
-    answers[0]([3]);
-    await first;
-    expect(view.searchHits).toEqual([3]);
+    vi.useFakeTimers();
+    try {
+      const wait = (ms = 250) => vi.advanceTimersByTimeAsync(ms);
+      const loading = (totalRows: number) => snapshot({ loading: true, totalRows });
+      vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => loading(300));
+      const view = repo.repoView(7, loading(300));
+      await wait(0);
+      const answers: ((hits: number[]) => void)[] = [];
+      vi.mocked(ipc.api.searchCommits).mockImplementation(() => new Promise((r) => answers.push(r)));
+      const first = view.search.run("fix");
+      answers[0]([3]);
+      await first;
+      expect(view.search.hits).toEqual([3]);
 
-    core.handler?.(loading(500)); // more rows: look again
-    await settle();
-    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
-    core.handler?.(loading(700)); // while that lookup runs: one more afterwards, not one each
-    core.handler?.(loading(800));
-    await settle();
-    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
-    answers[1]([3, 400]);
-    await settle();
-    expect(view.searchHits).toEqual([3, 400]);
-    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(3);
-    answers[2]([3, 400, 750]);
-    await settle();
+      core.handler?.(loading(500)); // more rows: look again
+      await wait();
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
+      core.handler?.(loading(700)); // while that lookup runs: one more afterwards, not one each
+      core.handler?.(loading(800));
+      await wait();
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
+      answers[1]([3, 400]);
+      await wait();
+      expect(view.search.hits).toEqual([3, 400]);
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(3);
+      answers[2]([3, 400, 750]);
+      await wait();
 
-    core.handler?.(snapshot({ loading: false, totalRows: 1000 })); // loaded: a last lookup
-    await settle();
-    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(4);
-    answers[3]([3, 400, 750, 900]);
-    await settle();
-    expect(view.searchHits).toEqual([3, 400, 750, 900]);
-    expect(view.selectedHash).toBe("c3"); // the selection stays
+      core.handler?.(snapshot({ loading: false, totalRows: 1000 })); // loaded: a last lookup
+      await wait(0);
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(4);
+      answers[3]([3, 400, 750, 900]);
+      await wait();
+      expect(view.search.hits).toEqual([3, 400, 750, 900]);
+      expect(view.selectedHash).toBe("c3"); // the selection stays
 
-    core.handler?.(snapshot({ loading: false, totalRows: 1000 })); // nothing new: no lookup
-    await settle();
-    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(4);
+      core.handler?.(snapshot({ loading: false, totalRows: 1000 })); // nothing new: no lookup
+      await wait();
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("spaces the lookups made while rows load 250 ms apart; the last one, once loaded, at once", async () => {
+    vi.useFakeTimers();
+    try {
+      const loading = (totalRows: number) => snapshot({ loading: true, totalRows });
+      vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => loading(300));
+      const view = repo.repoView(7, loading(300));
+      await vi.advanceTimersByTimeAsync(0);
+      vi.mocked(ipc.api.searchCommits).mockResolvedValue([3]);
+      await view.search.run("fix");
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(1);
+
+      core.handler?.(loading(500));
+      await vi.advanceTimersByTimeAsync(100);
+      core.handler?.(loading(600));
+      await vi.advanceTimersByTimeAsync(149);
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
+
+      core.handler?.(loading(700));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
+      core.handler?.(snapshot({ loading: false, totalRows: 1000 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(ipc.api.searchCommits).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the same hit set while only load progress changes", async () => {
     const view = await openView(0);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10]);
-    await view.runSearch("fix");
-    const set = view.hitSet;
+    await view.search.run("fix");
+    const set = view.search.hitSet;
     expect([...set]).toEqual([3, 10]);
     await view.applySnapshot(snapshot({ totalRows: 1000 }));
-    expect(view.hitSet).toBe(set);
+    expect(view.search.hitSet).toBe(set);
   });
 });
 
@@ -642,7 +698,7 @@ describe("RepoView fetch and refresh", () => {
     vi.mocked(ipc.api.fetch).mockRejectedValue(new ipc.CoreError({ code: "io", message: "boom", detail: "x" }));
     await view.fetch();
     expect(view.fetching).toBe(false);
-    expect(notice).toHaveBeenCalledWith("Fetch failed", "boom");
+    expect(notice).toHaveBeenCalledWith("Fetch failed", "boom\nx");
   });
 
   it("refresh shows progress and applies the snapshot it returns", async () => {

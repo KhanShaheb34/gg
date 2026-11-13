@@ -81,6 +81,29 @@ function addTab(snapshot: RepoSnapshot): void {
   if (app.tabs.some((t) => t.repoId === snapshot.repoId)) return;
   app.tabs.push({ repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name });
   repoView(snapshot.repoId, snapshot).onNotice = (message, detail) => toast("error", message, detail);
+  const held = heldErrors.get(snapshot.repoId);
+  heldErrors.delete(snapshot.repoId);
+  for (const error of held ?? []) reportError(new CoreError(error), snapshot.name);
+}
+
+/**
+ * `repo-error`s of repositories that have no tab yet: the core sends the errors of a
+ * repository it opened at start while the UI's `open_repo` for it is being answered, before
+ * its tab exists. Shown, named, when the tab is added. A few repositories' worth at most.
+ */
+const heldErrors = new Map<number, CoreErrorDto[]>();
+const MAX_HELD_REPOS = 16;
+
+function onRepoError(repoId: number, error: CoreErrorDto): void {
+  const tab = app.tabs.find((t) => t.repoId === repoId);
+  if (tab) {
+    reportError(new CoreError(error), tab.name);
+    return;
+  }
+  const held = heldErrors.get(repoId) ?? [];
+  held.push(error);
+  heldErrors.set(repoId, held);
+  if (heldErrors.size > MAX_HELD_REPOS) heldErrors.delete(heldErrors.keys().next().value!);
 }
 
 /** Opens the repository at `path` in a tab and activates it; failures become toasts. */
@@ -116,9 +139,9 @@ export function cycleTab(delta: 1 | -1): void {
   activate(app.tabs[(at + delta + count) % count].repoId);
 }
 
-/** Activates the tab at `index` (0-based), if there is one. */
+/** Activates the tab at `index` (0-based; -1 is the last), if there is one. */
 export function activateIndex(index: number): void {
-  const tab = app.tabs[index];
+  const tab = app.tabs.at(index);
   if (tab) activate(tab.repoId);
 }
 
@@ -148,11 +171,16 @@ export async function removeRecent(path: string): Promise<void> {
   }
 }
 
+let themeRequest = 0;
+
 export async function setTheme(theme: ThemeSetting): Promise<void> {
   app.settings.theme = theme;
   applyTheme(theme);
+  const request = ++themeRequest;
   try {
-    app.settings = await api.updateSettings({ theme });
+    const settings = await api.updateSettings({ theme });
+    // An answer to an earlier choice must not undo a later one.
+    if (request === themeRequest) app.settings = settings;
   } catch (e) {
     reportError(e, "Could not save the theme");
   }
@@ -173,10 +201,7 @@ export async function init(): Promise<void> {
   if (!started) {
     started = true;
     onSystemThemeChange(() => applyTheme(app.settings.theme));
-    onEvent<{ repoId: number; error: CoreErrorDto }>("repo-error", ({ repoId, error }) => {
-      const name = app.tabs.find((t) => t.repoId === repoId)?.name;
-      reportError(new CoreError(error), name);
-    });
+    onEvent<{ repoId: number; error: CoreErrorDto }>("repo-error", ({ repoId, error }) => onRepoError(repoId, error));
   }
 
   let state;
@@ -187,6 +212,12 @@ export async function init(): Promise<void> {
     app.ready = true;
     return;
   }
+  // Is git there? Any repository command says, and for no repository (id 0) it is cheap:
+  // `git_not_found` without git, else `unknown_repo`. So the no-git panel shows at once
+  // rather than after the first attempt to open something.
+  api.getSnapshot(0).catch((e: unknown) => {
+    if (e instanceof CoreError && e.code === "git_not_found") app.gitMissing = true;
+  });
   app.recents = state.recents;
   app.settings = state.settings;
   app.homeDir = state.homeDir;

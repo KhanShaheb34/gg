@@ -1,6 +1,7 @@
 <!--
   The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s; hovering
-  the stack holds them all.
+  the stack holds them all. A persistent one stays until dismissed; one with an action shows
+  it as a button.
 -->
 <script lang="ts">
   import { app, dismissToast, type Toast } from "../state/app.svelte";
@@ -11,6 +12,7 @@
 
   /** Removes `toast` once it has been shown, unhovered, for its lifetime. */
   function expire(_node: HTMLElement, toast: Toast) {
+    if (toast.persistent) return;
     let left: number = LIFETIME_MS[toast.kind];
     let started = Date.now();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -62,6 +64,10 @@
         <p class="message"><bdi>{toast.message}</bdi></p>
         {#if toast.detail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
+        {/if}
+        {#if toast.action}
+          {@const action = toast.action}
+          <button class="action" onclick={() => action.run()}>{action.label}</button>
         {/if}
       </div>
       <button class="dismiss" aria-label="Dismiss notification" onclick={() => dismissToast(toast.id)}>
@@ -132,6 +138,24 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 4;
     line-clamp: 4;
+  }
+
+  .action {
+    margin-top: 8px;
+    padding: 3px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--bg);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+  }
+
+  .action:hover {
+    background: var(--bg-hover);
+  }
+
+  .action:active {
+    background: var(--bg-pressed);
   }
 
   .dismiss {

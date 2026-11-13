@@ -128,6 +128,11 @@ impl Core {
                 }
                 to_json(settings)
             }
+            "reset_settings" => {
+                let NoArgs {} = parse(cmd, args)?;
+                self.blocking(|core| core.store.reset()).await?;
+                Ok(Value::Null)
+            }
             "remove_recent" => {
                 let a: RemoveRecentArgs = parse(cmd, args)?;
                 to_json(
@@ -222,11 +227,13 @@ impl Core {
     }
 
     /// Runs `f`, which does file I/O (the store writes and syncs `state.json` under its
-    /// lock), on Tokio's blocking pool rather than on an async worker.
+    /// lock), on Tokio's blocking pool rather than on an async worker, after the calls made
+    /// before it (a fair queue), so writes land in call order.
     async fn blocking<T: Send + 'static>(
         self: &Arc<Self>,
         f: impl FnOnce(&Core) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        let _turn = self.io_turn.lock().await;
         let core = self.clone();
         tokio::task::spawn_blocking(move || f(&core))
             .await
@@ -242,6 +249,7 @@ impl Core {
             settings: self.store.settings(),
             launch_path: self.launch_path.clone(),
             home_dir: home_dir(),
+            settings_problem: self.store.problem(),
         }
     }
 }

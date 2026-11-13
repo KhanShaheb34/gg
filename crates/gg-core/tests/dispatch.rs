@@ -577,7 +577,8 @@ async fn launch_path_is_reported() {
             "session": {"tabs": [], "active": null},
             "settings": {"theme": "system", "fetchIntervalSecs": 300},
             "launchPath": null,
-            "homeDir": home
+            "homeDir": home,
+            "settingsProblem": null
         })
     );
 }
@@ -667,6 +668,88 @@ async fn perf_marks_are_kept_and_logged() {
     h.call("perf_mark", json!({"name": "later", "ms": 1})).await;
     assert_eq!(h.core.perf_marks().len(), 3);
     assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
+}
+
+/// A settings file that cannot be read is reported once, through `get_app_state`, never
+/// written over; changes apply for the session; `reset_settings` moves it aside and saving
+/// resumes.
+#[cfg(unix)]
+#[tokio::test]
+async fn unreadable_settings_are_reported_kept_and_can_be_reset() {
+    use std::os::unix::fs::PermissionsExt;
+    let config = tempfile::tempdir().unwrap();
+    let path = config.path().join("state.json");
+    std::fs::write(&path, "{}").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let core = Core::new(
+        config.path().to_path_buf(),
+        None,
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .unwrap();
+    let state = core.dispatch("get_app_state", json!({})).await.unwrap();
+    let problem = state["settingsProblem"]
+        .as_str()
+        .expect("reported")
+        .to_owned();
+    assert!(problem.contains("could not be read"), "{problem}");
+
+    for i in 0..10 {
+        let tab = format!("/t{i}");
+        core.dispatch("save_session", json!({"tabs": [tab], "active": tab}))
+            .await
+            .expect("a session change applies even though it is not saved");
+    }
+    let settings = core
+        .dispatch(
+            "update_settings",
+            json!({"patch": {"fetchIntervalSecs": 60}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(settings["fetchIntervalSecs"], 60);
+    let state = core.dispatch("get_app_state", json!({})).await.unwrap();
+    assert_eq!(state["session"]["tabs"], json!(["/t9"]));
+    assert_eq!(state["settings"]["fetchIntervalSecs"], 60);
+
+    core.dispatch("reset_settings", json!({})).await.unwrap();
+    let state = core.dispatch("get_app_state", json!({})).await.unwrap();
+    assert_eq!(state["settingsProblem"], Value::Null);
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved["settings"]["fetchIntervalSecs"], 60);
+    for entry in std::fs::read_dir(config.path()).unwrap() {
+        let _ = std::fs::set_permissions(
+            entry.unwrap().path(),
+            std::fs::Permissions::from_mode(0o644),
+        );
+    }
+}
+
+/// Settings changes land in the order they were asked for, however quickly they come.
+#[tokio::test]
+async fn settings_changes_land_in_call_order() {
+    let h = harness().await;
+    let mut tasks = tokio::task::JoinSet::new();
+    let themes = ["dark", "light"];
+    for i in 0..40 {
+        let core = h.core.clone();
+        let theme = themes[i % 2];
+        tasks.spawn(async move {
+            core.dispatch("update_settings", json!({"patch": {"theme": theme}}))
+                .await
+                .unwrap();
+        });
+        // Each call reaches the core before the next is made, as calls from the UI do.
+        tokio::task::yield_now().await;
+    }
+    tasks.join_all().await;
+    let state = h.call("get_app_state", json!({})).await;
+    assert_eq!(state["settings"]["theme"], "light");
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.config.path().join("state.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["settings"]["theme"], "light");
 }
 
 /// Marks kept in memory are bounded: the oldest go once there are 1,000.

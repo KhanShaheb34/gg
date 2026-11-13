@@ -259,6 +259,10 @@ export const api = {
   },
   updateSettings: (patch: Partial<Settings>) => call<Settings>("update_settings", { patch }),
   removeRecent: (path: string) => call<Recent[]>("remove_recent", { path }),
+  /** Moves an unreadable settings file aside, so settings are saved again. */
+  async resetSettings(): Promise<void> {
+    await call("reset_settings");
+  },
   openRepo: (path: string) => call<RepoSnapshot>("open_repo", { path }),
   async closeRepo(repoId: number): Promise<void> {
     await call("close_repo", { repoId });

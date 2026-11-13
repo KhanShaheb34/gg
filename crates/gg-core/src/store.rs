@@ -3,10 +3,11 @@
 //!
 //! The file is read once, when the store is created; a missing file gives defaults and one
 //! that cannot be parsed is renamed to `state.json.bad` first. A file that exists but cannot
-//! be read (permissions, say) also gives defaults, but is never written over: every change
-//! then fails. Every change is written at once and atomically (a temp file renamed over the
-//! old one). A change that cannot be written is an `Io` error and is not applied in memory
-//! either.
+//! be read (permissions, say), or a corrupt one that cannot be moved aside, also gives
+//! defaults but is never written over: changes then apply for the running session only, and
+//! [`Store::problem`] says why, until [`Store::reset`] moves the file aside. Otherwise every
+//! change is written at once and atomically (a temp file renamed over the old one); a change
+//! that cannot be written is an `Io` error and is not applied in memory either.
 
 use std::fs;
 use std::io::{self, Write as _};
@@ -49,9 +50,9 @@ struct StoreData {
 pub struct Store {
     dir: PathBuf,
     data: Mutex<StoreData>,
-    /// Why `state.json` could not be read, when it exists but could not be: it is not
-    /// written over.
-    unreadable: Option<String>,
+    /// Why `state.json` is not saved to, when it exists but could not be read (or moved
+    /// aside): it is not written over until [`Store::reset`].
+    unreadable: Mutex<Option<String>>,
 }
 
 impl Store {
@@ -65,26 +66,74 @@ impl Store {
         let data = match fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<StoreData>(&bytes) {
                 Ok(data) => data.sanitized(),
-                Err(_) => {
+                Err(parse) => {
                     // Kept for the user to look at. If it cannot be moved aside, it is not
                     // written over either.
                     if let Err(e) = fs::rename(&path, config_dir.join(BAD_FILE_NAME)) {
-                        unreadable = Some(e.to_string());
+                        unreadable = Some(format!(
+                            "{} could not be parsed ({parse}) and could not be moved aside ({e})",
+                            path.display()
+                        ));
                     }
                     StoreData::default()
                 }
             },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => StoreData::default(),
+            // Missing (or its folder is not a folder): nothing to keep; a write reports it.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                StoreData::default()
+            }
             Err(e) => {
-                unreadable = Some(e.to_string());
+                unreadable = Some(format!("{} could not be read ({e})", path.display()));
                 StoreData::default()
             }
         };
         Self {
             dir: config_dir.to_path_buf(),
             data: Mutex::new(data),
-            unreadable,
+            unreadable: Mutex::new(unreadable),
         }
+    }
+
+    /// Why changes are not being saved (the settings file exists but could not be read or
+    /// moved aside), or `None` when they are.
+    pub fn problem(&self) -> Option<String> {
+        lock(&self.unreadable).clone()
+    }
+
+    /// Moves a settings file that could not be read aside, to
+    /// `state.json.unreadable-<unix ms>`, and saves what the session has. Fails, changing
+    /// nothing, if the file cannot be moved. Does nothing when there is no problem.
+    pub fn reset(&self) -> Result<()> {
+        let mut unreadable = lock(&self.unreadable);
+        if unreadable.is_none() {
+            return Ok(());
+        }
+        let path = self.dir.join(FILE_NAME);
+        let aside = self
+            .dir
+            .join(format!("{FILE_NAME}.unreadable-{}", unix_ms()));
+        fs::rename(&path, &aside).map_err(|e| {
+            CoreError::new(
+                ErrorCode::Io,
+                format!("Could not move {} aside", path.display()),
+            )
+            .with_detail(e.to_string())
+        })?;
+        *unreadable = None;
+        drop(unreadable);
+        let data = self.lock();
+        self.write(&data).map_err(|e| {
+            CoreError::new(
+                ErrorCode::Io,
+                format!("Could not save settings to {}", self.dir.display()),
+            )
+            .with_detail(e.to_string())
+        })
     }
 
     /// Most recent first.
@@ -164,21 +213,16 @@ impl Store {
     }
 
     /// Applies `f` to a copy of the data and writes it; the copy replaces the data in memory
-    /// only once it is written. Holds the lock throughout, so writes land in order.
+    /// only once it is written. Holds the lock throughout, so writes land in order. While the
+    /// file is not saved to (see [`Store::problem`]), the change applies in memory only.
     fn change<R>(&self, f: impl FnOnce(&mut StoreData) -> Result<R>) -> Result<R> {
-        if let Some(error) = &self.unreadable {
-            return Err(CoreError::new(
-                ErrorCode::Io,
-                format!(
-                    "Settings are not saved: {} could not be read, and is kept as it is",
-                    self.dir.join(FILE_NAME).display()
-                ),
-            )
-            .with_detail(error.clone()));
-        }
         let mut data = self.lock();
         let mut next = data.clone();
         let out = f(&mut next)?;
+        if lock(&self.unreadable).is_some() {
+            *data = next;
+            return Ok(out);
+        }
         self.write(&next).map_err(|e| {
             CoreError::new(
                 ErrorCode::Io,
@@ -211,7 +255,7 @@ impl Store {
 
     fn lock(&self) -> MutexGuard<'_, StoreData> {
         // Every change replaces the data whole, so a panic cannot leave it half-changed.
-        self.data.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.data)
     }
 }
 
@@ -238,6 +282,10 @@ fn same_folder(listed: &str, canonical_path: &Path) -> bool {
 /// `path` with symlinks resolved (unchanged if it cannot be, for example a deleted folder).
 fn canonical(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn unix_ms() -> i64 {
@@ -411,10 +459,11 @@ mod tests {
     }
 
     /// A file that exists but cannot be read (here: no permission) is the user's data: it
-    /// gives defaults for now, and nothing is written over it.
+    /// gives defaults for now and is never written over. Changes still apply for the running
+    /// session, and the store says once, with the cause, why they are not saved.
     #[cfg(unix)]
     #[test]
-    fn unreadable_file_is_never_overwritten() {
+    fn unreadable_file_is_never_overwritten_and_changes_apply_in_memory() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
@@ -423,16 +472,96 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         let store = Store::load(dir.path());
         assert_eq!(store.settings().fetch_interval_secs, 300);
-        let err = store.save_session(Session::default()).unwrap_err();
-        assert_eq!(err.code, ErrorCode::Io);
-        assert!(err.message.contains("could not be read"), "{}", err.message);
-        assert!(
-            store
-                .update_settings(patch(serde_json::json!({"theme": "light"})))
-                .is_err()
-        );
+        let problem = store.problem().expect("the problem is reported");
+        assert!(problem.contains("could not be read"), "{problem}");
+        assert!(problem.contains("ermission denied"), "the cause: {problem}");
+
+        let session = Session {
+            tabs: vec!["/a".into()],
+            active: Some("/a".into()),
+        };
+        store.save_session(session.clone()).unwrap();
+        assert_eq!(store.session(), session);
+        let settings = store
+            .update_settings(patch(serde_json::json!({"fetchIntervalSecs": 60})))
+            .unwrap();
+        assert_eq!(settings.fetch_interval_secs, 60);
+        assert_eq!(store.settings().fetch_interval_secs, 60);
+
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+    }
+
+    /// A corrupt file that cannot be moved aside says so, with both causes.
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_file_that_cannot_be_moved_aside_reports_why() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        fs::create_dir(&config).unwrap();
+        fs::write(config.join("state.json"), "{ not json").unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o555)).unwrap();
+        let store = Store::load(&config);
+        let problem = store.problem();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o755)).unwrap();
+        let problem = problem.expect("the problem is reported");
+        assert!(problem.contains("could not be parsed"), "{problem}");
+        assert!(problem.contains("could not be moved aside"), "{problem}");
+        assert!(problem.contains("ermission denied"), "{problem}");
+    }
+
+    /// Resetting moves the unreadable file aside (state.json.unreadable-<ms>) and saving
+    /// resumes, with what the session changed meanwhile.
+    #[cfg(unix)]
+    #[test]
+    fn reset_moves_the_unreadable_file_aside_and_saving_resumes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(&path, "{}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let store = Store::load(dir.path());
+        store
+            .update_settings(patch(serde_json::json!({"theme": "dark"})))
+            .unwrap();
+        store.reset().unwrap();
+        assert_eq!(store.problem(), None);
+        let aside: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("state.json.unreadable-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["settings"]["theme"], "dark");
+        store.save_session(Session::default()).unwrap();
+        for entry in fs::read_dir(dir.path()).unwrap() {
+            let p = entry.unwrap().path();
+            let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o644));
+        }
+    }
+
+    /// When the file cannot be moved aside, reset fails and nothing is written.
+    #[cfg(unix)]
+    #[test]
+    fn reset_that_cannot_move_the_file_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        fs::create_dir(&config).unwrap();
+        let path = config.join("state.json");
+        fs::write(&path, "{}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o555)).unwrap();
+        let store = Store::load(&config);
+        let result = store.reset();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(result.unwrap_err().code, ErrorCode::Io);
+        assert!(store.problem().is_some());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
     }
 
     #[test]

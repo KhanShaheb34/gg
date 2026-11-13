@@ -13,6 +13,7 @@ vi.mock("../ipc", async (importOriginal) => {
       saveSession: vi.fn(),
       updateSettings: vi.fn(),
       removeRecent: vi.fn(),
+      resetSettings: vi.fn(),
       openRepo: vi.fn(),
       closeRepo: vi.fn(),
       pickFolder: vi.fn(),
@@ -36,6 +37,7 @@ function appState(overrides: Partial<AppState> = {}): AppState {
     settings: { theme: "system", fetchIntervalSecs: 300 },
     launchPath: null,
     homeDir: null,
+    settingsProblem: null,
     ...overrides,
   };
 }
@@ -278,6 +280,40 @@ describe("repo-error before the tab exists", () => {
     expect(s.app.toasts).toMatchObject([
       { kind: "error", message: "c: Could not read the history", detail: "fatal: x" },
     ]);
+  });
+});
+
+describe("settings that cannot be saved", () => {
+  const problem = "/c/state.json could not be read (Permission denied (os error 13))";
+
+  it("are reported once, however many changes follow", async () => {
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ settingsProblem: problem }));
+    await s.init();
+    for (const path of ["/r/a", "/r/b", "/r/c"]) await s.openPath(path);
+    for (let i = 0; i < 10; i++) s.cycleTab(1);
+    await s.setTheme("dark");
+    expect(s.app.toasts).toHaveLength(1);
+    expect(s.app.toasts[0]).toMatchObject({ kind: "error", persistent: true, detail: problem });
+    expect(s.app.toasts[0].action?.label).toBe("Reset settings");
+  });
+
+  it("Reset settings moves the file aside through the core, then the notice goes", async () => {
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ settingsProblem: problem }));
+    vi.mocked(ipc.api.resetSettings).mockResolvedValue(undefined);
+    await s.init();
+    await s.app.toasts[0].action!.run();
+    expect(ipc.api.resetSettings).toHaveBeenCalledTimes(1);
+    expect(s.app.toasts.map((t) => t.message)).toEqual(["Settings reset: saving again"]);
+  });
+
+  it("a reset that fails keeps the notice and says why", async () => {
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ settingsProblem: problem }));
+    vi.mocked(ipc.api.resetSettings).mockRejectedValue(coreError("io", "Could not move /c/state.json aside"));
+    await s.init();
+    await s.app.toasts[0].action!.run();
+    expect(s.app.toasts).toHaveLength(2);
+    expect(s.app.toasts[0].persistent).toBe(true);
+    expect(s.app.toasts[1]).toMatchObject({ kind: "error", message: "Could not reset settings: Could not move /c/state.json aside" });
   });
 });
 

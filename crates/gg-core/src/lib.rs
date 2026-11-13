@@ -42,6 +42,9 @@ pub struct Core {
     store: Store,
     launch_path: Option<String>,
     perf: Mutex<Perf>,
+    /// Store and perf-log writes take turns here, first come first served, so they land in
+    /// the order they were asked for.
+    io_turn: tokio::sync::Mutex<()>,
 }
 
 /// Most perf marks kept in memory; older ones go first (the perf log keeps them all).
@@ -92,6 +95,7 @@ impl Core {
             store,
             launch_path: launch_path.map(|p| p.to_string_lossy().into_owned()),
             perf: Mutex::new(Perf::default()),
+            io_turn: tokio::sync::Mutex::new(()),
         })
     }
 

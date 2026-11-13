@@ -105,6 +105,7 @@ export type AppState = {
   settings: Settings;
   launchPath: string | null;
   homeDir: string | null; // the user's home folder, for showing paths as ~/…
+  settingsProblem: string | null; // why settings are not being saved (unreadable file); null when they are
 };
 
 /** One git command the core ran (`command_log`); `args` excludes the injected `-c` options. */

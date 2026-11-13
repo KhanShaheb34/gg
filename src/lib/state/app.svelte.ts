@@ -8,7 +8,15 @@ import { disposeRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
 export type ToastKind = "info" | "error";
-export type Toast = { id: number; kind: ToastKind; message: string; detail?: string };
+/** A notice. A persistent one stays until dismissed; `action` is a button on it. */
+export type Toast = {
+  id: number;
+  kind: ToastKind;
+  message: string;
+  detail?: string;
+  persistent?: boolean;
+  action?: { label: string; run: () => Promise<void> };
+};
 
 export const app = $state({
   tabs: [] as Tab[],
@@ -29,6 +37,33 @@ let nextToastId = 1;
 /** Shows a toast; the Toast component dismisses it after a while. */
 export function toast(kind: ToastKind, message: string, detail?: string): void {
   app.toasts.push(detail ? { id: nextToastId++, kind, message, detail } : { id: nextToastId++, kind, message });
+}
+
+/** Shows a notice that stays until it is dismissed (or its action succeeds). */
+function notice(message: string, detail: string, action: NonNullable<Toast["action"]>): number {
+  const id = nextToastId++;
+  app.toasts.push({ id, kind: "error", message, detail, persistent: true, action });
+  return id;
+}
+
+/**
+ * The settings file could not be read: settings and the session apply for this run only.
+ * Said once, with a way to move the file aside and save again.
+ */
+function reportSettingsProblem(problem: string): void {
+  const id = notice("Settings are not being saved", problem, {
+    label: "Reset settings",
+    run: async () => {
+      try {
+        await api.resetSettings();
+      } catch (e) {
+        reportError(e, "Could not reset settings");
+        return;
+      }
+      dismissToast(id);
+      toast("info", "Settings reset: saving again");
+    },
+  });
 }
 
 export function dismissToast(id: number): void {
@@ -218,6 +253,7 @@ export async function init(): Promise<void> {
   api.getSnapshot(0).catch((e: unknown) => {
     if (e instanceof CoreError && e.code === "git_not_found") app.gitMissing = true;
   });
+  if (state.settingsProblem) reportSettingsProblem(state.settingsProblem);
   app.recents = state.recents;
   app.settings = state.settings;
   app.homeDir = state.homeDir;

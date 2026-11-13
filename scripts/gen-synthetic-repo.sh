@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generates a synthetic git repository for performance measurements.
 #
-#   scripts/gen-synthetic-repo.sh <dir> <commits> <branches>
+#   scripts/gen-synthetic-repo.sh [--tree <tracked> <untracked>] <dir> <commits> <branches>
 #
 # <dir> must not exist yet. The repository gets exactly <commits> commits and <branches>
 # local branches (`main` plus `feature/1` ... `feature/<branches-1>`), written in one
@@ -17,13 +17,32 @@
 # - remote `origin` (pointing at the repository itself) with remote-tracking branches for
 #   `main` and every other feature branch, some of them a commit behind.
 #
+# With `--tree`, the repository also gets a large working tree, as a big monorepo has: one
+# more commit on `main` adds <tracked> files (in folders of 100), and <untracked> files are
+# written next to them without being added; 10 tracked files are changed. Then `git status`
+# has real work to do. The commit count is then <commits> + 1.
+#
 # The output is deterministic: the same arguments always produce the same commit hashes
 # (a fixed-seed generator, fixed dates and identities, and git config isolated from the
 # host).
 set -euo pipefail
 
+tracked=0
+untracked=0
+if [ "${1:-}" = "--tree" ]; then
+  if [ $# -lt 3 ]; then
+    echo "usage: $0 [--tree <tracked> <untracked>] <dir> <commits> <branches>" >&2
+    exit 2
+  fi
+  tracked=$2
+  untracked=$3
+  shift 3
+  case "$tracked$untracked" in
+    *[!0-9]*) echo "tracked and untracked must be whole numbers" >&2; exit 2 ;;
+  esac
+fi
 if [ $# -ne 3 ]; then
-  echo "usage: $0 <dir> <commits> <branches>" >&2
+  echo "usage: $0 [--tree <tracked> <untracked>] <dir> <commits> <branches>" >&2
   exit 2
 fi
 dir=$1
@@ -213,9 +232,50 @@ BEGIN {
 ' | git -C "$dir" fast-import --quiet
 
 git -C "$dir" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+
+if [ "$tracked" -gt 0 ]; then
+  # One commit on main that adds the tracked files, with fixed dates.
+  LC_ALL=C awk -v T="$tracked" '
+  BEGIN {
+    msg = "Add generated tree (" T " files)"
+    print "commit refs/heads/main"
+    print "author Ada Lovelace <ada@example.com> 1700000000 +0000"
+    print "committer Ada Lovelace <ada@example.com> 1700000000 +0000"
+    printf "data %d\n%s\n", length(msg), msg
+    print "from refs/heads/main^0"
+    for (i = 0; i < T; i++) {
+      body = "generated file " i
+      printf "M 100644 inline tree/d%04d/f%05d.txt\ndata %d\n%s\n", int(i / 100), i, length(body), body
+    }
+    print ""
+  }' | git -C "$dir" fast-import --quiet
+fi
+
 git -C "$dir" reset -q --hard main
 
+if [ "$tracked" -gt 0 ]; then
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    f=$(printf '%s/tree/d%04d/f%05d.txt' "$dir" $(( i * tracked / 10 / 100 )) $(( i * tracked / 10 )))
+    echo "changed" >> "$f"
+  done
+fi
+if [ "$untracked" -gt 0 ]; then
+  LC_ALL=C awk -v U="$untracked" -v D="$dir" 'BEGIN {
+    for (i = 0; i < U; i++) {
+      d = sprintf("%s/scratch/u%03d", D, int(i / 100))
+      if (i % 100 == 0) system("mkdir -p \"" d "\"")
+      f = sprintf("%s/n%05d.txt", d, i)
+      print "untracked " i > f
+      close(f)
+    }
+  }'
+fi
+
+extra=""
+if [ "$tracked" -gt 0 ] || [ "$untracked" -gt 0 ]; then
+  extra=", $(git -C "$dir" ls-files | wc -l | tr -d ' ') tracked files, $untracked untracked"
+fi
 echo "$dir: $(git -C "$dir" rev-list --all --count) commits," \
   "$(git -C "$dir" for-each-ref refs/heads | wc -l | tr -d ' ') branches," \
   "$(git -C "$dir" for-each-ref refs/tags | wc -l | tr -d ' ') tags," \
-  "$(git -C "$dir" for-each-ref refs/remotes | wc -l | tr -d ' ') remote refs"
+  "$(git -C "$dir" for-each-ref refs/remotes | wc -l | tr -d ' ') remote refs$extra"

@@ -30,6 +30,7 @@
     alignSlackFor,
     autoGraphWidth,
     displayedRows,
+    fillTime,
     HEADER_H,
     LANE_COLORS,
     OVERSCAN,
@@ -42,13 +43,15 @@
   import GraphHeader from "./GraphHeader.svelte";
   import { GraphColumns } from "./graphColumns.svelte";
   import { gridKey } from "./gridKeys";
-  import { LanesCanvas } from "./lanesCanvas";
+  import { LanesCanvas, type RowSource } from "./lanesCanvas";
   import RefLabels from "./RefLabels.svelte";
 
   let { view }: { view: RepoView } = $props();
 
   const NO_LABELS: RefLabel[] = [];
   const NO_PATHS: string[] = [];
+  /** No rows: what slots and lanes show while a fast jump is under way. */
+  const NO_ROWS: RowSource = { get: () => undefined };
 
   // --- Columns ----------------------------------------------------------------------------
 
@@ -88,6 +91,9 @@
   let scrollTop = 0;
   let lastTop = 0;
   let rafId = 0;
+  /** Rows are filled again from this time on (see fillTime); a timer brings that frame. */
+  let fillAt = 0;
+  let fillTimer: ReturnType<typeof setTimeout> | null = null;
 
   const total = $derived(view.snapshot.totalRows);
   const shown = $derived(displayedRows(total, ROW_H));
@@ -155,18 +161,32 @@
     schedule();
   });
 
-  /** Brings slots, fetching and the canvas up to date with the scroll position. */
-  function frame(now: number) {
+  /**
+   * Brings slots, fetching and the canvas up to date with the scroll position. During a fast
+   * jump by the user (a fling, a scrollbar drag) the rows are left unfilled until it slows
+   * (fillTime); a scroll the view makes itself (`moved`: a page key, a search hit) fills them
+   * at once.
+   */
+  function frame(now: number, moved = false) {
     if (rafId !== 0) cancelAnimationFrame(rafId);
     rafId = 0;
+    if (!moved) fillAt = fillTime(scrollTop - lastTop, viewportH, now, fillAt);
+    const filling = moved || now >= fillAt;
+    if (!filling && fillTimer === null) {
+      fillTimer = setTimeout(() => {
+        fillTimer = null;
+        schedule();
+      }, fillAt - now + 1);
+    }
     const cache = view.cache;
+    const rows: RowSource = filling ? cache : NO_ROWS;
     const w = rowWindow(scrollTop, viewportH, ROW_H, rowCount(), OVERSCAN);
     const n = slots.length;
     for (let k = 0; k < n; k++) {
       const slot = slots[k];
       let i = w.first + ((((k - w.first) % n) + n) % n);
       if (i >= w.last) i = -1;
-      const row = i >= 0 ? cache.get(i) : undefined;
+      const row = i >= 0 ? rows.get(i) : undefined;
       if (slot.index !== i) slot.index = i;
       if (slot.row !== row) {
         // A tooltip built for the commit this slot showed would now name another one.
@@ -182,7 +202,7 @@
     const first = poolStart(poolFirst, w.first, POOL_STEP, ROW_H, ratio);
     if (first !== poolFirst) poolFirst = first;
     // Sized for the rows the viewport needs, not the pool, which only grows.
-    if (canvas && lanes.draw(canvas, cache, w, poolFirst, columns.widths.graph, poolRows, ratio)) {
+    if (canvas && lanes.draw(canvas, rows, w, poolFirst, columns.widths.graph, poolRows, ratio)) {
       view.markFirstRows();
     }
     probe?.frame(now, w, slots);
@@ -218,7 +238,7 @@
       scroller.scrollTop = target;
       scrollTop = scroller.scrollTop;
       view.scrollTop = scrollTop;
-      frame(performance.now()); // same task: rows, canvas and position change together
+      frame(performance.now(), true); // same task: rows, canvas and position change together
       return;
     }
     schedule();
@@ -235,7 +255,7 @@
     if (n > slots.length) slots = [...slots, ...Array.from({ length: n - slots.length }, () => new Slot())];
     else if (2 * n < slots.length) slots = slots.slice(0, n);
     keepSelectionInView(before);
-    frame(performance.now());
+    frame(performance.now(), true);
   }
 
   /**
@@ -360,6 +380,7 @@
       theme.disconnect();
       ratioQuery?.removeEventListener("change", onRatio);
       if (rafId !== 0) cancelAnimationFrame(rafId);
+      if (fillTimer !== null) clearTimeout(fillTimer);
     };
   });
 </script>

@@ -3,6 +3,8 @@ import type { Edge } from "../types";
 import {
   alignedFirstRow,
   alignSlackFor,
+  FILL_DELAY_MS,
+  fillTime,
   autoGraphWidth,
   GRAPH_MAX_AUTO_W,
   GRAPH_MIN_AUTO_W,
@@ -375,5 +377,20 @@ describe("alignSlackFor", () => {
     expect(alignSlackFor(1.5)).toBe(0);
     expect(alignSlackFor(1.25)).toBe(1);
     expect(alignSlackFor(1.75)).toBe(1);
+  });
+});
+
+describe("fillTime (rows are not filled during fast jumps)", () => {
+  it("holds filling for a moment after a frame that moved more than a viewport", () => {
+    expect(FILL_DELAY_MS).toBe(50);
+    expect(fillTime(801, 800, 1000, 0)).toBe(1050);
+    expect(fillTime(-5000, 800, 2000, 1050)).toBe(2050);
+  });
+
+  it("leaves it as it was for moves of up to a viewport: smooth scrolling and page keys fill at once", () => {
+    expect(fillTime(13, 800, 1000, 0)).toBe(0);
+    expect(fillTime(800, 800, 1000, 0)).toBe(0);
+    expect(fillTime(-774, 800, 1000, 0)).toBe(0);
+    expect(fillTime(13, 800, 1020, 1050)).toBe(1050); // still within the hold
   });
 });

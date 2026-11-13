@@ -448,6 +448,21 @@ export function alignSlackFor(dpr: number): number {
   return slack;
 }
 
+/** How long rows stay unfilled after the last fast frame, ms. */
+export const FILL_DELAY_MS = 50;
+
+/**
+ * When the rows may be filled again (performance.now ms), after a frame at `now` that
+ * scrolled `movedPx` px with a viewport `viewportH` px tall, given the time set before
+ * (`previous`). A frame that moves more than a viewport (a fling, a scrollbar drag, End)
+ * shows rows nobody can read: they are left as skeletons until FILL_DELAY_MS after the last
+ * such frame, so WebKit does not lay out and paint thousands of rows nobody sees. Moves of
+ * up to a viewport (trackpad scrolling, page keys) leave it as it was.
+ */
+export function fillTime(movedPx: number, viewportH: number, now: number, previous: number): number {
+  return Math.abs(movedPx) > viewportH ? now + FILL_DELAY_MS : previous;
+}
+
 /** How many of `totalRows` rows the view shows: all, unless that passes MAX_SCROLL_PX. */
 export function displayedRows(totalRows: number, rowH: number): number {
   return Math.min(totalRows, Math.floor(MAX_SCROLL_PX / rowH));

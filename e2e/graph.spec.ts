@@ -560,3 +560,54 @@ test("scrolling creates no elements: ref labels use fixed slots, with +k for the
   await expect(more).toHaveText("+3");
   await expect(more).toHaveAttribute("title", /x3.*x4.*x5|t300|x5/);
 });
+
+test("a jump of more than a screen leaves rows unfilled for a moment, then fills them", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
+  await expect(subject(row(page, 0))).not.toBeEmpty();
+  await page.waitForTimeout(300); // rows 0..440 are loaded ahead
+  const busyThenFilled = await grid(page).evaluate(async (el) => {
+    const busy = () => {
+      const box = el.getBoundingClientRect();
+      return [...el.querySelectorAll<HTMLElement>('[role="row"][data-index]:not([hidden])')].filter((r) => {
+        const b = r.getBoundingClientRect();
+        return b.bottom > box.top + 28 && b.top < box.bottom && r.getAttribute("aria-busy") === "true";
+      }).length;
+    };
+    el.scrollTop = 400 * 26; // loaded rows, far below
+    await new Promise((r) => requestAnimationFrame(r));
+    await new Promise((r) => requestAnimationFrame(r));
+    const during = busy();
+    const stopped = performance.now();
+    while (busy() > 0 && performance.now() - stopped < 1000) await new Promise((r) => requestAnimationFrame(r));
+    return { during, filledAfter: performance.now() - stopped };
+  });
+  expect(busyThenFilled.during).toBeGreaterThan(0);
+  expect(busyThenFilled.filledAfter).toBeLessThan(100);
+});
+
+test("scrolling a few px a frame, as a trackpad does, fills every row in every frame", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
+  await expect(subject(row(page, 0))).not.toBeEmpty();
+  await page.waitForTimeout(300);
+  const busyFrames = await grid(page).evaluate(async (el) => {
+    let frames = 0;
+    for (let k = 1; k <= 120; k++) {
+      el.scrollTop = k * 13;
+      await new Promise((r) => requestAnimationFrame(r));
+      const box = el.getBoundingClientRect();
+      const busy = [...el.querySelectorAll<HTMLElement>('[role="row"][data-index]:not([hidden])')].some((r) => {
+        const b = r.getBoundingClientRect();
+        return b.bottom > box.top + 28 && b.top < box.bottom && r.getAttribute("aria-busy") === "true";
+      });
+      if (busy) frames++;
+    }
+    return frames;
+  });
+  expect(busyFrames).toBe(0);
+});

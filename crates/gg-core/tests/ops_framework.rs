@@ -563,6 +563,37 @@ async fn close_is_refused_while_an_operation_runs_or_waits() {
     h.m.close(id).await.expect("closes once idle");
 }
 
+/// A title that names the current branch is made in the operation's turn: a merge queued
+/// behind a checkout names the branch the checkout switched to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    repo.branch("feature");
+    repo.branch("other");
+    repo.checkout("other");
+    repo.commit("on other");
+    repo.checkout("main");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_op_delay(Duration::from_millis(300));
+
+    let first = tokio::spawn({
+        let m = h.m.clone();
+        async move { m.run_op(id, checkout_branch("feature"), &[]).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the checkout runs");
+    let merge = h.run(id, merge_branch("other")).await;
+    first.await.unwrap().expect("checkout");
+    assert_eq!(merge.title, "Merge other into feature", "{merge:?}");
+    assert_eq!(merge.status, OpStatus::Done, "{merge:?}");
+}
+
 /// Ruling 7: a `refresh` asked for while an operation runs (the UI sends one when the
 /// window regains focus) is folded into the operation's final refresh: it returns the
 /// current snapshot at once.

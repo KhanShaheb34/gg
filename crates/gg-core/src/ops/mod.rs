@@ -23,8 +23,7 @@ pub use explain::explain;
 
 use crate::EventSink;
 use crate::dto::{
-    Danger, DangerKind, HeadInfo, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus,
-    ResetMode,
+    Danger, DangerKind, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus, ResetMode,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
@@ -200,17 +199,30 @@ where
     Box::new(f)
 }
 
+/// An operation's title, made in its turn from the branch HEAD is on then ("detached
+/// HEAD" without one): some titles name it ("Merge x into main").
+type Title = Box<dyn FnOnce(&str) -> String + Send>;
+
+/// A title that does not depend on HEAD.
+fn fixed(title: String) -> Title {
+    Box::new(move |_| title)
+}
+
+/// A title made from the branch HEAD is on.
+fn on_head(f: impl FnOnce(&str) -> String + Send + 'static) -> Title {
+    Box::new(f)
+}
+
 /// A request that can run: its title and its body.
 struct Prepared {
-    title: String,
+    title: Title,
     body: Body,
 }
 
 /// Checks `request` (names, arguments, whether it is built yet) without git, and returns
-/// its title and body; `head` is the repository's HEAD as last read, for the title.
-/// `bad_name` for a bad name, `bad_request` for a bad argument or an operation not built
-/// yet. Every operation is matched here, once.
-fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
+/// its title and body. `bad_name` for a bad name, `bad_request` for a bad argument or an
+/// operation not built yet. Every operation is matched here, once.
+fn prepare(request: &OpRequest) -> Result<Prepared> {
     let (title, body) = match request.clone() {
         OpRequest::CheckoutBranch {
             branch,
@@ -218,7 +230,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         } => {
             check_arg(&branch, "branch")?;
             (
-                format!("Check out {branch}"),
+                fixed(format!("Check out {branch}")),
                 body(move |ctx, _| {
                     Box::pin(async move { local::checkout_branch(ctx, &branch).await })
                 }),
@@ -231,7 +243,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             check_arg(&remote_branch, "remote branch")?;
             check_branch_name(&local_name)?;
             (
-                format!("Check out {remote_branch} as {local_name}"),
+                fixed(format!("Check out {remote_branch} as {local_name}")),
                 body(move |ctx, _| {
                     Box::pin(async move {
                         local::checkout_remote(ctx, &remote_branch, &local_name).await
@@ -242,7 +254,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         OpRequest::CheckoutCommit { hash } => {
             check_full_hash(&hash)?;
             (
-                format!("Check out {}", local::short(&hash)),
+                fixed(format!("Check out {}", local::short(&hash))),
                 body(move |ctx, _| {
                     Box::pin(async move { local::checkout_commit(ctx, &hash).await })
                 }),
@@ -257,7 +269,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
                 format!("Create branch {name}")
             };
             (
-                title,
+                fixed(title),
                 body(move |ctx, _| {
                     Box::pin(async move { local::create_branch(ctx, &name, &at, checkout).await })
                 }),
@@ -267,7 +279,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             check_arg(&branch, "branch")?;
             check_branch_name(&new_name)?;
             (
-                format!("Rename branch {branch} to {new_name}"),
+                fixed(format!("Rename branch {branch} to {new_name}")),
                 body(move |ctx, _| {
                     Box::pin(async move { local::rename_branch(ctx, &branch, &new_name).await })
                 }),
@@ -276,7 +288,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         OpRequest::DeleteBranch { branch } => {
             check_arg(&branch, "branch")?;
             (
-                format!("Delete branch {branch}"),
+                fixed(format!("Delete branch {branch}")),
                 body(move |ctx, dangers| {
                     Box::pin(async move { local::delete_branch(ctx, dangers, &branch).await })
                 }),
@@ -297,7 +309,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
                 _ => target.name.clone(),
             };
             (
-                format!("Merge {shown} into {}", head_name(head)),
+                on_head(move |head| format!("Merge {shown} into {head}")),
                 body(move |ctx, _| {
                     Box::pin(
                         async move { local::merge(ctx, &target, no_ff, squash, no_commit).await },
@@ -307,8 +319,9 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         }
         OpRequest::Rebase { onto } => {
             check_arg(&onto, "branch")?;
+            let shown = onto.clone();
             (
-                format!("Rebase {} onto {onto}", head_name(head)),
+                on_head(move |head| format!("Rebase {head} onto {shown}")),
                 body(move |ctx, _| Box::pin(async move { local::rebase(ctx, &onto).await })),
             )
         }
@@ -320,7 +333,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             check_full_hash(&hash)?;
             check_mainline(mainline)?;
             (
-                format!("Cherry-pick {}", local::short(&hash)),
+                fixed(format!("Cherry-pick {}", local::short(&hash))),
                 body(move |ctx, _| {
                     Box::pin(
                         async move { local::cherry_pick(ctx, &hash, mainline, no_commit).await },
@@ -332,7 +345,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             check_full_hash(&hash)?;
             check_mainline(mainline)?;
             (
-                format!("Revert {}", local::short(&hash)),
+                fixed(format!("Revert {}", local::short(&hash))),
                 body(move |ctx, _| {
                     Box::pin(async move { local::revert(ctx, &hash, mainline).await })
                 }),
@@ -345,12 +358,9 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
                 ResetMode::Mixed => "mixed",
                 ResetMode::Hard => "hard",
             };
+            let to = local::short(&hash).to_owned();
             (
-                format!(
-                    "Reset {} to {} ({how})",
-                    head_name(head),
-                    local::short(&hash)
-                ),
+                on_head(move |head| format!("Reset {head} to {to} ({how})")),
                 body(move |ctx, _| Box::pin(async move { local::reset(ctx, &hash, mode).await })),
             )
         }
@@ -368,7 +378,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
                 ));
             }
             (
-                format!("Create tag {name}"),
+                fixed(format!("Create tag {name}")),
                 body(move |ctx, _| {
                     Box::pin(async move {
                         local::create_tag(ctx, &name, &hash, message.as_deref()).await
@@ -379,7 +389,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         OpRequest::DeleteTag { name, remote: None } => {
             check_arg(&name, "tag")?;
             (
-                format!("Delete tag {name}"),
+                fixed(format!("Delete tag {name}")),
                 body(move |ctx, _| Box::pin(async move { local::delete_tag(ctx, &name).await })),
             )
         }
@@ -402,11 +412,6 @@ fn check_mainline(mainline: Option<u32>) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// HEAD's branch for a title, or "detached HEAD".
-fn head_name(head: &HeadInfo) -> &str {
-    head.branch.as_deref().unwrap_or("detached HEAD")
 }
 
 /// `Ok` if `hash` is a full commit hash: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
@@ -436,6 +441,16 @@ fn check_arg(value: &str, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// An operation asked for: it waits for its turn in the repository's queue, then runs.
+struct Turn {
+    repo: Arc<Repo>,
+    op_id: u64,
+    request: OpRequest,
+    confirmed: Vec<DangerKind>,
+    title: Title,
+    body: Body,
+}
+
 /// What a turn in the queue ended with.
 enum Ran {
     Step(Step),
@@ -461,15 +476,17 @@ impl RepoManager {
         request: OpRequest,
         confirmed: &[DangerKind],
     ) -> Result<OpOutcome> {
-        let head = self.snapshot(repo_id).await?.head;
-        let Prepared { title, body } = prepare(&request, &head)?;
-        let repo = self.get(repo_id)?;
-        let op_id = self.next_op_id();
-        let (m, confirmed) = (self.clone(), confirmed.to_vec());
-        let task = tokio::spawn(async move {
-            m.run_in_turn(repo, op_id, title, request, confirmed, body)
-                .await
-        });
+        let Prepared { title, body } = prepare(&request)?;
+        let turn = Turn {
+            repo: self.get(repo_id)?,
+            op_id: self.next_op_id(),
+            request,
+            confirmed: confirmed.to_vec(),
+            title,
+            body,
+        };
+        let m = self.clone();
+        let task = tokio::spawn(async move { m.run_in_turn(turn).await });
         // Only the body can panic, and that is handled within the turn.
         task.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
@@ -480,15 +497,8 @@ impl RepoManager {
     /// The body runs as a task of its own, so that if it panics the operation still ends
     /// here, within the turn: the repository is refreshed and no longer marked busy before
     /// the next operation starts.
-    async fn run_in_turn(
-        self: &Arc<Self>,
-        repo: Arc<Repo>,
-        op_id: u64,
-        title: String,
-        request: OpRequest,
-        confirmed: Vec<DangerKind>,
-        body: Body,
-    ) -> Result<OpOutcome> {
+    async fn run_in_turn(self: &Arc<Self>, turn: Turn) -> Result<OpOutcome> {
+        let (repo, op_id) = (turn.repo.clone(), turn.op_id);
         repo.op_waiting.fetch_add(1, Ordering::SeqCst);
         self.op_queue_changed(&repo).await;
         let _turn = repo.op_queue.lock().await;
@@ -501,20 +511,8 @@ impl RepoManager {
         // refresh. A request that needs confirmation shows nothing.
         let started = Arc::new(AtomicBool::new(false));
         let inner = tokio::spawn({
-            let (m, repo, started) = (self.clone(), repo.clone(), started.clone());
-            let title_owned = title.clone();
-            async move {
-                m.run_body(
-                    &repo,
-                    op_id,
-                    &title_owned,
-                    &request,
-                    &confirmed,
-                    body,
-                    &started,
-                )
-                .await
-            }
+            let (m, started) = (self.clone(), started.clone());
+            async move { m.run_body(turn, &started).await }
         });
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
@@ -524,7 +522,7 @@ impl RepoManager {
         } else {
             self.snapshot(repo.identity.repo_id).await
         };
-        let ran = ran?;
+        let (title, ran) = ran?;
         let snapshot = snapshot?;
 
         let (log_from, log_to) = repo.runner.log().op_writes(op_id).unwrap_or((0, 0));
@@ -579,32 +577,33 @@ impl RepoManager {
         Ok(outcome)
     }
 
-    /// Checks `request` for dangers and, if every one is confirmed, publishes the operation
-    /// as running (setting `started`) and runs its `body` in the active worktree.
-    #[allow(clippy::too_many_arguments)]
-    async fn run_body(
-        &self,
-        repo: &Arc<Repo>,
-        op_id: u64,
-        title: &str,
-        request: &OpRequest,
-        confirmed: &[DangerKind],
-        body: Body,
-        started: &AtomicBool,
-    ) -> Result<Ran> {
-        let ctx = OpCtx {
+    /// Titles the operation after the branch HEAD is on now, checks its request for
+    /// dangers and, if every one is confirmed, publishes it as running (setting `started`)
+    /// and runs its body in the active worktree. Returns the title and how it ended.
+    async fn run_body(&self, turn: Turn, started: &AtomicBool) -> Result<(String, Ran)> {
+        let Turn {
             repo,
+            op_id,
+            request,
+            confirmed,
+            title,
+            body,
+        } = turn;
+        let ctx = OpCtx {
+            repo: &repo,
             runner: repo.runner.for_op(op_id),
             cwd: repo.worktree.clone(),
             op_id,
             sink: self.sink.as_ref(),
             net_limit: self.net_limit(),
         };
-        let dangers = dangers(&ctx, request).await?;
-        if !all_confirmed(&dangers, confirmed) {
-            return Ok(Ran::Unconfirmed(dangers));
+        let head = local::current_branch(&ctx).await?;
+        let title = title(head.as_deref().unwrap_or("detached HEAD"));
+        let dangers = dangers(&ctx, &request).await?;
+        if !all_confirmed(&dangers, &confirmed) {
+            return Ok((title, Ran::Unconfirmed(dangers)));
         }
-        self.start_op(repo, op_id, title).await?;
+        self.start_op(&repo, op_id, &title).await?;
         started.store(true, Ordering::SeqCst);
         let step = body(&ctx, &dangers).await;
         let delay = self.op_delay();
@@ -615,7 +614,7 @@ impl RepoManager {
         if self.take_op_panic() {
             panic!("test: the operation's body panicked");
         }
-        step.map(Ran::Step)
+        step.map(|step| (title, Ran::Step(step)))
     }
 }
 
@@ -684,11 +683,7 @@ mod tests {
 
     #[test]
     fn unbuilt_operations_and_bad_input_are_refused_without_git() {
-        let head = HeadInfo {
-            branch: Some("main".into()),
-            hash: None,
-        };
-        let refused = |r: &OpRequest| prepare(r, &head).err().expect("refused").code;
+        let refused = |r: &OpRequest| prepare(r).err().expect("refused").code;
         assert_eq!(refused(&OpRequest::Continue), ErrorCode::BadRequest);
         let option_like = OpRequest::CreateBranch {
             name: "x".into(),
@@ -702,8 +697,19 @@ mod tests {
             checkout: false,
         };
         assert_eq!(
-            prepare(&ok, &head).map(|p| p.title).expect("ok"),
+            prepare(&ok).map(|p| (p.title)("main")).expect("ok"),
             "Create branch x"
         );
+        let merge = OpRequest::Merge {
+            target: crate::dto::MergeTarget {
+                kind: MergeTargetKind::Branch,
+                name: "x".into(),
+            },
+            no_ff: true,
+            squash: false,
+            no_commit: false,
+        };
+        let title = prepare(&merge).map(|p| p.title).expect("ok");
+        assert_eq!(title("trunk"), "Merge x into trunk");
     }
 }

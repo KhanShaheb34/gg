@@ -530,6 +530,39 @@ async fn status_counts_conflicts() {
 }
 
 #[tokio::test]
+async fn status_ignores_submodules() {
+    let sub = TestRepo::new();
+    sub.commit("sub one");
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let sub_path = sub.path().to_str().unwrap();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub_path,
+        "sub",
+    ]);
+    repo.commit_all("add submodule");
+    // New commit, modified and untracked content inside the submodule checkout.
+    let checkout = repo.path().join("sub");
+    fs::write(checkout.join("untracked.txt"), "x").unwrap();
+    fs::write(checkout.join("file-0.txt"), "changed\n").unwrap();
+    assert!(
+        !repo.git(&["status", "--porcelain"]).is_empty(),
+        "plain git status reports the submodule"
+    );
+
+    let git = runner().await;
+    assert_eq!(
+        read_status(&git, repo.path()).await.unwrap(),
+        WorktreeStatus::default()
+    );
+}
+
+#[tokio::test]
 async fn status_of_linked_worktree_is_its_own() {
     let repo = TestRepo::new();
     repo.commit("one");

@@ -7,11 +7,18 @@ use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner};
 
 /// Change counts for the worktree at `worktree` (untracked files counted one by one).
+/// Submodules are ignored entirely, so git never looks inside them or reads their config.
 pub async fn read_status(r: &GitRunner, worktree: &Path) -> Result<WorktreeStatus> {
     let out = r
         .run(
             worktree,
-            &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+            &[
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=all",
+            ],
             CmdKind::Read,
         )
         .await?;

@@ -952,19 +952,26 @@ async fn close_and_unknown_repo() {
 // ---------------------------------------------------------------------------------------
 // fsmonitor guard
 
+/// A script that creates `marker` when run, for use as an fsmonitor hook.
+#[cfg(unix)]
+fn marker_hook(repo: &TestRepo, name: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let marker = repo.dir.path().join(format!("{name}-ran"));
+    let hook = repo.dir.path().join(format!("{name}.sh"));
+    fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    (hook, marker)
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn fsmonitor_hook_is_never_run() {
-    use std::os::unix::fs::PermissionsExt;
-
     let repo = TestRepo::new();
     repo.commit("one");
-    let marker = repo.dir.path().join("fsmonitor-ran");
-    let hook = repo.dir.path().join("fsmonitor-hook.sh");
-    fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let (hook, marker) = marker_hook(&repo, "fsmonitor-hook");
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
-    // Plain git does run the hook: the guard below is what keeps it from running.
+    // Plain git does run the hook: the guard is what keeps it from running.
     repo.git(&["status", "--porcelain"]);
     assert!(marker.exists(), "git runs the configured fsmonitor hook");
     fs::remove_file(&marker).unwrap();
@@ -978,33 +985,53 @@ async fn fsmonitor_hook_is_never_run() {
         "the app ran the repository's fsmonitor hook"
     );
     assert_eq!(snap.status.untracked, 1, "status still works");
-    let git = h.m.runner(snap.repo_id).unwrap();
-    let value = git
-        .run(
-            repo.path(),
-            &["config", "--get", "core.fsmonitor"],
-            CmdKind::Read,
-        )
-        .await
-        .unwrap();
-    assert_eq!(value.text().trim(), "false");
 }
 
-/// Stops the fsmonitor daemon that `core.fsmonitor=true` starts, even if the test fails.
-struct StopDaemon<'a>(&'a TestRepo);
+#[cfg(unix)]
+#[tokio::test]
+async fn submodule_fsmonitor_hook_is_never_run() {
+    let sub = TestRepo::new();
+    sub.commit("sub one");
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.path().to_str().unwrap(),
+        "sub",
+    ]);
+    repo.commit_all("add submodule");
+    let (hook, marker) = marker_hook(&repo, "submodule-hook");
+    let checkout = repo.path().join("sub");
+    let status = std::process::Command::new("git")
+        .args(["config", "core.fsmonitor", hook.to_str().unwrap()])
+        .current_dir(&checkout)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // Plain git status in the parent runs the submodule's hook.
+    repo.git(&["status", "--porcelain"]);
+    assert!(marker.exists(), "git runs the submodule's fsmonitor hook");
+    fs::remove_file(&marker).unwrap();
 
-impl Drop for StopDaemon<'_> {
-    fn drop(&mut self) {
-        self.0.git_succeeds(&["fsmonitor--daemon", "stop"]);
-    }
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    h.refresh(snap.repo_id).await;
+    assert!(
+        !marker.exists(),
+        "the app ran the submodule's fsmonitor hook"
+    );
 }
 
 #[tokio::test]
-async fn fsmonitor_boolean_is_kept() {
+async fn fsmonitor_is_false_even_when_configured_true() {
     let repo = TestRepo::new();
     repo.commit("one");
     repo.git(&["config", "core.fsmonitor", "true"]);
-    let _stop = StopDaemon(&repo);
     let h = harness().await;
     let snap = h.open(repo.path()).await;
     let git = h.m.runner(snap.repo_id).unwrap();
@@ -1016,5 +1043,5 @@ async fn fsmonitor_boolean_is_kept() {
         )
         .await
         .unwrap();
-    assert_eq!(value.text().trim(), "true");
+    assert_eq!(value.text().trim(), "false");
 }

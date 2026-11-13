@@ -334,37 +334,28 @@ fn test_repo_worktree_and_remote() {
 }
 
 #[tokio::test]
-async fn extra_config_applies_to_every_command_but_stays_out_of_the_log() {
+async fn fsmonitor_is_always_disabled_and_stays_out_of_the_log() {
     let repo = TestRepo::new();
-    repo.git(&["config", "core.fsmonitor", "/bin/false"]);
     let log = CommandLog::new();
-    let base = GitRunner::detect(log.clone()).await.unwrap();
-    let guarded = base.with_extra_config(&[("core.fsmonitor", "false"), ("gg.test", "yes")]);
+    let git = GitRunner::detect(log.clone()).await.unwrap();
     let args = ["config", "--get", "core.fsmonitor"];
-    let get = |git: &GitRunner, key: &'static str| {
-        let git = git.clone();
-        let cwd = repo.path().to_path_buf();
-        async move {
-            git.run(&cwd, &["config", "--get", key], CmdKind::Read)
-                .await
-                .unwrap()
-                .text()
-                .trim()
-                .to_owned()
-        }
+    let get = || async {
+        git.run(repo.path(), &args, CmdKind::Read)
+            .await
+            .unwrap()
+            .text()
+            .trim()
+            .to_owned()
     };
-    assert_eq!(get(&guarded, "core.fsmonitor").await, "false");
-    assert_eq!(get(&guarded, "gg.test").await, "yes");
-    // The base runner and other clones are unaffected; the default options are kept.
-    assert_eq!(get(&base, "core.fsmonitor").await, "/bin/false");
-    assert_eq!(get(&guarded, "core.quotePath").await, "false");
-    // Extra options compose.
-    let twice = guarded.with_extra_config(&[("gg.other", "1")]);
-    assert_eq!(get(&twice, "gg.test").await, "yes");
-    assert_eq!(get(&twice, "gg.other").await, "1");
+    // Whatever the repository configures, a hook program or the built-in daemon, every
+    // command sees `false`.
+    assert_eq!(get().await, "false");
+    repo.git(&["config", "core.fsmonitor", "/bin/false"]);
+    assert_eq!(get().await, "false");
+    repo.git(&["config", "core.fsmonitor", "true"]);
+    assert_eq!(get().await, "false");
 
     let records = log.since(0);
-    assert!(records.iter().all(|r| !r.args.iter().any(|a| a == "-c")));
-    assert_eq!(records[0].args, args);
-    assert!(std::ptr::eq(guarded.log().as_ref(), log.as_ref()));
+    assert_eq!(records.len(), 3);
+    assert!(records.iter().all(|r| r.args == args));
 }

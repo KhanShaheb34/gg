@@ -41,7 +41,7 @@ pub(super) struct Repo {
     /// The active worktree; every command runs here.
     pub(super) worktree: PathBuf,
     common_dir: PathBuf,
-    /// Runs this repository's commands (with its config guards).
+    /// Runs this repository's commands.
     pub(super) runner: GitRunner,
     pub(super) slot: RwLock<Slot>,
     /// Whether a log load is running. Changed only while holding the `slot` write lock.
@@ -158,7 +158,7 @@ impl RepoManager {
             return Ok(repo.snapshot().await);
         }
 
-        let runner = self.runner_for(&location.worktree).await?;
+        let runner = self.runner.clone();
         let info = read_info(&runner, &location.worktree).await?;
         let root = info
             .worktrees
@@ -349,8 +349,7 @@ impl RepoManager {
         Some((repo.common_dir.clone(), repo.root.clone()))
     }
 
-    /// The runner used for this repository's commands (it carries the repository's config
-    /// guards).
+    /// The runner used for this repository's commands.
     pub fn runner(&self, repo_id: u32) -> Option<GitRunner> {
         self.get(repo_id).ok().map(|r| r.runner.clone())
     }
@@ -469,44 +468,12 @@ impl RepoManager {
             common_dir: canonical(&path.join(common_dir)),
         })
     }
-
-    /// A runner for the repository at `worktree`: the shared one, plus
-    /// `-c core.fsmonitor=false` when the repository configures an fsmonitor hook program,
-    /// so background reads never run a program the repository chose.
-    async fn runner_for(&self, worktree: &Path) -> Result<GitRunner> {
-        let out = self
-            .runner
-            .run_unchecked(
-                worktree,
-                &["config", "--get", "core.fsmonitor"],
-                CmdKind::Read,
-            )
-            .await?;
-        let value = (out.code == 0).then(|| out.text());
-        Ok(if fsmonitor_needs_guard(out.code, value.as_deref()) {
-            self.runner
-                .with_extra_config(&[("core.fsmonitor", "false")])
-        } else {
-            self.runner.clone()
-        })
-    }
 }
 
 /// Where an opened path lives.
 struct Location {
     worktree: PathBuf,
     common_dir: PathBuf,
-}
-
-/// Whether `git config --get core.fsmonitor` (exit `code`, output `value`) shows a setting
-/// that could run a program: anything but unset (exit 1) or a git boolean.
-fn fsmonitor_needs_guard(code: i32, value: Option<&str>) -> bool {
-    const BOOLEANS: [&str; 8] = ["true", "false", "yes", "no", "on", "off", "1", "0"];
-    match (code, value) {
-        (1, _) => false,
-        (0, Some(v)) => !BOOLEANS.iter().any(|b| v.trim().eq_ignore_ascii_case(b)),
-        _ => true,
-    }
 }
 
 /// Head, refs, remotes, worktrees and status, read concurrently in `worktree`.
@@ -563,32 +530,4 @@ fn unknown_repo(repo_id: u32) -> CoreError {
 /// Locks a std mutex, ignoring poisoning: every critical section leaves its data valid.
 pub(super) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fsmonitor_guard_is_off_only_for_unset_or_boolean() {
-        assert!(!fsmonitor_needs_guard(1, None));
-        for v in [
-            "true", "FALSE", "Yes", "no", "on", "OFF", "1", "0", " true\n",
-        ] {
-            assert!(!fsmonitor_needs_guard(0, Some(v)), "{v:?}");
-        }
-        for v in [
-            "/usr/local/bin/watchman-hook",
-            ".git/hooks/fsmonitor",
-            "2",
-            "",
-            "truthy",
-        ] {
-            assert!(fsmonitor_needs_guard(0, Some(v)), "{v:?}");
-        }
-        // Anything git could not answer plainly (several values, a broken config) is
-        // treated as unsafe.
-        assert!(fsmonitor_needs_guard(2, None));
-        assert!(fsmonitor_needs_guard(128, None));
-    }
 }

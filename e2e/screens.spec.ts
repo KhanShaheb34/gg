@@ -1,7 +1,9 @@
 // Screenshots for the visual check, written to docs/perf/screens/. Run on demand:
 //   GG_SCREENS=1 pnpm e2e screens
+import { chmodSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
+import type { OpOutcome, OpRequest } from "../src/lib/types";
 import { expect, makeRepo, test } from "./fixtures";
 
 const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");
@@ -242,5 +244,105 @@ for (const theme of ["light", "dark"] as const) {
     await page.getByRole("tab", { name: "branchy" }).hover();
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `hover-tab-${theme}.png`) });
+  });
+}
+
+/** Runs `request` through the app's own runOp (the module the page loaded), in the active tab. */
+function runOp(page: Page, request: OpRequest): Promise<OpOutcome> {
+  return page.evaluate(async (req) => {
+    const ops = await import("/src/lib/state/ops.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    return ops.runOp(app.activeRepoId!, req);
+  }, request);
+}
+
+// Menus, the confirmation dialog, the busy indicator and the notices of operations.
+for (const theme of ["light", "dark"] as const) {
+  test(`menus, dialogs and operations, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    const dir = gg.repoPath("branchy");
+    await open(page, dir);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    const shot = async (name: string) => {
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+    };
+
+    // A commit's menu with the reset submenu open, the hard reset under the pointer.
+    await grid.locator('[role="row"]', { hasText: "Plugin sandboxing" }).locator(".subject").click({ button: "right" });
+    await page.getByRole("menuitem", { name: /^Reset main to here$/ }).hover();
+    await page.getByRole("menuitem", { name: "Hard: discard all changes" }).hover();
+    await shot("menu-commit");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+
+    // The current branch: a disabled item with its reason.
+    await grid.locator('[data-ref="main"]').first().click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Merge main into main…" }).hover();
+    await shot("menu-branch-current");
+    await page.keyboard.press("Escape");
+
+    // Another branch, from the keyboard (the active item is the focus).
+    await grid.locator('[data-ref="feature/ui"]').first().click({ button: "right" });
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+    await park(page);
+    await shot("menu-branch");
+    await page.keyboard.press("Escape");
+
+    // A remote branch, near the right edge of the window.
+    await grid.locator('[data-ref="origin/main"]').first().click({ button: "right" });
+    await shot("menu-remote");
+    await page.keyboard.press("Escape");
+
+    // The confirmation the core asks for: a hard reset with uncommitted changes.
+    writeFileSync(path.join(dir, "files/f1.txt"), "changed\n");
+    writeFileSync(path.join(dir, "files/f2.txt"), "changed\n");
+    void runOp(page, { op: "reset", hash: gg.git("branchy", "rev-parse", "HEAD~2").trim(), mode: "hard" });
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    await park(page);
+    await shot("dialog-confirm");
+    await page.keyboard.press("Escape");
+
+    // A failed checkout (a changed file it would overwrite): the notice with git's output unfolded.
+    gg.git("branchy", "checkout", "--", ".");
+    const differing = gg.git("branchy", "diff", "--name-only", "main", "develop").trim().split("\n")[0];
+    writeFileSync(path.join(dir, differing), "in the way\n");
+    const failed = await runOp(page, { op: "checkout_branch", branch: "develop", fastForward: false });
+    expect(failed.status).toBe("failed");
+    const alert = page.getByRole("alert").filter({ hasText: failed.message });
+    await alert.getByRole("button", { name: "Git output" }).click();
+    await park(page);
+    await shot("notice-failed");
+    await alert.getByRole("button", { name: "Dismiss notification" }).click();
+
+    // A merge whose notice offers to push, and the busy indicator with one queued.
+    gg.git("branchy", "checkout", "--", ".");
+    gg.git("branchy", "clean", "-fdq");
+    const hook = path.join(dir, ".git/hooks/post-checkout");
+    writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
+    chmodSync(hook, 0o755);
+    const first = runOp(page, { op: "checkout_branch", branch: "feature/ui", fastForward: false });
+    const second = runOp(page, { op: "checkout_branch", branch: "main", fastForward: false });
+    await expect(page.getByTestId("busy")).toContainText("+1");
+    await park(page);
+    await shot("busy");
+    await Promise.all([first, second]);
+    // The merge commit is made by the core's git: give it the fixtures' author.
+    gg.git("branchy", "config", "user.name", "Ada Lovelace");
+    gg.git("branchy", "config", "user.email", "ada@example.com");
+    await runOp(page, {
+      op: "merge",
+      target: { kind: "branch", name: "feature/ui" },
+      noFf: true,
+      squash: false,
+      noCommit: false,
+    });
+    await page.mouse.move(1000, 760);
+    await page.getByRole("status").filter({ hasText: /feature\/ui into main/ }).hover();
+    await shot("notice-done");
   });
 }

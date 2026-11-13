@@ -322,6 +322,7 @@ pub(crate) async fn merge(
     let before = head_commit(ctx).await?;
     let out = match git_may_stop(ctx, &args, false).await? {
         Ok(out) => out,
+        Err(step) if squash => return squash_failed(ctx, step).await,
         Err(step) => return Ok(step),
     };
     if let Some(message) = nothing_to_do(&args, &out) {
@@ -364,6 +365,35 @@ pub(crate) async fn merge(
         },
         &out,
     ))
+}
+
+/// Said when a squash merge conflicts (R20).
+const SQUASH_CONFLICTS: &str = "This squash merge has conflicts. A squash can't be continued \
+                                here, so nothing was changed. Merge normally, or squash in a \
+                                terminal.";
+
+/// `step`, how a squash merge failed. One that left conflicts (git leaves no MERGE_HEAD for
+/// a squash, so it could be neither continued nor aborted) is undone with `reset --merge`,
+/// which puts the index and the files the merge touched back and keeps the uncommitted
+/// changes it did not touch; the step then says so (R20), with git's output.
+async fn squash_failed(ctx: &OpCtx<'_>, step: Step) -> Result<Step> {
+    let Step::Failed { detail, hints, .. } = &step else {
+        return Ok(step);
+    };
+    let unmerged = ctx.read(&["ls-files", "--unmerged", "-z"]).await?;
+    if unmerged.code != 0 || unmerged.stdout.is_empty() {
+        return Ok(step);
+    }
+    let args = ["reset", "--merge"];
+    let out = ctx.git(&args).await?;
+    if out.code != 0 {
+        return Ok(explain(&args, &out));
+    }
+    Ok(Step::Failed {
+        message: SQUASH_CONFLICTS.to_owned(),
+        detail: detail.clone(),
+        hints: hints.clone(),
+    })
 }
 
 /// `step` (done), saying so if git's output `out` shows that the changes it auto-stashed

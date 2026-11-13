@@ -1368,3 +1368,50 @@ async fn checkout_with_untracked_files_in_the_way_explains() {
         "mine, untracked\n"
     );
 }
+
+/// R20: a squash merge that conflicts leaves no MERGE_HEAD, so nothing could continue or
+/// abort it: the core puts the working tree and index back as they were (an unrelated
+/// uncommitted change survives) and fails with a plain line, git's output below it.
+#[tokio::test]
+async fn a_squash_merge_with_conflicts_changes_nothing() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    repo.write("other.txt", "committed\n");
+    repo.commit_all("other");
+    repo.write("other.txt", "uncommitted\n");
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    let status = repo.git(&["status", "--porcelain"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            merge(MergeTargetKind::Branch, "feature", false, true, false),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        out.message,
+        "This squash merge has conflicts. A squash can't be continued here, so nothing was \
+         changed. Merge normally, or squash in a terminal."
+    );
+    assert!(
+        out.detail.as_deref().unwrap_or("").contains("CONFLICT"),
+        "{:?}",
+        out.detail
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(repo.git(&["status", "--porcelain"]), status);
+    assert_eq!(repo.git(&["diff", "--cached", "--name-only"]), "");
+    assert_eq!(
+        fs::read_to_string(repo.path().join("clash.txt")).unwrap(),
+        "main\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("other.txt")).unwrap(),
+        "uncommitted\n"
+    );
+    assert!(out.snapshot.in_progress.is_none());
+    assert_eq!(out.snapshot.status.conflicted, 0);
+}

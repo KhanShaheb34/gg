@@ -233,7 +233,7 @@ fn stopped_without_conflicts(kind: InProgressKind) -> String {
 }
 
 /// The branch HEAD is on, or `None` when detached (or unborn and unreadable).
-async fn current_branch(ctx: &OpCtx<'_>) -> Result<Option<String>> {
+pub(crate) async fn current_branch(ctx: &OpCtx<'_>) -> Result<Option<String>> {
     let out = ctx.read(&["symbolic-ref", "-q", "--short", "HEAD"]).await?;
     Ok((out.code == 0)
         .then(|| out.text().trim().to_owned())

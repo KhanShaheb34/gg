@@ -7,6 +7,7 @@ use crate::dto::{Danger, DangerKind, OpRequest, ResetMode};
 use crate::error::Result;
 use crate::git::status::read_status;
 use crate::ops::OpCtx;
+use crate::ops::local::current_branch;
 
 /// The dangers `request` would run into now.
 pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<Danger>> {
@@ -23,57 +24,88 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
     })
 }
 
-/// `delete_unmerged_branch` if `branch` exists and is an ancestor neither of HEAD nor of
-/// its upstream: deleting it would lose the commits only it has, which the message counts.
+/// `delete_unmerged_branch` exactly when `branch -d` would refuse: git compares the branch
+/// with its upstream when it has one (and that exists), else with HEAD, and refuses unless
+/// the branch is contained in it. So a branch merged into its upstream deletes without
+/// confirmation even if HEAD lacks it, and one merged into HEAD but not into its upstream
+/// needs confirmation (then `-D`). The message counts the commits only the branch has,
+/// relative to that reference, and says when the current branch has them nevertheless.
 async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>> {
     let full = format!("refs/heads/{branch}");
     if !verifies(ctx, &full).await? {
         // git says it does not exist.
         return Ok(None);
     }
-    let mut tips: Vec<String> = Vec::new();
-    if verifies(ctx, "HEAD").await? {
-        tips.push("HEAD".to_owned());
-    }
-    let upstream = upstream_of(ctx, &full).await?;
-    if let Some(up) = &upstream
-        && verifies(ctx, up).await?
-    {
-        tips.push(up.clone());
-    }
-    for tip in &tips {
+    let upstream = match upstream_of(ctx, &full).await? {
+        Some(up) if verifies(ctx, &up).await? => Some(up),
+        _ => None,
+    };
+    let head = verifies(ctx, "HEAD").await?;
+    let reference = upstream.clone().or_else(|| head.then(|| "HEAD".to_owned()));
+    if let Some(reference) = &reference {
         let merged = ctx
-            .read(&["merge-base", "--is-ancestor", &full, tip])
+            .read(&["merge-base", "--is-ancestor", &full, reference])
             .await?;
         if merged.code == 0 {
             return Ok(None);
         }
     }
     let mut args = vec!["rev-list", "--count", full.as_str()];
-    if !tips.is_empty() {
-        args.push("--not");
-        args.extend(tips.iter().map(String::as_str));
+    if let Some(reference) = &reference {
+        args.extend(["--not", reference.as_str()]);
     }
     let count = ctx.read(&args).await?;
     let n: u64 = count.text().trim().parse().unwrap_or(0);
-    let into = if upstream.is_some() {
-        "HEAD or its upstream branch"
-    } else {
-        "HEAD"
-    };
     let (commits, them) = if n == 1 {
         ("1 commit".to_owned(), "it")
     } else {
         (format!("{n} commits"), "them")
     };
+    let current = current_branch(ctx).await?;
+    let message = match (&upstream, &current) {
+        (Some(up), current) => {
+            let up = short_ref(up);
+            let in_head = head
+                && ctx
+                    .read(&["merge-base", "--is-ancestor", &full, "HEAD"])
+                    .await?
+                    .code
+                    == 0;
+            match current {
+                Some(current) if in_head && current != branch => format!(
+                    "Branch \u{201c}{branch}\u{201d} has {commits} not in its upstream branch \
+                     {up}: its commits are in {current}, but not yet in {up}."
+                ),
+                _ => format!(
+                    "Branch \u{201c}{branch}\u{201d} has {commits} not in its upstream branch \
+                     {up}: deleting it loses {them}."
+                ),
+            }
+        }
+        (None, _) if !head => format!(
+            "Branch \u{201c}{branch}\u{201d} has {commits}, and no commit is checked out to \
+             compare it with: deleting it loses {them}."
+        ),
+        (None, current) => {
+            let into = current.as_deref().unwrap_or("HEAD");
+            format!(
+                "Branch \u{201c}{branch}\u{201d} has {commits} not merged into {into}: deleting \
+                 it loses {them}."
+            )
+        }
+    };
     Ok(Some(Danger {
         kind: DangerKind::DeleteUnmergedBranch,
-        message: format!(
-            "Branch \u{201c}{branch}\u{201d} has {commits} not merged into {into}: deleting \
-             it loses {them}."
-        ),
+        message,
         detail: None,
     }))
+}
+
+/// `refs/remotes/origin/x` as `origin/x`, `refs/heads/x` as `x`.
+fn short_ref(full: &str) -> &str {
+    full.strip_prefix("refs/remotes/")
+        .or_else(|| full.strip_prefix("refs/heads/"))
+        .unwrap_or(full)
 }
 
 /// `hard_reset`, always: it discards the uncommitted changes, which the message counts;

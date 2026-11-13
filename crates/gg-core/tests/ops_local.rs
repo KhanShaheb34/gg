@@ -256,6 +256,19 @@ async fn delete_merged_branch_runs_without_confirmation() {
             .iter()
             .any(|r| r.args == ["branch", "-d", "--", "done"])
     );
+
+    // Confirming the danger does not make a merged branch's delete a forced one.
+    repo.branch("done");
+    let confirmed = [DangerKind::DeleteUnmergedBranch];
+    let out = h.run_confirmed(id, delete_branch("done"), &confirmed).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["branch", "-d", "--", "done"]),
+        "{:?}",
+        op_records(&h.log, &out)
+    );
 }
 
 #[tokio::test]
@@ -305,10 +318,10 @@ async fn delete_unmerged_branch_needs_confirmation() {
     );
 }
 
-/// Merged into HEAD (so no danger), but not into its own upstream: git refuses with "not
-/// fully merged".
+/// Merged into HEAD but not into its own upstream: git's `-d` refuses that, so it is the
+/// danger, and the message says where the commits are. Confirmed, `-D` deletes it.
 #[tokio::test]
-async fn branch_not_merged_into_its_upstream_explains() {
+async fn branch_not_merged_into_its_upstream_needs_confirmation() {
     let repo = TestRepo::new();
     repo.commit("one");
     repo.branch("topic");
@@ -322,14 +335,53 @@ async fn branch_not_merged_into_its_upstream_explains() {
     let id = h.open(repo.path()).await.repo_id;
 
     let out = h.run(id, delete_branch("topic")).await;
-    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert_eq!(out.dangers.len(), 1);
+    assert_eq!(out.dangers[0].kind, DangerKind::DeleteUnmergedBranch);
+    let message = &out.dangers[0].message;
+    assert!(message.contains("1 commit "), "{message}");
+    assert!(message.contains("origin/topic"), "{message}");
     assert!(
-        out.message.contains("\u{201c}topic\u{201d}") && out.message.contains("not fully merged"),
-        "{}",
-        out.message
+        message.contains("its commits are in main, but not yet in origin/topic"),
+        "{message}"
     );
-    assert!(out.detail.unwrap().contains("not fully merged"));
-    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
+
+    let confirmed = [DangerKind::DeleteUnmergedBranch];
+    let out = h
+        .run_confirmed(id, delete_branch("topic"), &confirmed)
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["branch", "-D", "--", "topic"])
+    );
+}
+
+/// Merged into its upstream but not into HEAD: git's `-d` deletes it (its commits are on
+/// the remote), so there is no danger.
+#[tokio::test]
+async fn branch_merged_into_its_upstream_only_deletes_without_confirmation() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("topic");
+    repo.checkout("topic");
+    repo.commit("pushed");
+    repo.checkout("main");
+    let _origin = repo.clone_as_remote();
+    repo.git(&["branch", "-u", "origin/topic", "topic"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, delete_branch("topic")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["branch", "-d", "--", "topic"])
+    );
 }
 
 // ---- Local operations: merge and rebase ----

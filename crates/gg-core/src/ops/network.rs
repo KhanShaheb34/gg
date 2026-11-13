@@ -287,7 +287,7 @@ async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
     let before = ref_commit(ctx, &into).await?;
     let out = ctx.git_net(&args).await?;
     if out.code != 0 {
-        return fetch_into_failed(ctx, &args, &out).await;
+        return fetch_into_failed(ctx, &args, &out, "pull").await;
     }
     let after = ref_commit(ctx, &into).await?;
     Ok(Step::Done(if before == after {
@@ -333,10 +333,16 @@ async fn split_remote_branch(
 }
 
 /// The step for a fetch into a local branch (`args`) that failed with `out`, as [`explain`]
-/// says, except when git refused because the branch is checked out in this very worktree:
-/// that is the branch something stopped here (a rebase) is working on, so the message says
-/// what is in progress here rather than to switch to another worktree.
-async fn fetch_into_failed(ctx: &OpCtx<'_>, args: &[&str], out: &GitOutput) -> Result<Step> {
+/// says, except when git refused because the branch is checked out in this very worktree
+/// while git is stopped here (a rebase working on that branch): then the message says what
+/// is in progress here rather than to switch to another worktree, and to `then` ("pull",
+/// "fetch") once it has ended.
+async fn fetch_into_failed(
+    ctx: &OpCtx<'_>,
+    args: &[&str],
+    out: &GitOutput,
+    then: &str,
+) -> Result<Step> {
     let step = explain(args, out);
     let refused = out.stderr.lines().find_map(|l| {
         let rest = l
@@ -354,21 +360,19 @@ async fn fetch_into_failed(ctx: &OpCtx<'_>, args: &[&str], out: &GitOutput) -> R
     if dunce::canonicalize(&path).ok() != dunce::canonicalize(&ctx.cwd).ok() {
         return Ok(step);
     }
+    // Nothing stopped: the branch is simply checked out here, as git says.
+    let Some(kind) = stopped_kind(ctx).await else {
+        return Ok(step);
+    };
     let Step::Failed { detail, hints, .. } = step else {
         return Ok(step);
     };
-    let (what, it) = match stopped_kind(ctx).await {
-        Some(kind) => (
-            format!("A {}", kind_name(kind)),
-            format!("the {}", kind_name(kind)),
-        ),
-        None => ("An operation".to_owned(), "it".to_owned()),
-    };
+    let kind = kind_name(kind);
     Ok(Step::Failed {
         message: format!(
-            "{what} is in progress in this worktree, on branch \u{201c}{branch}\u{201d}: \
+            "A {kind} is in progress in this worktree, on branch \u{201c}{branch}\u{201d}: \
              until it ends, git counts the branch as checked out here and does not move it by \
-             fetching. Continue or abort {it} first, then pull."
+             fetching. Continue or abort the {kind} first, then {then}."
         ),
         detail,
         hints,
@@ -400,7 +404,7 @@ pub(crate) async fn fetch_into_local(
     let before = ref_commit(ctx, &into).await?;
     let out = ctx.git_net(&args).await?;
     if out.code != 0 {
-        return fetch_into_failed(ctx, &args, &out).await;
+        return fetch_into_failed(ctx, &args, &out, "fetch").await;
     }
     let after = ref_commit(ctx, &into).await?;
     let at = after.as_deref().map_or("", short);

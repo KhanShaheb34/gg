@@ -1676,3 +1676,62 @@ async fn pulling_the_branch_being_rebased_here_says_a_rebase_is_in_progress() {
         out.message
     );
 }
+
+/// Task 5 review, item 6: fetching into the branch checked out here, with nothing in
+/// progress, says what git's refusal means (no talk of an operation in progress).
+#[tokio::test]
+async fn fetching_into_the_branch_checked_out_here_with_nothing_stopped_says_why_plainly() {
+    let (repo, _origin, other) = with_remote();
+    other.commit("new on origin");
+    other.git(&["push", "-q", "origin", "main"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, fetch_into_local("origin/main", "main")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message
+            .starts_with("Branch \u{201c}main\u{201d} is checked out in the worktree at"),
+        "{}",
+        out.message
+    );
+    assert!(!out.message.contains("in progress"), "{}", out.message);
+}
+
+/// Item 6, the other half: with a rebase stopped on the branch, fetching into it says the
+/// rebase is in progress, and to fetch (not pull) once it has ended.
+#[tokio::test]
+async fn fetching_into_the_branch_being_rebased_here_says_to_fetch_afterwards() {
+    let (repo, _origin, other) = with_remote();
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+    other.git(&["pull", "-q"]);
+    other.commit("new on origin");
+    other.git(&["push", "-q", "origin", "main"]);
+    assert!(!repo.git_succeeds(&["rebase", "feature"]));
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, fetch_into_local("origin/main", "main")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("A rebase is in progress"),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message
+            .ends_with("Continue or abort the rebase first, then fetch."),
+        "{}",
+        out.message
+    );
+}

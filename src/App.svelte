@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Mark from "./lib/components/Mark.svelte";
+  import Toolbar from "./lib/components/Toolbar.svelte";
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
@@ -45,8 +46,11 @@
 
   function onKeydown(e: KeyboardEvent) {
     const shortcut = shortcutFor(e, mac);
-    if (!shortcut || app.gitMissing) return;
+    if (!shortcut) return;
+    // Always: Cmd/Ctrl+R must never reload the page, nor Cmd/Ctrl+F open the browser's find.
     e.preventDefault();
+    if (app.gitMissing) return;
+    const view = active ? repoView(active.repoId) : null;
     switch (shortcut.kind) {
       case "open":
         void openViaPicker();
@@ -59,6 +63,15 @@
         break;
       case "jump":
         activateIndex(shortcut.index);
+        break;
+      case "search":
+        view?.openSearch();
+        break;
+      case "fetch":
+        void view?.fetch();
+        break;
+      case "refresh":
+        void view?.refresh();
         break;
     }
   }
@@ -77,18 +90,21 @@
       </section>
     {:else if active}
       <div class="repo" id="repo-panel" role="tabpanel" aria-labelledby="tab-{active.repoId}" data-testid="repo-view">
-        <header class="repo-head">
-          <span class="dot" style:background="var(--lane-{colorIndex(active.path)})" aria-hidden="true"></span>
-          <h1 class="repo-name">{active.name}</h1>
-          <span class="repo-path selectable path-tail" title={shortenPath(active.path, app.homeDir)}
-            ><bdi>{shortenPath(active.path, app.homeDir)}</bdi></span
-          >
-        </header>
-        <div class="repo-body">
-          {#key active.repoId}
+        {#key active.repoId}
+          <header class="repo-head">
+            <div class="identity">
+              <span class="dot" style:background="var(--lane-{colorIndex(active.path)})" aria-hidden="true"></span>
+              <h1 class="repo-name">{active.name}</h1>
+              <span class="repo-path selectable path-tail" title={shortenPath(active.path, app.homeDir)}
+                ><bdi>{shortenPath(active.path, app.homeDir)}</bdi></span
+              >
+            </div>
+            <Toolbar view={repoView(active.repoId)} />
+          </header>
+          <div class="repo-body">
             <GraphView view={repoView(active.repoId)} />
-          {/key}
-        </div>
+          </div>
+        {/key}
       </div>
     {:else if app.ready}
       <Welcome />
@@ -140,14 +156,24 @@
   }
 
   .repo-head {
+    /* The toolbar's loading line runs along this header's bottom edge. */
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 40px;
+    padding: 0 8px 0 14px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+
+  .identity {
     display: flex;
     align-items: baseline;
     gap: 8px;
-    height: 34px;
-    padding: 0 14px;
-    line-height: 34px;
-    border-bottom: 1px solid var(--border);
-    flex: none;
+    min-width: 0;
+    max-width: 34%;
+    flex: 0 1 auto;
   }
 
   .dot {

@@ -36,6 +36,16 @@ describe("shortcutFor on macOS (Cmd)", () => {
   it("accepts an upper-case key (caps lock)", () => {
     expect(mac(key("O", { metaKey: true }))).toEqual({ kind: "open" });
   });
+
+  it("maps Cmd+F to search, Cmd+Shift+F to fetch and Cmd+R to refresh", () => {
+    expect(mac(key("f", { metaKey: true }))).toEqual({ kind: "search" });
+    expect(mac(key("F", { metaKey: true, shiftKey: true }))).toEqual({ kind: "fetch" });
+    expect(mac(key("f", { metaKey: true, shiftKey: true }))).toEqual({ kind: "fetch" });
+    expect(mac(key("r", { metaKey: true }))).toEqual({ kind: "refresh" });
+    expect(mac(key("r", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(mac(key("o", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(mac(key("f", { ctrlKey: true }))).toBeNull();
+  });
 });
 
 describe("shortcutFor elsewhere (Ctrl)", () => {
@@ -47,5 +57,9 @@ describe("shortcutFor elsewhere (Ctrl)", () => {
     expect(pc(key("3", { ctrlKey: true }))).toEqual({ kind: "jump", index: 2 });
     expect(pc(key("Tab", { ctrlKey: true }))).toEqual({ kind: "cycle", delta: 1 });
     expect(pc(key("o", { metaKey: true }))).toBeNull();
+    expect(pc(key("f", { ctrlKey: true }))).toEqual({ kind: "search" });
+    expect(pc(key("F", { ctrlKey: true, shiftKey: true }))).toEqual({ kind: "fetch" });
+    expect(pc(key("r", { ctrlKey: true }))).toEqual({ kind: "refresh" });
+    expect(pc(key("r", { metaKey: true }))).toBeNull();
   });
 });

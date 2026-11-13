@@ -43,6 +43,10 @@
   --warning: #a35f00;
   --success: #2a7d3c;
 
+  --hit-row: rgba(214, 150, 0, 0.075);
+  --hit-mark: rgba(250, 186, 20, 0.42);
+  --field-bg: #ffffff;
+
   --shadow-pop: 0 1px 2px rgba(16, 18, 27, 0.06), 0 10px 28px rgba(16, 18, 27, 0.12);
   --shadow-tab: 0 1px 1px rgba(16, 18, 27, 0.06);
   --tab-border: #dcdde3;
@@ -82,6 +86,10 @@
   --danger: #ff6b66;
   --warning: #f0b232;
   --success: #5cc97a;
+
+  --hit-row: rgba(240, 178, 50, 0.07);
+  --hit-mark: rgba(240, 178, 50, 0.34);
+  --field-bg: #121317;
 
   --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
   --shadow-tab: 0 1px 1px rgba(0, 0, 0, 0.3);
@@ -197,6 +205,56 @@ button {
 
 .icon-btn svg {
   display: block;
+}
+
+/* Checkbox drawn to match the themes: a rounded box, accent-filled with a tick when on. */
+.checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--field-bg);
+  transition: background-color 80ms linear, border-color 80ms linear;
+}
+
+.checkbox::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: var(--accent-contrast);
+  /* A tick. */
+  clip-path: polygon(14% 44%, 0 59%, 39% 96%, 100% 22%, 85% 8%, 38% 66%);
+  transform: scale(0);
+  transition: transform 80ms var(--ease);
+}
+
+.checkbox:checked,
+.checkbox[data-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.checkbox:checked::before,
+.checkbox[data-checked="true"]::before {
+  transform: scale(1);
+}
+
+.checkbox:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Spinning for work in progress (an icon, or a ring). */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

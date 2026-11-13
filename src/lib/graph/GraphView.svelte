@@ -18,6 +18,7 @@
   import { onMount, tick } from "svelte";
   import Splitter from "../components/Splitter.svelte";
   import { formatDate, formatDateLong, shortHash } from "../format";
+  import { matchParts, searchPattern } from "../search";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { CommitRow, RefLabel } from "../types";
@@ -147,6 +148,9 @@
   const waiting = $derived(view.snapshot.loading && total === 0);
   const rowsHeight = $derived((waiting ? slots.length : shown) * ROW_H);
   const detachedHead = $derived(view.snapshot.head.branch === null);
+  /** Rows matching the search, and how to find the match in their subjects. */
+  const hits = $derived(new Set(view.liveHits));
+  const pattern = $derived(hits.size > 0 ? searchPattern(view.searchQuery) : null);
 
   /** Rows the grid has right now (skeletons included while waiting). */
   function rowCount(): number {
@@ -474,15 +478,6 @@
     titled = el;
   }
 
-  async function selectIndex(index: number) {
-    view.scrollToRow(index);
-    const cache = view.cache;
-    if (!cache.get(index)) await cache.ensure(index, index);
-    if (cache !== view.cache) return;
-    const row = cache.get(index);
-    if (row) view.select(row.hash, index);
-  }
-
   function onKeydown(e: KeyboardEvent) {
     // Only plain keys on the grid itself: the shell's shortcuts and the splitters keep theirs.
     if (e.target !== scroller || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -522,7 +517,7 @@
         return;
     }
     e.preventDefault();
-    void selectIndex(Math.min(count - 1, Math.max(0, target)));
+    void view.selectRow(Math.min(count - 1, Math.max(0, target)));
   }
 
   onMount(() => {
@@ -617,6 +612,7 @@
             aria-rowindex={slot.index >= 0 ? slot.index + 2 : undefined}
             aria-selected={r !== undefined && r.hash === view.selectedHash}
             aria-busy={r === undefined}
+            data-hit={hits.has(slot.index) ? "true" : undefined}
             class:merge={r?.isMerge}
             class:head={r?.isHead}
             class:uncommitted={r?.kind === "uncommitted"}
@@ -631,7 +627,11 @@
                 detachedWorktrees={r?.detachedWorktrees ?? NO_PATHS}
                 homeDir={app.homeDir}
               />
-              <span class="subject">{r?.subject ?? ""}</span>
+              <span class="subject"
+                >{#if r && pattern && hits.has(slot.index)}{#each matchParts(r.subject, pattern) as part}{#if part.match}<mark
+                        >{part.text}</mark
+                      >{:else}{part.text}{/if}{/each}{:else}{r?.subject ?? ""}{/if}</span
+              >
             </div>
             <div class="cell date" role="gridcell">
               {r?.kind === "commit" ? formatDate(r.time) : ""}
@@ -764,8 +764,24 @@
     background: var(--bg-hover);
   }
 
+  /* A search hit: a faint tint, and its match marked in the subject. */
+  .row[data-hit="true"] {
+    background: var(--hit-row);
+  }
+
+  .row[data-hit="true"]:hover {
+    background: color-mix(in srgb, var(--hit-row), var(--bg-hover));
+  }
+
   .row[aria-selected="true"] {
     background: var(--bg-selected);
+  }
+
+  .subject mark {
+    border-radius: 2px;
+    background: var(--hit-mark);
+    color: inherit;
+    box-shadow: 0 0 0 1px var(--hit-mark);
   }
 
   .scroller:focus-visible .row[aria-selected="true"] {

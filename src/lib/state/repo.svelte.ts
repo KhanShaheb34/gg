@@ -1,16 +1,76 @@
 // One RepoView per open tab: the repository's latest snapshot, its cache of rows, the
-// selection and where the graph was scrolled to. It follows `repo-changed` events, and when
-// the rows change under it, keeps the visible commit and the selection where they were.
+// selection and where the graph was scrolled to, the view options, search, fetch and refresh.
+// It follows `repo-changed` events, and when the rows change under it, keeps the visible
+// commit and the selection where they were.
 
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
-import type { RepoSnapshot, RowsPage } from "../types";
+import { hitPosition, stepHit } from "../search";
+import type { RepoSnapshot, RowsPage, ViewOptions } from "../types";
 
 /** Rows fetched around the restored position before a new generation is shown. */
 const SWAP_PREFETCH_ROWS = 80;
 /** Attempts to show one generation before keeping the old rows until the next change. */
 const MAX_SWAP_ATTEMPTS = 3;
+/** How long an opening view waits for its remembered view options before showing other rows. */
+const RESTORE_HOLD_MS = 2000;
+/** The least time a refresh shows as running, so that a quick one is still seen. */
+const MIN_REFRESH_MS = 400;
+/** How long a fetch shows as starting when the core does not report it running. */
+const FETCH_START_MS = 3000;
+/** localStorage key prefix of the view options remembered per repository path. */
+const OPTIONS_KEY = "gg.view.v1:";
+
+const DEFAULT_OPTIONS: ViewOptions = { branches: null, showRemotes: true, showTags: true };
+
+function sameOptions(a: ViewOptions | undefined, b: ViewOptions | undefined): boolean {
+  if (!a || !b) return a === b;
+  if (a.showRemotes !== b.showRemotes || a.showTags !== b.showTags) return false;
+  if (a.branches === null || b.branches === null) return a.branches === b.branches;
+  return a.branches.length === b.branches.length && a.branches.every((n, i) => n === b.branches![i]);
+}
+
+/** The view options remembered for the repository at `path`, if any (and well formed). */
+function readOptions(path: string): ViewOptions | null {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(OPTIONS_KEY + path) ?? "null");
+    if (typeof raw !== "object" || raw === null) return null;
+    const o = raw as Record<string, unknown>;
+    const branches = o.branches;
+    const validBranches =
+      branches === null || (Array.isArray(branches) && branches.every((b) => typeof b === "string"));
+    if (!validBranches || typeof o.showRemotes !== "boolean" || typeof o.showTags !== "boolean") return null;
+    return { branches: branches as string[] | null, showRemotes: o.showRemotes, showTags: o.showTags };
+  } catch {
+    return null;
+  }
+}
+
+function writeOptions(path: string, options: ViewOptions): void {
+  try {
+    if (sameOptions(options, DEFAULT_OPTIONS)) localStorage.removeItem(OPTIONS_KEY + path);
+    else localStorage.setItem(OPTIONS_KEY + path, JSON.stringify(options));
+  } catch {
+    // Not remembered; the choice still applies until the repository is closed.
+  }
+}
+
+/** The newer of two snapshots of one repository (`b` when they are alike). */
+function newer(a: RepoSnapshot | null, b: RepoSnapshot): RepoSnapshot {
+  if (!a || b.generation > a.generation) return b;
+  if (b.generation < a.generation) return a;
+  return b.totalRows >= a.totalRows ? b : a;
+}
+
+/** Holding back snapshots while remembered view options are applied to an opening view. */
+type Hold = {
+  /** The newest snapshot held back. */
+  newest: RepoSnapshot | null;
+  /** Whether a snapshot shows the remembered options; set once the core has answered. */
+  ready: ((s: RepoSnapshot) => boolean) | null;
+  timer: ReturnType<typeof setTimeout>;
+};
 
 /** A snapshot for a view created before its repository's first snapshot has arrived. */
 function placeholder(repoId: number): RepoSnapshot {
@@ -42,8 +102,28 @@ export class RepoView {
   selectedHash: string | null = $state(null);
   /** Row index of the selection in the current generation. */
   selectedIndex: number | null = $state(null);
-  searchHits: number[] = $state([]);
-  searchIndex = $state(-1);
+
+  /** The view options asked for last: what the toolbar shows, ahead of the core's answer. */
+  viewOptions: ViewOptions = $state.raw(DEFAULT_OPTIONS);
+
+  /** The search box is open. */
+  searchOpen = $state(false);
+  /** Bumped to ask the search box to take the focus. */
+  searchFocus = $state(0);
+  searchQuery = $state("");
+  /** Ascending row indices of the commits matching `searchQuery`, in `searchGeneration`. */
+  searchHits: number[] = $state.raw([]);
+  searchGeneration = $state(-1);
+  /** The core is looking for `searchQuery`. */
+  searchPending = $state(false);
+
+  /** A refresh asked for here is underway. */
+  refreshing = $state(false);
+  /** A fetch was asked for here and the core has not reported it running yet. */
+  private fetchStarting = $state(false);
+
+  /** Shows an error to the user (set by the app shell). */
+  onNotice: ((message: string, detail?: string) => void) | null = null;
 
   /** Where the graph is scrolled to, px; kept while the tab is in the background. */
   scrollTop = 0;
@@ -65,10 +145,27 @@ export class RepoView {
   /** Count of `repo-changed` events received; a snapshot asked for earlier is older than they. */
   private events = 0;
   /** The request for the newest snapshot in flight, shared by everyone who asks. */
-  private refreshing: Promise<void> | null = null;
+  private snapshotRequest: Promise<void> | null = null;
   /** The generation that failed to show, and how often in a row. */
   private failedGeneration = -1;
   private failures = 0;
+
+  /** Remembered view options have been looked for (on the first snapshot with a path). */
+  private restoreChecked = false;
+  private hold: Hold | null = null;
+  /** View options waiting to be sent; the loop sending them, while it runs. */
+  private optionsWanted: ViewOptions | null = null;
+  private optionsSending: Promise<void> | null = null;
+  /** The next generation change keeps the selection in place (the view options changed). */
+  private revealSelection = false;
+
+  private searchToken = 0;
+  /** The hit row being moved to, while its row loads. */
+  private steppingTo: number | null = null;
+
+  /** When the fetch asked for here was asked for (ms since the epoch), while it is watched. */
+  private fetchAskedAt = 0;
+  private fetchWatched = false;
 
   constructor(repoId: number, initial?: RepoSnapshot) {
     this.repoId = repoId;
@@ -89,18 +186,276 @@ export class RepoView {
     this.selectedIndex = hash === null ? null : index;
   }
 
-  /** Scrolls the mounted graph (or the one mounted next) just enough to show row `index`. */
-  scrollToRow(index: number): void {
+  /**
+   * Scrolls the mounted graph (or the one mounted next) to show row `index`: just enough,
+   * or, with `center`, putting a row out of view in the middle.
+   */
+  scrollToRow(index: number, center = false): void {
     const top = index * ROW_H;
     const height = Math.max(ROW_H, this.viewportH);
     const from = this.pendingScroll ?? this.scrollTop;
     let target = from;
-    if (top < target) target = top;
-    else if (top + ROW_H > target + height) target = top + ROW_H - height;
+    if (top < from || top + ROW_H > from + height) {
+      if (center) target = Math.round(top - (height - ROW_H) / 2);
+      else target = top < from ? top : top + ROW_H - height;
+    }
     // A position someone else asked for (a page key, say) still has to be applied.
     if (target === from && this.pendingScroll === null) return;
     this.pendingScroll = Math.max(0, target);
     this.onChange?.();
+  }
+
+  /** Scrolls row `index` into view and selects it once its row is loaded. */
+  async selectRow(index: number, center = false): Promise<void> {
+    this.scrollToRow(index, center);
+    const cache = this.cache;
+    if (!cache.get(index)) await cache.ensure(index, index);
+    if (cache !== this.cache) return;
+    const row = cache.get(index);
+    if (row) this.select(row.hash, index);
+  }
+
+  // --- View options -------------------------------------------------------------------------
+
+  /**
+   * Changes the view options (merged into the current ones) and remembers them for this
+   * repository. Hiding remote branches also drops them from the branch selection. The graph
+   * keeps its rows until the new ones are loaded, and the selection where it was on screen.
+   */
+  setViewOptions(patch: Partial<ViewOptions>): Promise<void> {
+    const next: ViewOptions = { ...this.viewOptions, ...patch };
+    if (!next.showRemotes && next.branches !== null) {
+      const remote = new Set(this.snapshot.remoteBranches ?? []);
+      next.branches = next.branches.filter((name) => !remote.has(name));
+    }
+    if (next.branches !== null && next.branches.length === 0) next.branches = null;
+    this.viewOptions = next;
+    if (this.snapshot.rootPath) writeOptions(this.snapshot.rootPath, next);
+    this.revealSelection = true;
+    return this.sendOptions(next);
+  }
+
+  /** Sends `options` to the core: one request at a time, the newest options last. */
+  private sendOptions(options: ViewOptions): Promise<void> {
+    this.optionsWanted = options;
+    this.optionsSending ??= this.drainOptions();
+    return this.optionsSending;
+  }
+
+  private async drainOptions(): Promise<void> {
+    try {
+      while (this.optionsWanted !== null && !this.disposed) {
+        const options = this.optionsWanted;
+        this.optionsWanted = null;
+        let s: RepoSnapshot;
+        try {
+          s = await api.setViewOptions(this.repoId, options);
+        } catch (e) {
+          this.notice(e, "Could not change the view");
+          this.releaseHold();
+          continue;
+        }
+        if (this.optionsWanted !== null || this.disposed) continue; // a newer choice follows
+        if (s.viewOptions && !sameOptions(s.viewOptions, this.viewOptions)) this.viewOptions = s.viewOptions;
+        // Nothing to wait for: the rows did not change.
+        if (!s.loading && s.generation <= this.snapshot.generation) this.revealSelection = false;
+        if (this.hold) {
+          // Shown once the rows of these options are: a later generation, or the same one
+          // once nothing is loading any more.
+          const answer = s;
+          this.hold.ready = (x) =>
+            x.generation > answer.generation || (!x.loading && sameOptions(x.viewOptions, answer.viewOptions));
+        }
+        void this.applySnapshot(s);
+      }
+    } finally {
+      this.optionsSending = null;
+    }
+  }
+
+  /**
+   * On the first snapshot of the repository: when other view options are remembered for it,
+   * asks for them and holds the rows back until they show (or RESTORE_HOLD_MS passed).
+   */
+  private restoreOptions(s: RepoSnapshot): void {
+    this.restoreChecked = true;
+    const stored = readOptions(s.rootPath);
+    if (!stored || sameOptions(stored, s.viewOptions ?? DEFAULT_OPTIONS)) return;
+    this.viewOptions = stored;
+    this.hold = { newest: null, ready: null, timer: setTimeout(() => this.releaseHold(), RESTORE_HOLD_MS) };
+    void this.sendOptions(stored);
+  }
+
+  private holdBack(s: RepoSnapshot): void {
+    const hold = this.hold!;
+    hold.newest = newer(hold.newest, s);
+    if (hold.ready?.(hold.newest)) this.releaseHold();
+  }
+
+  private releaseHold(): void {
+    const hold = this.hold;
+    if (!hold) return;
+    this.hold = null;
+    clearTimeout(hold.timer);
+    if (hold.newest) void this.applySnapshot(hold.newest);
+  }
+
+  // --- Search -------------------------------------------------------------------------------
+
+  /** Position of the selected row among the hits, or -1. */
+  get searchIndex(): number {
+    return hitPosition(this.liveHits, this.selectedHash === null ? null : this.selectedIndex);
+  }
+
+  /** The hits, when they belong to the rows shown. */
+  get liveHits(): number[] {
+    return this.searchGeneration === this.snapshot.generation ? this.searchHits : [];
+  }
+
+  openSearch(): void {
+    this.searchOpen = true;
+    this.searchFocus++;
+  }
+
+  closeSearch(): void {
+    this.searchOpen = false;
+    void this.runSearch("");
+  }
+
+  /** Looks for commits matching `query` and selects the first; a blank query clears the hits. */
+  async runSearch(query: string): Promise<void> {
+    this.searchQuery = query;
+    const token = ++this.searchToken;
+    if (query.trim() === "") {
+      this.searchHits = [];
+      this.searchGeneration = -1;
+      this.searchPending = false;
+      return;
+    }
+    const generation = this.snapshot.generation;
+    this.searchPending = true;
+    let hits: number[];
+    try {
+      hits = await api.searchCommits(this.repoId, query);
+    } catch (e) {
+      if (token === this.searchToken) {
+        this.searchPending = false;
+        this.notice(e, "Search failed");
+      }
+      return;
+    }
+    if (token !== this.searchToken || this.disposed) return;
+    this.searchPending = false;
+    if (generation !== this.snapshot.generation) return; // looked up again for the new rows
+    this.searchHits = hits;
+    this.searchGeneration = generation;
+    if (hits.length > 0) await this.selectRow(hits[0], true);
+  }
+
+  /** Selects the next hit after the selection, wrapping around. */
+  nextHit(): Promise<void> {
+    return this.stepToHit(1);
+  }
+
+  /** Selects the previous hit before the selection, wrapping around. */
+  prevHit(): Promise<void> {
+    return this.stepToHit(-1);
+  }
+
+  private async stepToHit(dir: 1 | -1): Promise<void> {
+    const from = this.steppingTo ?? (this.selectedHash === null ? null : this.selectedIndex);
+    const row = stepHit(this.liveHits, from, dir);
+    if (row === null) return;
+    this.steppingTo = row;
+    try {
+      await this.selectRow(row, true);
+    } finally {
+      if (this.steppingTo === row) this.steppingTo = null;
+    }
+  }
+
+  /** Looks the hits of the current query up again in the rows now shown. */
+  private async refreshHits(): Promise<void> {
+    const query = this.searchQuery;
+    const token = ++this.searchToken;
+    const generation = this.snapshot.generation;
+    let hits: number[];
+    try {
+      hits = await api.searchCommits(this.repoId, query);
+    } catch {
+      if (token === this.searchToken) this.searchPending = false;
+      return; // the next change looks again
+    }
+    if (token !== this.searchToken || this.disposed) return;
+    this.searchPending = false;
+    if (generation !== this.snapshot.generation) return;
+    this.searchHits = hits;
+    this.searchGeneration = generation;
+  }
+
+  // --- Fetch and refresh --------------------------------------------------------------------
+
+  /** A fetch is running, or was just asked for here. */
+  get fetching(): boolean {
+    return this.snapshot.fetch?.running === true || this.fetchStarting;
+  }
+
+  /** Fetches from all remotes; progress shows at once, and its failure as a notice. */
+  async fetch(): Promise<void> {
+    if (this.fetching) return;
+    this.fetchStarting = true;
+    this.fetchWatched = true;
+    this.fetchAskedAt = Date.now();
+    try {
+      await api.fetch(this.repoId);
+    } catch (e) {
+      this.fetchStarting = false;
+      this.fetchWatched = false;
+      this.notice(e, "Fetch failed");
+      return;
+    }
+    // The core starts it on its own task; one that never starts (no remotes) stops showing.
+    setTimeout(() => {
+      if (this.fetchStarting && this.snapshot.fetch?.running !== true) {
+        this.fetchStarting = false;
+        this.fetchWatched = false;
+      }
+    }, FETCH_START_MS);
+  }
+
+  /** Follows the fetch asked for here through `s`: running, then done (or failed). */
+  private trackFetch(s: RepoSnapshot): void {
+    const state = s.fetch;
+    if (!this.fetchWatched || !state) return;
+    if (state.running) {
+      this.fetchStarting = false;
+      return;
+    }
+    if (state.lastAtMs === null || state.lastAtMs < this.fetchAskedAt) return;
+    this.fetchStarting = false;
+    this.fetchWatched = false;
+    if (state.lastError) this.onNotice?.("Fetch failed", state.lastError);
+  }
+
+  /** Re-reads the repository now; progress shows for at least MIN_REFRESH_MS. */
+  async refresh(): Promise<void> {
+    if (this.refreshing) return;
+    this.refreshing = true;
+    const started = performance.now();
+    try {
+      void this.applySnapshot(await api.refresh(this.repoId));
+    } catch (e) {
+      this.notice(e, "Could not refresh");
+    }
+    const left = MIN_REFRESH_MS - (performance.now() - started);
+    if (left > 0) await new Promise((r) => setTimeout(r, left));
+    this.refreshing = false;
+  }
+
+  private notice(e: unknown, message: string): void {
+    const text = e instanceof Error ? e.message : String(e);
+    const detail = e instanceof CoreError ? (e.detail ?? undefined) : undefined;
+    this.onNotice?.(`${message}: ${text}`, detail);
   }
 
   /** Records first paint of real rows, once (`first-rows`). */
@@ -121,6 +476,11 @@ export class RepoView {
    */
   async applySnapshot(s: RepoSnapshot): Promise<void> {
     if (this.disposed || s.repoId !== this.repoId) return;
+    if (!this.restoreChecked && s.rootPath) this.restoreOptions(s);
+    if (this.hold) {
+      this.holdBack(s);
+      return;
+    }
     const current = this.snapshot;
     if (s.generation === current.generation) {
       // Within a generation rows are only appended; fewer means an older snapshot.
@@ -148,6 +508,9 @@ export class RepoView {
     const anchor = computeAnchor(startTop, ROW_H);
     const anchorHash = atTop ? null : (this.cache.get(anchor.index)?.hash ?? null);
     const selected = this.selectedHash;
+    // After a change of view options the selection is kept where it is on screen (in view).
+    const reveal = this.revealSelection && selected !== null;
+    const selectedOffset = reveal ? this.selectionOffset(startTop) : 0;
     const find = (hash: string | null) =>
       hash === null ? Promise.resolve(null) : api.findRow(this.repoId, hash).catch(() => null);
     const [anchorIndex, selectedIndex] = await Promise.all([find(anchorHash), find(selected)]);
@@ -155,9 +518,12 @@ export class RepoView {
 
     const target = this.incoming ?? s;
     const lastRow = Math.max(0, target.totalRows - 1);
-    const top = atTop
-      ? 0
-      : restoreScrollTop(Math.min(anchorIndex ?? anchor.index, lastRow), anchor.offset, ROW_H);
+    const keepSelection = reveal && selectedIndex !== null;
+    const top = keepSelection
+      ? restoreScrollTop(selectedIndex, selectedOffset, ROW_H)
+      : atTop
+        ? 0
+        : restoreScrollTop(Math.min(anchorIndex ?? anchor.index, lastRow), anchor.offset, ROW_H);
     const next = this.newCache(target.generation, target.totalRows);
     const first = Math.floor(top / ROW_H);
     await Promise.all([
@@ -169,7 +535,7 @@ export class RepoView {
     const lastVisible = first + Math.ceil(this.viewportH / ROW_H);
     const consistent =
       next.loaded(first, lastVisible) &&
-      (anchorIndex === null || next.get(anchorIndex)?.hash === anchorHash) &&
+      (keepSelection || anchorIndex === null || next.get(anchorIndex)?.hash === anchorHash) &&
       (selectedIndex === null || next.get(selectedIndex)?.hash === selected);
     if (!consistent) {
       this.incoming = null;
@@ -191,9 +557,18 @@ export class RepoView {
   /** Stops following the repository and drops its rows. */
   dispose(): void {
     this.disposed = true;
+    if (this.hold) clearTimeout(this.hold.timer);
+    this.hold = null;
     this.stopEvents();
     this.onChange = null;
     this.cache = this.newCache(-1, 0);
+  }
+
+  /** Where the selected row's top is below the viewport's top, px, clamped into view. */
+  private selectionOffset(scrollTop: number): number {
+    const max = Math.max(0, this.viewportH - ROW_H);
+    const offset = this.selectedIndex === null ? Math.round(max / 3) : this.selectedIndex * ROW_H - scrollTop;
+    return Math.min(max, Math.max(0, offset));
   }
 
   /**
@@ -209,6 +584,7 @@ export class RepoView {
   ): void {
     this.incoming = null;
     this.cache = cache;
+    if (this.optionsSending === null) this.revealSelection = false;
     if (this.selectedHash !== null) {
       if (this.selectedHash !== found) this.selectedIndex = null; // selected meanwhile: row unknown
       else if (foundIndex === null) this.select(null);
@@ -220,8 +596,15 @@ export class RepoView {
   }
 
   private show(s: RepoSnapshot): void {
+    const generationChanged = s.generation !== this.snapshot.generation;
     this.snapshot = s;
     this.cache.reset(s.generation, s.totalRows);
+    // The core's options, unless newer ones are on their way to it.
+    if (this.optionsSending === null && s.viewOptions && !sameOptions(s.viewOptions, this.viewOptions)) {
+      this.viewOptions = s.viewOptions;
+    }
+    this.trackFetch(s);
+    if (generationChanged && this.searchQuery.trim() !== "") void this.refreshHits();
     if (!s.loading && !this.markedLoaded) {
       this.markedLoaded = true;
       void api.perfMark("fully-loaded", performance.now()).catch(() => {});
@@ -234,18 +617,18 @@ export class RepoView {
    * arrives meanwhile. Calls while one request is in flight share it.
    */
   private refreshSnapshot(): Promise<void> {
-    if (this.refreshing) return this.refreshing;
+    if (this.snapshotRequest) return this.snapshotRequest;
     const seen = this.events;
-    this.refreshing = api.getSnapshot(this.repoId).then(
+    this.snapshotRequest = api.getSnapshot(this.repoId).then(
       (s) => {
-        this.refreshing = null;
+        this.snapshotRequest = null;
         if (this.events === seen) void this.applySnapshot(s);
       },
       () => {
-        this.refreshing = null; // the events will bring the next one
+        this.snapshotRequest = null; // the events will bring the next one
       },
     );
-    return this.refreshing;
+    return this.snapshotRequest;
   }
 
   private newCache(generation: number, totalRows: number): RowCache {

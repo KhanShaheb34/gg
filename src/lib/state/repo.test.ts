@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommitRow, RepoSnapshot } from "../types";
+import type { CommitRow, RepoSnapshot, ViewOptions } from "../types";
 
 // A fake core: the rows of the current generation are a list of hashes.
 const core = vi.hoisted(() => ({
@@ -18,18 +18,16 @@ vi.mock("../ipc", async (importOriginal) => {
     }),
     api: {
       getSnapshot: vi.fn(),
-      getRows: vi.fn(async (_repoId: number, generation: number, start: number, count: number) => {
-        if (generation !== core.generation) {
-          throw new actual.CoreError({ code: "stale_generation", message: "stale", detail: null });
-        }
-        const rows = core.hashes.slice(start, start + count).map((hash, i) => row(start + i, hash));
-        return { generation, start, rows };
-      }),
+      getRows: vi.fn(),
       findRow: vi.fn(async (_repoId: number, hash: string) => {
         const i = core.hashes.indexOf(hash);
         return i < 0 ? null : i;
       }),
       perfMark: vi.fn(async () => {}),
+      searchCommits: vi.fn(async () => []),
+      setViewOptions: vi.fn(),
+      fetch: vi.fn(async () => {}),
+      refresh: vi.fn(),
     },
   };
 });
@@ -88,14 +86,42 @@ type Ipc = typeof import("../ipc");
 let ipc: Ipc;
 let repo: typeof import("./repo.svelte");
 
+/** A Map-backed localStorage; the unit tests run without a DOM. */
+function memoryStorage(): Storage {
+  const items = new Map<string, string>();
+  return {
+    get length() {
+      return items.size;
+    },
+    clear: () => items.clear(),
+    getItem: (k) => items.get(k) ?? null,
+    key: (i) => [...items.keys()][i] ?? null,
+    removeItem: (k) => void items.delete(k),
+    setItem: (k, v) => void items.set(k, String(v)),
+  };
+}
+
 beforeEach(async () => {
   vi.resetModules();
+  vi.stubGlobal("localStorage", memoryStorage());
   core.generation = 1;
   core.hashes = Array.from({ length: 1000 }, (_, i) => `c${i}`);
   ipc = await import("../ipc");
   repo = await import("./repo.svelte");
   vi.mocked(ipc.api.getSnapshot).mockReset().mockImplementation(async () => snapshot());
-  vi.mocked(ipc.api.getRows).mockClear();
+  vi.mocked(ipc.api.getRows)
+    .mockReset()
+    .mockImplementation(async (_repoId: number, generation: number, start: number, count: number) => {
+      if (generation !== core.generation) {
+        throw new ipc.CoreError({ code: "stale_generation", message: "stale", detail: null });
+      }
+      const rows = core.hashes.slice(start, start + count).map((hash, i) => row(start + i, hash));
+      return { generation, start, rows };
+    });
+  vi.mocked(ipc.api.searchCommits).mockReset().mockImplementation(async () => []);
+  vi.mocked(ipc.api.setViewOptions).mockReset();
+  vi.mocked(ipc.api.fetch).mockReset().mockImplementation(async () => {});
+  vi.mocked(ipc.api.refresh).mockReset();
 });
 
 /** A view of the fake repository with rows 0..399 loaded, scrolled to `scrollTop`. */
@@ -270,5 +296,248 @@ describe("RepoView.applySnapshot", () => {
     expect(view.cache).toBe(cacheBefore);
     expect(view.snapshot.generation).toBe(1);
     expect(vi.mocked(ipc.api.getSnapshot).mock.calls.length).toBeLessThan(8);
+  });
+});
+
+const ALL: ViewOptions = { branches: null, showRemotes: true, showTags: true };
+
+describe("RepoView search", () => {
+  it("runSearch stores the hits and selects the first, scrolled into view", async () => {
+    const view = await openView(0);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([30, 100, 400]);
+    await view.runSearch("fix");
+    expect(ipc.api.searchCommits).toHaveBeenCalledWith(7, "fix");
+    expect(view.searchHits).toEqual([30, 100, 400]);
+    expect(view.searchIndex).toBe(0);
+    expect(view.selectedHash).toBe("c30");
+    expect(view.selectedIndex).toBe(30);
+    const top = view.pendingScroll ?? view.scrollTop;
+    expect(30 * 26).toBeGreaterThanOrEqual(top);
+    expect(31 * 26).toBeLessThanOrEqual(top + view.viewportH);
+  });
+
+  it("nextHit wraps from the last hit to the first, prevHit the other way", async () => {
+    const view = await openView(0);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10, 40]);
+    await view.runSearch("fix");
+    await view.nextHit();
+    expect(view.selectedHash).toBe("c10");
+    await view.nextHit();
+    expect(view.selectedHash).toBe("c40");
+    expect(view.searchIndex).toBe(2);
+    await view.nextHit();
+    expect(view.selectedHash).toBe("c3");
+    expect(view.searchIndex).toBe(0);
+    await view.prevHit();
+    expect(view.selectedHash).toBe("c40");
+  });
+
+  it("an empty query clears the hits without asking the core", async () => {
+    const view = await openView(0);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10]);
+    await view.runSearch("fix");
+    await view.runSearch("   ");
+    expect(view.searchHits).toEqual([]);
+    expect(view.searchIndex).toBe(-1);
+    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores the answer to a query that was replaced meanwhile", async () => {
+    const view = await openView(0);
+    let answerFirst: (hits: number[]) => void = () => {};
+    vi.mocked(ipc.api.searchCommits)
+      .mockImplementationOnce(() => new Promise((r) => (answerFirst = r)))
+      .mockResolvedValueOnce([7]);
+    const first = view.runSearch("fi");
+    await view.runSearch("fix");
+    answerFirst([1, 2, 3]);
+    await first;
+    expect(view.searchHits).toEqual([7]);
+    expect(view.selectedHash).toBe("c7");
+  });
+
+  it("looks the hits up again when the rows change, keeping the selection", async () => {
+    const view = await openView(0);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10]);
+    await view.runSearch("fix");
+    commitOnTop(2);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([5, 12]);
+    await view.applySnapshot(snapshot());
+    await vi.waitFor(() => expect(view.searchHits).toEqual([5, 12]));
+    expect(view.selectedHash).toBe("c3");
+    expect(view.searchIndex).toBe(0);
+    expect(view.searchGeneration).toBe(2);
+  });
+
+  it("closeSearch clears the query and the hits", async () => {
+    const view = await openView(0);
+    view.openSearch();
+    expect(view.searchOpen).toBe(true);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([3]);
+    await view.runSearch("fix");
+    view.closeSearch();
+    expect(view.searchOpen).toBe(false);
+    expect(view.searchQuery).toBe("");
+    expect(view.searchHits).toEqual([]);
+  });
+});
+
+describe("RepoView view options", () => {
+  it("setViewOptions sends the merged options and remembers them for the repository path", async () => {
+    const view = await openView(0);
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(async (_id, options) => snapshot({ viewOptions: options }));
+    const done = view.setViewOptions({ showRemotes: false });
+    // The toolbar shows the choice at once.
+    expect(view.viewOptions).toEqual({ ...ALL, showRemotes: false });
+    await done;
+    expect(ipc.api.setViewOptions).toHaveBeenCalledWith(7, { branches: null, showRemotes: false, showTags: true });
+    expect(JSON.parse(localStorage.getItem("gg.view.v1:/r")!)).toEqual({
+      branches: null,
+      showRemotes: false,
+      showTags: true,
+    });
+  });
+
+  it("hiding remote branches also drops them from the branch selection", async () => {
+    const s = snapshot({ remoteBranches: ["origin/main"], viewOptions: { ...ALL, branches: ["main", "origin/main"] } });
+    vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => s);
+    const view = repo.repoView(7, s);
+    await settle();
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(async (_id, options) => snapshot({ viewOptions: options }));
+    await view.setViewOptions({ showRemotes: false });
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main"], showRemotes: false, showTags: true });
+  });
+
+  it("sends quick successive changes one at a time, the newest last", async () => {
+    const view = await openView(0);
+    const answers: (() => void)[] = [];
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(
+      (_id, options) => new Promise((r) => answers.push(() => r(snapshot({ viewOptions: options })))),
+    );
+    void view.setViewOptions({ showTags: false });
+    void view.setViewOptions({ branches: ["main"] });
+    const last = view.setViewOptions({ showRemotes: false });
+    expect(ipc.api.setViewOptions).toHaveBeenCalledTimes(1);
+    answers[0]();
+    await vi.waitFor(() => expect(ipc.api.setViewOptions).toHaveBeenCalledTimes(2));
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main"], showRemotes: false, showTags: false });
+    answers[1]();
+    await last;
+    expect(view.viewOptions).toEqual({ branches: ["main"], showRemotes: false, showTags: false });
+  });
+
+  it("keeps the selected commit selected and at the same place on screen", async () => {
+    const view = await openView(26 * 480);
+    view.select("c490", 490); // 260 px below the top
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(async (_id, options) => {
+      core.generation++;
+      core.hashes = core.hashes.filter((h) => Number(h.slice(1)) % 2 === 0); // c490 → row 245
+      return snapshot({ viewOptions: options });
+    });
+    await view.setViewOptions({ branches: ["main"] });
+    await vi.waitFor(() => expect(view.snapshot.generation).toBe(2));
+    expect(view.selectedHash).toBe("c490");
+    expect(view.selectedIndex).toBe(245);
+    expect(view.scrollTop).toBe(245 * 26 - 260);
+  });
+
+  it("brings a selected commit that was out of view into view", async () => {
+    const view = await openView(26 * 100);
+    view.select("c900", 900);
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(async (_id, options) => {
+      core.generation++;
+      core.hashes = core.hashes.filter((h) => Number(h.slice(1)) % 2 === 0); // c900 → row 450
+      return snapshot({ viewOptions: options });
+    });
+    await view.setViewOptions({ showTags: false });
+    await vi.waitFor(() => expect(view.snapshot.generation).toBe(2));
+    expect(view.selectedIndex).toBe(450);
+    expect(450 * 26).toBeGreaterThanOrEqual(view.scrollTop);
+    expect(451 * 26).toBeLessThanOrEqual(view.scrollTop + view.viewportH);
+  });
+
+  it("re-applies remembered options on open and shows no other rows before them", async () => {
+    const stored: ViewOptions = { branches: ["feature"], showRemotes: true, showTags: true };
+    localStorage.setItem("gg.view.v1:/r", JSON.stringify(stored));
+    // The core loads the filtered rows as a new generation; until then it serves the old ones.
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(async () => snapshot({ viewOptions: stored, loading: true }));
+    const view = repo.repoView(7, snapshot());
+    const shown: (string | undefined)[] = [];
+    view.onChange = () => shown.push(view.cache.get(0)?.hash);
+    expect(view.viewOptions).toEqual(stored);
+    await settle();
+    await settle();
+    expect(ipc.api.setViewOptions).toHaveBeenCalledWith(7, stored);
+    expect(view.snapshot.totalRows).toBe(0);
+
+    core.generation++;
+    core.hashes = Array.from({ length: 40 }, (_, i) => `f${i}`);
+    core.handler?.(snapshot({ viewOptions: stored }));
+    await vi.waitFor(() => expect(view.snapshot.generation).toBe(2));
+    await view.cache.ensure(0, 0);
+    expect(view.cache.get(0)?.hash).toBe("f0");
+    expect(shown.filter((h) => h !== undefined && !h.startsWith("f"))).toEqual([]);
+  });
+
+  it("asks nothing when the core already has the remembered options", async () => {
+    localStorage.setItem("gg.view.v1:/r", JSON.stringify(ALL));
+    const view = repo.repoView(7, snapshot());
+    await settle();
+    expect(ipc.api.setViewOptions).not.toHaveBeenCalled();
+    expect(view.snapshot.totalRows).toBe(1000);
+  });
+
+  it("shows the rows anyway when the remembered options cannot be applied", async () => {
+    localStorage.setItem("gg.view.v1:/r", JSON.stringify({ ...ALL, showTags: false }));
+    vi.mocked(ipc.api.setViewOptions).mockRejectedValue(
+      new ipc.CoreError({ code: "git_failed", message: "boom", detail: null }),
+    );
+    const view = repo.repoView(7, snapshot());
+    const notice = vi.fn();
+    view.onNotice = notice;
+    await vi.waitFor(() => expect(view.snapshot.totalRows).toBe(1000));
+    expect(notice).toHaveBeenCalled();
+  });
+});
+
+describe("RepoView fetch and refresh", () => {
+  it("refresh shows progress and applies the snapshot it returns", async () => {
+    const view = await openView(0);
+    commitOnTop(1);
+    vi.mocked(ipc.api.refresh).mockImplementation(async () => snapshot());
+    const done = view.refresh();
+    expect(view.refreshing).toBe(true);
+    await done;
+    await vi.waitFor(() => expect(view.snapshot.generation).toBe(2));
+    await vi.waitFor(() => expect(view.refreshing).toBe(false), { timeout: 2000 });
+  });
+
+  it("fetch shows progress at once and reports the failure of the fetch it started", async () => {
+    const view = await openView(0);
+    const notice = vi.fn();
+    view.onNotice = notice;
+    const done = view.fetch();
+    expect(view.fetching).toBe(true);
+    await done;
+    expect(ipc.api.fetch).toHaveBeenCalledWith(7);
+    core.handler?.(snapshot({ fetch: { running: true, lastError: null, lastAtMs: null } }));
+    await settle();
+    expect(view.fetching).toBe(true);
+    core.handler?.(
+      snapshot({ fetch: { running: false, lastError: "fatal: no such remote", lastAtMs: Date.now() + 1 } }),
+    );
+    await settle();
+    expect(view.fetching).toBe(false);
+    expect(notice).toHaveBeenCalledWith("Fetch failed", "fatal: no such remote");
+  });
+
+  it("does not report a failed background fetch", async () => {
+    const view = await openView(0);
+    const notice = vi.fn();
+    view.onNotice = notice;
+    core.handler?.(snapshot({ fetch: { running: false, lastError: "fatal: offline", lastAtMs: Date.now() } }));
+    await settle();
+    expect(notice).not.toHaveBeenCalled();
+    expect(view.snapshot.fetch.lastError).toBe("fatal: offline");
   });
 });

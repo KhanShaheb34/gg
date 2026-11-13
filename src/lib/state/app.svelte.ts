@@ -80,7 +80,7 @@ async function openTab(path: string): Promise<boolean> {
 function addTab(snapshot: RepoSnapshot): void {
   if (app.tabs.some((t) => t.repoId === snapshot.repoId)) return;
   app.tabs.push({ repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name });
-  repoView(snapshot.repoId, snapshot);
+  repoView(snapshot.repoId, snapshot).onNotice = (message, detail) => toast("error", message, detail);
 }
 
 /** Opens the repository at `path` in a tab and activates it; failures become toasts. */

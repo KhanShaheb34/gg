@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { BIG_COMMITS, bigSubject, expect, test } from "./fixtures";
+import { BIG_COMMITS, bigSubject, closeButton, expect, test } from "./fixtures";
 
 test.use({ timezoneId: "UTC" });
 
@@ -300,7 +300,7 @@ test("recent repositories show paths under the home folder with ~", async ({ gg 
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("small"));
-  await page.getByRole("button", { name: "Close small" }).click();
+  await closeButton(page, "small").click();
   const recent = page.getByRole("list", { name: "Recent repositories" }).getByRole("listitem");
   await expect(recent).toContainText("~/repos");
 });

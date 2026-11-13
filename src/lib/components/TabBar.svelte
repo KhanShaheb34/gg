@@ -25,6 +25,14 @@
 
   function onTabKeydown(e: KeyboardEvent, index: number) {
     const count = app.tabs.length;
+    if (e.key === "Delete") {
+      // Closes the tab, as the ARIA tabs pattern has it; the focus goes to the one selected next.
+      e.preventDefault();
+      void closeTab(app.tabs[index].repoId).then(() => {
+        if (app.activeRepoId !== null) void focusTab(app.activeRepoId);
+      });
+      return;
+    }
     let target: number;
     if (e.key === "ArrowRight") target = (index + 1) % count;
     else if (e.key === "ArrowLeft") target = (index - 1 + count) % count;
@@ -36,6 +44,12 @@
     activate(repoId);
     void focusTab(repoId);
   }
+
+  // A tab selected some other way (Ctrl+Tab, Cmd+1) takes the focus along if a tab had it.
+  $effect(() => {
+    const repoId = app.activeRepoId;
+    if (repoId !== null && list?.contains(document.activeElement)) void focusTab(repoId);
+  });
 
   function onAuxClick(e: MouseEvent, repoId: number) {
     // Middle-click closes, as in browsers.
@@ -51,7 +65,8 @@
     <div class="tabs" role="tablist" aria-label="Open repositories" bind:this={list}>
       {#each app.tabs as tab, i (tab.repoId)}
         {@const selected = tab.repoId === app.activeRepoId}
-        <div class="tab" class:selected title={shortenPath(tab.path, app.homeDir)}>
+        <!-- The list holds only tabs: the close button is for the mouse (keys: Delete, ⌘W). -->
+        <div class="tab" class:selected role="presentation" title={shortenPath(tab.path, app.homeDir)}>
           <button
             class="tab-main"
             role="tab"
@@ -70,7 +85,7 @@
           <button
             class="close"
             tabindex="-1"
-            aria-label="Close {tab.name}"
+            aria-hidden="true"
             title="Close ({isMac() ? '⌘W' : 'Ctrl+W'})"
             onclick={() => closeTab(tab.repoId)}
           >

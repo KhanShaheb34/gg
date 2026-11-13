@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { closeButton, expect, test } from "./fixtures";
 
 /** Opens `path` through the "Open repository" button, answering the browser's path prompt. */
 async function openThroughPicker(page: Page, path: string) {
@@ -33,7 +33,7 @@ test("opens a repository, restores it on reload and keeps it in recents", async 
   await expect(tabs(page)).toHaveText(["small"]);
   await expect(page.getByTestId("repo-view")).toBeVisible();
 
-  await page.getByRole("button", { name: "Close small" }).click();
+  await closeButton(page, "small").click();
   await expect(tabs(page)).toHaveCount(0);
   const recents = page.getByRole("list", { name: "Recent repositories" });
   await expect(recents.getByRole("listitem")).toHaveCount(1);
@@ -43,7 +43,7 @@ test("opens a repository, restores it on reload and keeps it in recents", async 
   await expect(tabs(page)).toHaveText(["small"]);
   await expect(page.getByTestId("repo-view")).toBeVisible();
 
-  await page.getByRole("button", { name: "Close small" }).click();
+  await closeButton(page, "small").click();
   await recents.getByRole("button", { name: "Remove small from recents" }).click();
   await expect(page.getByRole("list", { name: "Recent repositories" })).toHaveCount(0);
   await page.reload();
@@ -97,10 +97,36 @@ test("keyboard: arrows move between tabs, the shortcut closes one", async ({ gg 
   await page.keyboard.press("ArrowLeft");
   await expect(tabs(page).nth(1)).toHaveAttribute("aria-selected", "true");
 
+  // Ctrl+Tab from a focused tab takes the focus along to the tab it selects.
+  await tabs(page).nth(1).focus();
+  await page.keyboard.press("Control+Tab");
+  await expect(tabs(page).nth(0)).toHaveAttribute("aria-selected", "true");
+  await expect(tabs(page).nth(0)).toBeFocused();
+
+  // Cmd+9 is the last tab.
+  await page.keyboard.press("ControlOrMeta+9");
+  await expect(tabs(page).nth(1)).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ControlOrMeta+1");
   await expect(tabs(page).nth(0)).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ControlOrMeta+w");
   await expect(tabs(page)).toHaveText(["empty"]);
+});
+
+test("the tab list holds only tabs: close buttons are left to the mouse and the shortcut", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await openThroughPicker(page, gg.repoPath("small"));
+  const list = page.getByRole("tablist", { name: "Open repositories" });
+  const snapshot = await list.ariaSnapshot();
+  expect(snapshot).not.toContain("button");
+  expect(snapshot).toContain('tab "small"');
+  // Still there for the mouse.
+  await page.getByRole("tab", { name: "small" }).hover();
+  await expect(closeButton(page, "small")).toBeVisible();
+  // Delete closes the focused tab, as the ARIA tabs pattern has it.
+  await page.getByRole("tab", { name: "small" }).focus();
+  await page.keyboard.press("Delete");
+  await expect(tabs(page)).toHaveCount(0);
 });
 
 test("the theme toggle switches and persists the theme; system follows the OS", async ({ gg }) => {

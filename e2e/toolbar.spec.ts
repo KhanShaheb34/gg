@@ -2,7 +2,7 @@
 // tags toggles, search, fetch and refresh.
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { BIG_COMMITS, bigSubject, expect, makeRepo, test } from "./fixtures";
+import { BIG_COMMITS, bigSubject, closeButton, expect, makeRepo, test } from "./fixtures";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -306,7 +306,7 @@ test("the branch filter is remembered: across a page reload and after the tab is
   await expect.poll(() => subjects(page)).toEqual(feature);
 
   // Closed, the core forgets the repository; reopened, the filter comes back from storage.
-  await page.getByRole("button", { name: "Close small" }).click();
+  await closeButton(page, "small").click();
   await open(page, small);
   await expect(filterButton(page)).toHaveText(/1 branch/);
   await expect.poll(() => subjects(page)).toEqual(feature);
@@ -355,7 +355,7 @@ test("a filtered repository opens with a Graph column wide enough for its header
   await filterButton(page).click();
   await option(page, "fix/typo").click();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Close small" }).click();
+  await closeButton(page, "small").click();
   await open(page, gg.repoPath("small"));
   await expect(subject(row(page, 0))).toHaveText("Fix typo 4");
   const graph = (await page.getByRole("columnheader", { name: "Graph" }).boundingBox())!;

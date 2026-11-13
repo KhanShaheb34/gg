@@ -293,6 +293,16 @@ const REPOS: Record<string, RepoScript> = {
 /** A running gg-devserver. */
 type Devserver = { url: string; process: ChildProcess };
 
+/** Kills `child` and everything it started (a login shell, git): its whole process group. */
+function killGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): void {
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    child.kill(signal); // the group is gone; the child may not be
+  }
+}
+
 /**
  * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
  * debug build unless `binary` names another.
@@ -301,7 +311,8 @@ export function startDevserver(configDir: string, home: string, binary = DEVSERV
   const child = spawn(
     binary,
     ["--port", "0", "--config-dir", configDir, "--allow-origin", VITE_ORIGIN],
-    { stdio: ["ignore", "pipe", "pipe"], env: { ...isolatedEnv(), HOME: home, USERPROFILE: home } },
+    // Its own process group, so stopping it also stops whatever it started.
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...isolatedEnv(), HOME: home, USERPROFILE: home }, detached: true },
   );
   return new Promise((resolve, reject) => {
     let out = "";
@@ -318,11 +329,19 @@ export function startDevserver(configDir: string, home: string, binary = DEVSERV
       } catch {}
       fail(new Error(`gg-devserver did not start within 20 s (pid ${child.pid}, out ${JSON.stringify(out)})\n${ps}`));
     }, 20_000);
+    const detach = () => {
+      child.stdout!.removeAllListeners("data");
+      child.stderr!.removeAllListeners("data");
+      child.removeListener("error", fail);
+      child.removeListener("exit", exited);
+    };
     const fail = (e: Error) => {
       clearTimeout(timer);
-      child.kill();
+      detach();
+      killGroup(child);
       reject(new Error(`${e.message}\n${err}`));
     };
+    const exited = (code: number | null) => fail(new Error(`gg-devserver exited with ${code}`));
     // Start-up times, for looking into slow starts: GG_STARTLOG=<file> pnpm e2e
     if (process.env.GG_STARTLOG) {
       child.stdout!.once("data", () => {
@@ -335,20 +354,35 @@ export function startDevserver(configDir: string, home: string, binary = DEVSERV
       const match = /listening on (http:\/\/\S+)/.exec(out);
       if (match) {
         clearTimeout(timer);
+        detach();
+        // Its output is no longer read; it must not fill the pipes and block.
+        child.stdout!.resume();
+        child.stderr!.resume();
         resolve({ url: match[1], process: child });
       }
     });
     child.on("error", fail);
-    child.on("exit", (code) => fail(new Error(`gg-devserver exited with ${code}`)));
+    child.on("exit", exited);
   });
 }
 
+/** Stops the devserver and what it started; SIGKILL if it has not gone after 5 s. */
 export async function stopDevserver(server: Devserver): Promise<void> {
   const child = server.process;
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    killGroup(child); // anything it left behind
+    return;
+  }
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-  child.kill();
+  killGroup(child);
+  const timer = setTimeout(() => killGroup(child, "SIGKILL"), 5_000);
   await exited;
+  clearTimeout(timer);
+}
+
+/** The close button of the tab named `name` (hidden from assistive technology; see TabBar). */
+export function closeButton(page: Page, name: string) {
+  return page.getByRole("tab", { name, exact: true }).locator("xpath=..").locator(".close");
 }
 
 export type GG = {
@@ -384,8 +418,9 @@ export const test = base.extend<{ gg: GG }>({
   gg: async ({ page }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
-    const server = await startDevserver(path.join(root, "config"), root);
+    let server: Devserver | null = null;
     try {
+      server = await startDevserver(path.join(root, "config"), root);
       await page.addInitScript((url) => {
         (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
       }, server.url);
@@ -416,7 +451,7 @@ export const test = base.extend<{ gg: GG }>({
 
       await use({ page, repoPath, folder, git });
     } finally {
-      await stopDevserver(server);
+      if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });
     }
   },

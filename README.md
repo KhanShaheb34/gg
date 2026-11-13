@@ -3,7 +3,10 @@
 A fast, light desktop viewer for git history: tabs of repositories, each a virtualized
 commit graph with branch and tag labels, a branch filter, search, fetch and refresh, and a
 details panel with the commit's message and changed files. Tauri 2 shell, Rust core
-(`crates/gg-core`), Svelte 5 UI (`src/`). It reads repositories; it never writes to them.
+(`crates/gg-core`), Svelte 5 UI (`src/`). It never changes your work: no commits, checkouts
+or merges. The only git command it runs that writes is `git fetch` (when you ask, and on a
+schedule you can turn off), which updates remote-tracking refs, objects and `FETCH_HEAD`, as
+in a terminal.
 
 ## Using it
 
@@ -17,8 +20,9 @@ details panel with the commit's message and changed files. Tauri 2 shell, Rust c
 - ⌘F searches subjects, authors and hashes (Enter / Shift+Enter: next / previous hit),
   ⌘⇧F fetches from all remotes, ⌘R re-reads the repository. On Windows and Linux, Ctrl
   stands for ⌘.
-- git is found through your login shell's `PATH`, so a git installed with Homebrew is used
-  even when the app is started from the Finder.
+- git is looked up on your login shell's `PATH` (read when the app starts), falling back
+  to the app's own `PATH`, so a git your shell finds is the one used even when the app is
+  started from the Finder.
 
 ## Dev commands
 

@@ -74,6 +74,7 @@
             data-repo-id={tab.repoId}
             aria-selected={selected}
             aria-controls="repo-panel"
+            aria-keyshortcuts="Delete"
             tabindex={selected ? 0 : -1}
             onclick={() => activate(tab.repoId)}
             onkeydown={(e) => onTabKeydown(e, i)}

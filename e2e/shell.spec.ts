@@ -123,7 +123,8 @@ test("the tab list holds only tabs: close buttons are left to the mouse and the 
   // Still there for the mouse.
   await page.getByRole("tab", { name: "small" }).hover();
   await expect(closeButton(page, "small")).toBeVisible();
-  // Delete closes the focused tab, as the ARIA tabs pattern has it.
+  // Delete closes the focused tab, as the ARIA tabs pattern has it, and the tab says so.
+  await expect(page.getByRole("tab", { name: "small" })).toHaveAttribute("aria-keyshortcuts", "Delete");
   await page.getByRole("tab", { name: "small" }).focus();
   await page.keyboard.press("Delete");
   await expect(tabs(page)).toHaveCount(0);

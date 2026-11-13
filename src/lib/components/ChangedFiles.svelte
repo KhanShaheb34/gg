@@ -356,8 +356,12 @@
     color: var(--text-faint);
   }
 
+  /* As wide as the counts the commit needs ("+a | −d"), whatever this row shows, so the
+     columns and a "binary" label line up. */
   .counts {
     flex: none;
+    width: calc(var(--add-w, 4ch) + var(--del-w, 4ch) + 3ch);
+    text-align: right;
     font-family: var(--font-mono);
     font-size: var(--fs-xs);
     color: var(--text-faint);

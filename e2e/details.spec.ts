@@ -457,6 +457,19 @@ test("the information column's fade leaves the column divider alone", async ({ g
   expect(await files.evaluate((el) => getComputedStyle(el).maskImage)).toBe("none");
 });
 
+test("a binary file's label takes the count columns' room, no more", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Rework peaches routes").click();
+  const p = panel(page);
+  const box = async (path: string) => (await fileRow(p, path).locator(".counts").boundingBox())!;
+  const binary = await box("assets/logo.bin");
+  const counted = await box("app/routes/r.py");
+  expect(Math.abs(binary.width - counted.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(binary.x + binary.width - (counted.x + counted.width))).toBeLessThanOrEqual(1);
+});
+
 test("tree items tell assistive technology where they are and what changed", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

@@ -139,6 +139,16 @@ footprints() {
   printf '%s\t%s\n' "$total" "$detail"
 }
 mode_name() { case $1 in 0) echo idle ;; 1) echo scroll ;; *) echo "$1" ;; esac; }
+# Quits the launch under measurement and lets it and its WebKit helpers exit.
+stop_app() {
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    kill -0 "$pid" 2>/dev/null || [ -n "$(helpers_of "$pid")" ] || break
+    sleep 0.25
+  done
+  pid=""
+  sleep 2
+}
 
 echo "repo: $repo ($(git -C "$repo" rev-list --all --count) commits)"
 echo "machine: $(sysctl -n machdep.cpu.brand_string), $(sysctl -n hw.ncpu) cores," \
@@ -162,12 +172,16 @@ for _ in $(seq 1 "$runs"); do
       --env GG_PERF_SCROLL="$mode" --env GG_CONFIG_DIR="$work/config-$run"
     pid=$(pgrep -n -f "^$app" || true)
     [ -n "$pid" ] || { echo "run $run: the app did not start" >&2; exit 1; }
+    missing=""
     for m in first-rows fully-loaded; do
-      if ! wait_mark "$log" $m 60; then
-        echo "run $run: no $m mark within 60 s (screen locked or window covered?)" >&2
-        exit 1
-      fi
+      wait_mark "$log" $m 60 || { missing=$m; break; }
     done
+    if [ -n "$missing" ]; then
+      # A covered window gets no animation frames; this launch is left out, not the series.
+      echo "run $run: no $missing mark within 60 s (screen locked or window covered?); skipped" >&2
+      stop_app
+      continue
+    fi
     first=$(( $(mark "$log" first-rows 3) - spawn ))
     loaded=$(( $(mark "$log" fully-loaded 3) - spawn ))
     nav_first=$(mark "$log" first-rows)
@@ -189,8 +203,10 @@ for _ in $(seq 1 "$runs"); do
         awk -v n="$(name_of "$p")" -v a="$c" -v b="$(cpu_secs "$p")" -v t="$(( t1 - t0 ))" \
           'BEGIN { printf " %s=%.2f%%", n, (b - a) * 100000 / t }'
       done < "$work/cpu0")
-    else
-      wait_mark "$log" scroll-done 90 || { echo "run $run: no scroll-done mark" >&2; exit 1; }
+    elif ! wait_mark "$log" scroll-done 90; then
+      echo "run $run: no scroll-done mark within 90 s (window covered?); skipped" >&2
+      stop_app
+      continue
     fi
     helpers=$(helpers_of "$pid")
     rss=0; kinds=""
@@ -213,8 +229,9 @@ for _ in $(seq 1 "$runs"); do
       for d in $detail; do printf '%s\t%s\tfoot-%s\t%s\n' "$run" "$name" "${d%%=*}" "${d#*=}"; done
     } >> "$results"
     if [ "$mode" != 0 ]; then
-      echo "    probe:" $(awk -F'\t' '$1 ~ /^(scroll|click)-/ && $1 != "scroll-done" { printf "%s=%s ", $1, $2 }' "$log")
-      awk -F'\t' -v r="$run" -v m="$name" '$1 ~ /^(scroll|click)-/ && $1 != "scroll-done" { print r "\t" m "\t" $1 "\t" $2 }' "$log" >> "$results"
+      echo "    probe:" $(awk -F'\t' '$1 ~ /^(scroll|click|page)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { printf "%s=%s ", $1, $2 }' "$log")
+      awk -F'\t' '$1 ~ /^page-error / { print "    " $1 }' "$log"
+      awk -F'\t' -v r="$run" -v m="$name" '$1 ~ /^(scroll|click|page)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { print r "\t" m "\t" $1 "\t" $2 }' "$log" >> "$results"
       # WebKit drops graphics memory (tiles) some time after scrolling; measure again.
       sleep 30
       IFS=$'\t' read -r later detail < <(footprints "$pid")
@@ -223,14 +240,7 @@ for _ in $(seq 1 "$runs"); do
       for d in $detail; do printf '%s\t%s\tfoot30-%s\t%s\n' "$run" "$name" "${d%%=*}" "${d#*=}"; done >> "$results"
     fi
 
-    kill "$pid"
-    # Let the app and its WebKit helpers exit before the next launch.
-    for _ in $(seq 1 40); do
-      kill -0 "$pid" 2>/dev/null || [ -n "$(helpers_of "$pid")" ] || break
-      sleep 0.25
-    done
-    pid=""
-    sleep 2
+    stop_app
   done
 done
 

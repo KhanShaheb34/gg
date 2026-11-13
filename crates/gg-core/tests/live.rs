@@ -195,6 +195,7 @@ async fn new_worktree_triggers_refresh() {
     let status = std::process::Command::new("git")
         .args(["checkout", "-q", "--detach"])
         .current_dir(&wt)
+        .env("GIT_CONFIG_GLOBAL", gg_core::testutil::empty_git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .status()
         .unwrap();
@@ -228,6 +229,7 @@ fn git_in(dir: &Path, args: &[&str]) -> bool {
     std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", gg_core::testutil::empty_git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_EDITOR", "true")
         .stdout(std::process::Stdio::null())

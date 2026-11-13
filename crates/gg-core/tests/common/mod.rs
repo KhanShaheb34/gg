@@ -1,6 +1,7 @@
 //! Helpers shared by the operation tests (`ops_framework`, `ops_local`, `ops_network`,
 //! `ops_progress`): a manager with a recording sink and a command log, request builders and
-//! repository set-ups.
+//! repository set-ups. The core's git in test builds reads no global or system config
+//! (see `gg_core::testutil::empty_git_config`).
 #![allow(dead_code)]
 
 use std::path::Path;

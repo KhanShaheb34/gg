@@ -1461,6 +1461,7 @@ async fn submodule_fsmonitor_hook_is_never_run() {
     let status = std::process::Command::new("git")
         .args(["config", "core.fsmonitor", hook.to_str().unwrap()])
         .current_dir(&checkout)
+        .env("GIT_CONFIG_GLOBAL", gg_core::testutil::empty_git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .status()
         .unwrap();

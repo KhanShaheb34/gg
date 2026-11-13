@@ -717,6 +717,12 @@ impl GitRunner {
         if let Some(path) = &self.path {
             cmd.env("PATH", path);
         }
+        // Test builds only (the app refuses `testutil` in a release build): the developer's
+        // global and system config must not change what tests see.
+        #[cfg(feature = "testutil")]
+        cmd.env("GIT_CONFIG_GLOBAL", crate::testutil::empty_git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_SYSTEM");
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }

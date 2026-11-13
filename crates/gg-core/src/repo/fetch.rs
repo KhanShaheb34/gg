@@ -144,7 +144,15 @@ impl RepoManager {
             .run_with_timeout(&repo.worktree, &args, CmdKind::Write, limit)
             .await;
         let (error, detail) = match run {
-            Ok(Err(expired)) => (Some(timed_out(expired)), None),
+            Ok(Err(gave_up)) => {
+                let stderr = without_progress(&gave_up.stderr);
+                (
+                    Some(timed_out(gave_up.limit)),
+                    Some(stderr)
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| keep_tail(s, MAX_DETAIL)),
+                )
+            }
             Ok(Ok(out)) if out.code == 0 => (None, None),
             Ok(Ok(out)) => {
                 let stderr = without_progress(&out.stderr);

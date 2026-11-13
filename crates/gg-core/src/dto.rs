@@ -126,8 +126,8 @@ pub struct FetchState {
     /// several remotes, the lines of those that fetched come first), else its last line;
     /// `None` after a success.
     pub last_error: Option<String>,
-    /// git's whole stderr of the last failed fetch; `None` after a success or when there is
-    /// nothing more to say (a timeout).
+    /// git's stderr of the last failed (or timed-out) fetch, its last 8 KiB at most; `None`
+    /// after a success or when git said nothing.
     pub last_error_detail: Option<String>,
     /// When the last fetch finished, unix milliseconds.
     pub last_at_ms: Option<i64>,

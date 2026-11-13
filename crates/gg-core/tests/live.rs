@@ -761,6 +761,12 @@ async fn a_user_fetch_that_never_ends_stops_at_the_cap() {
         now.fetch.last_error.as_deref(),
         Some("Fetch timed out: still running after 1500 ms")
     );
+    // What git had said by then is kept as the detail.
+    let detail = now
+        .fetch
+        .last_error_detail
+        .expect("the stderr tail is kept");
+    assert!(detail.contains("remote: still here"), "{detail:?}");
 }
 
 #[cfg(unix)]

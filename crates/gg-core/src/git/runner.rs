@@ -105,6 +105,15 @@ pub enum Expired {
     Idle(Duration),
 }
 
+/// A command [`GitRunner::run_with_timeout`] gave up on: the limit it ran into and the tail
+/// of what it had written by then.
+#[derive(Debug, Clone)]
+pub struct TimedOut {
+    pub limit: Expired,
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+}
+
 /// Most bytes [`GitRunner::run_with_timeout`] keeps of stdout and of stderr: the last ones.
 pub const KEPT_TAIL: usize = 64 * 1024;
 /// Put before output of which only the tail was kept.
@@ -213,6 +222,10 @@ impl CommandLog {
         // A panic while holding the lock cannot leave the buffer inconsistent; keep using it.
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+fn lock_tail(t: &Mutex<Tail>) -> std::sync::MutexGuard<'_, Tail> {
+    t.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The last [`KEPT_TAIL`] bytes written to it, starting at a line when it had to drop some.
@@ -394,7 +407,7 @@ impl GitRunner {
         args: &[&str],
         kind: CmdKind,
         limit: TimeLimit,
-    ) -> Result<std::result::Result<GitOutput, Expired>> {
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
         use tokio::io::AsyncReadExt;
 
         let started = Instant::now();
@@ -417,13 +430,16 @@ impl GitRunner {
         let output_seen = || {
             *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
         };
+        // Outside the reading future, so what was read is still there when it is dropped
+        // on timeout.
+        let (out, err) = (Mutex::new(Tail::default()), Mutex::new(Tail::default()));
+        let take = |t: &Mutex<Tail>| std::mem::take(&mut *lock_tail(t)).into_bytes();
         let read = async {
-            let (mut out, mut err) = (Tail::default(), Tail::default());
             let read_out = async {
                 if let Some(p) = stdout_pipe.as_mut() {
                     let mut buf = [0u8; 8192];
                     while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        out.push(&buf[..n]);
+                        lock_tail(&out).push(&buf[..n]);
                         output_seen();
                     }
                 }
@@ -432,13 +448,13 @@ impl GitRunner {
                 if let Some(p) = stderr_pipe.as_mut() {
                     let mut buf = [0u8; 8192];
                     while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        err.push(&buf[..n]);
+                        lock_tail(&err).push(&buf[..n]);
                         output_seen();
                     }
                 }
             };
             tokio::join!(read_out, read_err);
-            (out.into_bytes(), err.into_bytes())
+            (take(&out), take(&err))
         };
         let run = async {
             let ((out, err), status) = tokio::join!(read, child.wait());
@@ -489,7 +505,11 @@ impl GitRunner {
                 let _ = group;
                 let _ = child.kill().await;
                 self.log_timed_out(cwd, args, kind, started);
-                Ok(Err(hit))
+                Ok(Err(TimedOut {
+                    limit: hit,
+                    stdout: take(&out),
+                    stderr: String::from_utf8_lossy(&take(&err)).into_owned(),
+                }))
             }
         }
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hashMatch, hitPosition, matchParts, needleOf, searchPattern, splitMatch, stepHit } from "./search";
+import { countLabel, hashMatch, hitPosition, matchParts, needleOf, searchPattern, splitMatch, stepHit } from "./search";
 
 describe("searchPattern and matchParts", () => {
   it("splits text into matched and unmatched parts, ignoring case", () => {
@@ -103,5 +103,18 @@ describe("hashMatch", () => {
     expect(hashMatch(hash, "fa32")).toBe(0);
     expect(hashMatch(hash, "0fa3 x")).toBe(0);
     expect(hashMatch(hash, null)).toBe(0);
+  });
+});
+
+describe("countLabel", () => {
+  it("says which hit is selected, how many there are, or that there are none", () => {
+    expect(countLabel(2, 41)).toBe("3 of 41");
+    expect(countLabel(-1, 41)).toBe("41 results");
+    expect(countLabel(-1, 1)).toBe("1 result");
+    expect(countLabel(-1, 0)).toBe("No results");
+  });
+  it("groups thousands", () => {
+    expect(countLabel(0, 97169)).toBe("1 of 97,169");
+    expect(countLabel(-1, 19440)).toBe("19,440 results");
   });
 });

@@ -7,6 +7,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { isMac } from "../platform";
+  import { countLabel } from "../search";
   import type { RepoView } from "../state/repo.svelte";
 
   let { view }: { view: RepoView } = $props();
@@ -25,13 +26,7 @@
 
   const pending = $derived(text.trim() !== view.searchQuery.trim() || view.searchPending);
   const hits = $derived(view.liveHits);
-  const counted = $derived.by(() => {
-    if (view.searchQuery.trim() === "") return "";
-    if (hits.length === 0) return "No results";
-    const at = view.searchIndex;
-    if (at >= 0) return `${at + 1} of ${hits.length}`;
-    return hits.length === 1 ? "1 result" : `${hits.length} results`;
-  });
+  const counted = $derived(view.searchQuery.trim() === "" ? "" : countLabel(view.searchIndex, hits.length));
   /** The count shown: the last one known while a search is underway, so it does not flicker. */
   let shown = $state("");
   $effect(() => {

@@ -115,3 +115,11 @@ export function hashMatch(hash: string, needle: string | null): number {
   if (needle === null || needle.length < 4 || !/^[0-9a-f]+$/.test(needle) || !hash.startsWith(needle)) return 0;
   return Math.min(needle.length, 8);
 }
+
+/** The search box's count: "3 of 41" for the selected hit (`at`, or -1), "41 results", "No results". */
+export function countLabel(at: number, total: number): string {
+  const n = (v: number) => v.toLocaleString("en-US");
+  if (total === 0) return "No results";
+  if (at >= 0) return `${n(at + 1)} of ${n(total)}`;
+  return total === 1 ? "1 result" : `${n(total)} results`;
+}

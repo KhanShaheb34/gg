@@ -1,6 +1,6 @@
 <!--
   The graph's toolbar, in the repository header: which branches the graph shows, whether it
-  shows remote branches and tags, then search, fetch and refresh. Every control changes at
+  shows remote branches, tags and stashes, then search, fetch and refresh. Every control changes at
   once when used; the work it starts shows as it runs (spinning icons, a loading line along
   the header's bottom edge).
 -->
@@ -23,6 +23,11 @@
   /** A repository without commits: filtering and searching have nothing to work on. */
   const noCommits = $derived(!view.snapshot.loading && view.snapshot.totalRows === 0);
   const NO_COMMITS = "Nothing to show yet: this repository has no commits";
+  /** Stashes show only with all branches: a stash belongs to no branch. */
+  const stashesOff = $derived(noCommits || view.viewOptions.branches !== null);
+  const stashesTitle = $derived(
+    noCommits ? NO_COMMITS : view.viewOptions.branches !== null ? "Stashes show when all branches are shown" : undefined,
+  );
 
   const fetchInfo = $derived(view.snapshot.fetch);
   const noRemotes = $derived(view.snapshot.remotes.length === 0);
@@ -64,6 +69,16 @@
       onchange={(e) => view.setViewOptions({ showTags: e.currentTarget.checked })}
     />
     <span>Tags</span>
+  </label>
+  <label class="toggle" title={stashesTitle}>
+    <input
+      type="checkbox"
+      class="checkbox"
+      disabled={stashesOff}
+      checked={view.viewOptions.showStashes}
+      onchange={(e) => view.setViewOptions({ showStashes: e.currentTarget.checked })}
+    />
+    <span>Stashes</span>
   </label>
 
   <span class="spacer"></span>

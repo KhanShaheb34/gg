@@ -647,3 +647,94 @@ test("scrolling a few px a frame, as a trackpad does, fills every row in every f
   });
   expect(busyFrames).toBe(0);
 });
+
+test("stashes: one row each with a stash label; the Stashes toggle hides them and is remembered", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("stashes"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
+  const [newest, older] = gg
+    .git("stashes", "stash", "list", "--format=%H%x09%s")
+    .trim()
+    .split("\n")
+    .map((l) => l.split("\t"));
+  expect(older[1]).toBe("On main: Keep the parser draft");
+  for (const [i, [hash, subj]] of [newest, older].entries()) {
+    const r = row(page, i);
+    await expect(subject(r)).toHaveText(subj);
+    await expect(r.locator(".hash")).toHaveText(hash.slice(0, 8));
+    const label = r.locator(`[data-ref="stash@{${i}}"]`);
+    await expect(label).toBeVisible();
+    await expect(label).toHaveClass(/\bstash\b/);
+    await expect(label).toHaveAttribute("title", `Stash stash@{${i}}`);
+  }
+  await expect(subject(row(page, 2))).toHaveText(bigSubject(300));
+  // Its own colour, not its lane's, in both themes: unlike a branch label.
+  const colours = () =>
+    page.evaluate(() => {
+      const ink = (sel: string) => getComputedStyle(document.querySelector(sel)!).borderColor;
+      return { stash: ink('[data-ref="stash@{1}"]'), branch: ink('[data-ref="main"]') };
+    });
+  const light = await colours();
+  expect(light.stash).not.toBe(light.branch);
+  await page.evaluate(() => (document.documentElement.dataset.theme = "dark"));
+  const dark = await colours();
+  expect(dark.stash).not.toBe(dark.branch);
+  expect(dark.stash).not.toBe(light.stash);
+  await page.evaluate(() => (document.documentElement.dataset.theme = "light"));
+
+  const toggle = page.getByRole("checkbox", { name: "Stashes" });
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 1));
+  await expect(grid(page).locator(".ref.stash:visible")).toHaveCount(0);
+  await expect(subject(row(page, 0))).toHaveText(bigSubject(300));
+
+  await page.reload();
+  await expect(page.getByRole("checkbox", { name: "Stashes" })).not.toBeChecked();
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 1));
+  await page.getByRole("checkbox", { name: "Stashes" }).click();
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
+  await expect(row(page, 1).locator('[data-ref="stash@{1}"]')).toBeVisible();
+});
+
+test("hiding and showing stashes keeps the selected commit and the first visible commit in place", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("stashes"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
+  await scrollTo(page, 120 * 26 + 7);
+  await expect.poll(async () => (await firstVisible(page)).subject).toMatch(/^Big commit \d+$/);
+  const before = await firstVisible(page);
+  const target = grid(page).locator('[role="row"]', { has: page.getByText(bigSubject(170), { exact: true }) });
+  await target.click();
+  await expect(target).toHaveAttribute("aria-selected", "true");
+
+  const toggle = page.getByRole("checkbox", { name: "Stashes" });
+  await toggle.click();
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 1));
+  await expect.poll(async () => (await firstVisible(page)).subject).toBe(before.subject);
+  expect((await firstVisible(page)).scrollTop).toBe(before.scrollTop - 2 * 26);
+  const selected = grid(page).locator('[role="row"][aria-selected="true"]');
+  await expect(subject(selected)).toHaveText(bigSubject(170));
+
+  await toggle.click();
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
+  await expect.poll(async () => (await firstVisible(page)).subject).toBe(before.subject);
+  expect((await firstVisible(page)).scrollTop).toBe(before.scrollTop);
+  await expect(subject(selected)).toHaveText(bigSubject(170));
+  await expect(selected).toBeInViewport();
+});
+
+test("a stash saved outside the app appears at the top without moving the view", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await expect(subject(row(page, 0))).toHaveText("Add part 19");
+  writeFileSync(path.join(gg.repoPath("small"), "src", "part1.txt"), "changed\n");
+  gg.git("small", "stash", "push", "-q", "--message=Saved elsewhere");
+  await expect(subject(row(page, 0))).toHaveText("On main: Saved elsewhere", { timeout: 2000 });
+  await expect(row(page, 0).locator('[data-ref="stash@{0}"]')).toBeVisible();
+  expect((await firstVisible(page)).scrollTop).toBe(0);
+});

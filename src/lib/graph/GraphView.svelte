@@ -295,7 +295,7 @@
     const hit = rowAt(e);
     if (!hit) return;
     view.select(hit.row.hash, hit.index);
-    if (hit.row.kind === "commit" && (e.target as Element).closest(".hash")) copyHash(hit.row.hash);
+    if (hit.row.kind !== "uncommitted" && (e.target as Element).closest(".hash")) copyHash(hit.row.hash);
   }
 
   function copyHash(hash: string) {
@@ -317,7 +317,7 @@
     if (!r) return;
     let text: string | null = null;
     if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? r.subject : null;
-    else if (r.kind !== "commit") text = null;
+    else if (r.kind === "uncommitted") text = null;
     else if (el.classList.contains("date")) text = formatDateLong(r.time);
     else if (el.classList.contains("author")) text = `${r.author} <${r.email}>`;
     else text = r.hash;
@@ -424,8 +424,8 @@
           {@const hit = r !== undefined && needle !== null && hits.has(slot.index)}
           {@const subj = hit ? splitMatch(r!.subject, needle!) : null}
           {@const auth = hit ? splitMatch(r!.author, needle!) : null}
-          {@const short = r?.kind === "commit" ? shortHash(r.hash) : ""}
-          {@const hashMarked = hit && r!.kind === "commit" ? hashMatch(r!.hash, needle) : 0}
+          {@const short = r && r.kind !== "uncommitted" ? shortHash(r.hash) : ""}
+          {@const hashMarked = hit && r!.kind !== "uncommitted" ? hashMatch(r!.hash, needle) : 0}
           <div
             class="row"
             role="row"
@@ -439,6 +439,7 @@
             class:merge={r?.isMerge}
             class:head={r?.isHead}
             class:uncommitted={r?.kind === "uncommitted"}
+            class:stash={r?.kind === "stash"}
             style:transform="translateY({(slot.index - poolFirst) * ROW_H}px)"
             style:--c={r ? `var(--lane-${r.color % LANE_COLORS})` : undefined}
           >
@@ -457,7 +458,7 @@
               >
             </div>
             <div class="cell date" role="gridcell">
-              {r?.kind === "commit" ? formatDate(r.time) : ""}
+              {r && r.kind !== "uncommitted" ? formatDate(r.time) : ""}
             </div>
             <div class="cell author" role="gridcell"
               ><span>{auth ? auth[0] : (r?.author ?? "")}</span><mark>{auth ? auth[1] : ""}</mark><span
@@ -629,6 +630,10 @@
   .uncommitted .subject {
     color: var(--text-muted);
     font-style: italic;
+  }
+
+  .stash .subject {
+    color: var(--text-muted);
   }
 
   .date {

@@ -258,6 +258,30 @@ const REPOS: Record<string, RepoScript> = {
     git("reset", "-q", "--hard");
   },
   /**
+   * 300 linear commits on `main` ("Big commit 1" the oldest) and two stashes, both newer than
+   * every commit: `stash@{1}` "On main: Keep the parser draft" on `main` with an untracked
+   * file, and `stash@{0}` "WIP on (no branch): …" on commit 150, which no branch has after
+   * it (its base is on `main`, so only the stash's own row is extra).
+   */
+  stashes(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    execFileSync("git", ["fast-import", "--quiet"], {
+      cwd: dir,
+      input: linearHistory(300),
+      stdio: ["pipe", "ignore", "pipe"],
+      env: isolatedEnv(),
+    });
+    advanceClock(dir, 301);
+    git("reset", "-q", "--hard");
+    write("log.txt", "draft\n");
+    write("draft.txt", "untracked draft\n");
+    git("stash", "push", "-q", "--include-untracked", "--message=Keep the parser draft");
+    git("checkout", "-q", "--detach", "main~150");
+    write("log.txt", "older idea\n");
+    git("stash", "push", "-q");
+    git("checkout", "-q", "main");
+  },
+  /**
    * 48 commits on `main`, `develop`, `feature/search`, `feature/ui`, `release/1.0` and a merged
    * `hotfix/crash` that now exists only on the remote, with merges between them; tags `v0.1`,
    * `v0.2`, `v1.0`; a bare `origin` whose `develop` is at the local one, and whose `main` and
@@ -428,7 +452,7 @@ export function closeButton(page: Page, name: string) {
 
 export type GG = {
   page: Page;
-  /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`, `details`), created on first use. */
+  /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`, `details`, `stashes`…), created on first use. */
   repoPath(name: string): string;
   /** Path of a plain (non-repository) folder `name`, created on first use. */
   folder(name: string): string;

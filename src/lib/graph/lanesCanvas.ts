@@ -33,10 +33,10 @@ export class LanesCanvas {
   /** The shapes of the drawn rows' edges, worked out once per frame. */
   private readonly shapes = new EdgeShapes();
   private rows: RowSource | null = null;
-  /** Row i's edges, for EdgeShapes; undefined when it is not loaded or not a commit. */
+  /** Row i's edges, for EdgeShapes; undefined when it is not loaded or is the uncommitted row. */
   private readonly edgesOf = (i: number) => {
     const r = this.rows?.get(i);
-    return r?.kind === "commit" ? r.edges : undefined;
+    return r && r.kind !== "uncommitted" ? r.edges : undefined;
   };
   private readonly laneColors: string[] = new Array(LANE_COLORS).fill("#888");
   private faintColor = "#888";
@@ -154,6 +154,11 @@ export class LanesCanvas {
         ctx.strokeStyle = r.kind === "uncommitted" ? this.faintColor : color;
         ctx.stroke();
         ctx.lineWidth = lineW;
+      } else if (r.kind === "stash") {
+        // A stash is a square: not a commit on a branch.
+        const s = NODE_R - 0.5;
+        ctx.fillStyle = color;
+        ctx.fillRect(x - s, y - s, s * 2, s * 2);
       } else {
         ctx.beginPath();
         ctx.arc(x, y, r.isMerge ? NODE_R - 1 : NODE_R, 0, Math.PI * 2);

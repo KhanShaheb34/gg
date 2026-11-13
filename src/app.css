@@ -65,6 +65,8 @@
   --lane-7: #4d7c0f;
   --lane-8: #dc2626;
   --lane-9: #475569;
+  /* Stash labels: apart from every lane colour. */
+  --stash: #8a5a3c;
 }
 
 /* Dark: warm-neutral graphite, not black; lanes lifted so lines read on it. */
@@ -113,6 +115,7 @@
   --lane-7: #a3cc4e;
   --lane-8: #f87171;
   --lane-9: #9aa8bc;
+  --stash: #d2a47c;
 }
 
 *,

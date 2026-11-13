@@ -382,6 +382,7 @@
   .del {
     min-width: var(--del-w, 4ch);
     color: var(--danger);
+    text-align: left;
   }
 
   .add.zero,

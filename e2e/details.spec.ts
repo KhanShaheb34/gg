@@ -464,6 +464,14 @@ test("a binary file's label takes the count columns' room, no more", async ({ gg
   await rowWith(page, "Rework peaches routes").click();
   const p = panel(page);
   const box = async (path: string) => (await fileRow(p, path).locator(".counts").boundingBox())!;
+  // The deletions sit right after the bar, as written: "+2 | −1".
+  const bar = (await fileRow(p, "app/routes/r.py").locator(".bar").boundingBox())!;
+  const del = await fileRow(p, "app/routes/r.py").locator(".del").evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect().x;
+  });
+  expect(del - (bar.x + bar.width)).toBeLessThan(12);
   const binary = await box("assets/logo.bin");
   const counted = await box("app/routes/r.py");
   expect(Math.abs(binary.width - counted.width)).toBeLessThanOrEqual(1);

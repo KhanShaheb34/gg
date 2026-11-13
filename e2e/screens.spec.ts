@@ -105,7 +105,7 @@ for (const theme of ["light", "dark"] as const) {
     const panel = page.getByRole("region", { name: "Commit details" });
     const shot = async (name: string) => {
       await expect(panel.getByTestId("details-files-count")).toBeVisible();
-      await page.mouse.move(1270, 60);
+      await page.mouse.move(1000, 60); // empty toolbar space, off every button
       await page.waitForTimeout(200);
       await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
     };
@@ -124,5 +124,48 @@ for (const theme of ["light", "dark"] as const) {
     await panel.getByRole("button", { name: "List" }).click();
     await shot("details-list");
     await panel.getByRole("button", { name: "Tree" }).click();
+  });
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`first run, empty, loading and error states, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await expect(page.getByTestId("welcome")).toBeVisible();
+    await page.mouse.move(640, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `welcome-first-run-${theme}.png`) });
+
+    // A folder that is not a repository: the error toast, over the welcome screen.
+    page.once("dialog", (dialog) => dialog.accept(gg.folder("plain")));
+    await page.getByRole("button", { name: "Open repository" }).first().click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await page.waitForTimeout(250); // the toast's entrance
+    await page.screenshot({ path: path.join(OUT, `toast-${theme}.png`) });
+    await page.getByRole("button", { name: "Dismiss notification" }).click();
+
+    // A repository without commits.
+    await open(page, gg.repoPath("empty"));
+    await expect(page.getByText("No commits yet")).toBeVisible();
+    await page.mouse.move(640, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `empty-${theme}.png`) });
+
+    // Loading: the first rows held back, so the skeleton rows show.
+    await page.route("**/events", (route) => route.abort());
+    await page.route("**/invoke", async (route) => {
+      const body = route.request().postDataJSON() as { cmd?: string } | null;
+      if (body?.cmd !== "open_repo" && body?.cmd !== "get_snapshot") return route.continue();
+      const response = await route.fetch();
+      const json = (await response.json()) as { ok?: { totalRows: number; loading: boolean } };
+      if (json.ok) Object.assign(json.ok, { totalRows: 0, loading: true });
+      await route.fulfill({ response, json });
+    });
+    await open(page, gg.repoPath("small"));
+    await expect(page.locator('[role="row"][aria-busy="true"]:not([hidden])').first()).toBeVisible();
+    await page.mouse.move(640, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `loading-${theme}.png`) });
   });
 }

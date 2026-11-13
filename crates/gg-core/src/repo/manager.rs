@@ -149,6 +149,10 @@ pub(crate) struct Repo {
     /// A fetch the user asked for is waiting for its turn or running; another one asked for
     /// meanwhile returns at once.
     pub(super) user_fetch: AtomicBool,
+    /// Stops the scheduled fetch running now, if any (R13).
+    pub(super) scheduled_cancel: Mutex<Option<Arc<Notify>>>,
+    /// Held by a scheduled fetch while it runs; cancelling one waits for it.
+    pub(super) scheduled_running: tokio::sync::Mutex<()>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -523,6 +527,8 @@ impl RepoManager {
             op_queue: tokio::sync::Mutex::new(()),
             op_waiting: AtomicU32::new(0),
             user_fetch: AtomicBool::new(false),
+            scheduled_cancel: Mutex::new(None),
+            scheduled_running: tokio::sync::Mutex::new(()),
         });
 
         // Nobody else can hold this lock yet; holding it while registering the repository

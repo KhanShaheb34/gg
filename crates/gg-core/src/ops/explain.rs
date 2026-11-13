@@ -9,9 +9,8 @@ use crate::git::runner::{Expired, GitOutput, git_failed};
 use crate::ops::Step;
 
 /// Said when git could not take a lock because its lock file exists.
-const LOCKED: &str = "Another git process is running in this repository, or one stopped \
-                      without cleaning up: git found its lock file. Try again once it is \
-                      done; if no git is running, delete the lock file named below.";
+const LOCKED: &str = "Another git process is working in this repository: git found its \
+                      lock file (named below). Try again once it is done.";
 
 /// Said when HEAD is detached and the operation needs a current branch.
 pub(crate) const NO_BRANCH: &str = "No branch is checked out (HEAD is detached), so there \
@@ -407,6 +406,7 @@ pub(crate) fn timed_out(limit: Expired) -> String {
     match limit {
         Expired::Idle(idle) => format!("Timed out: no output from git for {}.\n", span(idle)),
         Expired::Total(total) => format!("Timed out: still running after {}.\n", span(total)),
+        Expired::Cancelled => "Stopped: it was cancelled.\n".to_owned(),
     }
 }
 
@@ -476,6 +476,10 @@ mod tests {
             panic!("not failed");
         };
         assert_eq!(message, LOCKED);
+        // The app never suggests deleting git's lock files: the process holding one may be
+        // running.
+        assert!(!LOCKED.to_lowercase().contains("delete"), "{LOCKED}");
+        assert!(LOCKED.contains("Try again"), "{LOCKED}");
     }
 
     #[test]

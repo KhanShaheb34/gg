@@ -615,6 +615,8 @@ impl RepoManager {
         self.op_queue_changed(&repo).await;
         let _turn = repo.op_queue.lock().await;
         repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
+        // Nothing of ours runs beside an operation (R13).
+        self.cancel_scheduled_fetch(&repo).await;
         if repo.is_closed().await {
             return Err(unknown_repo(repo.identity.repo_id));
         }

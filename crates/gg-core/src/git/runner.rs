@@ -106,6 +106,8 @@ pub enum Expired {
     Total(Duration),
     /// It wrote nothing for `idle`.
     Idle(Duration),
+    /// It was cancelled (see [`GitRunner::run_cancellable`]).
+    Cancelled,
 }
 
 /// A command [`GitRunner::run_with_timeout`] gave up on: the limit it ran into and the tail
@@ -116,6 +118,9 @@ pub struct TimedOut {
     pub stdout: Vec<u8>,
     pub stderr: String,
 }
+
+/// How long a cancelled command has to stop before it is killed.
+pub const CANCEL_GRACE: Duration = Duration::from_secs(1);
 
 /// Most bytes [`GitRunner::run_with_timeout`] keeps of stdout and of stderr: the last ones.
 pub const KEPT_TAIL: usize = 64 * 1024;
@@ -528,6 +533,35 @@ impl GitRunner {
         limit: TimeLimit,
         on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_limited(cwd, args, kind, limit, on_stderr, None)
+            .await
+    }
+
+    /// [`GitRunner::run_with_timeout`] that also stops when `cancel` is notified: then git
+    /// and what it started are asked to stop (SIGTERM on Unix, so git removes its lock
+    /// files), killed if still there after [`CANCEL_GRACE`], and the result is
+    /// `Ok(Err(..))` with [`Expired::Cancelled`].
+    pub async fn run_cancellable(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+        cancel: &tokio::sync::Notify,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_limited(cwd, args, kind, limit, &|_| {}, Some(cancel))
+            .await
+    }
+
+    async fn run_limited(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+        on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
+        cancel: Option<&tokio::sync::Notify>,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
         use tokio::io::AsyncReadExt;
 
         let started = Instant::now();
@@ -598,9 +632,37 @@ impl GitRunner {
                 }
             }
         };
-        let finished = tokio::select! {
-            done = run => Ok(done),
-            hit = expired => Err(hit),
+        let cancelled = async {
+            match cancel {
+                Some(cancel) => cancel.notified().await,
+                None => std::future::pending().await,
+            }
+        };
+        let expired = async {
+            tokio::select! {
+                hit = expired => hit,
+                () = cancelled => Expired::Cancelled,
+            }
+        };
+        let finished = {
+            tokio::pin!(run);
+            let finished = tokio::select! {
+                done = &mut run => Ok(done),
+                hit = expired => Err(hit),
+            };
+            // Cancelled: ask git to stop, so that it removes its lock files, and give it a
+            // moment before it is killed with the rest.
+            #[cfg(unix)]
+            if let Err(Expired::Cancelled) = finished
+                && let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok())
+            {
+                // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+                unsafe {
+                    libc::killpg(pid, libc::SIGTERM);
+                }
+                let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
+            }
+            finished
         };
         match finished {
             Ok((out, err, Ok(status))) => {

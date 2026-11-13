@@ -1302,3 +1302,92 @@ async fn user_fetch_waits_for_the_running_operation() {
     );
     assert!(!h.m.snapshot(id).await.unwrap().fetch.running);
 }
+
+/// R13: a scheduled fetch that is running when an operation or a fetch the user asked for
+/// takes its turn is cancelled: its git and what git started are stopped, no error is
+/// shown, and the operation does not wait for it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_running_scheduled_fetch_is_cancelled_when_an_operation_takes_its_turn() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for by_user_fetch in [false, true] {
+        let (repo, _origin, _other) = with_remote();
+        let head = rev(&repo, "HEAD");
+        let pidfile = repo.path().join(".git/hung.pid");
+        let script = repo.path().join(".git/hung-upload-pack");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        repo.git(&[
+            "config",
+            "remote.origin.uploadpack",
+            script.to_str().unwrap(),
+        ]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+
+        h.m.set_fetch_interval(1);
+        h.sink
+            .wait_for(TIMEOUT, |n, v| {
+                n == "repo-changed" && v["repoId"] == id && v["fetch"]["running"] == true
+            })
+            .await
+            .expect("a scheduled fetch starts");
+        h.m.set_fetch_interval(0);
+        let deadline = Instant::now() + TIMEOUT;
+        while !pidfile.exists() {
+            assert!(Instant::now() < deadline, "upload-pack started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let pid = std::fs::read_to_string(&pidfile).unwrap().trim().to_owned();
+
+        let started = Instant::now();
+        if by_user_fetch {
+            repo.git(&["config", "--unset", "remote.origin.uploadpack"]);
+            tokio::time::timeout(Duration::from_secs(10), h.m.fetch(id))
+                .await
+                .expect("the user's fetch is not held up")
+                .expect("fetch");
+        } else {
+            let out = tokio::time::timeout(
+                Duration::from_secs(10),
+                h.m.run_op(id, create_branch("b", &head), &[]),
+            )
+            .await
+            .expect("the operation is not held up")
+            .expect("run_op");
+            assert_eq!(out.status, OpStatus::Done, "{out:?}");
+        }
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() {
+            assert!(
+                Instant::now() < deadline,
+                "the hung upload-pack was stopped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let snap = h.m.snapshot(id).await.unwrap();
+        assert!(!snap.fetch.running);
+        assert_eq!(
+            snap.fetch.last_error, None,
+            "no error shown: {:?}",
+            snap.fetch
+        );
+    }
+}

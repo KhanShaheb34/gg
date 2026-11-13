@@ -119,6 +119,7 @@ impl RepoManager {
                     m.op_queue_changed(&repo).await;
                     let turn = repo.op_queue.lock().await;
                     repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
+                    m.cancel_scheduled_fetch(&repo).await;
                     let done = m.start_fetch(repo.clone(), initiator).await;
                     // Also when it did not run (no remotes, closed, one already running).
                     repo.user_fetch.store(false, Ordering::SeqCst);
@@ -127,8 +128,9 @@ impl RepoManager {
                 });
                 task.await.unwrap_or(Ok(()))
             }
-            // A scheduled one is skipped while an operation runs or waits; the next one
-            // comes an interval later.
+            // A scheduled one is skipped while an operation runs or waits, and cancelled
+            // when one takes its turn while it runs (see `cancel_scheduled_fetch`); the next
+            // one comes an interval later.
             Initiator::Schedule => {
                 if repo.op_waiting.load(Ordering::SeqCst) > 0 || repo.op_queue.try_lock().is_err() {
                     return Ok(());
@@ -159,9 +161,37 @@ impl RepoManager {
         task.await.unwrap_or(Ok(()))
     }
 
-    /// Runs git for a fetch whose `running` is set, records the outcome and refreshes.
+    /// Stops the scheduled fetch of `repo` running now, if any, and waits for it to end (git
+    /// is asked to stop, then killed; see [`GitRunner::run_cancellable`]): called by an
+    /// operation, or a fetch the user asked for, that has just taken its turn, so that
+    /// nothing of ours runs beside it. The cancelled fetch shows no error.
+    ///
+    /// [`GitRunner::run_cancellable`]: crate::git::runner::GitRunner::run_cancellable
+    pub(crate) async fn cancel_scheduled_fetch(&self, repo: &Repo) {
+        if let Some(cancel) = lock(&repo.scheduled_cancel).take() {
+            cancel.notify_one();
+        }
+        let _ended = repo.scheduled_running.lock().await;
+    }
+
+    /// Runs git for a fetch whose `running` is set, records the outcome and refreshes. A
+    /// scheduled fetch can be cancelled (see [`RepoManager::cancel_scheduled_fetch`]): then
+    /// the fetch state is left as it was before it, and nothing is refreshed.
     async fn run_fetch(self: Arc<Self>, repo: Arc<Repo>, initiator: Initiator) -> Result<()> {
         let repo_id = repo.identity.repo_id;
+        let scheduled = initiator == Initiator::Schedule;
+        let _running = if scheduled {
+            Some(repo.scheduled_running.lock().await)
+        } else {
+            None
+        };
+        let cancel = Arc::new(Notify::new());
+        // An operation or a user's fetch that took its turn before the signal was stored
+        // found nothing to cancel: then this one does not start.
+        let skip = scheduled && {
+            *lock(&repo.scheduled_cancel) = Some(cancel.clone());
+            repo.op_waiting.load(Ordering::SeqCst) > 0 || repo.op_queue.try_lock().is_err()
+        };
         let no_hooks = format!("core.hooksPath={NULL_DEVICE}");
         let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 3);
         if initiator == Initiator::Schedule {
@@ -179,10 +209,38 @@ impl RepoManager {
             Initiator::Schedule => TimeLimit::total(timeout),
         };
         // On timeout git and the transport helpers it started are killed.
-        let run = repo
-            .runner
-            .run_with_timeout(&repo.worktree, &args, CmdKind::Write, limit)
-            .await;
+        let run = if skip {
+            None
+        } else {
+            Some(
+                repo.runner
+                    .run_cancellable(&repo.worktree, &args, CmdKind::Write, limit, &cancel)
+                    .await,
+            )
+        };
+        if scheduled {
+            lock(&repo.scheduled_cancel).take();
+        }
+        let cancelled = match &run {
+            None => true,
+            Some(Ok(Err(gave_up))) => gave_up.limit == Expired::Cancelled,
+            _ => false,
+        };
+        if cancelled {
+            let ended = {
+                let mut slot = repo.slot.write().await;
+                slot.fetch.running = false;
+                if slot.closed {
+                    return Err(unknown_repo(repo_id));
+                }
+                slot.snapshot_to_emit(&repo.identity, repo.is_loading())
+            };
+            repo.publish(self.sink.as_ref(), ended);
+            return Ok(());
+        }
+        let Some(run) = run else {
+            return Ok(());
+        };
         let (error, detail) = match run {
             Ok(Err(gave_up)) => {
                 let stderr = without_progress(&gave_up.stderr);
@@ -376,6 +434,7 @@ fn timed_out(expired: Expired) -> String {
     match expired {
         Expired::Idle(idle) => format!("Fetch timed out: no output from git for {}", span(idle)),
         Expired::Total(total) => format!("Fetch timed out: still running after {}", span(total)),
+        Expired::Cancelled => "Fetch cancelled".to_owned(),
     }
 }
 

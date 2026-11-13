@@ -8,14 +8,25 @@ import { disposeRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
 export type ToastKind = "info" | "error";
-/** A notice. A persistent one stays until dismissed; `action` is a button on it. */
+/**
+ * A button on a notice. Clicking it dismisses the notice, unless `keepOpen` (then `run`
+ * dismisses it when done). `danger`: it destroys something.
+ */
+export type ToastAction = { label: string; run: () => void | Promise<void>; danger?: boolean; keepOpen?: boolean };
+/**
+ * A notice. A persistent one stays until dismissed. `detail` (git's own text, say) shows
+ * below the message, or behind a disclosure with `foldDetail`. `actions` are buttons on it;
+ * `link` a quieter one after them ("Show log").
+ */
 export type Toast = {
   id: number;
   kind: ToastKind;
   message: string;
   detail?: string;
+  foldDetail?: boolean;
   persistent?: boolean;
-  action?: { label: string; run: () => Promise<void> };
+  actions?: ToastAction[];
+  link?: ToastAction;
 };
 
 export const app = $state({
@@ -35,6 +46,8 @@ export const app = $state({
   gitMissing: false,
   /** The user's home folder, for showing paths as `~/…`. */
   homeDir: null as string | null,
+  /** The command-log entries asked for last ("Show log" on a notice): from id `from` on. */
+  logRequest: null as { repoId: number; from: number } | null,
 });
 
 let nextToastId = 1;
@@ -44,11 +57,16 @@ export function toast(kind: ToastKind, message: string, detail?: string): void {
   app.toasts.push(detail ? { id: nextToastId++, kind, message, detail } : { id: nextToastId++, kind, message });
 }
 
-/** Shows a notice that stays until it is dismissed (or its action succeeds). */
-function notice(message: string, detail: string, action: NonNullable<Toast["action"]>): number {
+/** Shows `notice`; returns its id. */
+export function notify(notice: Omit<Toast, "id">): number {
   const id = nextToastId++;
-  app.toasts.push({ id, kind: "error", message, detail, persistent: true, action });
+  app.toasts.push({ ...notice, id });
   return id;
+}
+
+/** Asks for the command log of repository `repoId` from entry `from` on (the log panel shows it). */
+export function showLog(repoId: number, from: number): void {
+  app.logRequest = { repoId, from };
 }
 
 /**
@@ -56,18 +74,28 @@ function notice(message: string, detail: string, action: NonNullable<Toast["acti
  * Said once, with a way to move the file aside and save again.
  */
 function reportSettingsProblem(problem: string): void {
-  const id = notice("Settings are not being saved", problem, {
-    label: "Reset settings",
-    run: async () => {
-      try {
-        await api.resetSettings();
-      } catch (e) {
-        reportError(e, "Could not reset settings");
-        return;
-      }
-      dismissToast(id);
-      toast("info", "Settings reset: saving again");
-    },
+  const id = notify({
+    kind: "error",
+    message: "Settings are not being saved",
+    detail: problem,
+    persistent: true,
+    actions: [
+      {
+        label: "Reset settings",
+        // The notice stays if the reset fails.
+        keepOpen: true,
+        run: async () => {
+          try {
+            await api.resetSettings();
+          } catch (e) {
+            reportError(e, "Could not reset settings");
+            return;
+          }
+          dismissToast(id);
+          toast("info", "Settings reset: saving again");
+        },
+      },
+    ],
   });
 }
 
@@ -76,7 +104,7 @@ export function dismissToast(id: number): void {
 }
 
 /** Reports a failed core call: git missing switches the app to its no-git panel. */
-function reportError(e: unknown, prefix?: string): void {
+export function reportError(e: unknown, prefix?: string): void {
   if (e instanceof CoreError && e.code === "git_not_found") {
     app.gitMissing = true;
     return;
@@ -247,8 +275,30 @@ export function activateIndex(index: number): void {
   if (tab) activate(tab.repoId);
 }
 
-/** Closes a tab; closing the active one activates its right-hand neighbour, else its left. */
+/** Tabs being closed: the core has been asked and has not answered yet. */
+const closing = new Set<number>();
+
+/**
+ * Closes a tab; closing the active one activates its right-hand neighbour, else its left.
+ * The core is asked first: while an operation (or a fetch the user asked for) runs in the
+ * repository it refuses, and the tab stays, with a notice saying why.
+ */
 export async function closeTab(repoId: number): Promise<void> {
+  if (closing.has(repoId) || !app.tabs.some((t) => t.repoId === repoId)) return;
+  closing.add(repoId);
+  try {
+    await api.closeRepo(repoId);
+  } catch (e) {
+    if (e instanceof CoreError && e.code === "busy") {
+      toast("info", e.message);
+      return;
+    }
+    // Already gone from the core is what closing wanted; anything else is said, and the
+    // tab goes all the same.
+    if (!(e instanceof CoreError && e.code === "unknown_repo")) reportError(e);
+  } finally {
+    closing.delete(repoId);
+  }
   const at = app.tabs.findIndex((t) => t.repoId === repoId);
   if (at < 0) return;
   app.tabs.splice(at, 1);
@@ -257,12 +307,6 @@ export async function closeTab(repoId: number): Promise<void> {
   }
   saveSession();
   disposeRepoView(repoId);
-  try {
-    await api.closeRepo(repoId);
-  } catch (e) {
-    // Already gone from the core is what closing wanted.
-    if (!(e instanceof CoreError && e.code === "unknown_repo")) reportError(e);
-  }
 }
 
 export async function removeRecent(path: string): Promise<void> {

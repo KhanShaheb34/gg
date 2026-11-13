@@ -221,6 +221,34 @@ describe("RepoView.applySnapshot", () => {
     expect(view.snapshot.totalRows).toBe(1001);
   });
 
+  it("drops a snapshot whose seq is lower than the one it holds, whatever else it says (R14)", async () => {
+    const view = await openView(0);
+    const op = { id: 3, title: "Merge feature/x into main", startedAtMs: 1, queued: 0 };
+    await view.applySnapshot(snapshot({ seq: 5, op }));
+    // An operation's outcome that predates the event above: same rows, older state.
+    await view.applySnapshot(snapshot({ seq: 4, op: null }));
+    expect(view.snapshot.seq).toBe(5);
+    expect(view.snapshot.op).toEqual(op);
+    await view.applySnapshot(snapshot({ seq: 6, op: null }));
+    expect(view.snapshot.op).toBeNull();
+
+    // Older rows too: a generation being swapped in is not replaced by an older snapshot of it.
+    commitOnTop(2);
+    const applying = view.applySnapshot(snapshot({ seq: 8, loading: true }));
+    await view.applySnapshot(snapshot({ seq: 7, totalRows: core.hashes.length + 5 }));
+    await applying;
+    expect(view.snapshot.seq).toBe(8);
+    expect(view.snapshot.loading).toBe(true);
+  });
+
+  it("findRepoView finds an open repository's view without making one", async () => {
+    expect(repo.findRepoView(7)).toBeUndefined();
+    const view = repo.repoView(7, snapshot());
+    expect(repo.findRepoView(7)).toBe(view);
+    repo.disposeRepoView(7);
+    expect(repo.findRepoView(7)).toBeUndefined();
+  });
+
   it("follows repo-changed events for its own repository only", async () => {
     const view = await openView(0);
     commitOnTop(1);

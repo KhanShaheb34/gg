@@ -1,19 +1,22 @@
 <!--
-  The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s; hovering
-  the stack holds them all. A persistent one stays until dismissed; one with an action shows
-  it as a button.
+  The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s (10 s too
+  for any with buttons); hovering the stack holds them all. A persistent one stays until
+  dismissed. Its buttons follow the message; a folded detail (git's own text) opens below.
 -->
 <script lang="ts">
-  import { app, dismissToast, type Toast } from "../state/app.svelte";
+  import { app, dismissToast, type Toast, type ToastAction } from "../state/app.svelte";
 
   const LIFETIME_MS = { info: 4_000, error: 10_000 } as const;
+  const WITH_BUTTONS_MS = 10_000;
 
   let held = $state(false);
+  /** Toasts whose folded detail is open. */
+  let unfolded: Set<number> = $state(new Set());
 
   /** Removes `toast` once it has been shown, unhovered, for its lifetime. */
   function expire(_node: HTMLElement, toast: Toast) {
     if (toast.persistent) return;
-    let left: number = LIFETIME_MS[toast.kind];
+    let left: number = toast.actions?.length ? WITH_BUTTONS_MS : LIFETIME_MS[toast.kind];
     let started = Date.now();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const run = () => {
@@ -31,6 +34,17 @@
       else run();
       return pause;
     });
+  }
+
+  function press(toast: Toast, action: ToastAction) {
+    if (!action.keepOpen) dismissToast(toast.id);
+    void action.run();
+  }
+
+  function toggleDetail(id: number) {
+    const next = new Set(unfolded);
+    if (!next.delete(id)) next.add(id);
+    unfolded = next;
   }
 </script>
 
@@ -62,12 +76,36 @@
         <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
              what is around it. -->
         <p class="message"><bdi>{toast.message}</bdi></p>
-        {#if toast.detail}
+        {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}
-        {#if toast.action}
-          {@const action = toast.action}
-          <button class="action" onclick={() => action.run()}>{action.label}</button>
+        {#if toast.actions?.length || toast.link || (toast.detail && toast.foldDetail)}
+          <div class="row">
+            {#each toast.actions ?? [] as action (action.label)}
+              <button class="action" class:danger={action.danger} onclick={() => press(toast, action)}
+                >{action.label}</button
+              >
+            {/each}
+            {#if toast.detail && toast.foldDetail}
+              <button
+                class="link"
+                aria-expanded={unfolded.has(toast.id)}
+                onclick={() => toggleDetail(toast.id)}
+              >
+                <svg class="chevron" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                  <path d="M2.5 1.5 5.5 4l-3 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                Git output
+              </button>
+            {/if}
+            {#if toast.link}
+              {@const link = toast.link}
+              <button class="link" onclick={() => press(toast, link)}>{link.label}</button>
+            {/if}
+          </div>
+          {#if toast.detail && toast.foldDetail && unfolded.has(toast.id)}
+            <pre class="output selectable">{toast.detail}</pre>
+          {/if}
         {/if}
       </div>
       <button class="dismiss" aria-label="Dismiss notification" onclick={() => dismissToast(toast.id)}>
@@ -140,8 +178,15 @@
     line-clamp: 4;
   }
 
-  .action {
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
     margin-top: 8px;
+  }
+
+  .action {
     padding: 3px 10px;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
@@ -156,6 +201,58 @@
 
   .action:active {
     background: var(--bg-pressed);
+  }
+
+  .action.danger {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border-strong));
+    color: var(--danger);
+  }
+
+  .action.danger:hover {
+    background: var(--danger-tint);
+  }
+
+  /* Quieter than a button: text in the accent colour. */
+  .link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--accent);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+  }
+
+  .link:hover {
+    background: var(--bg-hover);
+  }
+
+  .chevron {
+    transition: transform 120ms var(--ease);
+  }
+
+  .link[aria-expanded="true"] .chevron {
+    transform: rotate(90deg);
+  }
+
+  .output {
+    max-height: 180px;
+    margin: 6px 0 0;
+    padding: 7px 9px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--field-bg);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    unicode-bidi: isolate;
   }
 
   .dismiss {

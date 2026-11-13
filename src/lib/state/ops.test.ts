@@ -1,0 +1,274 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { snap } from "../menus/menuTestData";
+import type { Danger, OpHint, OpOutcome, OpRequest } from "../types";
+
+vi.mock("../ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../ipc")>();
+  return {
+    CoreError: actual.CoreError,
+    onEvent: vi.fn(() => () => {}),
+    api: { runOp: vi.fn(), saveSession: vi.fn(async () => {}) },
+  };
+});
+
+// The repository's view: a stand-in that records what it is given.
+const view = vi.hoisted(() => ({
+  snapshot: null as unknown,
+  applySnapshot: vi.fn(),
+  fetch: vi.fn(async () => {}),
+}));
+vi.mock("./repo.svelte", () => ({
+  findRepoView: vi.fn((repoId: number) => (repoId === 1 ? view : undefined)),
+  repoView: vi.fn(() => view),
+  disposeRepoView: vi.fn(),
+}));
+
+// Dialogs: the test plays the user, through the props the dialog was opened with.
+vi.mock("./overlays.svelte", () => ({ openDialog: vi.fn(), closeDialog: vi.fn() }));
+vi.mock("../components/dialogs/ConfirmDialog.svelte", () => ({ default: { name: "ConfirmDialog" } }));
+
+type Ipc = typeof import("../ipc");
+type ConfirmProps = { title: string; dangers: Danger[]; onConfirm: () => void; onCancel: () => void };
+
+let ipc: Ipc;
+let ops: typeof import("./ops.svelte");
+let app: typeof import("./app.svelte");
+let overlays: typeof import("./overlays.svelte");
+
+function outcome(overrides: Partial<OpOutcome> = {}): OpOutcome {
+  return {
+    opId: 9,
+    status: "done",
+    title: "Merge feature/x into main",
+    message: "Merged feature/x into main.",
+    detail: null,
+    logFrom: 0,
+    logTo: 0,
+    dangers: [],
+    hints: [],
+    snapshot: snap({ seq: 5 }),
+    ...overrides,
+  };
+}
+
+function danger(overrides: Partial<Danger> = {}): Danger {
+  return { kind: "hard_reset", message: "2 changed files will be lost.", detail: "a.txt\nb.txt", token: null, ...overrides };
+}
+
+const RESET: OpRequest = { op: "reset", hash: "a".repeat(40), mode: "hard" };
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+/** The props of the dialog opened last (the confirmation). */
+function lastDialog(): ConfirmProps {
+  const calls = vi.mocked(overlays.openDialog).mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  return calls[calls.length - 1][1] as ConfirmProps;
+}
+
+/** Waits for the confirmation to be shown (it is asked for after the core's answer). */
+async function confirmation(count: number): Promise<ConfirmProps> {
+  await vi.waitFor(() => expect(overlays.openDialog).toHaveBeenCalledTimes(count));
+  return lastDialog();
+}
+
+beforeEach(async () => {
+  vi.resetModules();
+  ipc = await import("../ipc");
+  overlays = await import("./overlays.svelte");
+  app = await import("./app.svelte");
+  ops = await import("./ops.svelte");
+  vi.mocked(ipc.api.runOp).mockReset();
+  vi.mocked(overlays.openDialog).mockReset();
+  vi.mocked(overlays.closeDialog).mockReset();
+  view.applySnapshot.mockReset();
+  view.fetch.mockReset();
+  view.snapshot = snap();
+});
+
+describe("runOp", () => {
+  it("sends the request with nothing confirmed, applies the snapshot and shows the result", async () => {
+    const done = outcome();
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(done);
+    expect(await ops.runOp(1, RESET)).toBe(done);
+    expect(ipc.api.runOp).toHaveBeenCalledWith(1, RESET, []);
+    expect(view.applySnapshot).toHaveBeenCalledWith(done.snapshot);
+    expect(overlays.openDialog).not.toHaveBeenCalled();
+    expect(app.app.toasts).toEqual([
+      expect.objectContaining({ kind: "info", message: "Merged feature/x into main.", actions: [] }),
+    ]);
+  });
+
+  it("asks before a dangerous request and, once confirmed, sends it again with those dangers", async () => {
+    const dangers = [danger()];
+    vi.mocked(ipc.api.runOp)
+      .mockResolvedValueOnce(outcome({ status: "needs_confirmation", title: "Reset main to aaaaaaaa", dangers }))
+      .mockResolvedValueOnce(outcome({ message: "Reset main to aaaaaaaa." }));
+    const run = ops.runOp(1, RESET);
+    const dialog = await confirmation(1);
+    expect(dialog.title).toBe("Reset main to aaaaaaaa");
+    expect(dialog.dangers).toEqual(dangers);
+    expect(app.app.toasts).toEqual([]);
+
+    dialog.onConfirm();
+    const result = await run;
+    expect(result.status).toBe("done");
+    expect(overlays.closeDialog).toHaveBeenCalled();
+    expect(vi.mocked(ipc.api.runOp).mock.calls).toEqual([
+      [1, RESET, []],
+      [1, RESET, ["hard_reset"]],
+    ]);
+    expect(app.app.toasts.map((t) => t.message)).toEqual(["Reset main to aaaaaaaa."]);
+  });
+
+  it("sends nothing more when the confirmation is cancelled, and says nothing", async () => {
+    const asked = outcome({ status: "needs_confirmation", dangers: [danger()] });
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(asked);
+    const run = ops.runOp(1, RESET);
+    (await confirmation(1)).onCancel();
+    expect(await run).toBe(asked);
+    await settle();
+    expect(ipc.api.runOp).toHaveBeenCalledTimes(1);
+    expect(overlays.closeDialog).toHaveBeenCalled();
+    expect(app.app.toasts).toEqual([]);
+  });
+
+  it("confirms a force push with the remote commit it was shown, and asks again if the remote moved", async () => {
+    const push: OpRequest = { op: "push", branch: "main", remote: "origin", setUpstream: false, force: true, lease: null };
+    const force = (token: string, message: string) =>
+      outcome({ status: "needs_confirmation", dangers: [danger({ kind: "force_push", token, message })] });
+    vi.mocked(ipc.api.runOp)
+      .mockResolvedValueOnce(force("1111", "origin/main has 1 commit main does not."))
+      .mockResolvedValueOnce(force("2222", "origin/main has 3 commits main does not."))
+      .mockResolvedValueOnce(outcome({ message: "Force-pushed main to origin." }));
+    const run = ops.runOp(1, push);
+    (await confirmation(1)).onConfirm();
+    const again = await confirmation(2);
+    expect(again.dangers[0].message).toBe("origin/main has 3 commits main does not.");
+    again.onConfirm();
+    await run;
+    expect(vi.mocked(ipc.api.runOp).mock.calls).toEqual([
+      [1, push, []],
+      [1, { ...push, lease: "1111" }, ["force_push"]],
+      [1, { ...push, lease: "2222" }, ["force_push"]],
+    ]);
+  });
+
+  it("keeps the request as it is for dangers without a field to carry their token", async () => {
+    const drop: OpRequest = { op: "stash_drop", stash: "d".repeat(40) };
+    vi.mocked(ipc.api.runOp)
+      .mockResolvedValueOnce(outcome({ status: "needs_confirmation", dangers: [danger({ kind: "drop_stash" })] }))
+      .mockResolvedValueOnce(outcome());
+    const run = ops.runOp(1, drop);
+    (await confirmation(1)).onConfirm();
+    await run;
+    expect(vi.mocked(ipc.api.runOp).mock.calls[1]).toEqual([1, drop, ["drop_stash"]]);
+  });
+
+  it("shows a failure with git's text folded below and a link to its log entries", async () => {
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
+      outcome({
+        status: "failed",
+        message: "Your local changes would be overwritten.",
+        detail: "error: Your local changes to the following files would be overwritten by merge:\n\ta.txt",
+        logFrom: 41,
+        logTo: 43,
+      }),
+    );
+    await ops.runOp(1, RESET);
+    const [notice] = app.app.toasts;
+    expect(notice).toMatchObject({
+      kind: "error",
+      message: "Your local changes would be overwritten.",
+      detail: "error: Your local changes to the following files would be overwritten by merge:\n\ta.txt",
+      foldDetail: true,
+      persistent: true,
+    });
+    expect(notice.link?.label).toBe("Show log");
+    await notice.link!.run();
+    expect(app.app.logRequest).toEqual({ repoId: 1, from: 41 });
+  });
+
+  it("shows no notice when git stops on conflicts (the banner shows it), but applies the snapshot", async () => {
+    const stopped = outcome({ status: "stopped", message: "Merge stopped on conflicts.", detail: "CONFLICT…" });
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(stopped);
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts).toEqual([]);
+    expect(view.applySnapshot).toHaveBeenCalledWith(stopped.snapshot);
+  });
+
+  it("reports an error from the core and rejects with it", async () => {
+    vi.mocked(ipc.api.runOp).mockRejectedValueOnce(
+      new ipc.CoreError({ code: "bad_name", message: "“a..b” is not a valid branch name", detail: null }),
+    );
+    await expect(ops.runOp(1, RESET)).rejects.toThrow("not a valid branch name");
+    expect(app.app.toasts).toEqual([
+      expect.objectContaining({ kind: "error", message: "“a..b” is not a valid branch name" }),
+    ]);
+  });
+});
+
+describe("hint buttons", () => {
+  async function buttonsFor(hints: OpHint[], status: OpOutcome["status"] = "done") {
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ status, hints }));
+    await ops.runOp(1, RESET);
+    vi.mocked(ipc.api.runOp).mockReset().mockResolvedValue(outcome({ message: "Followed up." }));
+    return app.app.toasts[0].actions ?? [];
+  }
+
+  it("push: pushes the branch the core named", async () => {
+    const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin", setUpstream: true }]);
+    expect(push.label).toBe("Push");
+    await push.run();
+    expect(ipc.api.runOp).toHaveBeenCalledWith(
+      1,
+      { op: "push", branch: "main", remote: "origin", setUpstream: true, force: false, lease: null },
+      [],
+    );
+  });
+
+  it("a rejected push: fetch, pull, and a separate force push that goes through the confirmation", async () => {
+    const buttons = await buttonsFor(
+      [{ kind: "fetch" }, { kind: "pull", branch: "main" }, { kind: "force_push", branch: "main", remote: "origin" }],
+      "failed",
+    );
+    expect(buttons.map((b) => [b.label, !!b.danger])).toEqual([
+      ["Fetch", false],
+      ["Pull", false],
+      ["Force push…", true],
+    ]);
+    await buttons[0].run();
+    expect(view.fetch).toHaveBeenCalled();
+    await buttons[1].run();
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "pull", branch: "main", mode: "default" }, []);
+    await buttons[2].run();
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(
+      1,
+      { op: "push", branch: "main", remote: "origin", setUpstream: false, force: true, lease: null },
+      [],
+    );
+  });
+
+  it("choose_pull_mode: pull by merging or by rebasing", async () => {
+    const buttons = await buttonsFor([{ kind: "choose_pull_mode", branch: "main" }], "failed");
+    expect(buttons.map((b) => b.label)).toEqual(["Pull with merge", "Pull with rebase"]);
+    await buttons[1].run();
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "pull", branch: "main", mode: "rebase" }, []);
+  });
+
+  it("a follow-up that fails is reported, not thrown at the button", async () => {
+    const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin", setUpstream: false }]);
+    vi.mocked(ipc.api.runOp).mockRejectedValueOnce(new ipc.CoreError({ code: "busy", message: "Busy", detail: null }));
+    await expect(push.run()).resolves.toBeUndefined();
+    expect(app.app.toasts.at(-1)).toMatchObject({ kind: "error", message: "Busy" });
+  });
+});
+
+describe("ops.busy", () => {
+  it("is the operation running on the repository, from its snapshot", () => {
+    expect(ops.ops.busy(1)).toBeNull();
+    const op = { id: 4, title: "Push main to origin", startedAtMs: 1, queued: 2 };
+    view.snapshot = snap({ op });
+    expect(ops.ops.busy(1)).toEqual(op);
+    expect(ops.ops.busy(2)).toBeNull();
+  });
+});

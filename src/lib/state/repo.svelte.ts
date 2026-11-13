@@ -29,7 +29,9 @@ const FETCH_START_MS = 3000;
 
 /** The newer of two snapshots of one repository (`b` when they are alike). */
 function newer(a: RepoSnapshot | null, b: RepoSnapshot): RepoSnapshot {
-  if (!a || b.generation > a.generation) return b;
+  if (!a) return b;
+  if (b.seq !== a.seq) return b.seq > a.seq ? b : a;
+  if (b.generation > a.generation) return b;
   if (b.generation < a.generation) return a;
   return b.totalRows >= a.totalRows ? b : a;
 }
@@ -447,6 +449,9 @@ export class RepoView {
    */
   async applySnapshot(s: RepoSnapshot): Promise<void> {
     if (this.disposed || s.repoId !== this.repoId) return;
+    // The core numbers its snapshots of a repository (R14): an older one (an operation's
+    // outcome overtaken by an event, say) would undo what a newer one showed.
+    if (s.seq < this.snapshot.seq || (this.incoming !== null && s.seq < this.incoming.seq)) return;
     if (!this.restoreChecked && s.rootPath) this.restoreOptions(s);
     if (this.hold) {
       this.holdBack(s);
@@ -656,6 +661,11 @@ export function repoView(repoId: number, initial?: RepoSnapshot): RepoView {
   if (!view) views.set(repoId, (view = new RepoView(repoId, initial)));
   else if (initial) void view.applySnapshot(initial);
   return view;
+}
+
+/** The view of open repository `repoId`, if it has one (never makes one). */
+export function findRepoView(repoId: number): RepoView | undefined {
+  return views.get(repoId);
 }
 
 /** Disposes of the view of `repoId` (its tab closed). */

@@ -152,6 +152,18 @@ describe("closeTab", () => {
     await s.closeTab(1);
     expect(s.app.activeRepoId).toBe(3);
   });
+
+  it("keeps a tab whose repository is busy, and says why plainly", async () => {
+    const busy = "An operation is running in b: close it once it has finished.";
+    vi.mocked(ipc.api.closeRepo).mockRejectedValueOnce(coreError("busy", busy));
+    s.activate(2);
+    const saves = vi.mocked(ipc.api.saveSession).mock.calls.length;
+    await s.closeTab(2);
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2, 3]);
+    expect(s.app.activeRepoId).toBe(2);
+    expect(s.app.toasts).toEqual([expect.objectContaining({ kind: "info", message: busy })]);
+    expect(ipc.api.saveSession).toHaveBeenCalledTimes(saves);
+  });
 });
 
 describe("session", () => {
@@ -438,14 +450,14 @@ describe("settings that cannot be saved", () => {
     await s.setTheme("dark");
     expect(s.app.toasts).toHaveLength(1);
     expect(s.app.toasts[0]).toMatchObject({ kind: "error", persistent: true, detail: problem });
-    expect(s.app.toasts[0].action?.label).toBe("Reset settings");
+    expect(s.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Reset settings"]);
   });
 
   it("Reset settings moves the file aside through the core, then the notice goes", async () => {
     vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ settingsProblem: problem }));
     vi.mocked(ipc.api.resetSettings).mockResolvedValue(undefined);
     await s.init();
-    await s.app.toasts[0].action!.run();
+    await s.app.toasts[0].actions![0].run();
     expect(ipc.api.resetSettings).toHaveBeenCalledTimes(1);
     expect(s.app.toasts.map((t) => t.message)).toEqual(["Settings reset: saving again"]);
   });
@@ -454,7 +466,7 @@ describe("settings that cannot be saved", () => {
     vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ settingsProblem: problem }));
     vi.mocked(ipc.api.resetSettings).mockRejectedValue(coreError("io", "Could not move /c/state.json aside"));
     await s.init();
-    await s.app.toasts[0].action!.run();
+    await s.app.toasts[0].actions![0].run();
     expect(s.app.toasts).toHaveLength(2);
     expect(s.app.toasts[0].persistent).toBe(true);
     expect(s.app.toasts[1]).toMatchObject({ kind: "error", message: "Could not reset settings: Could not move /c/state.json aside" });

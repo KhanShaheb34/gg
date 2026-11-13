@@ -10,7 +10,9 @@
 mod danger;
 mod explain;
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -18,7 +20,7 @@ pub(crate) use danger::dangers;
 pub use explain::explain;
 
 use crate::EventSink;
-use crate::dto::{Danger, DangerKind, OpHint, OpOutcome, OpRequest, OpStatus};
+use crate::dto::{Danger, DangerKind, HeadInfo, OpHint, OpOutcome, OpRequest, OpStatus};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, GitOutput, GitRunner, TimeLimit};
@@ -171,9 +173,33 @@ fn latest_line(partial: &mut String, chunk: &[u8]) -> Option<String> {
     latest
 }
 
-/// The title of `request`, once it is known to be one that can run; else why not
-/// (`bad_name`, or `bad_request` for operations not built yet). No git runs here.
-fn check(request: &OpRequest) -> Result<String> {
+/// The future an operation's body returns.
+pub(crate) type BodyFuture<'c> = Pin<Box<dyn Future<Output = Result<Step>> + Send + 'c>>;
+
+/// An operation's body: what it runs in its turn, once its dangers (given) are confirmed.
+pub(crate) type Body =
+    Box<dyn for<'c> FnOnce(&'c OpCtx<'c>, &'c [Danger]) -> BodyFuture<'c> + Send>;
+
+/// Boxes `f` as a [`Body`] (giving the closure its signature).
+fn body<F>(f: F) -> Body
+where
+    F: for<'c> FnOnce(&'c OpCtx<'c>, &'c [Danger]) -> BodyFuture<'c> + Send + 'static,
+{
+    Box::new(f)
+}
+
+/// A request that can run: its title and its body.
+struct Prepared {
+    title: String,
+    body: Body,
+}
+
+/// Checks `request` (names, arguments, whether it is built yet) without git, and returns
+/// its title and body; `head` is the repository's HEAD as last read, for the title.
+/// `bad_name` for a bad name, `bad_request` for a bad argument or an operation not built
+/// yet. Every operation is matched here, once.
+fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
+    let _ = head;
     match request {
         OpRequest::CreateBranch {
             name,
@@ -182,7 +208,13 @@ fn check(request: &OpRequest) -> Result<String> {
         } => {
             check_branch_name(name)?;
             check_commit(at)?;
-            Ok(format!("Create branch {name}"))
+            let (name, at) = (name.clone(), at.clone());
+            Ok(Prepared {
+                title: format!("Create branch {name}"),
+                body: body(move |ctx, _| {
+                    Box::pin(async move { create_branch(ctx, &name, &at).await })
+                }),
+            })
         }
         _ => Err(CoreError::new(
             ErrorCode::BadRequest,
@@ -209,6 +241,9 @@ enum Ran {
     Unconfirmed(Vec<Danger>),
 }
 
+/// Said when an operation's body panicked.
+const STOPPED_UNEXPECTEDLY: &str = "The operation stopped unexpectedly.";
+
 impl RepoManager {
     /// Runs `request` on repository `repo_id` once the operations asked for before it have
     /// ended, and returns how it went, with the repository as it is afterwards.
@@ -224,59 +259,50 @@ impl RepoManager {
         request: OpRequest,
         confirmed: &[DangerKind],
     ) -> Result<OpOutcome> {
+        let head = self.snapshot(repo_id).await?.head;
+        let Prepared { title, body } = prepare(&request, &head)?;
         let repo = self.get(repo_id)?;
-        let title = check(&request)?;
         let op_id = self.next_op_id();
-        let (m, task_repo, confirmed) = (self.clone(), repo.clone(), confirmed.to_vec());
+        let (m, confirmed) = (self.clone(), confirmed.to_vec());
         let task = tokio::spawn(async move {
-            m.run_in_turn(&task_repo, op_id, title, &request, &confirmed)
+            m.run_in_turn(repo, op_id, title, request, confirmed, body)
                 .await
         });
-        match task.await {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                // It panicked: whatever it did is refreshed, and the repository is not left
-                // marked busy (unless a later operation is running by now).
-                let _ = self.finish_op(&repo, op_id).await;
-                Err(
-                    CoreError::new(ErrorCode::Io, "The operation stopped unexpectedly.")
-                        .with_detail(e.to_string()),
-                )
-            }
-        }
+        // Only the body can panic, and that is handled within the turn.
+        task.await.unwrap_or_else(|e| {
+            Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
+        })
     }
 
     /// Waits for the turn, then runs the operation and ends it (see [`RepoManager::run_op`]).
+    /// The body runs as a task of its own, so that if it panics the operation still ends
+    /// here, within the turn: the repository is refreshed and no longer marked busy before
+    /// the next operation starts.
     async fn run_in_turn(
         self: &Arc<Self>,
-        repo: &Arc<Repo>,
+        repo: Arc<Repo>,
         op_id: u64,
         title: String,
-        request: &OpRequest,
-        confirmed: &[DangerKind],
+        request: OpRequest,
+        confirmed: Vec<DangerKind>,
+        body: Body,
     ) -> Result<OpOutcome> {
         repo.op_waiting
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.op_queue_changed(repo).await;
+        self.op_queue_changed(&repo).await;
         let _turn = repo.op_queue.lock().await;
         repo.op_waiting
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        self.start_op(repo, op_id, &title).await?;
+        self.start_op(&repo, op_id, &title).await?;
 
-        let ctx = OpCtx {
-            repo,
-            runner: repo.runner.for_op(op_id),
-            cwd: repo.worktree.clone(),
-            op_id,
-            sink: self.sink.as_ref(),
-            net_limit: self.net_limit(),
-        };
-        let ran = run_checked(&ctx, request, confirmed).await;
-        let delay = self.op_delay();
-        if !delay.is_zero() {
-            tokio::time::sleep(delay).await;
-        }
-        let snapshot = self.finish_op(repo, op_id).await;
+        let inner = tokio::spawn({
+            let (m, repo) = (self.clone(), repo.clone());
+            async move { m.run_body(&repo, op_id, &request, &confirmed, body).await }
+        });
+        let ran = inner.await.unwrap_or_else(|e| {
+            Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
+        });
+        let snapshot = self.finish_op(&repo, op_id).await;
         let ran = ran?;
         let snapshot = snapshot?;
 
@@ -321,26 +347,40 @@ impl RepoManager {
         }
         Ok(outcome)
     }
-}
 
-/// Checks `request` for dangers and, if every one is confirmed, runs it.
-async fn run_checked(
-    ctx: &OpCtx<'_>,
-    request: &OpRequest,
-    confirmed: &[DangerKind],
-) -> Result<Ran> {
-    let dangers = dangers(ctx, request).await?;
-    if !all_confirmed(&dangers, confirmed) {
-        return Ok(Ran::Unconfirmed(dangers));
+    /// Checks `request` for dangers and, if every one is confirmed, runs its `body` in the
+    /// active worktree.
+    async fn run_body(
+        &self,
+        repo: &Arc<Repo>,
+        op_id: u64,
+        request: &OpRequest,
+        confirmed: &[DangerKind],
+        body: Body,
+    ) -> Result<Ran> {
+        let ctx = OpCtx {
+            repo,
+            runner: repo.runner.for_op(op_id),
+            cwd: repo.worktree.clone(),
+            op_id,
+            sink: self.sink.as_ref(),
+            net_limit: self.net_limit(),
+        };
+        let dangers = dangers(&ctx, request).await?;
+        if !all_confirmed(&dangers, confirmed) {
+            return Ok(Ran::Unconfirmed(dangers));
+        }
+        let step = body(&ctx, &dangers).await;
+        let delay = self.op_delay();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        #[cfg(any(test, feature = "testutil"))]
+        if self.take_op_panic() {
+            panic!("test: the operation's body panicked");
+        }
+        step.map(Ran::Step)
     }
-    match request {
-        OpRequest::CreateBranch { name, at, .. } => create_branch(ctx, name, at).await,
-        _ => Err(CoreError::new(
-            ErrorCode::BadRequest,
-            "This operation is not implemented yet.",
-        )),
-    }
-    .map(Ran::Step)
 }
 
 /// Whether every kind in `dangers` is in `confirmed`.
@@ -429,28 +469,26 @@ mod tests {
 
     #[test]
     fn unbuilt_operations_and_bad_input_are_refused_without_git() {
-        let err = check(&OpRequest::Continue).unwrap_err();
-        assert_eq!(err.code, ErrorCode::BadRequest);
-        let with_checkout = OpRequest::CreateBranch {
-            name: "x".into(),
-            at: "abc".into(),
-            checkout: true,
+        let head = HeadInfo {
+            branch: Some("main".into()),
+            hash: None,
         };
-        assert_eq!(
-            check(&with_checkout).unwrap_err().code,
-            ErrorCode::BadRequest
-        );
+        let refused = |r: &OpRequest| prepare(r, &head).err().expect("refused").code;
+        assert_eq!(refused(&OpRequest::Continue), ErrorCode::BadRequest);
         let option_like = OpRequest::CreateBranch {
             name: "x".into(),
             at: "--all".into(),
             checkout: false,
         };
-        assert_eq!(check(&option_like).unwrap_err().code, ErrorCode::BadRequest);
+        assert_eq!(refused(&option_like), ErrorCode::BadRequest);
         let ok = OpRequest::CreateBranch {
             name: "x".into(),
             at: "abc".into(),
             checkout: false,
         };
-        assert_eq!(check(&ok).unwrap(), "Create branch x");
+        assert_eq!(
+            prepare(&ok, &head).map(|p| p.title).expect("ok"),
+            "Create branch x"
+        );
     }
 }

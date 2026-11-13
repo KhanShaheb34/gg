@@ -455,3 +455,73 @@ async fn repo_prefs_round_trip_and_default() {
         json!({ "mergeNoFf": false })
     );
 }
+
+/// A body that panics still ends its operation within its turn: the repository is
+/// refreshed and no longer busy, and the operation after it runs, whether or not the
+/// caller is still waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_panicking_body_still_ends_its_operation() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    // The caller waits.
+    h.m.panic_next_op();
+    let err =
+        h.m.run_op(id, create_branch("a", &head), &[])
+            .await
+            .expect_err("the body panicked");
+    assert_eq!(err.code, ErrorCode::Io);
+    let snap = h.m.snapshot(id).await.unwrap();
+    assert_eq!(snap.op, None);
+    assert!(
+        snap.branches.contains(&"a".to_owned()),
+        "refreshed: {snap:?}"
+    );
+
+    // The caller goes away while the body runs; another operation is asked for meanwhile.
+    h.m.set_op_delay(Duration::from_millis(400));
+    h.m.panic_next_op();
+    let caller = tokio::spawn({
+        let (m, head) = (h.m.clone(), head.clone());
+        async move { m.run_op(id, create_branch("b", &head), &[]).await }
+    });
+    let running = h
+        .sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"]["title"] == "Create branch b"
+        })
+        .await
+        .expect("published");
+    let next = tokio::spawn({
+        let (m, head) = (h.m.clone(), head.clone());
+        async move { m.run_op(id, create_branch("c", &head), &[]).await }
+    });
+    caller.abort();
+    let next = tokio::time::timeout(TIMEOUT, next)
+        .await
+        .expect("the next operation is not stuck")
+        .unwrap()
+        .expect("the next operation runs");
+    assert_eq!(next.status, OpStatus::Done, "{next:?}");
+    assert_eq!(next.snapshot.op, None);
+    assert!(next.snapshot.branches.contains(&"b".to_owned()));
+
+    // b ended (refreshed, op cleared) before c started.
+    let changes = h.changes(id);
+    let b_op = running.1["op"]["id"].clone();
+    let b_ended = changes
+        .iter()
+        .position(|v| v["op"].is_null() && v["branches"].as_array().unwrap().contains(&json!("b")))
+        .expect("b's end is published");
+    let c_started = changes
+        .iter()
+        .position(|v| v["op"]["id"] == next.op_id)
+        .expect("c is published");
+    assert!(b_ended < c_started, "{changes:#?}");
+    assert!(
+        changes[..b_ended].iter().any(|v| v["op"]["id"] == b_op),
+        "{changes:#?}"
+    );
+}

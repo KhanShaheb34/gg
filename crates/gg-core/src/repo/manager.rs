@@ -78,6 +78,9 @@ pub struct RepoManager {
     /// Tests only: how long every operation waits after its git commands, in milliseconds.
     #[cfg(any(test, feature = "testutil"))]
     op_delay_ms: AtomicU64,
+    /// Tests only: the next operation's body panics after running.
+    #[cfg(any(test, feature = "testutil"))]
+    op_panic: AtomicBool,
 }
 
 impl Drop for RepoManager {
@@ -327,6 +330,8 @@ impl RepoManager {
             last_op_id: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             op_delay_ms: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testutil"))]
+            op_panic: AtomicBool::new(false),
         })
     }
 
@@ -836,6 +841,19 @@ impl RepoManager {
     pub fn set_op_delay(&self, delay: Duration) {
         self.op_delay_ms
             .store(duration_ms(delay), Ordering::Relaxed);
+    }
+
+    /// Makes the next operation's body panic once it has run, after its test delay (tests
+    /// only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn panic_next_op(&self) {
+        self.op_panic.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the body that just ran is to panic (see [`RepoManager::panic_next_op`]).
+    #[cfg(any(test, feature = "testutil"))]
+    pub(crate) fn take_op_panic(&self) -> bool {
+        self.op_panic.swap(false, Ordering::SeqCst)
     }
 
     /// The test delay of [`RepoManager::set_op_delay`]; zero outside tests.

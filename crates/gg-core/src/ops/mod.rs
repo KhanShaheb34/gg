@@ -26,7 +26,7 @@ use crate::dto::{
     ResetMode,
 };
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::git::names::check_branch_name;
+use crate::git::names::{check_branch_name, check_tag_name};
 use crate::git::runner::{CmdKind, GitOutput, GitRunner, TimeLimit};
 use crate::repo::{Repo, RepoManager};
 
@@ -346,6 +346,35 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
                     local::short(&hash)
                 ),
                 body(move |ctx, _| Box::pin(async move { local::reset(ctx, &hash, mode).await })),
+            )
+        }
+        OpRequest::CreateTag {
+            name,
+            hash,
+            message,
+        } => {
+            check_tag_name(&name)?;
+            check_commit(&hash)?;
+            if message.as_ref().is_some_and(|m| m.trim().is_empty()) {
+                return Err(CoreError::new(
+                    ErrorCode::BadRequest,
+                    "An annotated tag needs a message.",
+                ));
+            }
+            (
+                format!("Create tag {name}"),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        local::create_tag(ctx, &name, &hash, message.as_deref()).await
+                    })
+                }),
+            )
+        }
+        OpRequest::DeleteTag { name, remote: None } => {
+            check_arg(&name, "tag")?;
+            (
+                format!("Delete tag {name}"),
+                body(move |ctx, _| Box::pin(async move { local::delete_tag(ctx, &name).await })),
             )
         }
         _ => {

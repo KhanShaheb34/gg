@@ -1689,3 +1689,159 @@ async fn hard_reset_needs_confirmation() {
             .any(|r| r.args == ["reset", "--hard", first.as_str()])
     );
 }
+
+// ---- Local operations: tags ----
+
+fn create_tag(name: &str, hash: &str, message: Option<&str>) -> OpRequest {
+    OpRequest::CreateTag {
+        name: name.to_owned(),
+        hash: hash.to_owned(),
+        message: message.map(str::to_owned),
+    }
+}
+
+#[tokio::test]
+async fn create_tag_lightweight_and_annotated() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    let second = repo.commit("two");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, create_tag("v1", &first, None)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Create tag v1");
+    assert_eq!(repo.git(&["cat-file", "-t", "refs/tags/v1"]), "commit");
+    assert_eq!(repo.git(&["rev-parse", "refs/tags/v1"]), first);
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["tag", "--", "v1", first.as_str()])
+    );
+
+    // A message that looks like an option is still a message.
+    let out = h
+        .run(id, create_tag("v2", &second, Some("-release two")))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["cat-file", "-t", "refs/tags/v2"]), "tag");
+    assert_eq!(repo.git(&["rev-parse", "refs/tags/v2^{commit}"]), second);
+    assert_eq!(
+        repo.git(&["tag", "-l", "--format=%(contents:subject)", "v2"]),
+        "-release two"
+    );
+
+    let out = h.run(id, create_tag("v1", &second, None)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        out.message,
+        "A tag named \u{201c}v1\u{201d} already exists."
+    );
+    assert_eq!(repo.git(&["rev-parse", "refs/tags/v1"]), first);
+
+    for name in ["-v3", "a..b", "HEAD"] {
+        let err =
+            h.m.run_op(id, create_tag(name, &first, None), &[])
+                .await
+                .unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadName, "{name}");
+    }
+    let err =
+        h.m.run_op(id, create_tag("v4", &first, Some("  ")), &[])
+            .await
+            .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
+#[tokio::test]
+async fn delete_tag_deletes_it_locally() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    repo.git(&["tag", "v1", &head]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let request = |remote: Option<&str>| OpRequest::DeleteTag {
+        name: "v1".into(),
+        remote: remote.map(str::to_owned),
+    };
+    // On a remote too: the network part comes with the network operations.
+    let err =
+        h.m.run_op(id, request(Some("origin")), &[])
+            .await
+            .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+
+    let out = h.run(id, request(None)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Delete tag v1");
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v1"]));
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["tag", "-d", "--", "v1"])
+    );
+
+    let out = h.run(id, request(None)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(out.message.contains("not found"), "{}", out.message);
+}
+
+/// Before the first commit nothing can be checked out, merged or tagged: every request
+/// ends in a plain failure (an outcome or an error with a message), none panics or hangs.
+#[tokio::test]
+async fn empty_repository() {
+    let repo = TestRepo::new();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let hash = "0123456789abcdef0123456789abcdef01234567";
+
+    let requests = vec![
+        checkout_branch("main"),
+        OpRequest::CheckoutRemote {
+            remote_branch: "origin/main".into(),
+            local_name: "x".into(),
+        },
+        OpRequest::CheckoutCommit { hash: hash.into() },
+        create_branch("x", hash),
+        OpRequest::CreateBranch {
+            name: "x".into(),
+            at: hash.into(),
+            checkout: true,
+        },
+        // (Renaming the unborn branch itself works.)
+        OpRequest::RenameBranch {
+            branch: "nope".into(),
+            new_name: "trunk".into(),
+        },
+        delete_branch("main"),
+        merge_branch("main"),
+        merge(MergeTargetKind::Commit, hash, false, true, true),
+        rebase("main"),
+        cherry_pick(hash, None, false),
+        revert(hash, Some(1)),
+        reset(hash, ResetMode::Soft),
+        reset(hash, ResetMode::Hard),
+        create_tag("v1", hash, None),
+        OpRequest::DeleteTag {
+            name: "v1".into(),
+            remote: None,
+        },
+    ];
+    for request in requests {
+        let shown = format!("{request:?}");
+        let confirmed = [DangerKind::HardReset, DangerKind::DeleteUnmergedBranch];
+        match tokio::time::timeout(TIMEOUT, h.m.run_op(id, request, &confirmed)).await {
+            Err(_) => panic!("{shown}: did not end"),
+            Ok(Err(e)) => assert!(!e.message.is_empty(), "{shown}: {e:?}"),
+            Ok(Ok(out)) => {
+                assert_eq!(out.status, OpStatus::Failed, "{shown}: {out:?}");
+                assert!(!out.message.is_empty(), "{shown}");
+                assert_eq!(out.snapshot.op, None);
+            }
+        }
+    }
+    // Still empty, and still usable.
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "HEAD"]));
+    assert_eq!(h.m.snapshot(id).await.unwrap().op, None);
+}

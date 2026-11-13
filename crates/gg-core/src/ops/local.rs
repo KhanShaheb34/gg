@@ -454,3 +454,34 @@ pub(crate) async fn reset(ctx: &OpCtx<'_>, hash: &str, mode: ResetMode) -> Resul
     )
     .await
 }
+
+/// `tag -- <name> <hash>`, or with a message, an annotated tag:
+/// `tag -a -m <message> -- <name> <hash>`.
+pub(crate) async fn create_tag(
+    ctx: &OpCtx<'_>,
+    name: &str,
+    hash: &str,
+    message: Option<&str>,
+) -> Result<Step> {
+    let mut args = vec!["tag"];
+    if let Some(message) = message {
+        args.extend(["-a", "-m", message]);
+    }
+    args.extend(["--", name, hash]);
+    run(
+        ctx,
+        &args,
+        format!("Created tag {name} at {}.", short(hash)),
+    )
+    .await
+}
+
+/// `tag -d -- <name>`.
+pub(crate) async fn delete_tag(ctx: &OpCtx<'_>, name: &str) -> Result<Step> {
+    run(
+        ctx,
+        &["tag", "-d", "--", name],
+        format!("Deleted tag {name}."),
+    )
+    .await
+}

@@ -677,6 +677,9 @@ impl RepoManager {
             )
             .await?;
         if out.code != 0 {
+            if out.stderr.contains("dubious ownership") {
+                return Err(not_owned().with_detail(out.stderr));
+            }
             // `--show-toplevel` fails in a bare repository; ask about bareness alone.
             let bare = self
                 .runner
@@ -797,6 +800,17 @@ fn path_string(path: &Path) -> String {
 
 fn not_a_repo() -> CoreError {
     CoreError::new(ErrorCode::NotARepo, "This folder is not a git repository.")
+}
+
+/// git refuses a repository owned by another user until it is listed in `safe.directory`.
+/// The app never changes git's config itself: git's own message (the detail) gives the
+/// command.
+fn not_owned() -> CoreError {
+    CoreError::new(
+        ErrorCode::GitFailed,
+        "Git will not open this repository because its folder belongs to another user. \
+         Git's message below gives the command that marks it as safe (safe.directory).",
+    )
 }
 
 fn bare_repo() -> CoreError {

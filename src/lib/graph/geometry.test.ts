@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Edge } from "../types";
 import {
   alignedFirstRow,
+  alignSlackFor,
   autoGraphWidth,
   GRAPH_MAX_AUTO_W,
   GRAPH_MIN_AUTO_W,
@@ -364,5 +365,15 @@ describe("poolStart", () => {
         expect(alignedFirstRow(start, 26, dpr)).toBe(start);
       }
     }
+  });
+});
+
+describe("alignSlackFor", () => {
+  it("is how many rows a whole-device-pixel start may lie above a row", () => {
+    expect(alignSlackFor(1)).toBe(0);
+    expect(alignSlackFor(2)).toBe(0);
+    expect(alignSlackFor(1.5)).toBe(0);
+    expect(alignSlackFor(1.25)).toBe(1);
+    expect(alignSlackFor(1.75)).toBe(1);
   });
 });

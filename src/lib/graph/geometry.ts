@@ -438,6 +438,16 @@ export function poolStart(prev: number, first: number, step: number, rowH: numbe
   return alignedFirstRow(first < prev ? Math.max(0, first - step) : first, rowH, dpr);
 }
 
+/**
+ * The most rows `alignedFirstRow` moves a start up at pixel ratio `dpr` (0 when every row top
+ * is a whole device pixel): the extra rows a canvas starting there must cover.
+ */
+export function alignSlackFor(dpr: number): number {
+  let slack = 0;
+  for (let f = 8; f < 16; f++) slack = Math.max(slack, f - alignedFirstRow(f, ROW_H, dpr));
+  return slack;
+}
+
 /** How many of `totalRows` rows the view shows: all, unless that passes MAX_SCROLL_PX. */
 export function displayedRows(totalRows: number, rowH: number): number {
   return Math.min(totalRows, Math.floor(MAX_SCROLL_PX / rowH));

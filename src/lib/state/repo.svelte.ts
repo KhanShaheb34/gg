@@ -104,6 +104,8 @@ export class RepoView {
   pendingScroll: number | null = null;
   /** Called when rows, the row count, the selection's row or `pendingScroll` changed. */
   onChange: (() => void) | null = null;
+  /** Called with each generation shown after the first full load (perf runs listen). */
+  onGenerationShown: ((generation: number) => void) | null = null;
 
   private stopEvents: () => void;
   /** The view was disposed of (its tab closed). */
@@ -562,13 +564,7 @@ export class RepoView {
       void api.perfMark("fully-loaded", performance.now()).catch(() => {});
     }
     this.onChange?.();
-    // A perf run (the probe is on) marks the frame that shows each later generation, so the
-    // time from an on-disk change to the screen can be read from the perf log.
-    if (generationChanged && this.markedLoaded && (globalThis as { __GG_PROBE__?: object }).__GG_PROBE__) {
-      const mark = () => void api.perfMark("generation-shown", s.generation).catch(() => {});
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(mark);
-      else mark();
-    }
+    if (generationChanged && this.markedLoaded) this.onGenerationShown?.(s.generation);
   }
 
   /**

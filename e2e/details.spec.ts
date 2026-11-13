@@ -1,6 +1,7 @@
 // The commit details panel against real repositories: what it shows, moving between commits,
 // closing it, and its height.
 import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, makeRepo, test } from "./fixtures";
@@ -402,13 +403,58 @@ test("the tree's folders line up with the header; counts line up down the list",
   const folderName = (await p.getByRole("treeitem", { name: "app", exact: true }).locator(".name").boundingBox())!;
   const peaches = (await p.getByRole("treeitem", { name: "peaches", exact: true }).locator(".chevron").boundingBox())!;
   expect(Math.abs(peaches.x - (chevron.x + 14))).toBeLessThanOrEqual(1);
-  const rootFile = await p.locator('[role="treeitem"][aria-level="2"][data-file] .name').first().boundingBox();
-  expect(rootFile).not.toBeNull();
+  // Rows start at the tree's left edge; a file's name is 29 px + 14 px per level in.
+  const edge = (await p.getByRole("tree", { name: "Changed files" }).boundingBox())!.x;
+  const levelOneFile = (await p.locator('[role="treeitem"][aria-level="2"][data-file] .name').first().boundingBox())!;
+  expect(Math.abs(levelOneFile.x - (edge + 29 + 14))).toBeLessThanOrEqual(1);
+  expect(Math.abs(folderName.x - (edge + 29))).toBeLessThanOrEqual(1);
   expect(folderName.x).toBeGreaterThan(chevron.x);
 
   const bars = await p.locator("[data-file] .bar").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().x)));
   expect(bars.length).toBeGreaterThan(1);
   expect(new Set(bars).size).toBe(1);
+});
+
+test("counts of a thousand lines and more still line up with the small ones", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  const dir = gg.repoPath("details");
+  writeFileSync(path.join(dir, "big.txt"), Array.from({ length: 12_345 }, (_, i) => `line ${i}\n`).join(""));
+  writeFileSync(path.join(dir, "small.txt"), "one\n");
+  gg.git("details", "add", "-A");
+  gg.git("details", "commit", "-q", "-m", "Add a big file");
+  gg.git("details", "rm", "-q", "big.txt");
+  writeFileSync(path.join(dir, "small.txt"), "one\ntwo\n");
+  gg.git("details", "commit", "-q", "-am", "Remove the big file");
+  await page.keyboard.press("ControlOrMeta+r");
+  const p = panel(page);
+  const bars = () =>
+    p.locator("[data-file] .bar").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().x)));
+  for (const [subject, counts] of [
+    ["Add a big file", "+12345 | −0"],
+    ["Remove the big file", "+0 | −12345"],
+  ]) {
+    await rowWith(page, subject).click();
+    await expect(fileRow(p, "big.txt").locator(".counts")).toHaveText(counts);
+    expect(await bars()).toHaveLength(2);
+    expect(new Set(await bars()).size, subject).toBe(1);
+  }
+});
+
+test("the information column's fade leaves the column divider alone", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Generate the module scaffolding").click();
+  const p = panel(page);
+  const info = p.getByTestId("details-message").locator("..");
+  await expect(info).toHaveClass(/more/);
+  // The divider belongs to the files column, which is not faded.
+  expect(await info.evaluate((el) => getComputedStyle(el).borderRightWidth)).toBe("0px");
+  const files = p.getByTestId("details-files-count").locator("../..");
+  expect(await files.evaluate((el) => getComputedStyle(el).borderLeftWidth)).toBe("1px");
+  expect(await files.evaluate((el) => getComputedStyle(el).maskImage)).toBe("none");
 });
 
 test("tree items tell assistive technology where they are and what changed", async ({ gg }) => {

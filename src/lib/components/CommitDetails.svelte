@@ -403,10 +403,10 @@
     overflow: auto;
     /* The first field sits on the files header's centre line (36 px). */
     padding: 9px 16px 16px;
-    border-right: 1px solid var(--border);
   }
 
-  /* More below: the text fades out at the bottom edge. */
+  /* More below: the text fades out at the bottom edge (the divider is the files column's, so
+     it does not fade with it). */
   .info.more {
     -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
     mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
@@ -508,6 +508,7 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    border-left: 1px solid var(--border);
   }
 
   .changes-head {

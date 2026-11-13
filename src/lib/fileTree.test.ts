@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFileTree,
   compareNatural,
+  countWidths,
   fileTreeOf,
   flattenTree,
   naturalKey,
@@ -184,5 +185,36 @@ describe("cached views of a commit's files", () => {
     expect(sortedFilesOf(files)).toBe(list);
     expect(list.map((f) => f.path)).toEqual(["a/z.txt", "B.md", "src/file-8.ts", "src/file-16.ts"]);
     expect(files.map((f) => f.path)).toEqual(["src/file-16.ts", "src/file-8.ts", "a/z.txt", "B.md"]);
+  });
+
+  it("sorts the flat list in the order the tree shows its folders: docs/ before docs-site/", () => {
+    const paths = ["docs-site/index.md", "docs/a.md", "lib.d/x.ts", "lib/y.ts", "lib-z.ts"];
+    const list = sortedFilesOf(paths.map((p) => file(p))).map((f) => f.path);
+    expect(list).toEqual(["docs/a.md", "docs-site/index.md", "lib/y.ts", "lib-z.ts", "lib.d/x.ts"]);
+    const folders = fileTreeOf(paths.map((p) => file(p)))
+      .filter((n) => n.file === null)
+      .map((n) => n.name);
+    expect(folders).toEqual(["docs", "docs-site", "lib", "lib.d"]);
+  });
+});
+
+describe("countWidths", () => {
+  const counted = (additions: number | null, deletions: number | null): FileChange => ({
+    path: "x",
+    oldPath: null,
+    status: "M",
+    additions,
+    deletions,
+  });
+
+  it("is at least four characters, sign included", () => {
+    expect(countWidths([counted(1, 0), counted(null, null)])).toEqual({ add: 4, del: 4 });
+    expect(countWidths([])).toEqual({ add: 4, del: 4 });
+  });
+
+  it("fits the widest count of the commit", () => {
+    const files = [counted(12_345, 3), counted(2, 1_000)];
+    expect(countWidths(files)).toEqual({ add: 6, del: 5 });
+    expect(countWidths(files)).toBe(countWidths(files));
   });
 });

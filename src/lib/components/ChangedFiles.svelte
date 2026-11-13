@@ -9,7 +9,7 @@
 -->
 <script lang="ts">
   import { untrack } from "svelte";
-  import { fileTreeOf, flattenTree, listRowsOf, type TreeNode, type TreeRow } from "../fileTree";
+  import { countWidths, fileTreeOf, flattenTree, listRowsOf, type TreeNode, type TreeRow } from "../fileTree";
   import { visibleText } from "../format";
   import type { FileChange } from "../types";
 
@@ -33,6 +33,7 @@
   const NONE: ReadonlySet<string> = new Set();
   const closedPaths = $derived(closed.commit === commit ? closed.paths : NONE);
   const rows: TreeRow[] = $derived(tree ? flattenTree(tree, closedPaths) : listRowsOf(files));
+  const widths = $derived(countWidths(files));
 
   let scroller: HTMLDivElement | undefined = $state();
   let top = $state(0);
@@ -187,6 +188,8 @@
   tabindex="0"
   bind:this={scroller}
   bind:clientHeight={height}
+  style:--add-w="{widths.add}ch"
+  style:--del-w="{widths.del}ch"
   onscroll={() => (top = scroller!.scrollTop)}
   onkeydown={onKeydown}
 >
@@ -360,19 +363,20 @@
     color: var(--text-faint);
   }
 
-  /* Fixed widths, so the bars line up down the list (up to three digits each). */
+  /* Widths fit the commit's widest counts (countWidths), so the bars line up down the list. */
   .add,
   .del {
     display: inline-block;
-    min-width: 4ch;
   }
 
   .add {
+    min-width: var(--add-w, 4ch);
     text-align: right;
     color: var(--success);
   }
 
   .del {
+    min-width: var(--del-w, 4ch);
     color: var(--danger);
   }
 

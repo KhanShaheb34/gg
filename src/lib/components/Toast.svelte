@@ -57,9 +57,11 @@
         {/if}
       </span>
       <div class="body selectable">
-        <p class="message">{toast.message}</p>
+        <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
+             what is around it. -->
+        <p class="message"><bdi>{toast.message}</bdi></p>
         {#if toast.detail}
-          <p class="detail mono">{toast.detail}</p>
+          <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}
       </div>
       <button class="dismiss" aria-label="Dismiss notification" onclick={() => dismissToast(toast.id)}>

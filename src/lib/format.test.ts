@@ -55,6 +55,37 @@ describe("visibleText", () => {
     expect(visibleText("a\u2066b\u2069")).toBe("a\u2039U+2066\u203Ab\u2039U+2069\u203A");
   });
 
+  it("shows every character that is invisible or reorders text by its code point", () => {
+    const hidden = [
+      // C1 controls
+      [0x80, 0x85, 0x9f],
+      // soft hyphen, Arabic letter mark
+      [0xad, 0x61c],
+      // zero-width space, joiners, LRM, RLM
+      [0x200b, 0x200c, 0x200d, 0x200e, 0x200f],
+      // line and paragraph separators, bidi embeddings and overrides
+      [0x2028, 0x2029, 0x202a, 0x202e],
+      // word joiner, invisible operators, isolates
+      [0x2060, 0x2061, 0x2064, 0x2065, 0x2066, 0x2069],
+      // byte order mark / zero-width no-break space
+      [0xfeff],
+    ].flat();
+    for (const code of hidden) {
+      const hex = code.toString(16).toUpperCase().padStart(4, "0");
+      expect(visibleText(`a${String.fromCharCode(code)}b`), `U+${hex}`).toBe(`a\u2039U+${hex}\u203Ab`);
+    }
+  });
+
+  it("tells apart two paths that differ only by a zero-width character", () => {
+    const plain = "src/main.rs";
+    const sneaky = "src/ma\u200Bin.rs";
+    // Different once shown, even to someone who cannot see zero-width characters.
+    const strip = (t: string) => t.replace(/[\u200B-\u200F\u2060\uFEFF]/g, "");
+    expect(strip(visibleText(sneaky))).not.toBe(strip(visibleText(plain)));
+    expect(visibleText(sneaky)).toBe("src/ma\u2039U+200B\u203Ain.rs");
+    expect(visibleText(plain)).toBe(plain);
+  });
+
   it("leaves ordinary text, other scripts included, as it is", () => {
     for (const s of ["src/app.ts", "dir with space/\u00FCn\u00EF \u2728.txt", "\u05E9\u05DC\u05D5\u05DD.md", ""]) {
       expect(visibleText(s)).toBe(s);
@@ -67,5 +98,13 @@ describe("groupDigits", () => {
     for (const n of [0, 7, 999, 1000, 10_000, 254_301, 1_234_567, 1_000_000_000]) {
       expect(groupDigits(n)).toBe(n.toLocaleString("en-US"));
     }
+  });
+
+  it("groups huge and negative values without an exponent", () => {
+    expect(groupDigits(-1234)).toBe("-1,234");
+    expect(groupDigits(1e21)).toBe("1,000,000,000,000,000,000,000");
+    expect(groupDigits(Number.MAX_SAFE_INTEGER)).toBe("9,007,199,254,740,991");
+    expect(groupDigits(Infinity)).toBe("Infinity");
+    expect(groupDigits(NaN)).toBe("NaN");
   });
 });

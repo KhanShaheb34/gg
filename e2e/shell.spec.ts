@@ -74,6 +74,8 @@ test("opening a folder that is not a repository shows an error and no tab", asyn
   await page.goto("/");
   await openThroughPicker(page, gg.folder("plain"));
   await expect(page.getByRole("alert")).toContainText("not a git repository");
+  // The core's text is isolated, so a path cannot reorder the rest of the toast.
+  await expect(page.getByRole("alert").locator(".message > bdi")).toContainText("not a git repository");
   await expect(tabs(page)).toHaveCount(0);
   await expect(page.getByTestId("welcome")).toBeVisible();
 });

@@ -17,7 +17,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import Splitter from "../components/Splitter.svelte";
-  import { formatDate, formatDateLong, shortHash } from "../format";
+  import { formatDate, formatDateLong, groupDigits, shortHash } from "../format";
   import { hashMatch, needleOf, splitMatch } from "../search";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
@@ -693,7 +693,7 @@
     </div>
 
     {#if shown < total}
-      <p class="cap">Showing the most recent {shown.toLocaleString("en-US")} commits</p>
+      <p class="cap">Showing the most recent {groupDigits(shown)} commits</p>
     {/if}
   </div>
 

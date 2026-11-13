@@ -85,20 +85,27 @@ export function colorIndex(key: string): number {
   return (hash >>> 0) % LANE_COLORS;
 }
 
-/** C0 controls and DEL; the bidirectional embeddings, overrides and isolates. */
-const INVISIBLE = /[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g;
+/**
+ * Characters that are invisible or rearrange the text around them: C0 controls, DEL and the
+ * C1 controls; the soft hyphen; the Arabic letter mark; zero-width space, joiners and the
+ * left-to-right and right-to-left marks; line and paragraph separators; bidirectional
+ * embeddings and overrides; the word joiner, invisible operators and bidirectional isolates;
+ * and the zero-width no-break space (byte order mark).
+ */
+const INVISIBLE = /[\u0000-\u001F\u007F-\u009F\u00AD\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/g;
 
 /**
  * `text` (a path from git, say) with characters that would hide or rearrange it made
- * visible: controls as their Unicode pictures (a newline as ␊), bidirectional overrides and
- * isolates by name (‹U+202E›). For display only; copies and tooltips keep the exact text.
+ * visible (see INVISIBLE): C0 controls as their Unicode pictures (a newline as ␊), DEL as ␡,
+ * the others by code point (‹U+202E›, ‹U+200B›). For display only; copies and tooltips keep
+ * the exact text.
  */
 export function visibleText(text: string): string {
   return text.replace(INVISIBLE, (c) => {
     const code = c.charCodeAt(0);
     if (code < 0x20) return String.fromCharCode(0x2400 + code);
     if (code === 0x7f) return "\u2421";
-    return `\u2039U+${code.toString(16).toUpperCase()}\u203A`;
+    return `\u2039U+${code.toString(16).toUpperCase().padStart(4, "0")}\u203A`;
   });
 }
 
@@ -107,7 +114,10 @@ export function visibleText(text: string): string {
  * but without starting the locale machinery, which costs tens of ms on a slow machine.
  */
 export function groupDigits(n: number): string {
-  const digits = String(Math.trunc(Math.abs(n)));
+  if (!Number.isFinite(n)) return String(n);
+  const whole = Math.trunc(Math.abs(n));
+  // From 1e21 up, String() writes an exponent; BigInt writes every digit.
+  const digits = whole < 1e21 ? String(whole) : BigInt(whole).toString();
   let out = "";
   for (let i = digits.length; i > 0; i -= 3) out = digits.slice(Math.max(0, i - 3), i) + (out ? `,${out}` : "");
   return (n < 0 ? "-" : "") + out;

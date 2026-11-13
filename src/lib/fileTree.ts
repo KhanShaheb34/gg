@@ -27,6 +27,7 @@ export function naturalKey(name: string): string {
 }
 
 const isDigit = (c: number) => c >= 48 && c <= 57;
+const SLASH = 47;
 
 /**
  * Compares two names by their keys (`naturalKey`): runs of digits by their value
@@ -35,7 +36,7 @@ const isDigit = (c: number) => c >= 48 && c <= 57;
  *
  * For ASCII names this matches what `Intl.Collator(numeric, base)` gave, except that
  * punctuation sorts by code (`a-b`, `a.b` before digits; `a_b` after them) rather than all
- * before digits. Other letters sort by code point after ASCII ones (`é` after `z`), and
+ * before digits, and `/` before everything (so whole paths sort folder by folder). Other letters sort by code point after ASCII ones (`é` after `z`), and
  * accents are not ignored: cheap and stable, which matters with ten thousand files.
  */
 export function compareNatural(a: string, b: string, rawA: string, rawB: string): number {
@@ -65,7 +66,13 @@ export function compareNatural(a: string, b: string, rawA: string, rawB: string)
       j = ej;
       continue;
     }
-    if (ca !== cb) return ca - cb;
+    if (ca !== cb) {
+      // A path's `/` sorts before every other character, so a folder's paths come right
+      // after the folder (`docs/a` before `docs-site/b`), in the order the tree shows them.
+      if (ca === SLASH) return -1;
+      if (cb === SLASH) return 1;
+      return ca - cb;
+    }
     i++;
     j++;
   }
@@ -186,4 +193,25 @@ export function listRowsOf(files: FileChange[]): TreeRow[] {
     listCache.set(files, rows);
   }
   return rows;
+}
+
+const widthCache = new WeakMap<FileChange[], { add: number; del: number }>();
+
+/**
+ * How many characters the `+a` and `−d` counts of `files` need (sign included, at least 4),
+ * so the bars between them line up down the list whatever the counts; kept with the list.
+ */
+export function countWidths(files: FileChange[]): { add: number; del: number } {
+  let widths = widthCache.get(files);
+  if (!widths) {
+    let add = 0;
+    let del = 0;
+    for (const f of files) {
+      add = Math.max(add, f.additions ?? 0);
+      del = Math.max(del, f.deletions ?? 0);
+    }
+    widths = { add: Math.max(4, String(add).length + 1), del: Math.max(4, String(del).length + 1) };
+    widthCache.set(files, widths);
+  }
+  return widths;
 }

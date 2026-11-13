@@ -5,6 +5,7 @@
 
 mod dispatch;
 pub mod dto;
+mod editor;
 pub mod error;
 pub mod git;
 pub mod graph;

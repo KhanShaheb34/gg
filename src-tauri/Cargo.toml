@@ -11,6 +11,10 @@ publish = false
 name = "gitgraph_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Measurement hooks for scripts/perf.sh (GG_PERF_SCROLL); not in a normal build.
+perf = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

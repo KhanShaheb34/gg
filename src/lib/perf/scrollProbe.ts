@@ -115,3 +115,49 @@ export async function runScrollProbe(
   probe.summary = summarize(deltas, probe, skeletons);
   return probe.summary;
 }
+
+/** Click feedback: from the click to the start of the frame that paints the selection. */
+export type ClickSummary = { clicks: number; p50: number; p95: number; max: number };
+
+const nextFrame = () => new Promise<number>((resolve) => requestAnimationFrame(() => resolve(performance.now())));
+
+/**
+ * Clicks `count` different visible rows of the graph in `scroller` (a `click` event on the
+ * row's subject, as the graph handles selection on click), each time measuring from just
+ * before the event to the first animation frame in which the row is selected, i.e. the
+ * frame that paints it. Rows are clicked 100 ms apart.
+ */
+export async function runClickProbe(scroller: HTMLElement, count = 20): Promise<ClickSummary> {
+  const latencies: number[] = [];
+  const top = scroller.querySelector("[data-header]")?.getBoundingClientRect().bottom ?? 0;
+  const bottom = scroller.getBoundingClientRect().bottom;
+  for (let k = 0; k < count; k++) {
+    const rows = [...scroller.querySelectorAll<HTMLElement>('[role="row"][aria-busy="false"]:not([hidden])')].filter(
+      (row) => {
+        const r = row.getBoundingClientRect();
+        return r.top >= top && r.bottom <= bottom && row.getAttribute("aria-selected") !== "true";
+      },
+    );
+    const row = rows[k % Math.max(1, rows.length)];
+    const subject = row?.querySelector<HTMLElement>(".subject");
+    if (!row || !subject) break;
+    const index = row.dataset.index;
+    const started = performance.now();
+    subject.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    for (let f = 0; f < 60; f++) {
+      const at = await nextFrame();
+      const now = scroller.querySelector(`[role="row"][data-index="${index}"]`);
+      if (now?.getAttribute("aria-selected") === "true") {
+        latencies.push(at - started);
+        break;
+      }
+    }
+    await sleep(100);
+  }
+  return {
+    clicks: latencies.length,
+    p50: percentile(latencies, 50),
+    p95: percentile(latencies, 95),
+    max: latencies.length ? Math.max(...latencies) : 0,
+  };
+}

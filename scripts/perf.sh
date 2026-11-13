@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Measures the release app (macOS) on one repository and prints a table.
 #
-#   scripts/perf.sh [--no-build] [--runs N] [--scroll | --still] <repo>
+#   scripts/perf.sh [--no-build] [--runs N] [--scroll | --still | --mixed] <repo>
 #
-# Builds the bundle (`pnpm tauri build --bundles app`, skipped with --no-build), then launches
-# it N times (default 6), one at a time, with `open -n -a GitGraph.app --env ...` (GG_OPEN=<repo>,
-# GG_PERF_LOG, GG_PERF_SCROLL), the way a user's launch goes through LaunchServices:
+# Builds the bundle with its measurement hooks (`pnpm tauri build --bundles app --features
+# perf`, skipped with --no-build), then launches it N times (default 6), one at a time, with
+# `open -n -a GitGraph.app --env ...`, the way a user's launch goes through LaunchServices.
+# Every launch gets its own empty config folder (GG_CONFIG_DIR), so the user's own app state
+# is never read or changed and no saved session adds tabs. The script refuses to run while
+# any copy of the app (bundle id dev.gitgraph.desktop) is running.
 #
 # - Launch: the wall-clock time (unix ms) is taken right before `open` runs ("spawn"). The app
 #   appends `name<TAB>ms since navigation start<TAB>unix ms` to the perf log for each mark,
@@ -14,16 +17,17 @@
 #   load. (Executing the binary directly from a shell does not bring its window forward on
 #   current macOS; a window that stays hidden behind others gets no animation frames, so
 #   `first-rows`, which is marked from one, may never come. `open` activates it like a click
-#   in the Dock does.)
-# - Idle (without --scroll): after fully-loaded, waits 20 s with the window open, then
-#   measures the CPU time used over the next 10 s by the app and its WebKit helpers (from
-#   their cumulative `ps -o time` before and after, so it is an exact average), and their
-#   memory: physical footprint (`footprint`) and resident size (`ps -o rss`), summed.
+#   in the Dock does.) Keep the screen unlocked and the window uncovered.
+# - Idle (default): after fully-loaded, waits 20 s with the window open, then measures the
+#   CPU time used over the next 10 s by the app and its WebKit helpers (from their cumulative
+#   `ps -o time` before and after, so it is an exact average), and their memory: physical
+#   footprint (`footprint`) and resident size (`ps -o rss`), summed.
 # - Scroll (--scroll): GG_PERF_SCROLL=1 makes the app scroll the graph top to bottom in 200
-#   steps over 6 s after fully-loaded and log frame-time marks; their values are printed,
-#   then memory is measured as above (no idle wait), and the footprint again 30 s later.
-# - Still (--still): the control for --scroll: GG_PERF_SCROLL=still records frame times for
-#   the same 6 s without scrolling, showing the engine's and machine's own frame jitter.
+#   steps over 6 s after fully-loaded, then click 20 visible rows, and log frame-time and
+#   click marks; memory is measured right after and again 30 s later, per process.
+# - Still (--still): the control for --scroll: GG_PERF_SCROLL=still records frames for the
+#   same 6 s without scrolling (then the same clicks).
+# - Mixed (--mixed): N still and N scroll launches, alternating, so both see the same load.
 #
 # WebKit helpers: WKWebView runs its page in XPC services (com.apple.WebKit.WebContent,
 # .Networking, .GPU) whose parent is launchd, not the app. They are matched by "responsible
@@ -33,53 +37,47 @@
 # and warns if it does not find exactly one of each kind.
 #
 # The first launch is listed separately (right after a build it is the first launch of that
-# binary: cold-ish); medians and minimums are over the other runs. The machine's load
-# average is printed with every run.
-#
-# The app's config folder is moved aside for the measurement (so no saved session opens other
-# tabs) and put back afterwards.
+# binary: cold-ish); medians, minimums and maximums are over the other launches, per mode.
+# The machine's load average is printed with every launch.
 set -euo pipefail
 
 build=1
 runs=6
-scroll=0
-mode=0
+modes="0"
 while [ $# -gt 0 ]; do
   case $1 in
     --no-build) build=0; shift ;;
     --runs) runs=$2; shift 2 ;;
-    --scroll) scroll=1; mode=1; shift ;;
-    --still) scroll=1; mode=still; shift ;;
+    --scroll) modes="1"; shift ;;
+    --still) modes="still"; shift ;;
+    --mixed) modes="still 1"; shift ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
 if [ $# -ne 1 ] || [ ! -d "$1" ]; then
-  echo "usage: $0 [--no-build] [--runs N] [--scroll | --still] <repo>" >&2
+  echo "usage: $0 [--no-build] [--runs N] [--scroll | --still | --mixed] <repo>" >&2
   exit 2
 fi
 repo=$(cd "$1" && pwd)
 root=$(cd "$(dirname "$0")/.." && pwd)
 bundle=$root/target/release/bundle/macos/GitGraph.app
 app=$bundle/Contents/MacOS/gitgraph
+bundle_id=dev.gitgraph.desktop
 
+if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "/GitGraph.app/Contents/MacOS/gitgraph" > /dev/null; then
+  echo "GitGraph ($bundle_id) is running; quit every copy of it first" >&2
+  exit 1
+fi
 if [ "$build" = 1 ]; then
-  (cd "$root" && CARGO_INCREMENTAL=0 pnpm tauri build --bundles app >&2)
+  (cd "$root" && CARGO_INCREMENTAL=0 pnpm tauri build --bundles app --features perf >&2)
 fi
 [ -x "$app" ] || { echo "no app at $app (build it first)" >&2; exit 1; }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/gg-perf.XXXXXX")
-config="$HOME/Library/Application Support/dev.gitgraph.desktop"
-saved=""
-if [ -e "$config" ]; then
-  saved="$work/config-backup"
-  mv "$config" "$saved"
-fi
 pid=""
 cleanup() {
   if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
-  rm -rf "$config"
-  if [ -n "$saved" ]; then mv "$saved" "$config"; fi
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -122,16 +120,18 @@ footprint_mb() {
 }
 rss_mb() { ps -o rss= -p "$1" | awk '{ printf "%.1f\n", $1 / 1024 }'; }
 name_of() { ps -o comm= -p "$1" | sed 's/.*\.WebKit\./WebKit./; s/.*\/gitgraph$/gitgraph/'; }
-# Median and minimum of the numbers on stdin.
-stats() { sort -n | awk '{ v[NR] = $1 } END {
-  if (NR == 0) { print "-\t-"; exit }
-  m = NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2
-  printf "%.2f\t%.2f\n", m, v[1] }'; }
-
-if pgrep -f "^$app" > /dev/null; then
-  echo "GitGraph is already running from $bundle; quit it first" >&2
-  exit 1
-fi
+# Footprint of the app and its helpers: prints "total<TAB>name=MB name=MB ...".
+footprints() {
+  # Called as `IFS=<tab> read ... < <(footprints ...)`, which hands it that IFS.
+  local IFS=$' \t\n' total=0 detail="" p f
+  for p in $1 $(helpers_of "$1"); do
+    f=$(footprint_mb "$p")
+    total=$(awk -v a="$total" -v b="${f:-0}" 'BEGIN { print a + b }')
+    detail="$detail $(name_of "$p")=${f}"
+  done
+  printf '%s\t%s\n' "$total" "$detail"
+}
+mode_name() { case $1 in 0) echo idle ;; 1) echo scroll ;; *) echo "$1" ;; esac; }
 
 echo "repo: $repo ($(git -C "$repo" rev-list --all --count) commits)"
 echo "machine: $(sysctl -n machdep.cpu.brand_string), $(sysctl -n hw.ncpu) cores," \
@@ -139,103 +139,106 @@ echo "machine: $(sysctl -n machdep.cpu.brand_string), $(sysctl -n hw.ncpu) cores
 echo "bundle: $(du -sh "$bundle" | cut -f1) ($bundle)"
 echo
 
+# One line per value: launch, mode, key, value.
 results=$work/results.tsv
 : > "$results"
-printf 'run\tload (1/5/15 min)\tspawn->first-rows\tspawn->fully-loaded\tnav->first-rows\tnav->fully-loaded\tidle CPU %%\tfootprint MB\tRSS MB\n'
-for run in $(seq 1 "$runs"); do
-  rm -rf "$config"
-  log=$work/perf-$run.log
-  run_load=$(load)
-  spawn=$(now_ms)
-  open -n -a "$bundle" --env GG_OPEN="$repo" --env GG_PERF_LOG="$log" --env GG_PERF_SCROLL="$mode"
-  pid=$(pgrep -n -f "^$app" || true)
-  [ -n "$pid" ] || { echo "run $run: the app did not start" >&2; exit 1; }
-  for m in first-rows fully-loaded; do
-    if ! wait_mark "$log" $m 60; then
-      echo "run $run: no $m mark within 60 s" >&2
-      exit 1
-    fi
-  done
-  first=$(( $(mark "$log" first-rows 3) - spawn ))
-  loaded=$(( $(mark "$log" fully-loaded 3) - spawn ))
-  nav_first=$(mark "$log" first-rows)
-  nav_loaded=$(mark "$log" fully-loaded)
-
-  helpers=$(helpers_of "$pid")
-  if [ "$scroll" = 1 ]; then
-    wait_mark "$log" scroll-done 60 || { echo "run $run: no scroll-done mark" >&2; exit 1; }
-    cpu="-"
-  else
-    sleep 20
-    c0=$(cpu_secs $pid $helpers)
-    for p in $pid $helpers; do echo "$p $(cpu_secs $p)"; done > "$work/cpu0"
-    t0=$(now_ms)
-    sleep 10
-    c1=$(cpu_secs $pid $helpers)
-    t1=$(now_ms)
-    cpu=$(awk -v a="$c0" -v b="$c1" -v t="$(( t1 - t0 ))" 'BEGIN { printf "%.2f", (b - a) * 100000 / t }')
-    cpu_detail=$(while read -r p c; do
-      awk -v n="$(name_of "$p")" -v a="$c" -v b="$(cpu_secs "$p")" -v t="$(( t1 - t0 ))" \
-        'BEGIN { printf " %s=%.2f%%", n, (b - a) * 100000 / t }'
-    done < "$work/cpu0")
-  fi
-  helpers=$(helpers_of "$pid")
-  foot=0; rss=0; detail=""; kinds=""
-  for p in $pid $helpers; do
-    f=$(footprint_mb "$p"); r=$(rss_mb "$p"); n=$(name_of "$p")
-    foot=$(awk -v a="$foot" -v b="${f:-0}" 'BEGIN { print a + b }')
-    rss=$(awk -v a="$rss" -v b="${r:-0}" 'BEGIN { print a + b }')
-    detail="$detail $n[$p]=${f}MB"
-    kinds="$kinds $n"
-  done
-  printf '%s\t%s\t%s ms\t%s ms\t%s ms\t%s ms\t%s\t%s\t%s\n' \
-    "$run" "$run_load" "$first" "$loaded" "${nav_first%.*}" "${nav_loaded%.*}" "$cpu" "$foot" "$rss"
-  echo "    processes:$detail"
-  [ "$scroll" = 1 ] || echo "    idle CPU:$cpu_detail"
-  for k in WebKit.WebContent WebKit.Networking WebKit.GPU; do
-    c=$(echo "$kinds" | tr ' ' '\n' | grep -c "^$k\$" || true)
-    [ "$c" = 1 ] || echo "    warning: found $c $k processes for this launch"
-  done
-  if [ "$scroll" = 1 ]; then
-    echo "    scroll:" $(awk -F'\t' '$1 ~ /^scroll-/ && $1 != "scroll-done" { printf "%s=%s ", substr($1, 8), $2 }' "$log")
-    awk -F'\t' '$1 ~ /^scroll-/ && $1 != "scroll-done" { print substr($1, 8) "\t" $2 }' "$log" |
-      sed "s/^/$run\tscroll-/" >> "$results"
-    # WebKit drops graphics memory (tiles) some time after scrolling; measure again.
-    sleep 30
-    later=0
-    for p in $pid $(helpers_of "$pid"); do
-      later=$(awk -v a="$later" -v b="$(footprint_mb "$p")" 'BEGIN { print a + b }')
+printf 'run\tmode\tload (1/5/15 min)\tspawn->first-rows\tspawn->fully-loaded\tnav->first-rows\tnav->fully-loaded\tidle CPU %%\tfootprint MB\tRSS MB\n'
+run=0
+for _ in $(seq 1 "$runs"); do
+  for mode in $modes; do
+    run=$((run + 1))
+    name=$(mode_name "$mode")
+    log=$work/perf-$run.log
+    run_load=$(load)
+    spawn=$(now_ms)
+    open -n -a "$bundle" --env GG_OPEN="$repo" --env GG_PERF_LOG="$log" \
+      --env GG_PERF_SCROLL="$mode" --env GG_CONFIG_DIR="$work/config-$run"
+    pid=$(pgrep -n -f "^$app" || true)
+    [ -n "$pid" ] || { echo "run $run: the app did not start" >&2; exit 1; }
+    for m in first-rows fully-loaded; do
+      if ! wait_mark "$log" $m 60; then
+        echo "run $run: no $m mark within 60 s (screen locked or window covered?)" >&2
+        exit 1
+      fi
     done
-    echo "    footprint 30 s later: $later MB"
-    printf '%s	foot30	%s\n' "$run" "$later" >> "$results"
-  fi
-  printf '%s\tfirst\t%s\n%s\tloaded\t%s\n%s\tcpu\t%s\n%s\tfoot\t%s\n%s\trss\t%s\n' \
-    "$run" "$first" "$run" "$loaded" "$run" "$cpu" "$run" "$foot" "$run" "$rss" >> "$results"
+    first=$(( $(mark "$log" first-rows 3) - spawn ))
+    loaded=$(( $(mark "$log" fully-loaded 3) - spawn ))
+    nav_first=$(mark "$log" first-rows)
+    nav_loaded=$(mark "$log" fully-loaded)
 
-  kill "$pid"
-  # Let the app and its WebKit helpers exit before the next launch.
-  for _ in $(seq 1 40); do
-    kill -0 "$pid" 2>/dev/null || [ -n "$(helpers_of "$pid")" ] || break
-    sleep 0.25
+    helpers=$(helpers_of "$pid")
+    cpu="-"
+    cpu_detail=""
+    if [ "$mode" = 0 ]; then
+      sleep 20
+      c0=$(cpu_secs $pid $helpers)
+      for p in $pid $helpers; do echo "$p $(cpu_secs $p)"; done > "$work/cpu0"
+      t0=$(now_ms)
+      sleep 10
+      c1=$(cpu_secs $pid $helpers)
+      t1=$(now_ms)
+      cpu=$(awk -v a="$c0" -v b="$c1" -v t="$(( t1 - t0 ))" 'BEGIN { printf "%.2f", (b - a) * 100000 / t }')
+      cpu_detail=$(while read -r p c; do
+        awk -v n="$(name_of "$p")" -v a="$c" -v b="$(cpu_secs "$p")" -v t="$(( t1 - t0 ))" \
+          'BEGIN { printf " %s=%.2f%%", n, (b - a) * 100000 / t }'
+      done < "$work/cpu0")
+    else
+      wait_mark "$log" scroll-done 90 || { echo "run $run: no scroll-done mark" >&2; exit 1; }
+    fi
+    helpers=$(helpers_of "$pid")
+    rss=0; kinds=""
+    for p in $pid $helpers; do
+      rss=$(awk -v a="$rss" -v b="$(rss_mb "$p")" 'BEGIN { print a + b }')
+      kinds="$kinds $(name_of "$p")"
+    done
+    IFS=$'\t' read -r foot detail < <(footprints "$pid")
+    printf '%s\t%s\t%s\t%s ms\t%s ms\t%s ms\t%s ms\t%s\t%s\t%s\n' "$run" "$name" "$run_load" \
+      "$first" "$loaded" "${nav_first%.*}" "${nav_loaded%.*}" "$cpu" "$foot" "$rss"
+    echo "    footprint MB:$detail"
+    [ -z "$cpu_detail" ] || echo "    idle CPU:$cpu_detail"
+    for k in WebKit.WebContent WebKit.Networking WebKit.GPU; do
+      c=$(echo "$kinds" | tr ' ' '\n' | grep -c "^$k\$" || true)
+      [ "$c" = 1 ] || echo "    warning: found $c $k processes for this launch"
+    done
+    {
+      printf '%s\t%s\t%s\t%s\n' "$run" "$name" first "$first" "$run" "$name" loaded "$loaded" \
+        "$run" "$name" cpu "$cpu" "$run" "$name" foot "$foot" "$run" "$name" rss "$rss"
+      for d in $detail; do printf '%s\t%s\tfoot-%s\t%s\n' "$run" "$name" "${d%%=*}" "${d#*=}"; done
+    } >> "$results"
+    if [ "$mode" != 0 ]; then
+      echo "    probe:" $(awk -F'\t' '$1 ~ /^(scroll|click)-/ && $1 != "scroll-done" { printf "%s=%s ", $1, $2 }' "$log")
+      awk -F'\t' -v r="$run" -v m="$name" '$1 ~ /^(scroll|click)-/ && $1 != "scroll-done" { print r "\t" m "\t" $1 "\t" $2 }' "$log" >> "$results"
+      # WebKit drops graphics memory (tiles) some time after scrolling; measure again.
+      sleep 30
+      IFS=$'\t' read -r later detail < <(footprints "$pid")
+      echo "    footprint 30 s later: $later MB:$detail"
+      printf '%s\t%s\tfoot30\t%s\n' "$run" "$name" "$later" >> "$results"
+      for d in $detail; do printf '%s\t%s\tfoot30-%s\t%s\n' "$run" "$name" "${d%%=*}" "${d#*=}"; done >> "$results"
+    fi
+
+    kill "$pid"
+    # Let the app and its WebKit helpers exit before the next launch.
+    for _ in $(seq 1 40); do
+      kill -0 "$pid" 2>/dev/null || [ -n "$(helpers_of "$pid")" ] || break
+      sleep 0.25
+    done
+    pid=""
+    sleep 2
   done
-  pid=""
-  sleep 2
 done
 
 echo
-if [ "$runs" -gt 1 ]; then
-  echo "runs 2-$runs (warm): median / min"
-  for key in first loaded cpu foot foot30 rss; do
-    awk -F'\t' -v k="$key" '$1 > 1 && $2 == k && $3 != "-" { print $3 }' "$results" | stats |
-      awk -F'\t' -v k="$key" '{ printf "  %-8s median %s  min %s\n", k, $1, $2 }'
-  done
-  if [ "$scroll" = 1 ]; then
-    for key in p50 p95 p99 max over17 over25 skeleton-max slow-skeleton-frames skeletons-after-stop; do
-      awk -F'\t' -v k="scroll-$key" '$1 > 1 && $2 == k { print $3 }' "$results" |
-        sort -n | awk -v k="$key" '{ v[NR] = $1 } END {
-          if (NR == 0) exit
-          m = NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2
-          printf "  %-22s median %.1f  min %.1f  max %.1f\n", k, m, v[1], v[NR] }'
-    done
-  fi
-fi
+echo "launches 2-$run, per mode: median / min / max"
+for name in $(cut -f2 "$results" | sort -u); do
+  echo "  $name:"
+  awk -F'\t' -v m="$name" '$1 > 1 && $2 == m && $4 != "-" { print $3 "\t" $4 }' "$results" |
+    sort -k1,1 -k2,2n | awk -F'\t' '
+      function flush() {
+        if (n == 0) return
+        med = n % 2 ? v[(n + 1) / 2] : (v[n / 2] + v[n / 2 + 1]) / 2
+        printf "    %-30s %10.2f %10.2f %10.2f   (%d)\n", key, med, v[1], v[n], n
+      }
+      $1 != key { flush(); key = $1; n = 0 }
+      { v[++n] = $2 }
+      END { flush() }'
+done

@@ -37,10 +37,13 @@ impl CoreSlot {
 }
 
 async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
-    let config_dir = app.path().app_config_dir().map_err(|e| {
-        CoreError::new(ErrorCode::Io, "Could not find the app's config folder")
-            .with_detail(e.to_string())
-    })?;
+    let config_dir = match gg_core::store::config_dir_override() {
+        Some(dir) => dir,
+        None => app.path().app_config_dir().map_err(|e| {
+            CoreError::new(ErrorCode::Io, "Could not find the app's config folder")
+                .with_detail(e.to_string())
+        })?,
+    };
     let launch = launch_path(std::env::args_os().nth(1), std::env::var_os("GG_OPEN"));
     let core = Core::new(config_dir, launch, Arc::new(TauriSink(app))).await?;
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
@@ -128,6 +131,7 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// with `GG_PERF_SCROLL=1` the graph scrolls itself top to bottom once the repository has
 /// loaded and reports frame times as perf marks; with `GG_PERF_SCROLL=still` it records
 /// frame times for as long without scrolling (the control). `None` otherwise.
+#[cfg(any(test, feature = "perf"))]
 fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<&'static str> {
     match gg_perf_scroll?.to_str()? {
         "1" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = true;"),
@@ -144,6 +148,8 @@ pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu);
+    // Performance runs only (`--features perf`, see scripts/perf.sh).
+    #[cfg(feature = "perf")]
     let builder = match perf_scroll_script(std::env::var_os("GG_PERF_SCROLL")) {
         Some(script) => builder.plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("perf-scroll")

@@ -41,7 +41,7 @@
   } from "./geometry";
   import RefLabels from "./RefLabels.svelte";
   import { api } from "../ipc";
-  import { runScrollProbe, type Probe } from "../perf/scrollProbe";
+  import type { Probe } from "../perf/scrollProbe";
 
   let { view }: { view: RepoView } = $props();
 
@@ -188,7 +188,10 @@
   $effect(() => {
     if (!perfScroll || perfScrollStarted || view.snapshot.loading || view.snapshot.totalRows === 0) return;
     perfScrollStarted = true;
-    void runScrollProbe(scroller, probe!, { scroll: perfScrollMode === true }).then(async (s) => {
+    // Loaded only in a perf run, so the probe is not part of the app's main chunk.
+    void import("../perf/scrollProbe").then(async ({ runScrollProbe, runClickProbe }) => {
+      const s = await runScrollProbe(scroller, probe!, { scroll: perfScrollMode === true });
+      const c = await runClickProbe(scroller);
       const marks: [string, number][] = [
         ["scroll-frames", s.frames],
         ["scroll-p50", s.p50],
@@ -200,6 +203,10 @@
         ["scroll-skeleton-max", s.skeletonMaxMs],
         ["scroll-slow-skeleton-frames", s.slowSkeletonFrames],
         ["scroll-skeletons-after-stop", s.skeletonsAfterStop],
+        ["click-count", c.clicks],
+        ["click-p50", c.p50],
+        ["click-p95", c.p95],
+        ["click-max", c.max],
       ];
       for (const [name, value] of marks) await api.perfMark(name, value).catch(() => {});
       await api.perfMark("scroll-done", performance.now()).catch(() => {});

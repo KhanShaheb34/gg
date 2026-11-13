@@ -221,6 +221,16 @@ fn unix_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// The config folder to use instead of the platform's: `GG_CONFIG_DIR` when it is set and
+/// not empty. Performance runs use it so they never read or change the user's own state.
+pub fn config_dir_override() -> Option<PathBuf> {
+    config_dir_from(std::env::var_os("GG_CONFIG_DIR"))
+}
+
+fn config_dir_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +394,15 @@ mod tests {
         let store = Store::load(&blocked);
         let err = store.save_session(Session::default()).unwrap_err();
         assert_eq!(err.code, ErrorCode::Io);
+    }
+
+    #[test]
+    fn config_dir_override_needs_a_non_empty_value() {
+        assert_eq!(
+            config_dir_from(Some("/tmp/gg perf/config".into())),
+            Some(PathBuf::from("/tmp/gg perf/config"))
+        );
+        assert_eq!(config_dir_from(Some("".into())), None);
+        assert_eq!(config_dir_from(None), None);
     }
 }

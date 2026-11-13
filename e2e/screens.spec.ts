@@ -58,3 +58,38 @@ for (const theme of ["light", "dark"] as const) {
     await page.screenshot({ path: path.join(OUT, `graph-branchy-${theme}.png`) });
   });
 }
+
+for (const theme of ["light", "dark"] as const) {
+  test(`toolbar, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("branchy"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await page.mouse.move(900, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `toolbar-${theme}.png`) });
+
+    // The branch filter open, filtered to "feature", one branch ticked.
+    await page.getByRole("button", { name: /^Branches:/ }).click();
+    const dialog = page.getByRole("dialog", { name: "Branch filter" });
+    await dialog.getByRole("option", { name: "feature/ui", exact: true }).click();
+    await expect(grid.locator('[data-index="0"] .subject')).toHaveText("Row hover states");
+    await page.keyboard.type("feat");
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: path.join(OUT, `toolbar-filter-${theme}.png`) });
+    await dialog.getByRole("option", { name: "Show All", exact: true }).click();
+    await page.keyboard.press("Escape");
+
+    // Search active, a few hits, the second one selected.
+    await page.keyboard.press("ControlOrMeta+f");
+    await page.keyboard.type("plugin");
+    await expect(page.getByTestId("search-count")).toHaveText(/^1 of \d+$/);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("search-count")).toHaveText(/^2 of \d+$/);
+    await page.mouse.move(900, 790);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `toolbar-search-${theme}.png`) });
+  });
+}

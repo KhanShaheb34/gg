@@ -34,7 +34,7 @@ impl RepoManager {
             path,
             regular: path.metadata().is_ok_and(|m| m.is_file()),
         });
-        let (argv, note) = launch_plan(std::env::consts::OS, command, &root, target)?;
+        let Plan { argv, cwd, note } = launch_plan(std::env::consts::OS, command, &root, target)?;
         #[cfg(any(test, feature = "testutil"))]
         if let Some(launches) = crate::lock_ignoring_poison(&self.editor_launches).as_mut() {
             launches.push(
@@ -44,7 +44,7 @@ impl RepoManager {
             );
             return Ok(note);
         }
-        launch(&argv, &worktree, self.login_path())?;
+        launch(&argv, &cwd, self.login_path())?;
         Ok(note)
     }
 
@@ -103,50 +103,70 @@ struct Target<'a> {
     regular: bool,
 }
 
+/// How to open something: the program and its arguments, the folder it runs in, and a
+/// note for the user if something else than asked was opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Plan {
+    argv: Vec<OsString>,
+    /// The worktree for an editor. For the platform's opener a folder outside any
+    /// repository, so that a program of that name in the worktree is never the one run
+    /// (a relative entry in `PATH` resolves against it).
+    cwd: PathBuf,
+    note: Option<String>,
+}
+
 /// The program and arguments that open `file` (`None`: the worktree folder `root`) on
-/// operating system `os` (`std::env::consts::OS`), and a note for the user if something
-/// else than asked was opened.
+/// operating system `os` (`std::env::consts::OS`), where they run, and a note for the user
+/// if something else than asked was opened.
 ///
 /// With `command` (its words, then the path) the editor gets the file. Without one, no
 /// file of the repository ever goes to the system's default application, which picks a
 /// program by file type and could run it (a `.command`, `.sh`, `.exe`, `.desktop`): on
 /// macOS a regular file opens as text (`open -t`); otherwise (a folder such as an `X.app`
 /// bundle, which `open` would start, or any file elsewhere) the worktree folder opens
-/// instead, with the note. Asked for the worktree itself (`.`), it opens without one. Folders open with `open`, `xdg-open` or `explorer`, each given the path as a
-/// plain argument; no shell (`cmd.exe`) is ever involved.
-fn launch_plan(
-    os: &str,
-    command: Option<&str>,
-    root: &Path,
-    file: Option<Target>,
-) -> Result<(Vec<OsString>, Option<String>)> {
+/// instead, with the note. Asked for the worktree itself (`.`), it opens without one.
+///
+/// The opener is `/usr/bin/open` on macOS and `explorer.exe` in the Windows folder;
+/// `xdg-open` elsewhere, found through `PATH`. It gets the path as a plain argument; no
+/// shell (`cmd.exe`) is ever involved.
+fn launch_plan(os: &str, command: Option<&str>, root: &Path, file: Option<Target>) -> Result<Plan> {
     let words = command.map(split_command).transpose()?.unwrap_or_default();
     if !words.is_empty() {
         let mut argv: Vec<OsString> = words.into_iter().map(OsString::from).collect();
         argv.push(file.map_or(root, |f| f.path).as_os_str().to_owned());
-        return Ok((argv, None));
+        return Ok(Plan {
+            argv,
+            cwd: root.to_owned(),
+            note: None,
+        });
     }
     // The worktree itself is the folder, not a file.
     let file = file.filter(|f| f.path != root);
-    let folder_opener = match os {
-        "macos" => "open",
-        "windows" => "explorer",
-        _ => "xdg-open",
+    let (opener, cwd): (OsString, PathBuf) = match os {
+        "macos" => ("/usr/bin/open".into(), PathBuf::from("/")),
+        "windows" => {
+            let windows = windows_dir();
+            (windows.join("explorer.exe").into_os_string(), windows)
+        }
+        _ => ("xdg-open".into(), PathBuf::from("/")),
     };
-    Ok(match file {
+    let (argv, note) = match file {
         Some(file) if os == "macos" && file.regular => (
-            vec!["open".into(), "-t".into(), file.path.as_os_str().to_owned()],
+            vec![opener, "-t".into(), file.path.as_os_str().to_owned()],
             None,
         ),
         Some(_) => (
-            vec![folder_opener.into(), root.as_os_str().to_owned()],
+            vec![opener, root.as_os_str().to_owned()],
             Some(FOLDER_INSTEAD.to_owned()),
         ),
-        None => (
-            vec![folder_opener.into(), root.as_os_str().to_owned()],
-            None,
-        ),
-    })
+        None => (vec![opener, root.as_os_str().to_owned()], None),
+    };
+    Ok(Plan { argv, cwd, note })
+}
+
+/// The Windows folder (`%SystemRoot%`, `C:\Windows` if unset).
+fn windows_dir() -> PathBuf {
+    std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
 }
 
 /// `command` split into words on whitespace; text in single or double quotes is one word
@@ -260,7 +280,7 @@ mod tests {
     /// folder instead, with the note; the worktree itself (`.`) opens without one.
     #[test]
     fn folders_never_go_to_open_as_text() {
-        let (argv, note) = launch_plan(
+        let Plan { argv, note, .. } = launch_plan(
             "macos",
             None,
             Path::new("/r"),
@@ -270,9 +290,9 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(argv, ["open", "/r"]);
+        assert_eq!(argv, ["/usr/bin/open", "/r"]);
         assert!(note.is_some());
-        let (argv, note) = launch_plan(
+        let Plan { argv, note, .. } = launch_plan(
             "macos",
             None,
             Path::new("/r"),
@@ -282,7 +302,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(argv, ["open", "/r"]);
+        assert_eq!(argv, ["/usr/bin/open", "/r"]);
         assert!(note.is_none());
     }
 
@@ -292,12 +312,45 @@ mod tests {
             path: Path::new(f),
             regular: true,
         });
-        let (argv, note) = launch_plan(os, command, Path::new("/r"), target).unwrap();
+        let Plan { argv, note, .. } = launch_plan(os, command, Path::new("/r"), target).unwrap();
         let argv = argv
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         (argv, note.is_some())
+    }
+
+    fn explorer() -> String {
+        windows_dir()
+            .join("explorer.exe")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The platform's opener never runs in the worktree, where a program of its name could
+    /// be found through a relative `PATH` entry; an editor command does (it may take paths
+    /// relative to it).
+    #[test]
+    fn openers_run_from_outside_the_worktree() {
+        let root = Path::new("/r");
+        for os in ["macos", "linux", "windows"] {
+            for file in [
+                None,
+                Some(Target {
+                    path: Path::new("/r/a.txt"),
+                    regular: true,
+                }),
+            ] {
+                let plan = launch_plan(os, None, root, file).unwrap();
+                assert_ne!(plan.cwd, root, "{os}");
+                assert!(plan.cwd.is_absolute() || os == "windows", "{os}: {plan:?}");
+                assert!(!plan.cwd.starts_with(root), "{os}");
+                let program = Path::new(&plan.argv[0]);
+                assert!(program.is_absolute() || os != "macos", "{plan:?}");
+            }
+            let plan = launch_plan(os, Some("code"), root, None).unwrap();
+            assert_eq!(plan.cwd, root);
+        }
     }
 
     fn words(w: &[&str]) -> Vec<String> {
@@ -313,7 +366,7 @@ mod tests {
         let file = Some("/r/x.command");
         assert_eq!(
             plan_on("macos", None, file),
-            (words(&["open", "-t", "/r/x.command"]), false)
+            (words(&["/usr/bin/open", "-t", "/r/x.command"]), false)
         );
         assert_eq!(
             plan_on("linux", None, file),
@@ -321,7 +374,7 @@ mod tests {
         );
         assert_eq!(
             plan_on("windows", None, file),
-            (words(&["explorer", "/r"]), true)
+            (words(&[&explorer(), "/r"]), true)
         );
         // A blank command is no command.
         assert_eq!(
@@ -331,7 +384,7 @@ mod tests {
         // The worktree folder itself opens as before.
         assert_eq!(
             plan_on("macos", None, None),
-            (words(&["open", "/r"]), false)
+            (words(&["/usr/bin/open", "/r"]), false)
         );
         assert_eq!(
             plan_on("linux", None, None),
@@ -339,7 +392,7 @@ mod tests {
         );
         assert_eq!(
             plan_on("windows", None, None),
-            (words(&["explorer", "/r"]), false)
+            (words(&[&explorer(), "/r"]), false)
         );
         // With a command, the file goes to it, on every platform.
         for os in ["macos", "linux", "windows"] {

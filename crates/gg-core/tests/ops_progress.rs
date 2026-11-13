@@ -502,18 +502,19 @@ async fn editor_command_is_split_without_a_shell() {
     let root = root.to_string_lossy().into_owned();
     let expected_opener: Vec<String> = if cfg!(target_os = "macos") {
         assert_eq!(note, None);
-        vec!["open".into(), "-t".into(), file.clone()]
+        vec!["/usr/bin/open".into(), "-t".into(), file.clone()]
     } else {
         assert!(
             note.as_deref().unwrap_or("").contains("Settings"),
             "{note:?}"
         );
         let opener = if cfg!(windows) {
-            "explorer"
+            let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+            format!(r"{windows}\explorer.exe")
         } else {
-            "xdg-open"
+            "xdg-open".to_owned()
         };
-        vec![opener.into(), root]
+        vec![opener, root]
     };
     assert_eq!(
         h.m.editor_launches(),

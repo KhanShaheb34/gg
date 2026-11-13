@@ -9,6 +9,7 @@ use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::progress::read_kind;
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{NO_BRANCH, nothing_to_do};
+use crate::ops::progress::unmerged_paths;
 use crate::ops::{OpCtx, Step, explain, network};
 
 /// The first 7 characters of `hash`, for messages.
@@ -320,9 +321,13 @@ pub(crate) async fn merge(
 
     let branch = current_branch(ctx).await?;
     let before = head_commit(ctx).await?;
+    // Unmerged entries the squash did not make must never be undone with it (run_op refuses
+    // a merge over them; this is the second line).
+    let unmerged_before = squash && !unmerged_paths(ctx).await?.is_empty();
     let out = match git_may_stop(ctx, &args, false).await? {
         Ok(out) => out,
-        Err(step) if squash => return squash_failed(ctx, step).await,
+        Err(step) if squash && !unmerged_before => return squash_failed(ctx, step).await,
+        Err(step) if squash => return Ok(step),
         Err(step) => return Ok(step),
     };
     if let Some(message) = nothing_to_do(&args, &out) {
@@ -372,16 +377,20 @@ const SQUASH_CONFLICTS: &str = "This squash merge has conflicts. A squash can't 
                                 here, so nothing was changed. Merge normally, or squash in a \
                                 terminal.";
 
-/// `step`, how a squash merge failed. One that left conflicts (git leaves no MERGE_HEAD for
-/// a squash, so it could be neither continued nor aborted) is undone with `reset --merge`,
+/// `step`, how a squash merge failed, when no file was unmerged before it started. One that
+/// left conflicts (git leaves no MERGE_HEAD for a squash, so it could be neither continued
+/// nor aborted) is undone with `reset --merge`,
 /// which puts the index and the files the merge touched back and keeps the uncommitted
 /// changes it did not touch; the step then says so (R20), with git's output.
 async fn squash_failed(ctx: &OpCtx<'_>, step: Step) -> Result<Step> {
     let Step::Failed { detail, hints, .. } = &step else {
         return Ok(step);
     };
-    let unmerged = ctx.read(&["ls-files", "--unmerged", "-z"]).await?;
-    if unmerged.code != 0 || unmerged.stdout.is_empty() {
+    // Unreadable: nothing is undone.
+    if unmerged_paths(ctx)
+        .await
+        .map_or(true, |paths| paths.is_empty())
+    {
         return Ok(step);
     }
     let args = ["reset", "--merge"];

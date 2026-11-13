@@ -339,8 +339,8 @@ async fn pop_with_conflict_keeps_the_stash_and_explains() {
     assert!(read(&repo, "notes.txt").contains("<<<<<<<"));
 }
 
-/// R17: while git is stopped in a merge, applying or popping a stash is refused; saving
-/// and dropping one run.
+/// R17 (revised): while git is stopped in a merge, applying, popping or saving a stash is
+/// refused (saving would take the merge's state with it); dropping one runs.
 #[tokio::test]
 async fn apply_and_pop_are_refused_while_git_is_stopped() {
     let repo = TestRepo::new();
@@ -372,8 +372,40 @@ async fn apply_and_pop_are_refused_while_git_is_stopped() {
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(stashes(&repo).is_empty());
-    // Saving runs too; git refuses to stash unresolved conflicts, in its own words.
+    // Saving is refused before git runs.
+    let mark = h.last_log_id();
     let out = h.run(id, save(None, false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
-    assert_eq!(write_args(&h, &out), [vec!["stash", "push", "--"]]);
+    assert!(
+        out.message.contains("A merge is in progress"),
+        "{}",
+        out.message
+    );
+    assert!(h.writes_since(mark).is_empty());
+}
+
+/// R17 (revised): with the conflicts resolved and staged, git would stash the merge's
+/// result and remove MERGE_HEAD, silently ending the merge; the core refuses instead.
+#[tokio::test]
+async fn saving_a_stash_does_not_end_a_stopped_merge() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(
+        h.run(id, merge_branch("feature")).await.status,
+        OpStatus::Stopped
+    );
+    repo.write("clash.txt", "resolved\n");
+    repo.git(&["add", "clash.txt"]);
+
+    let out = h.run(id, save(None, false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("A merge is in progress"),
+        "{}",
+        out.message
+    );
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
+    assert!(stashes(&repo).is_empty());
 }

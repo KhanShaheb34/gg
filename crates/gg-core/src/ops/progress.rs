@@ -26,17 +26,11 @@ pub(crate) fn nothing_in_progress() -> CoreError {
     )
 }
 
-/// Why `request` cannot run while git is stopped in `kind`, if it cannot: it would check
-/// out something else or start another merge, rebase, cherry-pick or revert under the
-/// stopped one (a stash pop or apply merges too). `head` is the branch HEAD is on. A reset
-/// runs (it is a way out; a hard one still needs its confirmation), and so does a stash
-/// save. Continue and abort are not refused here.
-pub(crate) fn refused_while(
-    request: &OpRequest,
-    kind: InProgressKind,
-    head: Option<&str>,
-) -> Option<String> {
-    let changes_head_or_tree = match request {
+/// Whether `request` would check out something else, or merge something into the working
+/// tree (a merge, rebase, cherry-pick, revert, pull of the branch checked out here, or a
+/// stash apply, pop or branch). `head` is the branch HEAD is on.
+pub(crate) fn changes_head_or_tree(request: &OpRequest, head: Option<&str>) -> bool {
+    match request {
         OpRequest::CheckoutBranch { .. }
         | OpRequest::CheckoutRemote { .. }
         | OpRequest::CheckoutCommit { .. }
@@ -51,14 +45,81 @@ pub(crate) fn refused_while(
         // Pulling a branch that is not checked out only fetches into it.
         OpRequest::Pull { branch, .. } => head == Some(branch.as_str()),
         _ => false,
-    };
-    changes_head_or_tree.then(|| {
-        format!(
-            "A {} is in progress: continue it or abort it first. Until then this would \
-             change what it is working on.",
-            kind_name(kind)
-        )
-    })
+    }
+}
+
+/// Why `request` cannot run while git is stopped in `kind`, if it cannot: it would check
+/// out something else or start another merge, rebase, cherry-pick or revert under the
+/// stopped one (a stash pop or apply merges too; see [`changes_head_or_tree`]). Saving a
+/// stash is refused too: git would take the stopped operation's state with it (a merge
+/// whose conflicts are resolved silently ends; R17 revised). `head` is the branch HEAD is
+/// on. A reset runs (it is a way out; a hard one still needs its confirmation), and so does
+/// dropping a stash. Continue and abort are not refused here.
+pub(crate) fn refused_while(
+    request: &OpRequest,
+    kind: InProgressKind,
+    head: Option<&str>,
+) -> Option<String> {
+    (changes_head_or_tree(request, head) || matches!(request, OpRequest::StashSave { .. })).then(
+        || {
+            format!(
+                "A {} is in progress: continue it or abort it first. Until then this would \
+                 change what it is working on.",
+                kind_name(kind)
+            )
+        },
+    )
+}
+
+/// Most conflicted paths named in [`unexplained_conflicts`]'s message.
+const NAMED_CONFLICTS: usize = 3;
+
+/// Why nothing that changes HEAD or the working tree may run, when nothing is in progress:
+/// files still have conflicts from an earlier step (a stash pop or apply that conflicted,
+/// say). git would refuse most such operations, but some (a squash merge) would fail in a
+/// way that cannot tell those conflicts from their own, and undoing them would throw away
+/// the user's edits of those files. None when no file is unmerged.
+pub(crate) async fn unexplained_conflicts(ctx: &OpCtx<'_>) -> Result<Option<String>> {
+    let paths = unmerged_paths(ctx).await?;
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let mut named = paths
+        .iter()
+        .take(NAMED_CONFLICTS)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > NAMED_CONFLICTS {
+        named.push('\u{2026}');
+    }
+    Ok(Some(format!(
+        "Some files still have conflicts from an earlier step ({named}). Resolve them and \
+         stage them, or discard them, first."
+    )))
+}
+
+/// The paths with unmerged entries in the index (`ls-files --unmerged`), sorted, each once.
+pub(crate) async fn unmerged_paths(ctx: &OpCtx<'_>) -> Result<Vec<String>> {
+    let out = ctx.read(&["ls-files", "--unmerged", "-z"]).await?;
+    if out.code != 0 {
+        return Err(
+            CoreError::new(ErrorCode::GitFailed, "Could not read the index")
+                .with_detail(out.stderr.clone()),
+        );
+    }
+    let mut paths: Vec<String> = out
+        .stdout
+        .split(|&b| b == 0)
+        .filter_map(|entry| {
+            // "<mode> <object> <stage>\t<path>"
+            let tab = entry.iter().position(|&b| b == b'\t')?;
+            Some(String::from_utf8_lossy(&entry[tab + 1..]).into_owned())
+        })
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// The title of continue (`verb` "Continue") or abort ("Abort") for what is in progress.

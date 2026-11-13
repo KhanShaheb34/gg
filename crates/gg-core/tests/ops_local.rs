@@ -1415,3 +1415,99 @@ async fn a_squash_merge_with_conflicts_changes_nothing() {
     assert!(out.snapshot.in_progress.is_none());
     assert_eq!(out.snapshot.status.conflicted, 0);
 }
+
+/// Conflicts left by a stash pop (no merge, rebase, cherry-pick or revert explains them), in
+/// `notes`, which the user then edits by hand. HEAD on `main`; `side` has a commit of its own.
+fn unmerged_from_a_stash_pop(repo: &TestRepo) {
+    repo.write("notes", "one\n");
+    repo.commit_all("notes");
+    repo.branch("side");
+    repo.checkout("side");
+    repo.write("side.txt", "side\n");
+    repo.commit_all("on side");
+    repo.checkout("main");
+    repo.write("notes", "stashed\n");
+    repo.git(&["stash", "push", "-q"]);
+    repo.write("notes", "two\n");
+    repo.commit_all("notes two");
+    assert!(
+        !repo.git_succeeds(&["stash", "pop", "-q"]),
+        "the pop conflicts"
+    );
+    repo.write("notes", "the user's own edit\n");
+}
+
+/// Task 5 review, item 1: unmerged entries that nothing in progress explains are refused
+/// before any operation that would touch them runs, so nothing (a squash's `reset --merge`
+/// above all) can throw away the user's edit of a conflicted file.
+#[tokio::test]
+async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
+    let repo = TestRepo::new();
+    unmerged_from_a_stash_pop(&repo);
+    let side = repo.git(&["rev-parse", "side"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+
+    let requests = [
+        merge(MergeTargetKind::Branch, "side", false, true, false),
+        merge_branch("side"),
+        rebase("side"),
+        checkout_branch("side"),
+        OpRequest::CherryPick {
+            hash: side.clone(),
+            mainline: None,
+            no_commit: false,
+        },
+        OpRequest::Revert {
+            hash: side.clone(),
+            mainline: None,
+        },
+    ];
+    for request in requests {
+        let out = h.run(id, request.clone()).await;
+        assert_eq!(out.status, OpStatus::Failed, "{request:?}: {out:?}");
+        assert_eq!(
+            out.message,
+            "Some files still have conflicts from an earlier step (notes). Resolve them and \
+             stage them, or discard them, first.",
+            "{request:?}"
+        );
+    }
+    let writes: Vec<_> = h.writes_since(mark).into_iter().map(|r| r.args).collect();
+    assert!(writes.is_empty(), "nothing ran: {writes:?}");
+    assert_eq!(
+        fs::read(repo.path().join("notes")).unwrap(),
+        b"the user's own edit\n"
+    );
+    assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+}
+
+/// Names at most three of the conflicted files.
+#[tokio::test]
+async fn unexplained_conflicts_name_three_files_at_most() {
+    let repo = TestRepo::new();
+    for f in ["a", "b", "c", "d"] {
+        repo.write(f, "one\n");
+    }
+    repo.commit_all("files");
+    repo.branch("side");
+    for f in ["a", "b", "c", "d"] {
+        repo.write(f, "stashed\n");
+    }
+    repo.git(&["stash", "push", "-q"]);
+    for f in ["a", "b", "c", "d"] {
+        repo.write(f, "two\n");
+    }
+    repo.commit_all("files two");
+    assert!(!repo.git_succeeds(&["stash", "pop", "-q"]));
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, checkout_branch("side")).await;
+    assert_eq!(
+        out.message,
+        "Some files still have conflicts from an earlier step (a, b, c…). Resolve them and \
+         stage them, or discard them, first."
+    );
+}

@@ -780,6 +780,13 @@ impl RepoManager {
                     return Ok((title, Ran::Refused(why)));
                 }
             }
+            // Conflicts nothing in progress explains (a stash pop's) stop what would touch
+            // the conflicted files, before git can.
+            (_, None) if progress::changes_head_or_tree(&request, head.as_deref()) => {
+                if let Some(why) = progress::unexplained_conflicts(&ctx).await? {
+                    return Ok((title, Ran::Refused(why)));
+                }
+            }
             _ => {}
         }
         if let Some(remote) = remote_of(&request)

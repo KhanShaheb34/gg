@@ -133,6 +133,10 @@ impl Core {
                 self.blocking(|core| core.store.reset()).await?;
                 Ok(Value::Null)
             }
+            "take_opened_paths" => {
+                let NoArgs {} = parse(cmd, args)?;
+                to_json(self.take_opened_paths())
+            }
             "remove_recent" => {
                 let a: RemoveRecentArgs = parse(cmd, args)?;
                 to_json(

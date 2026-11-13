@@ -3,7 +3,7 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gg_core::{Core, CoreError, ErrorCode, EventSink};
 use serde_json::Value;
@@ -50,7 +50,50 @@ async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
     #[cfg(feature = "perf")]
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
     core.open_startup_repos();
+    // Folders the system asked to open before the core was there go to it now; later ones
+    // go straight to it (see `deliver_opened`).
+    let mut opened = lock(&OPENED);
+    opened.core = Some(core.clone());
+    core.open_later(std::mem::take(&mut opened.pending));
+    drop(opened);
     Ok(core)
+}
+
+/// Folders the operating system asked the app to open (`RunEvent::Opened`: Finder's Open
+/// With, a folder dropped on the Dock icon, `open -a GitGraph <folder>`), held until the core
+/// has started; then the core itself, which queues them for the UI.
+struct OpenedQueue {
+    pending: Vec<PathBuf>,
+    core: Option<Arc<Core>>,
+}
+
+static OPENED: Mutex<OpenedQueue> = Mutex::new(OpenedQueue {
+    pending: Vec::new(),
+    core: None,
+});
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Hands `paths` to the core, or keeps them until it starts. Call inside the async runtime.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn deliver_opened(paths: Vec<PathBuf>) {
+    let mut opened = lock(&OPENED);
+    match &opened.core {
+        Some(core) => core.open_later(paths),
+        None => opened.pending.extend(paths),
+    }
+}
+
+/// The existing folders among `urls` (`file:` URLs only).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn opened_dirs(urls: &[tauri::Url]) -> Vec<PathBuf> {
+    urls.iter()
+        .filter(|u| u.scheme() == "file")
+        .filter_map(|u| u.to_file_path().ok())
+        .filter(|p| p.is_dir())
+        .collect()
 }
 
 /// The folder to open at launch: the first command-line argument if it is an existing
@@ -204,13 +247,50 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![invoke_core])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                let paths = opened_dirs(&urls);
+                if paths.is_empty() {
+                    return;
+                }
+                tauri::async_runtime::spawn(async move { deliver_opened(paths) });
+                // The app may be running behind other windows: bring it forward.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opened_urls_give_existing_folders_only() {
+        let dir = std::env::temp_dir();
+        let file = dir.join("gg-opened-test.txt");
+        std::fs::write(&file, "x").unwrap();
+        let urls = [
+            tauri::Url::from_directory_path(&dir).unwrap(),
+            tauri::Url::from_file_path(&file).unwrap(),
+            tauri::Url::from_directory_path("/no/such/folder").unwrap(),
+            tauri::Url::parse("https://example.com/").unwrap(),
+        ];
+        let dirs = opened_dirs(&urls);
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(
+            std::fs::canonicalize(&dirs[0]).unwrap(),
+            std::fs::canonicalize(&dir).unwrap()
+        );
+    }
 
     #[test]
     fn launch_path_prefers_an_existing_argument() {

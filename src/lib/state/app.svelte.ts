@@ -284,6 +284,7 @@ export async function init(): Promise<void> {
     started = true;
     onSystemThemeChange(() => applyTheme(app.settings.theme));
     onEvent<{ repoId: number; error: CoreErrorDto }>("repo-error", ({ repoId, error }) => onRepoError(repoId, error));
+    onEvent("paths-opened", () => void openSystemPaths());
   }
 
   let state;
@@ -344,4 +345,20 @@ export async function init(): Promise<void> {
     saveSession();
     await refreshRecents();
   }
+  // Folders the system asked to open meanwhile (an Open With that launched the app).
+  await openSystemPaths();
+}
+
+/**
+ * Opens the folders the operating system asked the app to open (Finder's Open With, a
+ * folder dropped on the Dock icon), in order; the last one is shown.
+ */
+async function openSystemPaths(): Promise<void> {
+  let paths: string[];
+  try {
+    paths = await api.takeOpenedPaths();
+  } catch {
+    return; // asked again with the next announcement
+  }
+  for (const path of paths) await openPath(path);
 }

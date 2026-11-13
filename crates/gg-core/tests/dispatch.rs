@@ -557,6 +557,33 @@ async fn startup_repos_open_before_the_ui_asks() {
     assert_eq!(ids, [1, 2], "open_repo opened a repository again");
 }
 
+/// Folders the operating system asks the app to open (Finder's Open With, a folder dropped
+/// on the Dock icon) wait in a queue the UI takes once; each arrival is announced with
+/// `paths-opened`, and the repositories start opening at once.
+#[tokio::test]
+async fn folders_opened_by_the_system_are_queued_announced_and_taken_once() {
+    let h = harness().await;
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let path = repo.path().to_path_buf();
+    assert_eq!(h.call("take_opened_paths", json!({})).await, json!([]));
+    h.core.open_later(vec![path.clone()]);
+    let announced = h
+        .sink
+        .wait_for(TIMEOUT, |name, _| name == "paths-opened")
+        .await;
+    assert!(announced.is_some());
+    // Opened ahead, like the launch path.
+    let opened = h
+        .sink
+        .wait_for(TIMEOUT, |name, _| name == "repo-changed")
+        .await;
+    assert!(opened.is_some(), "the repository started opening");
+    let taken = h.call("take_opened_paths", json!({})).await;
+    assert_eq!(taken, json!([path.to_string_lossy()]));
+    assert_eq!(h.call("take_opened_paths", json!({})).await, json!([]));
+}
+
 #[tokio::test]
 async fn launch_path_is_reported() {
     let dir = tempfile::tempdir().unwrap();

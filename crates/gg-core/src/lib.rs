@@ -45,6 +45,9 @@ pub struct Core {
     /// Store and perf-log writes take turns here, first come first served, so they land in
     /// the order they were asked for.
     io_turn: tokio::sync::Mutex<()>,
+    /// Folders the operating system asked the app to open, not yet taken by the UI.
+    opened: Mutex<Vec<String>>,
+    sink: Arc<dyn EventSink>,
 }
 
 /// Most perf marks kept in memory; older ones go first (the perf log keeps them all).
@@ -85,7 +88,7 @@ impl Core {
     ) -> Arc<Self> {
         let store = Store::load(&config_dir);
         let repos = runner.map(|runner| {
-            let repos = RepoManager::new(runner, sink);
+            let repos = RepoManager::new(runner, sink.clone());
             repos.set_fetch_interval(store.settings().fetch_interval_secs);
             repos
         });
@@ -96,7 +99,35 @@ impl Core {
             launch_path: launch_path.map(|p| p.to_string_lossy().into_owned()),
             perf: Mutex::new(Perf::default()),
             io_turn: tokio::sync::Mutex::new(()),
+            opened: Mutex::new(Vec::new()),
+            sink,
         })
+    }
+
+    /// Queues folders the operating system asked the app to open (Finder's Open With, a
+    /// folder dropped on the Dock icon, `open -a`), starts opening them in the background
+    /// like the launch path, and emits `paths-opened` so the UI takes them
+    /// (`take_opened_paths`). Must be called inside a Tokio runtime.
+    pub fn open_later(self: &Arc<Self>, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if let Ok(repos) = self.repos() {
+            for path in &paths {
+                let (repos, path) = (repos.clone(), path.clone());
+                tokio::spawn(async move {
+                    let _ = repos.open_in_background(&path).await;
+                });
+            }
+        }
+        lock_ignoring_poison(&self.opened)
+            .extend(paths.iter().map(|p| p.to_string_lossy().into_owned()));
+        self.sink.emit("paths-opened", serde_json::json!({}));
+    }
+
+    /// The queued folders (see [`Core::open_later`]), oldest first; the queue is emptied.
+    fn take_opened_paths(&self) -> Vec<String> {
+        std::mem::take(&mut *lock_ignoring_poison(&self.opened))
     }
 
     /// Starts opening, in the background, the repositories the UI opens at start: the saved
@@ -166,8 +197,12 @@ impl Core {
     }
 
     fn perf(&self) -> MutexGuard<'_, Perf> {
-        self.perf.lock().unwrap_or_else(|e| e.into_inner())
+        lock_ignoring_poison(&self.perf)
     }
+}
+
+fn lock_ignoring_poison<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Milliseconds since the unix epoch (0 if the clock is before it).

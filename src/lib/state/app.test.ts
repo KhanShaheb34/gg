@@ -21,6 +21,7 @@ vi.mock("../ipc", async (importOriginal) => {
       getSnapshot: vi.fn(() => new Promise(() => {})),
       refresh: vi.fn(() => new Promise(() => {})),
       setWindowFocused: vi.fn(async () => {}),
+      takeOpenedPaths: vi.fn(async () => []),
       perfMark: vi.fn(async () => {}),
     },
   };
@@ -75,6 +76,7 @@ beforeEach(async () => {
     .mockImplementation(async (patch) => ({ theme: "system", fetchIntervalSecs: 300, ...patch }));
   vi.mocked(ipc.api.removeRecent).mockReset().mockResolvedValue([]);
   vi.mocked(ipc.api.pickFolder).mockReset().mockResolvedValue(null);
+  vi.mocked(ipc.api.takeOpenedPaths).mockReset().mockResolvedValue([]);
 });
 
 describe("openPath", () => {
@@ -312,6 +314,31 @@ describe("init", () => {
     const handler = call![1] as (p: { repoId: number; error: CoreErrorDto }) => void;
     handler({ repoId: 2, error: { code: "git_failed", message: "fetch failed", detail: "boom" } });
     expect(s.app.toasts).toMatchObject([{ kind: "error", message: "b: fetch failed", detail: "boom" }]);
+  });
+});
+
+describe("folders the system asks to open", () => {
+  it("are opened after the session, the last one shown", async () => {
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(
+      appState({ session: { tabs: ["/r/a"], active: "/r/a" } }),
+    );
+    vi.mocked(ipc.api.takeOpenedPaths).mockResolvedValueOnce(["/r/b", "/r/c"]);
+    await s.init();
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2, 3]);
+    expect(s.app.activeRepoId).toBe(3);
+  });
+
+  it("are opened when the core says more have come, while the app runs", async () => {
+    let announce: () => void = () => {};
+    vi.mocked(ipc.onEvent).mockImplementation((name, handler) => {
+      if (name === "paths-opened") announce = () => (handler as (p: unknown) => void)({});
+      return () => {};
+    });
+    await s.init();
+    vi.mocked(ipc.api.takeOpenedPaths).mockResolvedValueOnce(["/r/b"]);
+    announce();
+    await vi.waitFor(() => expect(s.app.activeRepoId).toBe(2));
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([2]);
   });
 });
 

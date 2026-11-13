@@ -1498,3 +1498,157 @@ async fn fsmonitor_is_false_even_when_configured_true() {
         .unwrap();
     assert_eq!(value.text().trim(), "false");
 }
+
+// ---------------------------------------------------------------------------------------
+// stashes
+
+fn stash_rows(rows: &[CommitRow]) -> Vec<&CommitRow> {
+    rows.iter().filter(|r| r.kind == RowKind::Stash).collect()
+}
+
+/// Every parent of commit `hash`, as git has them.
+fn parents_of(repo: &TestRepo, hash: &str) -> Vec<String> {
+    let line = repo.git(&["rev-list", "--parents", "-n", "1", hash]);
+    line.split(' ').skip(1).map(str::to_owned).collect()
+}
+
+/// Each stash is one row, with its base as its only parent and its label; its index and
+/// untracked commits are no rows. A stash whose base no branch has keeps that base (and its
+/// history) in the graph. Saving a stash on a loaded commit adds its row without reading
+/// the log again; dropping the stash that alone leads to a commit reads it again.
+#[tokio::test]
+async fn stash_rows_appear_once_with_one_parent() {
+    let repo = TestRepo::new();
+    let c1 = repo.commit("one");
+    let c2 = repo.commit("two");
+    repo.write("file-0.txt", "changed\n");
+    repo.write("loose.txt", "untracked\n");
+    let with_untracked = repo.stash(&["--include-untracked", "--message=keep this"]);
+    repo.git(&["checkout", "-q", "-b", "tmp"]);
+    let lost = repo.commit("on a branch that goes");
+    repo.write("file-1.txt", "changed\n");
+    let on_lost = repo.stash(&[]);
+    repo.checkout("main");
+    repo.git(&["branch", "-q", "-D", "tmp"]);
+
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    let rows = h.rows(id).await;
+    assert_eq!(
+        hashes(&rows),
+        [
+            on_lost.clone(),
+            lost.clone(),
+            with_untracked.clone(),
+            c2.clone(),
+            c1.clone()
+        ]
+    );
+    let unique: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.hash.as_str()).collect();
+    assert_eq!(unique.len(), rows.len(), "each commit once");
+    let stashes = stash_rows(&rows);
+    assert_eq!(stashes.len(), 2);
+    for (w, base, n) in [(&on_lost, &lost, 0), (&with_untracked, &c2, 1)] {
+        let r = row(&rows, w);
+        assert_eq!(r.kind, RowKind::Stash);
+        assert_eq!(r.parents, std::slice::from_ref(base));
+        assert!(!r.is_merge);
+        assert_eq!(r.labels, [label(RefKind::Stash, &format!("stash@{{{n}}}"))]);
+        let helpers = &parents_of(&repo, w)[1..];
+        assert!(!helpers.is_empty());
+        for helper in helpers {
+            assert!(
+                !unique.contains(helper.as_str()),
+                "helper {helper} is a row"
+            );
+        }
+    }
+    assert_eq!(
+        parents_of(&repo, &with_untracked).len(),
+        3,
+        "it has an untracked commit"
+    );
+    assert_eq!(row(&rows, &with_untracked).subject, "On main: keep this");
+    assert!(row(&rows, &on_lost).subject.starts_with("WIP on tmp: "));
+    // Its label and subject are searched like a commit's.
+    assert_eq!(h.m.search(id, "stash@{1}").await.unwrap(), [2]);
+    assert_eq!(h.m.search(id, "keep this").await.unwrap(), [2]);
+
+    // A new stash on HEAD: in place, without the log.
+    let mark = h.last_command_id();
+    repo.write("file-0.txt", "changed again\n");
+    let newest = repo.stash(&[]);
+    let snap = h.refresh(id).await;
+    assert_eq!(
+        h.log_commands_since(mark),
+        0,
+        "no log read for a stash on a loaded commit"
+    );
+    assert_eq!(snap.total_rows, 6);
+    let rows = h.rows(id).await;
+    assert_eq!(rows[0].hash, newest);
+    assert_eq!(rows[0].kind, RowKind::Stash);
+    assert_eq!(
+        row(&rows, &on_lost).labels,
+        [label(RefKind::Stash, "stash@{1}")]
+    );
+
+    // Dropping the stash that alone leads to `lost`: the log is read, and `lost` goes.
+    let mark = h.last_command_id();
+    repo.git(&["stash", "drop", "-q", "stash@{1}"]);
+    h.refresh(id).await;
+    assert_eq!(h.log_commands_since(mark), 1);
+    let rows = h.rows(id).await;
+    assert_eq!(hashes(&rows), [newest, with_untracked, c2, c1]);
+}
+
+/// With `showStashes` off there are no stash rows or labels, and the log does not list
+/// them; turning it off and on again needs no log read when the stashes' bases are loaded.
+#[tokio::test]
+async fn stashes_hidden_by_view_option() {
+    let repo = TestRepo::new();
+    let c1 = repo.commit("one");
+    repo.write("file-0.txt", "changed\n");
+    repo.write("loose.txt", "untracked\n");
+    let w = repo.stash(&["--include-untracked"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(hashes(&h.rows(id).await), [w.clone(), c1.clone()]);
+
+    let mark = h.last_command_id();
+    let hidden = ViewOptions {
+        show_stashes: false,
+        ..all_refs()
+    };
+    let snap = h.view(id, hidden.clone()).await;
+    assert!(!snap.view_options.show_stashes);
+    let rows = h.rows(id).await;
+    assert_eq!(hashes(&rows), std::slice::from_ref(&c1));
+    assert!(
+        rows.iter()
+            .all(|r| r.labels.iter().all(|l| l.kind != RefKind::Stash))
+    );
+    assert!(h.m.search(id, "stash@{0}").await.unwrap().is_empty());
+    assert_eq!(h.log_commands_since(mark), 0);
+    // A refresh keeps them hidden, and a log read for another reason leaves them out.
+    repo.commit("two");
+    h.refresh(id).await;
+    let rows = h.rows(id).await;
+    assert!(stash_rows(&rows).is_empty());
+    assert!(!rows.iter().any(|r| r.hash == w));
+    let log = h
+        .log
+        .since(mark)
+        .into_iter()
+        .rfind(|r| r.args[0] == "log")
+        .unwrap();
+    assert!(!log.args.contains(&w));
+
+    let mark = h.last_command_id();
+    h.view(id, all_refs()).await;
+    assert_eq!(h.log_commands_since(mark), 0);
+    let rows = h.rows(id).await;
+    assert_eq!(stash_rows(&rows).len(), 1);
+    assert_eq!(row(&rows, &w).labels, [label(RefKind::Stash, "stash@{0}")]);
+}

@@ -36,6 +36,7 @@ use crate::git::details::read_details;
 use crate::git::progress::read_in_progress_with;
 use crate::git::refs::{read_head, read_refs, read_remotes};
 use crate::git::runner::{CmdKind, GitRunner};
+use crate::git::stash::read_stashes;
 use crate::git::status::{STATUS_ARGS, read_status_and_conflicts};
 use crate::git::worktrees::read_worktrees;
 use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule, unix_ms};
@@ -369,8 +370,8 @@ impl Repo {
         }
     }
 
-    /// Reads what the rows need (HEAD, refs, remotes, worktrees), with `tree` as the status
-    /// and in-progress state.
+    /// Reads what the rows need (HEAD, refs, remotes, worktrees, stashes), with `tree` as the
+    /// status and in-progress state.
     async fn read_info(&self, tree: TreeState) -> Result<RepoInfo> {
         read_info(&self.runner, &self.worktree, tree).await
     }
@@ -1210,7 +1211,8 @@ impl RepoManager {
             }
             let view = view.unwrap_or_else(|| slot.target().view().clone());
             let view = normalize_view(view, &info);
-            let changed = if slot.load_incomplete(repo) || slot.target().needs_reload(&info, &view)
+            let changed = if slot.load_incomplete(repo)
+                || slot.target().needs_reload(&info, &view, repo.is_loading())
             {
                 let next = RepoState::new(info, view, 0);
                 let has_tips = next.has_tips();
@@ -1374,14 +1376,15 @@ struct Location {
     common_dir: PathBuf,
 }
 
-/// Head, refs, remotes and worktrees, read concurrently in `worktree`, with `tree` as the
-/// status and in-progress state.
+/// Head, refs, remotes, worktrees and stashes, read concurrently in `worktree`, with `tree`
+/// as the status and in-progress state.
 async fn read_info(runner: &GitRunner, worktree: &Path, tree: TreeState) -> Result<RepoInfo> {
-    let (head, refs, remotes, worktrees) = tokio::join!(
+    let (head, refs, remotes, worktrees, stashes) = tokio::join!(
         read_head(runner, worktree),
         read_refs(runner, worktree),
         read_remotes(runner, worktree),
         read_worktrees(runner, worktree),
+        read_stashes(runner, worktree),
     );
     let mut worktrees = worktrees?;
     for wt in &mut worktrees {
@@ -1394,6 +1397,7 @@ async fn read_info(runner: &GitRunner, worktree: &Path, tree: TreeState) -> Resu
         worktrees,
         status: tree.status,
         in_progress: tree.in_progress,
+        stashes: stashes?,
     })
 }
 

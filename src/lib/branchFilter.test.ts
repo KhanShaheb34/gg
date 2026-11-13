@@ -8,7 +8,7 @@ describe("branchItems", () => {
   it("lists Show all, then local branches, then remote branches under headings", () => {
     expect(branchItems(local, remote, true, "")).toEqual([
       { kind: "all" },
-      { kind: "heading", label: "Branches" },
+      { kind: "heading", label: "Local branches" },
       { kind: "branch", name: "main", remote: false },
       { kind: "branch", name: "feature/login", remote: false },
       { kind: "branch", name: "fix/typo", remote: false },
@@ -31,14 +31,14 @@ describe("branchItems", () => {
   it("filters by a case-insensitive substring and drops empty sections", () => {
     expect(branchItems(local, remote, true, "TYPO")).toEqual([
       { kind: "all" },
-      { kind: "heading", label: "Branches" },
+      { kind: "heading", label: "Local branches" },
       { kind: "branch", name: "fix/typo", remote: false },
       { kind: "heading", label: "Remote branches" },
       { kind: "branch", name: "origin/fix/typo", remote: true },
     ]);
     expect(branchItems(local, remote, true, "login")).toEqual([
       { kind: "all" },
-      { kind: "heading", label: "Branches" },
+      { kind: "heading", label: "Local branches" },
       { kind: "branch", name: "feature/login", remote: false },
     ]);
     expect(branchItems(local, remote, true, "nothing")).toEqual([{ kind: "all" }]);

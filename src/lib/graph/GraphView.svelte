@@ -966,9 +966,11 @@
     opacity: 0.6;
   }
 
+  /* First in the cell, where the subject will start (the empty subject takes the rest). */
   .row[aria-busy="true"] .desc::after {
     --bar: 55%;
     flex: none;
+    order: -1;
   }
 
   .row[aria-busy="true"]:nth-child(odd) .desc::after {

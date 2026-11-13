@@ -427,6 +427,12 @@ test("while the first rows load, one viewport of skeletons shows and the grid do
   expect(state.skeletons).toBeGreaterThan(0);
   expect(state.skeletons).toBeLessThanOrEqual(Math.floor(state.rowArea / 26));
   expect(state.scrollable).toBeLessThanOrEqual(0);
+  // The description's bar starts where the text will, at the cell's left, as the others do.
+  const bar = await g
+    .locator('[role="row"][aria-busy="true"]:not([hidden]) .desc')
+    .first()
+    .evaluate((el) => getComputedStyle(el, "::after").order);
+  expect(bar).toBe("-1");
 });
 
 test("the lane canvas is as tall as the rows the viewport needs, and shrinks with it", async ({ gg }) => {

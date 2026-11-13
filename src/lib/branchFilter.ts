@@ -20,7 +20,7 @@ export function branchItems(local: string[], remote: string[], showRemotes: bool
     items.push({ kind: "heading", label });
     for (const name of names) items.push({ kind: "branch", name, remote: isRemote });
   };
-  section("Branches", keep(local), false);
+  section("Local branches", keep(local), false);
   if (showRemotes) section("Remote branches", keep(remote), true);
   return items;
 }

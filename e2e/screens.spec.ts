@@ -131,6 +131,18 @@ for (const theme of ["light", "dark"] as const) {
   test(`first run, empty, loading and error states, ${theme}`, async ({ gg }) => {
     const { page } = gg;
     await page.emulateMedia({ colorScheme: theme });
+    // For the loading shot: "small" stays loading with no rows (no events reach the page,
+    // and its snapshots say so); the empty repository needs neither.
+    const small = gg.repoPath("small");
+    await page.route("**/events", (route) => route.abort());
+    await page.route("**/invoke", async (route) => {
+      const body = route.request().postDataJSON() as { cmd?: string } | null;
+      if (body?.cmd !== "open_repo" && body?.cmd !== "get_snapshot") return route.continue();
+      const response = await route.fetch();
+      const json = (await response.json()) as { ok?: { rootPath: string; totalRows: number; loading: boolean } };
+      if (json.ok?.rootPath === small) Object.assign(json.ok, { totalRows: 0, loading: true });
+      await route.fulfill({ response, json });
+    });
     await page.goto("/");
     await expect(page.getByTestId("welcome")).toBeVisible();
     await page.mouse.move(640, 790);
@@ -152,17 +164,8 @@ for (const theme of ["light", "dark"] as const) {
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `empty-${theme}.png`) });
 
-    // Loading: the first rows held back, so the skeleton rows show.
-    await page.route("**/events", (route) => route.abort());
-    await page.route("**/invoke", async (route) => {
-      const body = route.request().postDataJSON() as { cmd?: string } | null;
-      if (body?.cmd !== "open_repo" && body?.cmd !== "get_snapshot") return route.continue();
-      const response = await route.fetch();
-      const json = (await response.json()) as { ok?: { totalRows: number; loading: boolean } };
-      if (json.ok) Object.assign(json.ok, { totalRows: 0, loading: true });
-      await route.fulfill({ response, json });
-    });
-    await open(page, gg.repoPath("small"));
+    // Loading: the first rows held back (see the routes above), so the skeleton rows show.
+    await open(page, small);
     await expect(page.locator('[role="row"][aria-busy="true"]:not([hidden])').first()).toBeVisible();
     await page.mouse.move(640, 790);
     await page.waitForTimeout(150);

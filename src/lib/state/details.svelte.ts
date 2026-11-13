@@ -4,8 +4,13 @@
 import { api } from "../ipc";
 import type { CommitDetails, CommitRow } from "../types";
 
-/** Commits whose details are remembered per repository. */
+/** Commits whose details are remembered per repository, at most. */
 export const DETAILS_CACHE_SIZE = 50;
+/**
+ * Changed files remembered per repository, at most, across all remembered commits (about
+ * 10 MB): the least recently shown go first. The newest is kept even when it alone has more.
+ */
+export const DETAILS_CACHE_FILES = 60_000;
 /**
  * A selection made this soon after the previous one (arrow keys held down, say) waits this
  * long for the next before the core is asked: only where the selection stops is loaded.
@@ -30,6 +35,8 @@ export class CommitDetailsLoader {
 
   /** Answers by hash, least recently shown first. */
   private cache = new Map<string, CommitDetails>();
+  /** Changed files of all remembered commits. */
+  private cachedFiles = 0;
   private inFlight = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastShown = -Infinity;
@@ -78,6 +85,7 @@ export class CommitDetailsLoader {
     this.disposed = true;
     this.cancelTimer();
     this.cache.clear();
+    this.cachedFiles = 0;
   }
 
   private cancelTimer(): void {
@@ -95,9 +103,19 @@ export class CommitDetailsLoader {
   }
 
   private remember(hash: string, details: CommitDetails): void {
-    this.cache.delete(hash);
+    this.forget(hash);
     this.cache.set(hash, details);
-    while (this.cache.size > DETAILS_CACHE_SIZE) this.cache.delete(this.cache.keys().next().value!);
+    this.cachedFiles += details.files.length;
+    while (this.cache.size > 1 && (this.cache.size > DETAILS_CACHE_SIZE || this.cachedFiles > DETAILS_CACHE_FILES)) {
+      this.forget(this.cache.keys().next().value!);
+    }
+  }
+
+  private forget(hash: string): void {
+    const old = this.cache.get(hash);
+    if (!old) return;
+    this.cache.delete(hash);
+    this.cachedFiles -= old.files.length;
   }
 
   private async load(hash: string): Promise<void> {

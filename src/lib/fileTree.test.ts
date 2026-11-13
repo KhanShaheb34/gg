@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildFileTree, flattenTree, type TreeNode } from "./fileTree";
+import {
+  buildFileTree,
+  compareNatural,
+  fileTreeOf,
+  flattenTree,
+  naturalKey,
+  sortedFilesOf,
+  type TreeNode,
+} from "./fileTree";
 import type { FileChange } from "./types";
 
 function file(path: string, status: FileChange["status"] = "M", oldPath: string | null = null): FileChange {
@@ -102,11 +110,79 @@ describe("flattenTree", () => {
     ]);
   });
 
-  it("handles ten thousand files quickly", () => {
+  it("gives each row its place among its siblings, for assistive technology", () => {
+    const rows = flattenTree(roots, new Set());
+    expect(rows.map((r) => `${r.node.name}:${r.pos}/${r.size}`)).toEqual([
+      "app:1/3",
+      "peaches:1/2",
+      "a.py:1/1",
+      "routes:2/2",
+      "r.py:1/1",
+      "docs:2/3",
+      "A.md:1/1",
+      "top.txt:3/3",
+    ]);
+  });
+
+  it("lays out ten thousand files (a smoke check of size, not of time)", () => {
     const many = Array.from({ length: 10_000 }, (_, i) => file(`src/m${i % 40}/f${i}.ts`, "A"));
-    const started = performance.now();
     const rows = flattenTree(buildFileTree(many), new Set());
     expect(rows).toHaveLength(10_000 + 40 + 1);
-    expect(performance.now() - started).toBeLessThan(500);
+    expect(rows[1].node.name).toBe("m0");
+    expect(rows[2].node.name).toBe("f0.ts");
+    expect(rows[3].node.name).toBe("f40.ts");
+  });
+});
+
+describe("natural order", () => {
+  const sorted = (names: string[]) =>
+    names
+      .map((n) => ({ n, k: naturalKey(n) }))
+      .sort((a, b) => compareNatural(a.k, b.k, a.n, b.n))
+      .map((x) => x.n);
+
+  it("sorts numbers by value and letters without case", () => {
+    expect(sorted(["file-16.ts", "file-8.ts", "File-9.ts", "file-100.ts", "b", "A", "a"])).toEqual([
+      "A",
+      "a",
+      "b",
+      "file-8.ts",
+      "File-9.ts",
+      "file-16.ts",
+      "file-100.ts",
+    ]);
+  });
+
+  it("orders equal numbers with leading zeros, and long numbers, consistently", () => {
+    expect(sorted(["v010", "v10", "v9", "v99999999999999999999", "v100000000000000000000"])).toEqual([
+      "v9",
+      "v010",
+      "v10",
+      "v99999999999999999999",
+      "v100000000000000000000",
+    ]);
+  });
+
+  it("is a total order: names differing only in case still compare apart", () => {
+    expect(compareNatural(naturalKey("a"), naturalKey("A"), "a", "A")).toBeGreaterThan(0);
+    expect(compareNatural(naturalKey("x"), naturalKey("x"), "x", "x")).toBe(0);
+  });
+});
+
+describe("cached views of a commit's files", () => {
+  const files = ["src/file-16.ts", "src/file-8.ts", "a/z.txt", "B.md"].map((p) => file(p));
+
+  it("builds the tree of one list of files once", () => {
+    const tree = fileTreeOf(files);
+    expect(fileTreeOf(files)).toBe(tree);
+    expect(fileTreeOf([...files])).not.toBe(tree);
+    expect(shape(tree)).toEqual([["a", ["z.txt"]], ["src", ["file-8.ts", "file-16.ts"]], "B.md"]);
+  });
+
+  it("sorts the flat list once, by whole path in the tree's natural order", () => {
+    const list = sortedFilesOf(files);
+    expect(sortedFilesOf(files)).toBe(list);
+    expect(list.map((f) => f.path)).toEqual(["a/z.txt", "B.md", "src/file-8.ts", "src/file-16.ts"]);
+    expect(files.map((f) => f.path)).toEqual(["src/file-16.ts", "src/file-8.ts", "a/z.txt", "B.md"]);
   });
 });

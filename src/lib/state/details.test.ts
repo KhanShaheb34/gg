@@ -20,14 +20,20 @@ vi.mock("../ipc", async (importOriginal) => {
 });
 
 import { api, CoreError } from "../ipc";
-import { CommitDetailsLoader, DETAILS_CACHE_SIZE, DETAILS_DEBOUNCE_MS } from "./details.svelte";
+import {
+  CommitDetailsLoader,
+  DETAILS_CACHE_FILES,
+  DETAILS_CACHE_SIZE,
+  DETAILS_DEBOUNCE_MS,
+} from "./details.svelte";
 
 const commitDetails = vi.mocked(api.commitDetails);
 
 /** A full 40-digit hash made from `n`. */
 const H = (n: number) => n.toString(16).padStart(40, "0");
 
-function details(hash: string): CommitDetails {
+function details(hash: string, fileCount = 0): CommitDetails {
+  const file = { path: "f", oldPath: null, status: "A" as const, additions: 1, deletions: 0 };
   return {
     hash,
     parents: [],
@@ -38,7 +44,7 @@ function details(hash: string): CommitDetails {
     committerEmail: "ada@x",
     commitTime: 0,
     message: `message of ${hash}`,
-    files: [],
+    files: Array.from({ length: fileCount }, () => file),
   };
 }
 
@@ -169,6 +175,37 @@ describe("CommitDetailsLoader", () => {
     await vi.advanceTimersByTimeAsync(DETAILS_DEBOUNCE_MS + 1);
     loader.show(H(1));
     expect(requested()).toEqual([H(1)]);
+  });
+
+  it(`remembers at most ${DETAILS_CACHE_FILES} changed files in all, dropping the least recent`, async () => {
+    const big = Math.floor(DETAILS_CACHE_FILES / 2.5);
+    for (let n = 1; n <= 3; n++) {
+      await vi.advanceTimersByTimeAsync(DETAILS_DEBOUNCE_MS + 1);
+      loader.show(H(n));
+      await answer(H(n), details(H(n), big));
+      expect(loader.details?.files).toHaveLength(big);
+    }
+    commitDetails.mockClear();
+    for (const n of [3, 2]) {
+      await vi.advanceTimersByTimeAsync(DETAILS_DEBOUNCE_MS + 1);
+      loader.show(H(n));
+    }
+    expect(requested()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(DETAILS_DEBOUNCE_MS + 1);
+    loader.show(H(1));
+    expect(requested()).toEqual([H(1)]);
+  });
+
+  it("shows a commit with more files than the budget, without keeping it", async () => {
+    loader.show(H(1));
+    await answer(H(1), details(H(1), DETAILS_CACHE_FILES + 1));
+    expect(loader.details?.files).toHaveLength(DETAILS_CACHE_FILES + 1);
+    await vi.advanceTimersByTimeAsync(DETAILS_DEBOUNCE_MS + 1);
+    loader.show(H(2));
+    await answer(H(2));
+    await vi.advanceTimersByTimeAsync(DETAILS_DEBOUNCE_MS + 1);
+    loader.show(H(1));
+    expect(requested()).toEqual([H(1), H(2), H(1)]);
   });
 
   it("does not ask twice for a commit already asked for", async () => {

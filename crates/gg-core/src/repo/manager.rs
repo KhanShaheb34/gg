@@ -153,6 +153,8 @@ pub(crate) struct Repo {
     errors: Mutex<HeldErrors>,
     /// The last status read failed (said once, until one succeeds again).
     status_failed: AtomicBool,
+    /// The last stash read failed (and was reported).
+    stashes_failed: AtomicBool,
     /// No status read is running or wanted, and one has ended (see
     /// [`RepoManager::wait_status`]).
     status_idle: watch::Sender<bool>,
@@ -192,6 +194,7 @@ struct HeldErrors {
     load: Option<serde_json::Value>,
     live_updates: Option<serde_json::Value>,
     status: Option<serde_json::Value>,
+    stashes: Option<serde_json::Value>,
 }
 
 /// What a held `repo-error` is about.
@@ -203,6 +206,8 @@ pub(super) enum ErrorKind {
     LiveUpdates,
     /// `git status` failed or took too long.
     Status,
+    /// The stash list could not be read.
+    Stashes,
 }
 
 /// The state lock's contents.
@@ -329,6 +334,7 @@ impl Repo {
             ErrorKind::Load => held.load = Some(payload),
             ErrorKind::LiveUpdates => held.live_updates = Some(payload),
             ErrorKind::Status => held.status = Some(payload),
+            ErrorKind::Stashes => held.stashes = Some(payload),
         }
     }
 
@@ -339,6 +345,7 @@ impl Repo {
             ErrorKind::Load => held.load = None,
             ErrorKind::LiveUpdates => held.live_updates = None,
             ErrorKind::Status => held.status = None,
+            ErrorKind::Stashes => held.stashes = None,
         }
     }
 
@@ -354,6 +361,7 @@ impl Repo {
                 held.live_updates.take(),
                 held.load.take(),
                 held.status.take(),
+                held.stashes.take(),
             ]
         };
         for payload in held.into_iter().flatten() {
@@ -388,9 +396,33 @@ impl Repo {
     }
 
     /// Reads what the rows need (HEAD, refs, remotes, worktrees, stashes), with `tree` as the
-    /// status and in-progress state.
-    async fn read_info(&self, tree: TreeState) -> Result<RepoInfo> {
-        read_info(&self.runner, &self.worktree, tree).await
+    /// status and in-progress state. Stashes that cannot be read are none (see
+    /// [`Repo::stashes_read`]).
+    async fn read_info(&self, sink: &dyn EventSink, tree: TreeState) -> Result<RepoInfo> {
+        let (info, stash_error) = read_info(&self.runner, &self.worktree, tree).await?;
+        self.stashes_read(sink, stash_error);
+        Ok(info)
+    }
+
+    /// Notes how reading the stash list went: a failure is reported once with `repo-error`
+    /// (until a read succeeds again), and the repository goes on without stashes.
+    fn stashes_read(&self, sink: &dyn EventSink, error: Option<CoreError>) {
+        match error {
+            None => {
+                if self.stashes_failed.swap(false, Ordering::SeqCst) {
+                    self.clear_held_error(ErrorKind::Stashes);
+                }
+            }
+            Some(reason) => {
+                if !self.stashes_failed.swap(true, Ordering::SeqCst) {
+                    self.report_error(
+                        sink,
+                        ErrorKind::Stashes,
+                        stashes_unavailable(self.identity.repo_id, reason),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -488,7 +520,8 @@ impl RepoManager {
         };
 
         let runner = self.runner.clone();
-        let info = read_info(&runner, &location.worktree, TreeState::default()).await?;
+        let (info, stash_error) =
+            read_info(&runner, &location.worktree, TreeState::default()).await?;
         let root = info
             .worktrees
             .iter()
@@ -547,6 +580,7 @@ impl RepoManager {
                 ..HeldErrors::default()
             }),
             status_failed: AtomicBool::new(false),
+            stashes_failed: AtomicBool::new(false),
             status_idle: watch::channel(false).0,
             status_reader: Mutex::new(StatusReader::default()),
             status_seq: AtomicU64::new(0),
@@ -557,6 +591,7 @@ impl RepoManager {
             scheduled_cancel: Mutex::new(None),
             scheduled_running: Arc::new(tokio::sync::Mutex::new(())),
         });
+        repo.stashes_read(self.sink.as_ref(), stash_error);
 
         // Nobody else can hold this lock yet; holding it while registering the repository
         // means no query sees it before its load has started.
@@ -973,7 +1008,7 @@ impl RepoManager {
             return Ok(repo.snapshot().await);
         }
         let tree = TreeState::of(repo.slot.read().await.target().info());
-        let info = repo.read_info(tree).await?;
+        let info = repo.read_info(self.sink.as_ref(), tree).await?;
         let snapshot = self.apply(repo, info, None, None).await?;
         self.request_status(repo);
         Ok(snapshot)
@@ -1095,7 +1130,7 @@ impl RepoManager {
             let held = slot.held_status.take().filter(|(seq, _)| *seq > floor);
             held.map_or_else(|| TreeState::of(slot.target().info()), |(_, tree)| tree)
         };
-        let snapshot = match repo.read_info(tree).await {
+        let snapshot = match repo.read_info(self.sink.as_ref(), tree).await {
             Ok(info) => self.apply(repo, info, None, Some(id)).await?,
             Err(_) => {
                 let (to_emit, snapshot) = {
@@ -1398,8 +1433,14 @@ struct Location {
 }
 
 /// Head, refs, remotes, worktrees and stashes, read concurrently in `worktree`, with `tree`
-/// as the status and in-progress state.
-async fn read_info(runner: &GitRunner, worktree: &Path, tree: TreeState) -> Result<RepoInfo> {
+/// as the status and in-progress state. Stashes that cannot be read (a corrupt
+/// `refs/stash`) are none, and the error comes back beside the info: the repository is
+/// usable without them.
+async fn read_info(
+    runner: &GitRunner,
+    worktree: &Path,
+    tree: TreeState,
+) -> Result<(RepoInfo, Option<CoreError>)> {
     let (head, refs, remotes, worktrees, stashes) = tokio::join!(
         read_head(runner, worktree),
         read_refs(runner, worktree),
@@ -1411,15 +1452,35 @@ async fn read_info(runner: &GitRunner, worktree: &Path, tree: TreeState) -> Resu
     for wt in &mut worktrees {
         wt.path = path_string(&canonical(Path::new(&wt.path)));
     }
-    Ok(RepoInfo {
-        head: head?,
-        refs: refs?,
-        remotes: remotes?,
-        worktrees,
-        status: tree.status,
-        in_progress: tree.in_progress,
-        stashes: stashes?,
-    })
+    let (stashes, stash_error) = match stashes {
+        Ok(stashes) => (stashes, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    Ok((
+        RepoInfo {
+            head: head?,
+            refs: refs?,
+            remotes: remotes?,
+            worktrees,
+            status: tree.status,
+            in_progress: tree.in_progress,
+            stashes,
+        },
+        stash_error,
+    ))
+}
+
+/// The `repo-error` payload saying that the stashes could not be read.
+fn stashes_unavailable(repo_id: u32, reason: CoreError) -> serde_json::Value {
+    let mut error = CoreError::new(
+        reason.code,
+        format!(
+            "Could not read the stashes, so none are shown: {}",
+            reason.message
+        ),
+    );
+    error.detail = reason.detail;
+    serde_json::json!({ "repoId": repo_id, "error": error })
 }
 
 /// The `repo-error` payload saying that the working tree's changes could not be read.

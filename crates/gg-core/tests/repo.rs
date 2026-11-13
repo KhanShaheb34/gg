@@ -1774,3 +1774,42 @@ async fn a_branch_selection_shows_the_stashes_on_its_commits() {
         hashes(&fresh.rows(fresh_id).await)
     );
 }
+
+/// Task 5 review, item 8: stashes that cannot be read (a corrupt `refs/stash`) do not stop
+/// the repository opening or refreshing: there are no stash rows, and `repo-error` says so
+/// once.
+#[tokio::test]
+async fn unreadable_stashes_leave_the_repository_usable_and_are_reported_once() {
+    let repo = TestRepo::new();
+    let c1 = repo.commit("one");
+    fs::write(
+        repo.path().join(".git/refs/stash"),
+        "0123456789012345678901234567890123456789\n",
+    )
+    .unwrap();
+    let h = harness().await;
+    let snap =
+        h.m.open(repo.path()).await.unwrap_or_else(|e| {
+            panic!("open failed: {:?}: {} ({:?})", e.code, e.message, e.detail)
+        });
+    let id = snap.repo_id;
+    h.wait(id).await;
+    assert_eq!(hashes(&h.rows(id).await), [c1.clone()]);
+    let c2 = repo.commit("two");
+    h.refresh(id).await;
+    h.refresh(id).await;
+    assert_eq!(hashes(&h.rows(id).await), [c2, c1]);
+    let errors: Vec<Value> = h
+        .sink
+        .events()
+        .into_iter()
+        .filter(|(n, v)| n == "repo-error" && v["repoId"] == id)
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    let message = errors[0]["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Could not read the stashes"),
+        "{message}"
+    );
+}

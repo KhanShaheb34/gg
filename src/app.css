@@ -11,7 +11,6 @@
   --fs: 13px;
   --fs-sm: 12px;
   --fs-xs: 11px;
-  --row-h: 26px;
   --radius: 6px;
   --radius-lg: 10px;
   --titlebar-h: 40px;
@@ -33,7 +32,7 @@
   --border-strong: #c9cbd4;
   --text: #1b1d24;
   --text-muted: #5b5f6e;
-  --text-faint: #8a8e9c;
+  --text-faint: #6e7280;
 
   --accent: #0a7c6c;
   --accent-hover: #086b5d;
@@ -82,7 +81,7 @@
   --border-strong: #3a3d47;
   --text: #e7e8ec;
   --text-muted: #a3a7b4;
-  --text-faint: #6f7383;
+  --text-faint: #878b99;
 
   --accent: #3ccbb4;
   --accent-hover: #5ad8c3;

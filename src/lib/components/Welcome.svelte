@@ -210,7 +210,7 @@
     align-items: center;
     column-gap: 10px;
     width: 100%;
-    height: calc(var(--row-h) + 6px);
+    height: 32px;
     padding: 0 36px 0 10px;
     border: 0;
     border-radius: 0;

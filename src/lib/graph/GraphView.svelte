@@ -269,6 +269,10 @@
         ["click-p95", c.p95],
         ["click-max", c.max],
       ];
+      // What went wrong on the page meanwhile (recorded by the perf build's init script).
+      const errors = (window as { __GG_PAGE_ERRORS__?: string[] }).__GG_PAGE_ERRORS__ ?? [];
+      marks.push(["page-errors", errors.length]);
+      for (const text of errors) marks.push([`page-error ${text}`, 0]);
       for (const [name, value] of marks) await api.perfMark(name, value).catch(() => {});
       await api.perfMark("scroll-done", performance.now()).catch(() => {});
     });

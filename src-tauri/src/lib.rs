@@ -135,17 +135,40 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// frame times for as long without scrolling (the control); with `GG_PERF_SCROLL=smooth` it
 /// scrolls a few px every frame, like a trackpad; with `GG_PERF_SCROLL=pages` it loads every
 /// page of rows once without scrolling (to tell the memory of loading rows from that of
-/// drawing them). `None` otherwise.
+/// drawing them). Every mode also records the page's errors, unhandled rejections, CSP
+/// violations and console errors and warnings in `window.__GG_PAGE_ERRORS__`, which the
+/// probe reports as `page-error` marks. `None` otherwise.
 #[cfg(any(test, feature = "perf"))]
-fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<&'static str> {
-    match gg_perf_scroll?.to_str()? {
-        "1" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = true;"),
-        "still" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = \"still\";"),
-        "smooth" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = \"smooth\";"),
-        "pages" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = \"pages\";"),
-        _ => None,
-    }
+fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<String> {
+    let mode = match gg_perf_scroll?.to_str()? {
+        "1" => "true",
+        "still" => "\"still\"",
+        "smooth" => "\"smooth\"",
+        "pages" => "\"pages\"",
+        _ => return None,
+    };
+    Some(format!(
+        "window.__GG_PROBE__ = {{}}; window.__GG_PERF_SCROLL__ = {mode};\n{PAGE_ERRORS_SCRIPT}"
+    ))
 }
+
+/// Records what goes wrong on the page (see `perf_scroll_script`).
+#[cfg(any(test, feature = "perf"))]
+const PAGE_ERRORS_SCRIPT: &str = r#"(() => {
+  const errors = (window.__GG_PAGE_ERRORS__ = []);
+  const note = (kind, text) => errors.push(`${kind}: ${String(text).slice(0, 200)}`);
+  addEventListener("error", (e) => note("error", e.message));
+  addEventListener("unhandledrejection", (e) => note("unhandled rejection", e.reason));
+  document.addEventListener("securitypolicyviolation", (e) =>
+    note("csp", `${e.violatedDirective} ${e.blockedURI}`));
+  for (const level of ["error", "warn"]) {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+      note(`console.${level}`, args.map(String).join(" "));
+      original(...args);
+    };
+  }
+})();"#;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -160,7 +183,7 @@ pub fn run() {
     let builder = match perf_scroll_script(std::env::var_os("GG_PERF_SCROLL")) {
         Some(script) => builder.plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("perf-scroll")
-                .js_init_script(script)
+                .js_init_script(script.as_str())
                 .build(),
         ),
         None => builder,
@@ -215,6 +238,14 @@ mod tests {
         assert!(
             smooth.contains("__GG_PROBE__") && smooth.contains("__GG_PERF_SCROLL__ = \"smooth\"")
         );
+        // Every mode also records what goes wrong on the page.
+        for mode in ["1", "still", "smooth", "pages"] {
+            let script = perf_scroll_script(Some(mode.into())).unwrap();
+            assert!(script.contains("__GG_PAGE_ERRORS__"), "{mode}");
+            assert!(script.contains("securitypolicyviolation"), "{mode}");
+            assert!(script.contains("unhandledrejection"), "{mode}");
+            assert!(script.contains("console[level]"), "{mode}");
+        }
         let pages = perf_scroll_script(Some("pages".into())).unwrap();
         assert!(pages.contains("__GG_PERF_SCROLL__ = \"pages\""));
         assert_eq!(perf_scroll_script(None), None);

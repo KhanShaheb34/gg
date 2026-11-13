@@ -8,9 +8,11 @@ use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::{CmdKind, GitRunner};
 
 /// NUL-separated: hash, parents, author name, email, time, committer name, email, time,
-/// raw message (last, so a message can hold anything).
-const META_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%cn%x00%ce%x00%ct%x00%B";
-const META_FIELDS: usize = 9;
+/// decorations, raw message (last, so a message can hold anything). With every ref and HEAD
+/// left out of the decorations (see [`read_details`]), only git's own markers remain, such as
+/// `grafted` on the commit where a shallow clone's history is cut.
+const META_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%cn%x00%ce%x00%ct%x00%D%x00%B";
+const META_FIELDS: usize = 10;
 
 /// Metadata, message and changed files of commit `hash` (a full 40 or 64 hex digit name;
 /// anything else is `BadRequest`). Files are compared with the first parent (a root commit
@@ -33,6 +35,9 @@ pub async fn read_details(r: &GitRunner, cwd: &Path, hash: &str) -> Result<Commi
                 "--no-show-signature",
                 "--no-ext-diff",
                 "--no-textconv",
+                // Decorations without refs: a branch could be named "grafted".
+                "--decorate-refs-exclude=refs/*",
+                "--decorate-refs-exclude=HEAD",
                 META_FORMAT,
                 &rev,
                 "--",
@@ -88,17 +93,21 @@ fn parse_meta(out: &[u8]) -> Option<CommitDetails> {
         committer,
         committer_email,
         commit_time,
+        decorations,
         message,
     ] = <[String; META_FIELDS]>::try_from(fields).ok()?;
     if hash.is_empty() || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
+    let parents: Vec<String> = parents
+        .split_ascii_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let grafted = decorations.split(", ").any(|d| d.trim() == "grafted");
     Some(CommitDetails {
         hash,
-        parents: parents
-            .split_ascii_whitespace()
-            .map(str::to_owned)
-            .collect(),
+        shallow_boundary: parents.is_empty() && grafted,
+        parents,
         author,
         author_email,
         author_time: author_time.trim().parse().unwrap_or(0),
@@ -329,7 +338,7 @@ mod tests {
     #[test]
     fn parses_meta() {
         let out = format!(
-            "{B1}\0{B2} {Z}\0Ada\0ada@x\01700000000\0Bob\0bob@x\01700000060\0subject\n\nbody ünï\n\n"
+            "{B1}\0{B2} {Z}\0Ada\0ada@x\01700000000\0Bob\0bob@x\01700000060\0\0subject\n\nbody ünï\n\n"
         );
         let m = parse_meta(out.as_bytes()).unwrap();
         assert_eq!(m.hash, B1);
@@ -347,6 +356,10 @@ mod tests {
             (1_700_000_000, 1_700_000_060)
         );
         assert_eq!(m.message, "subject\n\nbody ünï");
+        assert!(!m.shallow_boundary);
+        // Without parents and marked grafted: a shallow clone's boundary.
+        let cut = format!("{B1}\0\0A\0a\01\0C\0c\02\0grafted\0msg");
+        assert!(parse_meta(cut.as_bytes()).unwrap().shallow_boundary);
     }
 
     #[test]
@@ -355,7 +368,7 @@ mod tests {
         assert!(parse_meta(b"\0\0\0").is_none());
         assert!(parse_meta(format!("{B1}\0\0Ada\0").as_bytes()).is_none());
         let mut bytes = format!("{B1}\0\0A").into_bytes();
-        bytes.extend_from_slice(b"\xFF\0e\0x\0C\0e\0y\0msg \xFF");
+        bytes.extend_from_slice(b"\xFF\0e\0x\0C\0e\0y\0\0msg \xFF");
         let m = parse_meta(&bytes).unwrap();
         assert_eq!(m.author, "A\u{FFFD}");
         assert_eq!((m.author_time, m.commit_time), (0, 0));

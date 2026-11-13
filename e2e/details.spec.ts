@@ -661,3 +661,11 @@ test("the column divider can be dragged, keeps both minimums, is remembered and 
   await handle.dblclick();
   await expect.poll(infoWidth).toBeCloseTo(Math.round(panelW * 0.44), 0);
 });
+
+test("the commit where a shallow clone's history is cut is not called a root commit", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("shallow"));
+  await rowWith(page, "Two").click();
+  await expect(panel(page).getByTestId("details-parents")).toHaveText("Not available (shallow clone)");
+});

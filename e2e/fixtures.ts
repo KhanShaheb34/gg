@@ -203,6 +203,24 @@ const REPOS: Record<string, RepoScript> = {
     );
   },
   /** A repository without commits. */
+  /** A shallow clone (depth 2) of three commits, "One" to "Three": "Two" is where its history is cut. */
+  shallow(git, _write, dir) {
+    const source = makeRepo(
+      "shallow-source",
+      (src, write) => {
+        src("init", "-q", "-b", "main");
+        for (const subject of ["One", "Two", "Three"]) {
+          write("f.txt", `${subject}\n`);
+          src("add", "-A");
+          src("commit", "-q", "-m", subject);
+        }
+      },
+      path.dirname(dir),
+    );
+    git("init", "-q", "-b", "main");
+    git("fetch", "-q", "--depth", "2", `file://${source}`, "main");
+    git("reset", "-q", "--hard", "FETCH_HEAD");
+  },
   empty(git) {
     git("init", "-q", "-b", "main");
   },

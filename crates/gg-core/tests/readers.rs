@@ -688,6 +688,35 @@ async fn details_root_commit() {
     assert_eq!(file(&d.files, "x.txt").additions, Some(3));
 }
 
+/// In a shallow clone, the oldest commit fetched has parents that are not in the repository:
+/// it is not a root commit, and the details say so. A branch named "grafted" does not count.
+#[tokio::test]
+async fn details_shallow_boundary_is_not_a_root_commit() {
+    let src = TestRepo::new();
+    let root = src.commit("one");
+    src.commit("two");
+    let tip = src.commit("three");
+    let shallow = TestRepo::new();
+    let url = format!("file://{}", src.path().display());
+    shallow.git(&["remote", "add", "origin", &url]);
+    shallow.git(&["fetch", "-q", "--depth", "2", "origin", "main"]);
+    shallow.git(&["reset", "-q", "--hard", "origin/main"]);
+    shallow.git(&["branch", "grafted"]);
+    let boundary = shallow.git(&["rev-parse", "HEAD~1"]);
+
+    let git = runner().await;
+    let d = read_details(&git, shallow.path(), &boundary).await.unwrap();
+    assert!(d.parents.is_empty());
+    assert!(d.shallow_boundary, "the boundary of a shallow clone");
+    let d = read_details(&git, shallow.path(), &tip).await.unwrap();
+    assert!(!d.shallow_boundary);
+    // A real root commit, with a branch named "grafted" on it.
+    src.git(&["branch", "grafted", &root]);
+    let d = read_details(&git, src.path(), &root).await.unwrap();
+    assert!(d.parents.is_empty());
+    assert!(!d.shallow_boundary, "a root commit");
+}
+
 #[tokio::test]
 async fn details_merge_commit() {
     let h = merge_history();

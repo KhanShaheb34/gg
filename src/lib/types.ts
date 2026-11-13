@@ -101,6 +101,8 @@ export type CommitDetails = {
   commitTime: number;
   message: string;
   files: FileChange[];
+  /** No parents because a shallow clone's history is cut here (it is no root commit). */
+  shallowBoundary: boolean;
 };
 
 export type Settings = { theme: "system" | "light" | "dark"; fetchIntervalSecs: number }; // default system, 300; 0 = off

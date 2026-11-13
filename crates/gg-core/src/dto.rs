@@ -90,6 +90,9 @@ pub struct CommitDetails {
     /// Full message (subject and body), trailing whitespace removed.
     pub message: String,
     pub files: Vec<FileChange>,
+    /// The commit's parents are missing because the repository is a shallow clone and this
+    /// is where its history was cut (`parents` is then empty, though it is no root commit).
+    pub shallow_boundary: bool,
 }
 
 /// Kind of a ref. Serialized lowercase (`"branch"`).
@@ -408,6 +411,7 @@ mod tests {
             committer_email: "c@x".into(),
             commit_time: 2,
             message: "m".into(),
+            shallow_boundary: false,
             files: vec![FileChange {
                 path: "new".into(),
                 old_path: Some("old".into()),
@@ -422,7 +426,7 @@ mod tests {
             json!({
                 "hash": "h", "parents": ["p"], "author": "A", "authorEmail": "a@x",
                 "authorTime": 1, "committer": "C", "committerEmail": "c@x", "commitTime": 2,
-                "message": "m",
+                "message": "m", "shallowBoundary": false,
                 "files": [{"path": "new", "oldPath": "old", "status": "R",
                            "additions": null, "deletions": 0}]
             })

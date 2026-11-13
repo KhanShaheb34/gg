@@ -45,6 +45,7 @@ function details(hash: string, fileCount = 0): CommitDetails {
     commitTime: 0,
     message: `message of ${hash}`,
     files: Array.from({ length: fileCount }, () => file),
+    shallowBoundary: false,
   };
 }
 

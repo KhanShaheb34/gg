@@ -313,7 +313,11 @@
           {#each parents as parent (parent)}
             {@render parentButton(parent)}
           {:else}
-            <span class="faint">None (root commit)</span>
+            {#if details?.shallowBoundary}
+              <span class="faint">Not available (shallow clone)</span>
+            {:else if details}
+              <span class="faint">None (root commit)</span>
+            {/if}
           {/each}
         </dd>
 

@@ -12,7 +12,7 @@ use crate::dto::{OpHint, PullMode};
 use crate::error::Result;
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{Rejected, needs_pull_mode, nothing_to_do, push_rejected};
-use crate::ops::local::{current_branch, git_may_stop, head_commit, short};
+use crate::ops::local::{autostash_note, current_branch, git_may_stop, head_commit, short};
 use crate::ops::{OpCtx, Step, explain};
 
 /// A local branch's upstream, as configured.
@@ -229,15 +229,21 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         }
     };
     if nothing_to_do(&args, &out).is_some() {
-        return Ok(Step::Done(format!(
-            "Already up to date: {branch} has every commit of {}.",
-            from.as_deref().unwrap_or("its upstream")
-        )));
+        return Ok(autostash_note(
+            Step::Done(format!(
+                "Already up to date: {branch} has every commit of {}.",
+                from.as_deref().unwrap_or("its upstream")
+            )),
+            &out,
+        ));
     }
-    Ok(Step::Done(match from {
-        Some(from) => format!("Pulled {from} into {branch}."),
-        None => format!("Pulled into {branch}."),
-    }))
+    Ok(autostash_note(
+        Step::Done(match from {
+            Some(from) => format!("Pulled {from} into {branch}."),
+            None => format!("Pulled into {branch}."),
+        }),
+        &out,
+    ))
 }
 
 async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
@@ -378,7 +384,10 @@ pub(crate) async fn delete_tag_everywhere(
     let args = ["push", "--progress", remote, "--delete", full.as_str()];
     let out = ctx.git_net(&args).await?;
     let all = format!("{}\n{}", out.stderr, out.text());
-    let absent = all.contains("remote ref does not exist");
+    // "remote ref does not exist" (a failure), or a warning from a remote that deletes
+    // nothing and reports success (git's own receive-pack).
+    let absent =
+        all.contains("remote ref does not exist") || all.contains("deleting a non-existent ref");
     if out.code != 0 && !absent {
         return Ok(explain(&args, &out));
     }

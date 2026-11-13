@@ -370,7 +370,7 @@ pub(crate) async fn merge(
 /// (`rebase.autoStash`, `merge.autoStash`) conflicted as they were put back: git exits 0,
 /// keeps them in the stash and leaves its attempt in the working tree. git's text becomes
 /// the detail.
-fn autostash_note(step: Step, out: &GitOutput) -> Step {
+pub(crate) fn autostash_note(step: Step, out: &GitOutput) -> Step {
     let all = format!("{}\n{}", out.stderr, out.text());
     if !all.contains("Applying autostash resulted in conflicts") {
         return step;

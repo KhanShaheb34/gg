@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { percentile, stepTop, summarize, type Probe } from "./scrollProbe";
+import { percentile, smoothTop, stepTop, summarize, type Probe } from "./scrollProbe";
 
 describe("percentile", () => {
   it("uses the nearest rank", () => {
@@ -30,6 +30,16 @@ describe("stepTop", () => {
     expect(stepTop(1, 200, 1000)).toBe(5);
     expect(stepTop(100, 200, 1001)).toBe(501);
     expect(stepTop(200, 200, 2_600_000)).toBe(2_600_000);
+  });
+});
+
+describe("smoothTop", () => {
+  it("moves at a steady speed from the top, in fractions of a row, and stops at the bottom", () => {
+    expect(smoothTop(0, 1200, 10_000)).toBe(0);
+    expect(smoothTop(10, 1200, 10_000)).toBe(12);
+    expect(smoothTop(16.7, 1200, 10_000)).toBe(20);
+    expect(smoothTop(1000, 1200, 10_000)).toBe(1200);
+    expect(smoothTop(60_000, 1200, 10_000)).toBe(10_000);
   });
 });
 

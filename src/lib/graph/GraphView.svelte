@@ -200,12 +200,12 @@
     if (slow) probe.slowSkeletonFrames++;
   }
 
-  // A perf run (window.__GG_PERF_SCROLL__) scrolls the fully loaded graph top to bottom once
-  // and reports the result as perf marks (scroll-p50, scroll-p95, ...). With
+  // A perf run (window.__GG_PERF_SCROLL__) scrolls the fully loaded graph once (top to bottom
+  // in jumps, or smoothly; see ScrollMode) and reports the result as perf marks (scroll-p50, scroll-p95, ...). With
   // window.__GG_PERF_SEARCH__ set to a query, that search is active while it scrolls.
-  const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: boolean | "still" }).__GG_PERF_SCROLL__;
+  const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: boolean | "still" | "smooth" }).__GG_PERF_SCROLL__;
   const perfSearch = probe && (window as { __GG_PERF_SEARCH__?: string }).__GG_PERF_SEARCH__;
-  const perfScroll = perfScrollMode === true || perfScrollMode === "still";
+  const perfScroll = perfScrollMode === true || perfScrollMode === "still" || perfScrollMode === "smooth";
   let perfScrollStarted = false;
   $effect(() => {
     if (!perfScroll || perfScrollStarted || view.snapshot.loading || view.snapshot.totalRows === 0) return;
@@ -216,7 +216,8 @@
         view.openSearch();
         await view.runSearch(perfSearch);
       }
-      const s = await runScrollProbe(scroller, probe!, { scroll: perfScrollMode === true });
+      const mode = perfScrollMode === true ? "jump" : perfScrollMode === "smooth" ? "smooth" : "still";
+      const s = await runScrollProbe(scroller, probe!, { mode });
       const c = await runClickProbe(scroller);
       const marks: [string, number][] = [
         ["scroll-frames", s.frames],

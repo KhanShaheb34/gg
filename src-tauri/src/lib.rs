@@ -130,12 +130,14 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// Script that turns on the UI's scroll measurement (see `src/lib/perf/scrollProbe.ts`):
 /// with `GG_PERF_SCROLL=1` the graph scrolls itself top to bottom once the repository has
 /// loaded and reports frame times as perf marks; with `GG_PERF_SCROLL=still` it records
-/// frame times for as long without scrolling (the control). `None` otherwise.
+/// frame times for as long without scrolling (the control); with `GG_PERF_SCROLL=smooth` it
+/// scrolls a few px every frame, like a trackpad. `None` otherwise.
 #[cfg(any(test, feature = "perf"))]
 fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<&'static str> {
     match gg_perf_scroll?.to_str()? {
         "1" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = true;"),
         "still" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = \"still\";"),
+        "smooth" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = \"smooth\";"),
         _ => None,
     }
 }
@@ -199,11 +201,15 @@ mod tests {
     }
 
     #[test]
-    fn perf_scroll_only_with_gg_perf_scroll_1_or_still() {
+    fn perf_scroll_only_with_gg_perf_scroll_1_still_or_smooth() {
         let script = perf_scroll_script(Some("1".into())).unwrap();
         assert!(script.contains("__GG_PROBE__") && script.contains("__GG_PERF_SCROLL__ = true"));
         let still = perf_scroll_script(Some("still".into())).unwrap();
         assert!(still.contains("__GG_PROBE__") && still.contains("__GG_PERF_SCROLL__ = \"still\""));
+        let smooth = perf_scroll_script(Some("smooth".into())).unwrap();
+        assert!(
+            smooth.contains("__GG_PROBE__") && smooth.contains("__GG_PERF_SCROLL__ = \"smooth\"")
+        );
         assert_eq!(perf_scroll_script(None), None);
         assert_eq!(perf_scroll_script(Some("0".into())), None);
         assert_eq!(perf_scroll_script(Some("".into())), None);

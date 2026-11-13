@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Measures the release app (macOS) on one repository and prints a table.
 #
-#   scripts/perf.sh [--no-build] [--runs N] [--scroll | --still | --mixed] <repo>
+#   scripts/perf.sh [--no-build] [--runs N] [--scroll | --still | --smooth | --mixed | --modes "M..."] <repo>
 #
 # Builds the bundle with its measurement hooks (`pnpm tauri build --bundles app --features
 # perf`, skipped with --no-build), then launches it N times (default 6), one at a time, with
@@ -27,7 +27,10 @@
 #   click marks; memory is measured right after and again 30 s later, per process.
 # - Still (--still): the control for --scroll: GG_PERF_SCROLL=still records frames for the
 #   same 6 s without scrolling (then the same clicks).
+# - Smooth (--smooth): GG_PERF_SCROLL=smooth scrolls for the same 6 s the way a trackpad does,
+#   a few px every frame at a steady speed (most frames move the rows by less than a row).
 # - Mixed (--mixed): N still and N scroll launches, alternating, so both see the same load.
+#   --modes "still 1 smooth" interleaves any of: 0 (idle), 1 (scroll), still, smooth.
 #
 # WebKit helpers: WKWebView runs its page in XPC services (com.apple.WebKit.WebContent,
 # .Networking, .GPU) whose parent is launchd, not the app. They are matched by "responsible
@@ -50,13 +53,15 @@ while [ $# -gt 0 ]; do
     --runs) runs=$2; shift 2 ;;
     --scroll) modes="1"; shift ;;
     --still) modes="still"; shift ;;
+    --smooth) modes="smooth"; shift ;;
     --mixed) modes="still 1"; shift ;;
+    --modes) modes=$2; shift 2 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
 if [ $# -ne 1 ] || [ ! -d "$1" ]; then
-  echo "usage: $0 [--no-build] [--runs N] [--scroll | --still | --mixed] <repo>" >&2
+  echo "usage: $0 [--no-build] [--runs N] [--scroll | --still | --smooth | --mixed | --modes \"M...\"] <repo>" >&2
   exit 2
 fi
 repo=$(cd "$1" && pwd)

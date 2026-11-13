@@ -5,7 +5,9 @@
 // sets both when started with GG_PERF_SCROLL=1, so the same scroll is measured in WKWebView.
 // `__GG_PERF_SCROLL__ = "still"` (GG_PERF_SCROLL=still) is the control: the same 6 s of
 // frame recording without scrolling, which shows the frame-time jitter of the engine and
-// machine when the app does nothing.
+// machine when the app does nothing. `__GG_PERF_SCROLL__ = "smooth"` (GG_PERF_SCROLL=smooth)
+// scrolls for the same time the way a trackpad does: a few px every frame, at a steady speed,
+// so most frames move the rows by less than one row.
 
 /** Filled in by the graph view while the probe is on (see GraphView.svelte). */
 export type Probe = {
@@ -64,18 +66,35 @@ export function stepTop(k: number, steps: number, maxTop: number): number {
   return Math.round((maxTop * k) / steps);
 }
 
+/** Scroll position `elapsedMs` into a smooth scroll at `pxPerSec`, px (whole pixels). */
+export function smoothTop(elapsedMs: number, pxPerSec: number, maxTop: number): number {
+  return Math.min(maxTop, Math.round((elapsedMs * pxPerSec) / 1000));
+}
+
+/**
+ * How the probe scrolls: `jump` in `steps` equal steps from top to bottom (hundreds of rows
+ * each), `smooth` by a few px every frame at `pxPerSec`, `still` not at all (the control).
+ */
+export type ScrollMode = "jump" | "smooth" | "still";
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * Scrolls `scroller` from the top to the bottom in `steps` equal steps spread over
- * `durationMs`, recording every requestAnimationFrame delta meanwhile; then waits
- * `settleMs` and counts the visible rows that are still skeletons. Stores and returns the
- * summary. With `scroll: false` it records for the same time without scrolling (a control).
+ * Scrolls `scroller` for `durationMs` as `mode` says (see ScrollMode), recording every
+ * requestAnimationFrame delta meanwhile; then waits `settleMs` and counts the visible rows
+ * that are still skeletons. Stores and returns the summary.
  */
 export async function runScrollProbe(
   scroller: HTMLElement,
   probe: Probe,
-  { steps = 200, durationMs = 6000, settleMs = 300, scroll = true } = {},
+  {
+    mode = "jump" as ScrollMode,
+    steps = 200,
+    durationMs = 6000,
+    settleMs = 300,
+    // About one row every second frame at 60 Hz: a brisk two-finger scroll.
+    pxPerSec = 800,
+  } = {},
 ): Promise<ScrollSummary> {
   scroller.scrollTop = 0;
   await sleep(500);
@@ -84,22 +103,25 @@ export async function runScrollProbe(
   probe.slowSkeletonFrames = 0;
 
   const deltas: number[] = [];
+  const maxTop = scroller.scrollHeight - scroller.clientHeight;
+  const started = performance.now();
   let last = 0;
   let running = true;
   const tick = (now: number) => {
     if (last > 0) deltas.push(now - last);
     last = now;
+    // Positioned by the time since the start, so a late frame scrolls further, as a
+    // trackpad's momentum does.
+    if (mode === "smooth" && running) scroller.scrollTop = smoothTop(now - started, pxPerSec, maxTop);
     if (running) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 
-  const maxTop = scroller.scrollHeight - scroller.clientHeight;
-  const started = performance.now();
   for (let k = 1; k <= steps; k++) {
     // Steps are timed from the start, so a late step does not push the rest back.
     const wait = started + (k * durationMs) / steps - performance.now();
     if (wait > 0) await sleep(wait);
-    if (scroll) scroller.scrollTop = stepTop(k, steps, maxTop);
+    if (mode === "jump") scroller.scrollTop = stepTop(k, steps, maxTop);
   }
   running = false;
 

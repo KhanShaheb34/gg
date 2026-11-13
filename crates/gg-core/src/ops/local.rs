@@ -325,15 +325,21 @@ pub(crate) async fn merge(
     }
     let into = branch.as_deref().unwrap_or("detached HEAD");
     if squash {
-        return Ok(Step::Done(format!(
-            "Squashed {shown} into staged changes on {into}: commit them to finish."
-        )));
+        return Ok(autostash_note(
+            Step::Done(format!(
+                "Squashed {shown} into staged changes on {into}: commit them to finish."
+            )),
+            &out,
+        ));
     }
     if stopped_kind(ctx).await == Some(InProgressKind::Merge) {
-        return Ok(Step::Done(format!(
-            "Merged {shown} into {into} without committing: the result is staged; commit it \
-             to finish the merge."
-        )));
+        return Ok(autostash_note(
+            Step::Done(format!(
+                "Merged {shown} into {into} without committing: the result is staged; commit \
+                 it to finish the merge."
+            )),
+            &out,
+        ));
     }
     let hints = match &branch {
         Some(b) if head_commit(ctx).await? != before => {
@@ -342,11 +348,42 @@ pub(crate) async fn merge(
         _ => Vec::new(),
     };
     let message = format!("Merged {shown} into {into}.");
-    Ok(if hints.is_empty() {
-        Step::Done(message)
-    } else {
-        Step::DoneWithHints { message, hints }
-    })
+    Ok(autostash_note(
+        if hints.is_empty() {
+            Step::Done(message)
+        } else {
+            Step::DoneWith {
+                message,
+                detail: None,
+                hints,
+            }
+        },
+        &out,
+    ))
+}
+
+/// `step` (done), saying so if git's output `out` shows that the changes it auto-stashed
+/// (`rebase.autoStash`, `merge.autoStash`) conflicted as they were put back: git exits 0,
+/// keeps them in the stash and leaves its attempt in the working tree. git's text becomes
+/// the detail.
+fn autostash_note(step: Step, out: &GitOutput) -> Step {
+    let all = format!("{}\n{}", out.stderr, out.text());
+    if !all.contains("Applying autostash resulted in conflicts") {
+        return step;
+    }
+    let (message, hints) = match step {
+        Step::Done(message) => (message, Vec::new()),
+        Step::DoneWith { message, hints, .. } => (message, hints),
+        other => return other,
+    };
+    Step::DoneWith {
+        message: format!(
+            "{message} Your uncommitted changes could not be put back cleanly: they are kept \
+             in the stash, and git left its attempt, with conflicts, in the working tree."
+        ),
+        detail: Some(all.trim().to_owned()),
+        hints,
+    }
 }
 
 /// Push for `branch` after it got new commits: to its upstream's remote, or, without an
@@ -420,9 +457,9 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
         Ok(out) => out,
         Err(step) => return Ok(step),
     };
-    Ok(Step::Done(nothing_to_do(&args, &out).unwrap_or_else(
-        || format!("Rebased {branch} onto {onto}."),
-    )))
+    let done =
+        nothing_to_do(&args, &out).unwrap_or_else(|| format!("Rebased {branch} onto {onto}."));
+    Ok(autostash_note(Step::Done(done), &out))
 }
 
 /// `cherry-pick [-m N] [--no-commit] <hash>`.

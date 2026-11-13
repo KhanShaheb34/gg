@@ -36,8 +36,13 @@ use crate::repo::{Repo, RepoManager, unknown_repo};
 pub enum Step {
     /// It worked; a plain line saying what was done.
     Done(String),
-    /// It worked, and these follow-ups are worth offering (push after a merge).
-    DoneWithHints { message: String, hints: Vec<OpHint> },
+    /// It worked, with git's output worth showing (a note about it) or follow-ups worth
+    /// offering (push after a merge).
+    DoneWith {
+        message: String,
+        detail: Option<String>,
+        hints: Vec<OpHint>,
+    },
     /// git stopped on conflicts (not a failure): a plain line saying so, and git's output.
     Stopped { message: String, detail: String },
     /// It failed: a plain line (an explanation where one is known), git's own output and
@@ -537,8 +542,13 @@ impl RepoManager {
         };
         match ran {
             Ran::Step(Step::Done(message)) => outcome.message = message,
-            Ran::Step(Step::DoneWithHints { message, hints }) => {
+            Ran::Step(Step::DoneWith {
+                message,
+                detail,
+                hints,
+            }) => {
                 outcome.message = message;
+                outcome.detail = detail;
                 outcome.hints = hints;
             }
             Ran::Step(Step::Stopped { message, detail }) => {

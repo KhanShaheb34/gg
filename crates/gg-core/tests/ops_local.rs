@@ -677,6 +677,51 @@ async fn merge_hints_push_when_there_is_somewhere_to_push() {
     );
 }
 
+/// `main` (HEAD) and `feature` after `base`: `feature` changes `clash.txt`, `main` adds
+/// another file, and `clash.txt` has an uncommitted change on `main`, which conflicts with
+/// `feature`'s once git puts it back after a merge or rebase with auto-stash.
+fn dirty_against_feature(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.commit("main side");
+    repo.write("clash.txt", "dirty\n");
+}
+
+/// With auto-stash, git exits 0 even when the stashed changes conflict as they are put
+/// back: done, saying that they are kept in the stash, with git's text as the detail.
+#[tokio::test]
+async fn autostash_that_cannot_be_reapplied_is_said() {
+    for (config, request) in [
+        ("rebase.autoStash", rebase("feature")),
+        ("merge.autoStash", merge_branch("feature")),
+    ] {
+        let repo = TestRepo::new();
+        dirty_against_feature(&repo);
+        repo.git(&["config", config, "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+
+        let out = h.run(id, request).await;
+        assert_eq!(out.status, OpStatus::Done, "{config}: {out:?}");
+        assert!(
+            out.message.contains("kept in the stash"),
+            "{config}: {}",
+            out.message
+        );
+        let detail = out.detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("Applying autostash resulted in conflicts"),
+            "{config}: {detail}"
+        );
+        assert!(repo.git(&["stash", "list"]).contains("autostash"));
+    }
+}
+
 #[tokio::test]
 async fn rebase_replays_the_branch_onto_another() {
     let repo = TestRepo::new();

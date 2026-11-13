@@ -31,9 +31,11 @@ pub(crate) fn nothing_in_progress() -> CoreError {
     )
 }
 
-/// Why `request` cannot run while git is stopped in `kind`, if it cannot: it would move
-/// HEAD or change the index or working tree under the stopped operation. `head` is the
-/// branch HEAD is on. Continue and abort are not refused here.
+/// Why `request` cannot run while git is stopped in `kind`, if it cannot: it would check
+/// out something else or start another merge, rebase, cherry-pick or revert under the
+/// stopped one (a stash pop or apply merges too). `head` is the branch HEAD is on. A reset
+/// runs (it is a way out; a hard one still needs its confirmation), and so does a stash
+/// save. Continue and abort are not refused here.
 pub(crate) fn refused_while(
     request: &OpRequest,
     kind: InProgressKind,
@@ -47,8 +49,6 @@ pub(crate) fn refused_while(
         | OpRequest::Rebase { .. }
         | OpRequest::CherryPick { .. }
         | OpRequest::Revert { .. }
-        | OpRequest::Reset { .. }
-        | OpRequest::StashSave { .. }
         | OpRequest::StashApply { .. }
         | OpRequest::StashPop { .. }
         | OpRequest::StashBranch { .. } => true,
@@ -392,6 +392,37 @@ fn launch(argv: &[OsString], cwd: &Path, path: Option<OsString>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stash_operations_that_merge_are_refused_while_stopped() {
+        let stash = || "0123456789abcdef0123456789abcdef01234567".to_owned();
+        let refused = |r: OpRequest| refused_while(&r, InProgressKind::Rebase, Some("main"));
+        assert!(refused(OpRequest::StashApply { stash: stash() }).is_some());
+        assert!(refused(OpRequest::StashPop { stash: stash() }).is_some());
+        assert!(
+            refused(OpRequest::StashBranch {
+                stash: stash(),
+                name: "x".into()
+            })
+            .is_some()
+        );
+        let why = refused(OpRequest::StashPop { stash: stash() }).unwrap();
+        assert!(why.starts_with("A rebase is in progress"), "{why}");
+        assert!(
+            refused(OpRequest::StashSave {
+                message: None,
+                include_untracked: false
+            })
+            .is_none()
+        );
+        assert!(refused(OpRequest::StashDrop { stash: stash() }).is_none());
+        let pull = |branch: &str| OpRequest::Pull {
+            branch: branch.into(),
+            mode: crate::dto::PullMode::Default,
+        };
+        assert!(refused(pull("main")).is_some());
+        assert!(refused(pull("other")).is_none(), "only fetches into it");
+    }
 
     #[test]
     fn commands_split_on_whitespace_with_simple_quotes() {

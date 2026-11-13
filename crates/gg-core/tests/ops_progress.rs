@@ -52,6 +52,14 @@ fn revert(hash: &str) -> OpRequest {
     }
 }
 
+fn create_branch_and_checkout(name: &str, at: &str) -> OpRequest {
+    OpRequest::CreateBranch {
+        name: name.to_owned(),
+        at: at.to_owned(),
+        checkout: true,
+    }
+}
+
 fn read(repo: &TestRepo, rel: &str) -> String {
     fs::read_to_string(repo.path().join(rel)).unwrap()
 }
@@ -357,11 +365,18 @@ async fn other_operations_explain_while_in_progress() {
     let mark = h.last_log_id();
     let events = h.changes(id).len();
 
+    let one = repo.git(&["rev-parse", "feature~2"]);
     for request in [
         checkout_branch("feature"),
+        create_branch_and_checkout("later", &tip),
+        merge_branch("feature"),
         rebase("feature"),
-        cherry_pick(&tip),
-        reset(&tip, gg_core::dto::ResetMode::Mixed),
+        cherry_pick(&one),
+        revert(&tip),
+        OpRequest::Pull {
+            branch: "main".into(),
+            mode: gg_core::dto::PullMode::Default,
+        },
     ] {
         let out = h.run(id, request.clone()).await;
         assert_eq!(out.status, OpStatus::Failed, "{request:?}: {out:?}");
@@ -386,6 +401,17 @@ async fn other_operations_explain_while_in_progress() {
     let out = h.run(id, create_branch("later", &tip)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(out.snapshot.in_progress.is_some());
+
+    // So does a reset (a way out of a merge), a hard one still only once confirmed.
+    let hard = reset(&tip, gg_core::dto::ResetMode::Hard);
+    let out = h.run(id, hard.clone()).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    let out = h
+        .run_confirmed(id, hard, &[gg_core::dto::DangerKind::HardReset])
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.snapshot.in_progress, None);
+    assert!(!in_git_dir(&repo, "MERGE_HEAD"));
 }
 
 // ---- Open in editor ----

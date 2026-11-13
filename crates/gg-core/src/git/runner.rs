@@ -177,6 +177,9 @@ pub struct GitRunner {
     log: Arc<CommandLog>,
     /// `PATH` for git children, from the user's login shell when it could be read.
     path: Option<OsString>,
+    /// Further `-c key=value` options placed after [`LEADING_ARGS`]; see
+    /// [`GitRunner::with_extra_config`].
+    extra_args: Arc<[String]>,
 }
 
 impl GitRunner {
@@ -186,7 +189,11 @@ impl GitRunner {
         let path = tokio::task::spawn_blocking(|| cached_login_path().clone())
             .await
             .unwrap_or(None);
-        let runner = Self { log, path };
+        let runner = Self {
+            log,
+            path,
+            extra_args: Arc::from([]),
+        };
         let mut cmd = runner.command(None, &["--version"]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         match cmd.output().await {
@@ -275,9 +282,25 @@ impl GitRunner {
         &self.log
     }
 
+    /// A runner that also passes `-c key=value` for each pair to every command, after the
+    /// standard leading options (and after any extra options this runner already has).
+    /// Like those, they are left out of `CommandRecord.args`. Shares this runner's log.
+    pub fn with_extra_config(&self, pairs: &[(&str, &str)]) -> GitRunner {
+        let mut extra = self.extra_args.to_vec();
+        for (key, value) in pairs {
+            extra.push("-c".to_owned());
+            extra.push(format!("{key}={value}"));
+        }
+        GitRunner {
+            extra_args: extra.into(),
+            ..self.clone()
+        }
+    }
+
     fn command(&self, cwd: Option<&Path>, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.args(LEADING_ARGS)
+            .args(self.extra_args.iter())
             .args(args)
             .envs(GIT_ENV)
             .stdin(Stdio::null())

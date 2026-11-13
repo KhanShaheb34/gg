@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::graph::Edge;
+
 /// Which refs the graph shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,9 +92,135 @@ pub struct CommitDetails {
     pub files: Vec<FileChange>,
 }
 
+/// Kind of a ref. Serialized lowercase (`"branch"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RefKind {
+    /// Local branch (`refs/heads/`).
+    Branch,
+    /// Remote-tracking branch (`refs/remotes/`).
+    Remote,
+    /// Tag (`refs/tags/`).
+    Tag,
+}
+
+/// What HEAD points at in a worktree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadInfo {
+    /// Short name of the checked-out branch; `None` when detached.
+    pub branch: Option<String>,
+    /// The checked-out commit; `None` before the branch's first commit.
+    pub hash: Option<String>,
+}
+
+/// Progress of `git fetch` for one repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchState {
+    pub running: bool,
+    /// First stderr line of the last failed fetch; `None` after a success.
+    pub last_error: Option<String>,
+    /// When the last fetch finished, unix milliseconds.
+    pub last_at_ms: Option<i64>,
+}
+
+/// Everything the UI shows about an open repository, apart from its rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSnapshot {
+    pub repo_id: u32,
+    /// File name of `root_path`.
+    pub name: String,
+    /// The main worktree.
+    pub root_path: String,
+    /// The worktree the repository was opened from; HEAD, status and the uncommitted row
+    /// refer to it.
+    pub active_worktree: String,
+    /// Changes whenever rows may have changed; `rows()` with another generation fails.
+    pub generation: u64,
+    pub total_rows: u32,
+    /// The log is still being read.
+    pub loading: bool,
+    /// Highest lane index used by the rows laid out so far.
+    pub max_lane: u16,
+    pub head: HeadInfo,
+    /// Local branch short names, sorted.
+    pub branches: Vec<String>,
+    /// Remote-tracking branch short names (`origin/main`), sorted.
+    pub remote_branches: Vec<String>,
+    pub remotes: Vec<String>,
+    pub worktrees: Vec<WorktreeInfo>,
+    /// Status of the active worktree.
+    pub status: WorktreeStatus,
+    pub view_options: ViewOptions,
+    pub fetch: FetchState,
+}
+
+/// A ref shown on a row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefLabel {
+    pub kind: RefKind,
+    /// Short name: `main`, `origin/main`, `v1.0`.
+    pub name: String,
+    /// Branch only: remotes whose same-named branch is at this commit.
+    pub remotes: Vec<String>,
+    /// Checked out in the active worktree.
+    pub current: bool,
+    /// Path of a worktree that has this branch checked out.
+    pub worktree_path: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+/// Whether a row is a commit or the synthetic row for uncommitted changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RowKind {
+    Commit,
+    Uncommitted,
+}
+
+/// One row of the graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitRow {
+    pub index: u32,
+    pub kind: RowKind,
+    /// Full hash; `"UNCOMMITTED"` for the uncommitted row.
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub email: String,
+    /// Author time, unix seconds.
+    pub time: i64,
+    pub subject: String,
+    pub lane: u16,
+    pub color: u16,
+    pub edges: Vec<Edge>,
+    pub labels: Vec<RefLabel>,
+    /// The commit the active worktree's HEAD points at.
+    pub is_head: bool,
+    pub is_merge: bool,
+    /// Paths of worktrees whose detached HEAD is at this commit.
+    pub detached_worktrees: Vec<String>,
+}
+
+/// A window of rows of one generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowsPage {
+    pub generation: u64,
+    pub start: u32,
+    pub rows: Vec<CommitRow>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::EdgeHalf;
     use serde_json::json;
 
     #[test]
@@ -194,5 +322,105 @@ mod tests {
             })
         );
         assert_eq!(serde_json::from_value::<CommitDetails>(v).unwrap(), d);
+    }
+
+    #[test]
+    fn repo_snapshot_shape() {
+        let snap = RepoSnapshot {
+            repo_id: 7,
+            name: "r".into(),
+            root_path: "/r".into(),
+            active_worktree: "/w".into(),
+            generation: 3,
+            total_rows: 10,
+            loading: true,
+            max_lane: 2,
+            head: HeadInfo {
+                branch: None,
+                hash: Some("h".into()),
+            },
+            branches: vec!["main".into()],
+            remote_branches: vec!["origin/main".into()],
+            remotes: vec!["origin".into()],
+            worktrees: vec![],
+            status: WorktreeStatus::default(),
+            view_options: ViewOptions {
+                branches: None,
+                show_remotes: true,
+                show_tags: true,
+            },
+            fetch: FetchState::default(),
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "repoId": 7, "name": "r", "rootPath": "/r", "activeWorktree": "/w",
+                "generation": 3, "totalRows": 10, "loading": true, "maxLane": 2,
+                "head": {"branch": null, "hash": "h"},
+                "branches": ["main"], "remoteBranches": ["origin/main"], "remotes": ["origin"],
+                "worktrees": [], "status": {"changed": 0, "untracked": 0, "conflicted": 0},
+                "viewOptions": {"branches": null, "showRemotes": true, "showTags": true},
+                "fetch": {"running": false, "lastError": null, "lastAtMs": null}
+            })
+        );
+        assert_eq!(serde_json::from_value::<RepoSnapshot>(v).unwrap(), snap);
+    }
+
+    #[test]
+    fn rows_page_shape() {
+        let page = RowsPage {
+            generation: 2,
+            start: 5,
+            rows: vec![CommitRow {
+                index: 5,
+                kind: RowKind::Uncommitted,
+                hash: "UNCOMMITTED".into(),
+                parents: vec!["p".into()],
+                author: "A".into(),
+                email: "a@x".into(),
+                time: 9,
+                subject: "s".into(),
+                lane: 1,
+                color: 4,
+                edges: vec![Edge {
+                    from: 1,
+                    to: 0,
+                    color: 4,
+                    half: EdgeHalf::Bottom,
+                }],
+                labels: vec![RefLabel {
+                    kind: RefKind::Branch,
+                    name: "main".into(),
+                    remotes: vec!["origin".into()],
+                    current: true,
+                    worktree_path: Some("/r".into()),
+                    upstream: Some("origin/main".into()),
+                    ahead: 1,
+                    behind: 2,
+                }],
+                is_head: false,
+                is_merge: true,
+                detached_worktrees: vec!["/d".into()],
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&page).unwrap(),
+            json!({
+                "generation": 2, "start": 5,
+                "rows": [{
+                    "index": 5, "kind": "uncommitted", "hash": "UNCOMMITTED", "parents": ["p"],
+                    "author": "A", "email": "a@x", "time": 9, "subject": "s",
+                    "lane": 1, "color": 4,
+                    "edges": [{"from": 1, "to": 0, "color": 4, "half": "bottom"}],
+                    "labels": [{"kind": "branch", "name": "main", "remotes": ["origin"],
+                                "current": true, "worktreePath": "/r",
+                                "upstream": "origin/main", "ahead": 1, "behind": 2}],
+                    "isHead": false, "isMerge": true, "detachedWorktrees": ["/d"]
+                }]
+            })
+        );
+        assert_eq!(serde_json::to_value(RowKind::Commit).unwrap(), "commit");
+        assert_eq!(serde_json::to_value(RefKind::Tag).unwrap(), "tag");
     }
 }

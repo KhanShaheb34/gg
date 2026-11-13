@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
+pub use crate::dto::{HeadInfo, RefKind};
 use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner, git_failed};
 
@@ -13,17 +14,6 @@ use crate::git::runner::{CmdKind, GitRunner, git_failed};
 /// (`[ahead N, behind M]`, `[gone]` or empty), symref target.
 const REF_FORMAT: &str = "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(symref)";
 const REF_FIELDS: usize = 8;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RefKind {
-    /// Local branch (`refs/heads/`).
-    Branch,
-    /// Remote-tracking branch (`refs/remotes/`).
-    Remote,
-    /// Tag (`refs/tags/`).
-    Tag,
-}
 
 /// A branch, remote-tracking branch or tag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -40,16 +30,6 @@ pub struct RefInfo {
     pub ahead: u32,
     /// Commits on the upstream that are not on this branch (0 when there is none).
     pub behind: u32,
-}
-
-/// What HEAD points at in a worktree.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HeadInfo {
-    /// Short name of the checked-out branch; `None` when detached.
-    pub branch: Option<String>,
-    /// The checked-out commit; `None` before the branch's first commit.
-    pub hash: Option<String>,
 }
 
 /// Local branches, remote-tracking branches and tags, sorted by full ref name. Remote

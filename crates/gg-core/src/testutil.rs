@@ -5,12 +5,20 @@
 //! Commits get fixed, increasing dates, so the same steps always produce the same hashes.
 
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
+use serde_json::Value;
 use tempfile::TempDir;
+use tokio::sync::watch;
+
+use crate::EventSink;
 
 /// Date of the first commit in every `TestRepo` (unix seconds).
 const FIRST_COMMIT_TIME: i64 = 1_700_000_000;
@@ -163,6 +171,46 @@ impl TestRepo {
         path
     }
 
+    /// Appends `n` commits (`bulk 0`, `bulk 1`, ...) to the current branch in one
+    /// `git fast-import` run, much faster than `n` calls to [`TestRepo::commit`]. Each commit
+    /// keeps its parent's tree. Resets the index and working tree to the new tip (discarding
+    /// uncommitted changes). Returns the last commit's hash.
+    pub fn commit_many(&self, n: usize) -> String {
+        let branch = self.git(&["symbolic-ref", "HEAD"]);
+        let mut parent = self
+            .git_succeeds(&["rev-parse", "--verify", "--quiet", "HEAD"])
+            .then(|| self.git(&["rev-parse", "HEAD"]));
+        let mut script = String::new();
+        for i in 0..n {
+            let (_, date) = self.next_commit_slot();
+            let msg = format!("bulk {i}");
+            let _ = writeln!(script, "commit {branch}\nmark :{}", i + 1);
+            let _ = writeln!(script, "author Test <test@example.com> {date}");
+            let _ = writeln!(script, "committer Test <test@example.com> {date}");
+            let _ = writeln!(script, "data {}\n{msg}", msg.len());
+            if let Some(p) = parent.take() {
+                let _ = writeln!(script, "from {p}");
+            }
+            script.push('\n');
+        }
+        let mut child = self
+            .command(&[OsStr::new("fast-import"), OsStr::new("--quiet")], &[])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("start git fast-import");
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(script.as_bytes())
+            .expect("write fast-import script");
+        assert!(child.wait().expect("wait for fast-import").success());
+        // fast-import updates the branch but not the index or working tree.
+        self.git(&["reset", "-q", "--hard"]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+
     /// Creates a bare repository, adds it as remote `origin`, pushes all branches and tags
     /// to it and fetches. Returns the bare repository, which owns its own temp directory.
     pub fn clone_as_remote(&self) -> TestRepo {
@@ -256,5 +304,60 @@ impl TestRepo {
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|s| s.success())
+    }
+}
+
+/// An [`EventSink`] that records every event, for tests.
+pub struct RecordingSink {
+    events: Mutex<Vec<(String, Value)>>,
+    /// Number of events recorded so far; lets waiters sleep until the next one.
+    count: watch::Sender<usize>,
+}
+
+impl Default for RecordingSink {
+    fn default() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            count: watch::channel(0).0,
+        }
+    }
+}
+
+impl RecordingSink {
+    /// Every `(name, payload)` emitted so far, oldest first.
+    pub fn events(&self) -> Vec<(String, Value)> {
+        self.lock().clone()
+    }
+
+    /// The first event (already recorded or still to come) matching `pred`, or `None` if
+    /// none arrives within `timeout`.
+    pub async fn wait_for(
+        &self,
+        timeout: Duration,
+        pred: impl Fn(&str, &Value) -> bool,
+    ) -> Option<(String, Value)> {
+        let mut seen = self.count.subscribe();
+        let find = async {
+            loop {
+                seen.borrow_and_update();
+                if let Some(e) = self.lock().iter().find(|(n, v)| pred(n, v)) {
+                    return e.clone();
+                }
+                // The sender lives as long as `self`, so this only waits for the next event.
+                let _ = seen.changed().await;
+            }
+        };
+        tokio::time::timeout(timeout, find).await.ok()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(String, Value)>> {
+        self.events.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl EventSink for RecordingSink {
+    fn emit(&self, name: &str, payload: Value) {
+        self.lock().push((name.to_owned(), payload));
+        self.count.send_modify(|n| *n += 1);
     }
 }

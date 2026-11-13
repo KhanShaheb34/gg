@@ -727,7 +727,35 @@ async fn a_user_fetch_that_keeps_reporting_is_not_killed_but_a_scheduled_one_is(
     let scheduled = scheduled.expect("a scheduled fetch ran");
     assert_eq!(
         scheduled.fetch.last_error.as_deref(),
-        Some("Fetch timed out")
+        Some("Fetch timed out: still running after 700 ms")
+    );
+}
+
+/// However much git keeps writing, a fetch the user asked for ends at the absolute cap
+/// (2 h in the app), and says that this is the limit it hit.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_user_fetch_that_never_ends_stops_at_the_cap() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    upload_pack(
+        &repo,
+        "endless-upload-pack",
+        "while true; do echo \"remote: still here\" >&2; sleep 0.1; done",
+    );
+    let h = harness().await;
+    h.m.set_fetch_timeout(Duration::from_millis(700));
+    h.m.set_fetch_cap(Duration::from_millis(1500));
+    let snap = h.open(repo.path()).await;
+    tokio::time::timeout(TIMEOUT, h.m.fetch(snap.repo_id))
+        .await
+        .expect("the fetch was stopped")
+        .unwrap();
+    let now = h.m.snapshot(snap.repo_id).await.unwrap();
+    assert_eq!(
+        now.fetch.last_error.as_deref(),
+        Some("Fetch timed out: still running after 1500 ms")
     );
 }
 
@@ -750,7 +778,10 @@ async fn hung_fetch_times_out() {
         .expect("a timed-out fetch is still Ok");
     assert!(started.elapsed() < Duration::from_secs(10));
     let now = h.m.snapshot(snap.repo_id).await.unwrap();
-    assert_eq!(now.fetch.last_error.as_deref(), Some("Fetch timed out"));
+    assert_eq!(
+        now.fetch.last_error.as_deref(),
+        Some("Fetch timed out: no output from git for 500 ms")
+    );
     assert!(!now.fetch.running);
     assert!(now.fetch.last_at_ms.is_some());
     // The killed git still shows in the command log.

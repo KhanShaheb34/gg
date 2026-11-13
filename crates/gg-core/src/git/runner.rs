@@ -71,12 +71,41 @@ pub enum CmdKind {
 
 /// When [`GitRunner::run_with_timeout`] gives up on a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimeLimit {
+pub struct TimeLimit {
     /// After this long, whatever it is doing.
+    pub total: Duration,
+    /// Also once it has written nothing (stdout or stderr) for this long, if set.
+    pub idle: Option<Duration>,
+}
+
+impl TimeLimit {
+    /// Gives up after `total`.
+    pub fn total(total: Duration) -> Self {
+        Self { total, idle: None }
+    }
+
+    /// Gives up after `idle` without output, or after `total` in any case.
+    pub fn idle(idle: Duration, total: Duration) -> Self {
+        Self {
+            total,
+            idle: Some(idle),
+        }
+    }
+}
+
+/// Which limit of a [`TimeLimit`] a command ran into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expired {
+    /// It ran for the whole `total`.
     Total(Duration),
-    /// Once it has written nothing (stdout or stderr) for this long.
+    /// It wrote nothing for `idle`.
     Idle(Duration),
 }
+
+/// Most bytes [`GitRunner::run_with_timeout`] keeps of stdout and of stderr: the last ones.
+pub const KEPT_TAIL: usize = 64 * 1024;
+/// Put before output of which only the tail was kept.
+const DROPPED_MARK: &str = "\u{2026} (earlier output not kept)\n";
 
 /// Result of a finished git command.
 #[derive(Debug, Clone)]
@@ -180,6 +209,48 @@ impl CommandLog {
     fn lock(&self) -> std::sync::MutexGuard<'_, LogInner> {
         // A panic while holding the lock cannot leave the buffer inconsistent; keep using it.
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The last [`KEPT_TAIL`] bytes written to it, starting at a line when it had to drop some.
+#[derive(Default)]
+struct Tail {
+    bytes: Vec<u8>,
+    dropped: bool,
+}
+
+impl Tail {
+    fn push(&mut self, chunk: &[u8]) {
+        self.bytes.extend_from_slice(chunk);
+        // Trimmed only once it holds twice the tail, so each byte is moved at most once.
+        if self.bytes.len() > 2 * KEPT_TAIL {
+            self.trim();
+        }
+    }
+
+    fn trim(&mut self) {
+        if self.bytes.len() <= KEPT_TAIL {
+            return;
+        }
+        let mut cut = self.bytes.len() - KEPT_TAIL;
+        // Start at the next line, if one starts early in the tail.
+        if let Some(nl) = self.bytes[cut..].iter().position(|&b| b == b'\n')
+            && nl < KEPT_TAIL / 2
+        {
+            cut += nl + 1;
+        }
+        self.bytes.drain(..cut);
+        self.dropped = true;
+    }
+
+    fn into_bytes(mut self) -> Vec<u8> {
+        self.trim();
+        if self.dropped {
+            let mut marked = DROPPED_MARK.as_bytes().to_vec();
+            marked.append(&mut self.bytes);
+            return marked;
+        }
+        self.bytes
     }
 }
 
@@ -301,10 +372,12 @@ impl GitRunner {
         }
     }
 
-    /// Like [`GitRunner::run_unchecked`], but gives up when `limit` is reached: then git and
-    /// everything it started (a remote helper, ssh) are killed, the command is logged as
-    /// timed out, and the result is `Ok(None)`. On Unix git runs in its own process group
-    /// for this; elsewhere only git itself is killed.
+    /// Like [`GitRunner::run_unchecked`], for long-running commands whose output is shown
+    /// rather than parsed (fetch): only the last [`KEPT_TAIL`] bytes of stdout and of stderr
+    /// are kept (the pipes are still read to the end), and it gives up when `limit` is
+    /// reached. Then git and everything it started (a remote helper, ssh) are killed, the
+    /// command is logged as timed out, and the result is `Ok(Err(limit hit))`. On Unix git
+    /// runs in its own process group for this; elsewhere only git itself is killed.
     ///
     /// The group's id is git's pid, taken at spawn. On timeout the group is killed even when
     /// git has already exited (a helper it started still holding its output open): a group
@@ -318,7 +391,7 @@ impl GitRunner {
         args: &[&str],
         kind: CmdKind,
         limit: TimeLimit,
-    ) -> Result<Option<GitOutput>> {
+    ) -> Result<std::result::Result<GitOutput, Expired>> {
         use tokio::io::AsyncReadExt;
 
         let started = Instant::now();
@@ -338,15 +411,16 @@ impl GitRunner {
         let mut stderr_pipe = child.stderr.take();
         // When git last wrote anything, for an idle limit.
         let last_output = Mutex::new(tokio::time::Instant::now());
-        let output_seen =
-            || *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+        let output_seen = || {
+            *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+        };
         let read = async {
-            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let (mut out, mut err) = (Tail::default(), Tail::default());
             let read_out = async {
                 if let Some(p) = stdout_pipe.as_mut() {
                     let mut buf = [0u8; 8192];
                     while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        out.extend_from_slice(&buf[..n]);
+                        out.push(&buf[..n]);
                         output_seen();
                     }
                 }
@@ -355,47 +429,52 @@ impl GitRunner {
                 if let Some(p) = stderr_pipe.as_mut() {
                     let mut buf = [0u8; 8192];
                     while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        err.extend_from_slice(&buf[..n]);
+                        err.push(&buf[..n]);
                         output_seen();
                     }
                 }
             };
             tokio::join!(read_out, read_err);
-            (out, err)
+            (out.into_bytes(), err.into_bytes())
         };
         let run = async {
             let ((out, err), status) = tokio::join!(read, child.wait());
             (out, err, status)
         };
+        let deadline = tokio::time::Instant::now() + limit.total;
         let expired = async {
-            match limit {
-                TimeLimit::Total(timeout) => tokio::time::sleep(timeout).await,
-                TimeLimit::Idle(idle) => loop {
-                    let due = *last_output.lock().unwrap_or_else(|e| e.into_inner()) + idle;
-                    if tokio::time::Instant::now() >= due {
-                        break;
-                    }
-                    tokio::time::sleep_until(due).await;
-                },
+            loop {
+                let idle_due = limit
+                    .idle
+                    .map(|idle| *last_output.lock().unwrap_or_else(|e| e.into_inner()) + idle);
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    return Expired::Total(limit.total);
+                }
+                match (idle_due, limit.idle) {
+                    (Some(due), Some(idle)) if now >= due => return Expired::Idle(idle),
+                    (Some(due), _) => tokio::time::sleep_until(due.min(deadline)).await,
+                    _ => tokio::time::sleep_until(deadline).await,
+                }
             }
         };
         let finished = tokio::select! {
-            done = run => Some(done),
-            () = expired => None,
+            done = run => Ok(done),
+            hit = expired => Err(hit),
         };
         match finished {
-            Some((out, err, Ok(status))) => {
+            Ok((out, err, Ok(status))) => {
                 let code = status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&err).into_owned();
                 self.log.push(kind, cwd, args, started, code, &out, &stderr);
-                Ok(Some(GitOutput {
+                Ok(Ok(GitOutput {
                     stdout: out,
                     stderr,
                     code,
                 }))
             }
-            Some((_, _, Err(e))) => Err(fail(e)),
-            None => {
+            Ok((_, _, Err(e))) => Err(fail(e)),
+            Err(hit) => {
                 #[cfg(unix)]
                 if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
                     // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
@@ -407,7 +486,7 @@ impl GitRunner {
                 let _ = group;
                 let _ = child.kill().await;
                 self.log_timed_out(cwd, args, kind, started);
-                Ok(None)
+                Ok(Err(hit))
             }
         }
     }
@@ -633,6 +712,60 @@ mod tests {
         assert_eq!(t.len(), MAX_LOG_TEXT - 1);
         assert!(t.chars().all(|c| c == '€'));
         assert_eq!(truncate_text("short".to_string()), "short");
+    }
+
+    #[test]
+    fn tail_keeps_the_last_bytes_from_a_line_start() {
+        let mut t = Tail::default();
+        t.push(b"short\n");
+        assert_eq!(t.into_bytes(), b"short\n");
+
+        let mut t = Tail::default();
+        for i in 0..20_000 {
+            t.push(format!("line {i}\n").as_bytes());
+        }
+        let kept = t.into_bytes();
+        let text = String::from_utf8(kept).unwrap();
+        assert!(
+            text.len() <= KEPT_TAIL + DROPPED_MARK.len(),
+            "{}",
+            text.len()
+        );
+        assert!(text.starts_with(DROPPED_MARK));
+        let first = text[DROPPED_MARK.len()..].lines().next().unwrap();
+        assert!(first.starts_with("line "), "starts mid-line: {first:?}");
+        assert!(text.ends_with("line 19999\n"));
+    }
+
+    /// Output past the tail is read (so git is never blocked on a full pipe) and dropped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_with_timeout_keeps_only_the_tail_of_large_output() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        // git prints back a 300 KiB config value given on its command line.
+        let big = "x".repeat(300 * 1024);
+        let out = runner
+            .run_with_timeout(
+                dir.path(),
+                &["-c", &format!("gg.big={big}"), "config", "--get", "gg.big"],
+                CmdKind::Read,
+                TimeLimit::total(Duration::from_secs(20)),
+            )
+            .await
+            .unwrap()
+            .expect("finished");
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.len() <= KEPT_TAIL + DROPPED_MARK.len());
+        assert!(out.stdout.starts_with(DROPPED_MARK.as_bytes()));
+        assert!(
+            out.stdout.len() > KEPT_TAIL / 2,
+            "kept {}",
+            out.stdout.len()
+        );
     }
 
     #[test]

@@ -28,7 +28,7 @@ use crate::git::refs::{read_head, read_refs, read_remotes};
 use crate::git::runner::{CmdKind, GitRunner};
 use crate::git::status::read_status;
 use crate::git::worktrees::read_worktrees;
-use crate::repo::fetch::{FETCH_TIMEOUT, Schedule};
+use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule};
 use crate::repo::loader::start_load;
 use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, normalize_view};
 use crate::watcher::{RepoWatcher, watch_git_dir_reporting};
@@ -45,8 +45,11 @@ pub struct RepoManager {
     pub(super) schedule_changed: Arc<Notify>,
     /// The schedule task, started with the first `open`.
     pub(super) schedule_task: Mutex<Option<JoinHandle<()>>>,
-    /// How long a fetch may run before it is killed, in milliseconds.
+    /// How long a scheduled fetch may run, or a user's fetch stay silent, before it is
+    /// killed, in milliseconds.
     pub(super) fetch_timeout_ms: AtomicU64,
+    /// How long a fetch the user asked for may run in any case, in milliseconds.
+    pub(super) fetch_cap_ms: AtomicU64,
     /// Repositories (by common git dir) being opened right now. Another `open` of the same
     /// repository waits for that one instead of reading and watching it a second time; the
     /// receiver's sender is dropped when that open ends.
@@ -254,6 +257,7 @@ impl RepoManager {
             schedule_changed: Arc::new(Notify::new()),
             schedule_task: Mutex::new(None),
             fetch_timeout_ms: AtomicU64::new(duration_ms(FETCH_TIMEOUT)),
+            fetch_cap_ms: AtomicU64::new(duration_ms(FETCH_CAP)),
             opening: Mutex::new(HashMap::new()),
         })
     }

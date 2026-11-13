@@ -14,7 +14,7 @@ use tokio::time::Instant;
 
 use crate::dto::FetchState;
 use crate::error::{ErrorCode, Result};
-use crate::git::runner::{CmdKind, TimeLimit};
+use crate::git::runner::{CmdKind, Expired, TimeLimit};
 use crate::repo::manager::{Repo, RepoManager, lock, unknown_repo};
 
 /// Scheduled fetches keep running for this long after the window loses focus.
@@ -24,8 +24,10 @@ const FETCH_ARGS: [&str; 3] = ["fetch", "--all", "--prune"];
 /// A scheduled fetch running longer than this is killed, and so is a fetch the user asked
 /// for that has written nothing for this long.
 pub(super) const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
-/// `lastError` of a fetch that was killed for running too long (or silent too long).
-const TIMED_OUT: &str = "Fetch timed out";
+/// The longest a fetch the user asked for may run, even while git keeps writing.
+pub(super) const FETCH_CAP: Duration = Duration::from_secs(2 * 60 * 60);
+/// Most bytes of git's stderr kept as `lastErrorDetail`: the last ones.
+const MAX_DETAIL: usize = 8 * 1024;
 /// Where scheduled fetches look for hooks: nowhere.
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
@@ -79,6 +81,14 @@ impl RepoManager {
         self.fetch_by(repo_id, Initiator::User).await
     }
 
+    /// Sets how long a fetch the user asked for may run in any case (tests only; normally
+    /// 2 h).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_fetch_cap(&self, cap: Duration) {
+        self.fetch_cap_ms
+            .store(crate::repo::manager::duration_ms(cap), Ordering::Relaxed);
+    }
+
     /// Sets how long a scheduled fetch may run, and a user's fetch stay silent, before it is
     /// killed (tests only; normally 120 s).
     #[cfg(any(test, feature = "testutil"))]
@@ -123,9 +133,10 @@ impl RepoManager {
             Initiator::User => {
                 // Progress goes to stderr even without a terminal; any output counts.
                 args.push("--progress");
-                TimeLimit::Idle(timeout)
+                let cap = Duration::from_millis(self.fetch_cap_ms.load(Ordering::Relaxed));
+                TimeLimit::idle(timeout, cap)
             }
-            Initiator::Schedule => TimeLimit::Total(timeout),
+            Initiator::Schedule => TimeLimit::total(timeout),
         };
         // On timeout git and the transport helpers it started are killed.
         let run = repo
@@ -133,16 +144,18 @@ impl RepoManager {
             .run_with_timeout(&repo.worktree, &args, CmdKind::Write, limit)
             .await;
         let (error, detail) = match run {
-            Ok(None) => (Some(TIMED_OUT.to_owned()), None),
-            Ok(Some(out)) if out.code == 0 => (None, None),
-            Ok(Some(out)) => {
+            Ok(Err(expired)) => (Some(timed_out(expired)), None),
+            Ok(Ok(out)) if out.code == 0 => (None, None),
+            Ok(Ok(out)) => {
                 let stderr = without_progress(&out.stderr);
                 (
                     Some(fetch_error(&stderr, out.code)),
-                    Some(stderr).filter(|s| !s.trim().is_empty()),
+                    Some(stderr)
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| keep_tail(s, MAX_DETAIL)),
                 )
             }
-            Err(e) => (Some(e.message), e.detail),
+            Err(e) => (Some(e.message), e.detail.map(|d| keep_tail(d, MAX_DETAIL))),
         };
         let finished = {
             let mut slot = repo.slot.write().await;
@@ -310,6 +323,40 @@ fn fetch_error(stderr: &str, code: i32) -> String {
         )
 }
 
+/// `lastError` of a fetch that ran into `expired`.
+fn timed_out(expired: Expired) -> String {
+    match expired {
+        Expired::Idle(idle) => format!("Fetch timed out: no output from git for {}", span(idle)),
+        Expired::Total(total) => format!("Fetch timed out: still running after {}", span(total)),
+    }
+}
+
+/// `d` for people: whole hours, minutes or seconds where it is one, else milliseconds.
+fn span(d: Duration) -> String {
+    let (ms, s) = (d.as_millis(), d.as_secs());
+    if ms % 1000 != 0 {
+        format!("{ms} ms")
+    } else if s >= 3600 && s % 3600 == 0 {
+        format!("{} h", s / 3600)
+    } else if s >= 60 && s % 60 == 0 {
+        format!("{} min", s / 60)
+    } else {
+        format!("{s} s")
+    }
+}
+
+/// `text`, or its last `max` bytes (from a char boundary) after a "truncated" line.
+fn keep_tail(text: String, max: usize) -> String {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("\u{2026} (truncated)\n{}", &text[start..])
+}
+
 /// `stderr` with each progress line (redrawn with carriage returns) reduced to its last
 /// state, as a terminal would show it.
 fn without_progress(stderr: &str) -> String {
@@ -430,6 +477,30 @@ mod tests {
         );
         assert_eq!(fetch_error("From x\nsomething odd\n\n", 1), "something odd");
         assert_eq!(fetch_error("  \n", 128), "git fetch exited with code 128");
+    }
+
+    #[test]
+    fn timeouts_say_which_limit() {
+        assert_eq!(
+            timed_out(Expired::Idle(FETCH_TIMEOUT)),
+            "Fetch timed out: no output from git for 2 min"
+        );
+        assert_eq!(
+            timed_out(Expired::Total(FETCH_CAP)),
+            "Fetch timed out: still running after 2 h"
+        );
+        assert_eq!(span(Duration::from_secs(90)), "90 s");
+        assert_eq!(span(Duration::from_millis(700)), "700 ms");
+    }
+
+    #[test]
+    fn detail_keeps_its_tail_on_a_char_boundary() {
+        assert_eq!(keep_tail("short".into(), 8), "short");
+        let long = format!("{}fatal: x", "\u{e9}".repeat(10));
+        let kept = keep_tail(long, 9);
+        assert!(kept.starts_with("\u{2026} (truncated)\n"), "{kept:?}");
+        assert!(kept.ends_with("fatal: x"));
+        assert!(kept.len() <= "\u{2026} (truncated)\n".len() + 9);
     }
 
     #[test]

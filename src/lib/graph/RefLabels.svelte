@@ -84,11 +84,11 @@
     <span class="ab">{label ? aheadBehind(label) : ""}</span>
     <svg
       class="wt"
+      class:shown={!!label?.worktreePath && !label.current}
       width="11"
       height="10"
       viewBox="0 0 11 10"
       aria-label="in a worktree"
-      display={label?.worktreePath && !label.current ? undefined : "none"}
     >
       <path d="M1 2.2c0-.5.4-.9.9-.9h2.4l1 1.1h3.8c.5 0 .9.4.9.9v4.6c0 .5-.4.9-.9.9H1.9c-.5 0-.9-.4-.9-.9z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
     </svg>
@@ -203,7 +203,13 @@
     letter-spacing: -0.01em;
   }
 
+  /* Checked out in another worktree: a folder mark. */
   .wt {
+    display: none;
     opacity: 0.8;
+  }
+
+  .wt.shown {
+    display: block;
   }
 </style>

@@ -115,6 +115,13 @@ test("labels: main on its commit, local and remote at the same commit as one pil
   await expect(mainRow.locator(".hash")).toHaveText(mainHash.slice(0, 8));
   await expect(mainRow.locator('[data-ref="main"]')).toBeVisible();
   await expect(mainRow.locator('[data-ref="main"]')).toHaveAttribute("data-current", "true");
+  // No worktree mark on branches not checked out in another worktree.
+  await expect(grid(page).locator(".ref .wt:visible")).toHaveCount(0);
+  // A branch checked out in another worktree gets one.
+  gg.git("small", "worktree", "add", "-q", "../small-wt", "fix/typo");
+  await page.keyboard.press("ControlOrMeta+r");
+  await expect(grid(page).locator('[data-ref="fix/typo"] .wt')).toBeVisible();
+  await expect(grid(page).locator(".ref .wt:visible")).toHaveCount(1);
 
   // fix/typo was pushed with its upstream: one pill naming the remote too.
   const fix = grid(page).locator('[data-ref="fix/typo"]');

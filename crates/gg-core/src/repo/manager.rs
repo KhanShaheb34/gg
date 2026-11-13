@@ -103,8 +103,20 @@ pub(super) struct Repo {
     errors: Mutex<HeldErrors>,
     /// The last status read failed (said once, until one succeeds again).
     status_failed: AtomicBool,
-    /// Whether the first status read has ended (see [`RepoManager::wait_status`]).
-    status_read: watch::Sender<bool>,
+    /// No status read is running or wanted, and one has ended (see
+    /// [`RepoManager::wait_status`]).
+    status_idle: watch::Sender<bool>,
+    /// The status reader: one per repository, reading outside `refresh_lock`.
+    status_reader: Mutex<StatusReader>,
+    /// Number of the newest status read started; a read applies only if it still is.
+    status_seq: AtomicU64,
+}
+
+/// Whether a status read is running and whether another was asked for meanwhile.
+#[derive(Default)]
+struct StatusReader {
+    running: bool,
+    again: bool,
 }
 
 /// `repo-error` payloads of a repository nobody has asked for yet (opened in the background
@@ -399,7 +411,9 @@ impl RepoManager {
                 ..HeldErrors::default()
             }),
             status_failed: AtomicBool::new(false),
-            status_read: watch::channel(false).0,
+            status_idle: watch::channel(false).0,
+            status_reader: Mutex::new(StatusReader::default()),
+            status_seq: AtomicU64::new(0),
         });
 
         // Nobody else can hold this lock yet; holding it while registering the repository
@@ -436,14 +450,8 @@ impl RepoManager {
             }
         }
         self.start_schedule();
-        // Status beside the log; it waits its turn with refreshes.
-        let m = self.clone();
-        let status_repo = repo.clone();
-        tokio::spawn(async move {
-            let _serial = status_repo.refresh_lock.lock().await;
-            let _ = m.update_status(&status_repo).await;
-            status_repo.status_read.send_replace(true);
-        });
+        // Status beside the log.
+        self.request_status(&repo);
         Ok(snapshot)
     }
 
@@ -461,21 +469,51 @@ impl RepoManager {
             .store(duration_ms(delay), Ordering::Relaxed);
     }
 
-    /// Resolves once the first status read of the repository has ended, however it ended
-    /// (immediately for an unknown id).
+    /// Resolves once no status read of the repository is running or wanted, and at least
+    /// one has ended, however it ended (immediately for an unknown id).
     pub async fn wait_status(&self, repo_id: u32) {
         let Ok(repo) = self.get(repo_id) else {
             return;
         };
-        let mut read = repo.status_read.subscribe();
+        let mut read = repo.status_idle.subscribe();
         let _ = read.wait_for(|read| *read).await;
     }
 
-    /// Reads the working tree's status (giving up after the status timeout) and applies it:
-    /// the uncommitted row appears, changes or goes, in a new generation. A failure is said
-    /// once, as `repo-error`, until a read succeeds again; the rows stay as they are. Callers
-    /// hold `refresh_lock`.
-    async fn update_status(&self, repo: &Arc<Repo>) -> Result<()> {
+    /// Asks for the working tree's status to be read again, without waiting for it: one
+    /// reader per repository runs outside `refresh_lock`, so a slow status holds up neither
+    /// refreshes nor view-option changes. Requests made while a read runs coalesce into one
+    /// more read after it.
+    fn request_status(self: &Arc<Self>, repo: &Arc<Repo>) {
+        {
+            let mut reader = lock(&repo.status_reader);
+            if reader.running {
+                reader.again = true;
+                return;
+            }
+            reader.running = true;
+            repo.status_idle.send_replace(false);
+        }
+        let (m, repo) = (self.clone(), repo.clone());
+        tokio::spawn(async move {
+            loop {
+                lock(&repo.status_reader).again = false;
+                let seq = repo.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
+                if let Some(status) = m.read_status_now(&repo).await {
+                    let _ = m.apply_status(&repo, status, seq).await;
+                }
+                let mut reader = lock(&repo.status_reader);
+                if !reader.again || lock(&m.repos).get(&repo.identity.repo_id).is_none() {
+                    reader.running = false;
+                    repo.status_idle.send_replace(true);
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Reads the working tree's status, giving up after the status timeout. A failure is
+    /// said once, as `repo-error`, until a read succeeds again: `None`.
+    async fn read_status_now(&self, repo: &Repo) -> Option<WorktreeStatus> {
         let timeout = Duration::from_millis(self.status_timeout_ms.load(Ordering::Relaxed));
         let started = std::time::Instant::now();
         let read = tokio::time::timeout(timeout, async {
@@ -487,37 +525,41 @@ impl RepoManager {
             read_status(&repo.runner, &repo.worktree).await
         })
         .await;
-        let status = match read {
-            Ok(Ok(status)) => status,
-            failed => {
-                let reason = match failed {
-                    Ok(Err(e)) => e,
-                    _ => {
-                        // Dropping the command's future killed git.
-                        repo.runner.log_timed_out(
-                            &repo.worktree,
-                            &STATUS_ARGS,
-                            CmdKind::Read,
-                            started,
-                        );
-                        CoreError::new(
-                            ErrorCode::GitFailed,
-                            format!("git status took longer than {}", seconds(timeout)),
-                        )
-                    }
-                };
-                if !repo.status_failed.swap(true, Ordering::SeqCst) {
-                    repo.report_error(
-                        self.sink.as_ref(),
-                        ErrorKind::Status,
-                        status_unavailable(repo.identity.repo_id, reason),
-                    );
-                }
-                return Ok(());
+        let reason = match read {
+            Ok(Ok(status)) => {
+                repo.status_failed.store(false, Ordering::SeqCst);
+                repo.clear_held_error(ErrorKind::Status);
+                return Some(status);
+            }
+            Ok(Err(e)) => e,
+            Err(_) => {
+                // Dropping the command's future killed git.
+                repo.runner
+                    .log_timed_out(&repo.worktree, &STATUS_ARGS, CmdKind::Read, started);
+                CoreError::new(
+                    ErrorCode::GitFailed,
+                    format!("git status took longer than {}", seconds(timeout)),
+                )
             }
         };
-        repo.status_failed.store(false, Ordering::SeqCst);
-        repo.clear_held_error(ErrorKind::Status);
+        if !repo.status_failed.swap(true, Ordering::SeqCst) {
+            repo.report_error(
+                self.sink.as_ref(),
+                ErrorKind::Status,
+                status_unavailable(repo.identity.repo_id, reason),
+            );
+        }
+        None
+    }
+
+    /// Applies `status` from read number `seq`, unless a newer read has started since: the
+    /// uncommitted row appears, changes or goes, in a new generation. Takes `refresh_lock`
+    /// only for this, which involves no git.
+    async fn apply_status(&self, repo: &Arc<Repo>, status: WorktreeStatus, seq: u64) -> Result<()> {
+        let _serial = repo.refresh_lock.lock().await;
+        if repo.status_seq.load(Ordering::SeqCst) != seq {
+            return Ok(());
+        }
         let mut info = repo.slot.read().await.target().info().clone();
         if info.status == status {
             return Ok(());
@@ -644,9 +686,9 @@ impl RepoManager {
         self.apply(&repo, info, Some(o)).await
     }
 
-    /// Re-reads HEAD, refs and worktrees and applies them (emitting at once), then the
-    /// working tree's status (see `update_status`), so new commits never wait for a slow
-    /// status. Reloads the log only if the commits to
+    /// Re-reads HEAD, refs and worktrees and applies them (emitting at once), then asks for
+    /// the working tree's status (see `request_status`), which lands later, so new commits
+    /// never wait for a slow status. Reloads the log only if the commits to
     /// show may have changed (a selected tip went away, or a new tip is not a loaded commit),
     /// or the last load did not finish; otherwise only labels and the uncommitted row change.
     /// During a reload the old rows stay served until the new load has caught up with them,
@@ -663,9 +705,9 @@ impl RepoManager {
         }
         let status = repo.slot.read().await.target().info().status;
         let info = repo.read_info(status).await?;
-        self.apply(&repo, info, None).await?;
-        self.update_status(&repo).await?;
-        Ok(repo.snapshot().await)
+        let snapshot = self.apply(&repo, info, None).await?;
+        self.request_status(&repo);
+        Ok(snapshot)
     }
 
     /// Resolves once the repository's log is fully loaded (immediately for an unknown id).

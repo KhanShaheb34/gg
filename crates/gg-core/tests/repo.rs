@@ -54,6 +54,9 @@ impl Harness {
     async fn refresh(&self, id: u32) -> RepoSnapshot {
         self.m.refresh(id).await.expect("refresh");
         self.wait(id).await;
+        tokio::time::timeout(TIMEOUT, self.m.wait_status(id))
+            .await
+            .expect("status read");
         self.m.snapshot(id).await.unwrap()
     }
 
@@ -604,7 +607,8 @@ async fn uncommitted_row_disappears_without_reload() {
 
     fs::remove_file(repo.path().join("new.txt")).unwrap();
     let before = h.last_command_id();
-    let after = h.m.refresh(snap.repo_id).await.unwrap();
+    // Status is read after the refresh returns; wait for it.
+    let after = h.refresh(snap.repo_id).await;
     assert_eq!(h.log_commands_since(before), 0, "commits are reused");
     assert!(after.generation > snap.generation, "row indices changed");
     assert_eq!(after.total_rows, 2);
@@ -1073,6 +1077,74 @@ async fn a_status_that_times_out_is_a_notice_and_rows_stay() {
         .filter(|(n, _)| n == "repo-error")
         .count();
     assert_eq!(errors, 1);
+}
+
+/// A slow status holds up nothing else: view-option changes and refreshes run while it is
+/// read, the late status still lands, and an older read never overwrites a newer one.
+#[tokio::test]
+async fn a_slow_status_blocks_neither_view_changes_nor_refreshes() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&["branch", "side"]);
+    let h = harness().await;
+    h.m.set_status_delay(Duration::from_millis(1500));
+    let snap = h.m.open(repo.path()).await.unwrap();
+    let id = snap.repo_id;
+    h.wait(id).await;
+    // While the first read sleeps: a working-tree change.
+    repo.write("untracked.txt", "x");
+
+    let started = std::time::Instant::now();
+    let side = ViewOptions {
+        branches: Some(vec!["side".into()]),
+        ..all_refs()
+    };
+    h.m.set_view_options(id, side).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(700),
+        "set_view_options waited for status ({:?})",
+        started.elapsed()
+    );
+    h.m.set_view_options(id, all_refs()).await.unwrap();
+    repo.commit("two");
+    let started = std::time::Instant::now();
+    h.m.refresh(id).await.unwrap();
+    h.wait(id).await;
+    assert!(
+        started.elapsed() < Duration::from_millis(700),
+        "refresh waited for status ({:?})",
+        started.elapsed()
+    );
+    let refreshed = h.m.snapshot(id).await.unwrap();
+    assert_eq!(refreshed.total_rows, 2, "the new commit is there at once");
+
+    // The untracked file shows once status has been read.
+    h.sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["status"]["untracked"] == 1
+        })
+        .await
+        .expect("the late status lands");
+    // Gone again: the read the refresh asked for (or a later one) says so, and nothing
+    // older brings it back.
+    std::fs::remove_file(repo.path().join("untracked.txt")).unwrap();
+    h.m.refresh(id).await.unwrap();
+    h.sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed"
+                && v["repoId"] == id
+                && v["status"]["untracked"] == 0
+                && v["totalRows"] == 2
+        })
+        .await
+        .expect("the newer status lands");
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let now = h.m.snapshot(id).await.unwrap();
+    assert_eq!(
+        now.status.untracked, 0,
+        "an older read was applied over a newer one"
+    );
+    assert_eq!(now.total_rows, 2);
 }
 
 /// A refresh shows a new commit without waiting for status.

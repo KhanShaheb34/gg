@@ -31,7 +31,8 @@
   let shown = $state("");
   $effect(() => {
     if (text.trim() === "") shown = "";
-    else if (!pending) shown = counted;
+    // No hits yet, but git is still searching the messages: not "No results" yet.
+    else if (!pending) shown = hits.length === 0 && view.search.bodyPending ? "Searching messages…" : counted;
   });
 
   // Takes the focus whenever asked to (the button, Cmd/Ctrl+F).

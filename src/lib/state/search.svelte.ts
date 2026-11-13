@@ -38,6 +38,8 @@ export class SearchState {
   generation = $state(-1);
   /** The core is looking for `query`. */
   pending = $state(false);
+  /** git is searching the commit messages for `query` (or will, once rows have loaded). */
+  bodyPending = $state(false);
 
   private token = 0;
   /** Rows there were, and whether they were still loading, when the hits were looked up. */
@@ -100,8 +102,10 @@ export class SearchState {
   async run(query: string): Promise<void> {
     this.query = query;
     const token = ++this.token;
+    this.bodyPending = false; // an older message search no longer counts
     if (query.trim() === "") {
       this.hits = [];
+      this.bodyPending = false;
       this.generation = -1;
       this.pending = false;
       this.lookingUp = this.lookUpAgain = false;
@@ -172,6 +176,7 @@ export class SearchState {
   private async refresh(): Promise<void> {
     const query = this.query;
     const token = ++this.token;
+    this.bodyPending = false; // an older message search no longer counts
     const generation = this.host.snapshot.generation;
     this.startLookup();
     let hits: number[];
@@ -200,9 +205,15 @@ export class SearchState {
    * found nothing else), the first of them is selected.
    */
   private lookUpBodies(token: number, query: string, selectFirst: boolean): void {
+    // While rows load the message search is still to come: it counts as underway.
+    this.bodyPending = true;
     if (this.host.snapshot.loading) return;
+    const done = () => {
+      if (token === this.token) this.bodyPending = false;
+    };
     api.searchBodies(this.host.repoId, query).then(
       (found) => {
+        done();
         if (token !== this.token || this.host.disposed || found.generation !== this.generation) return;
         if (found.rows.length === 0) return;
         const merged = new Set([...this.hits, ...found.rows]);
@@ -212,6 +223,7 @@ export class SearchState {
       },
       () => {
         // Body hits only add to the others; without them the search still works.
+        done();
       },
     );
   }

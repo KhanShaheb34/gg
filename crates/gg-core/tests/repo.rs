@@ -1269,6 +1269,34 @@ async fn body_search_finds_commits_by_their_whole_message() {
     assert_eq!(found.rows.len(), 2, "{found:?} in {snap:?}");
 }
 
+/// One body search at a time per repository: a newer one stops the one before (its git is
+/// killed), and one that takes too long gives up.
+#[tokio::test]
+async fn a_newer_body_search_stops_the_older_and_slow_ones_give_up() {
+    let repo = TestRepo::new();
+    repo.commit("one\n\nfrobnication");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_body_search_delay(Duration::from_millis(1000));
+    let m = h.m.clone();
+    let older = tokio::spawn(async move { m.search_bodies(id, "frob").await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let started = std::time::Instant::now();
+    let m = h.m.clone();
+    let newer = tokio::spawn(async move { m.search_bodies(id, "frobnication").await });
+    let older = older.await.unwrap();
+    assert!(
+        older.is_err(),
+        "the older search was not stopped: {older:?}"
+    );
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(newer.await.unwrap().unwrap().rows.len(), 1);
+
+    h.m.set_body_search_timeout(Duration::from_millis(300));
+    let err = h.m.search_bodies(id, "frob").await.unwrap_err();
+    assert!(err.message.contains("longer than"), "{}", err.message);
+}
+
 #[tokio::test]
 async fn find_row_works() {
     let repo = TestRepo::new();

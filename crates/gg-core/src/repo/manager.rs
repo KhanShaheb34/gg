@@ -54,6 +54,11 @@ pub struct RepoManager {
     pub(super) fetch_cap_ms: AtomicU64,
     /// How long `git status` may take before it is given up on, in milliseconds.
     status_timeout_ms: AtomicU64,
+    /// How long a body search may take before it is given up on, in milliseconds.
+    body_search_timeout_ms: AtomicU64,
+    /// Tests only: how long every body search waits before git starts, in milliseconds.
+    #[cfg(any(test, feature = "testutil"))]
+    body_search_delay_ms: AtomicU64,
     /// Tests only: how long every status read waits before it starts, in milliseconds.
     #[cfg(any(test, feature = "testutil"))]
     status_delay_ms: AtomicU64,
@@ -110,6 +115,8 @@ pub(super) struct Repo {
     status_reader: Mutex<StatusReader>,
     /// Number of the newest status read started; a read applies only if it still is.
     status_seq: AtomicU64,
+    /// The body search running, if any; a newer one aborts it.
+    body_search: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -292,6 +299,9 @@ impl RepoManager {
             fetch_timeout_ms: AtomicU64::new(duration_ms(FETCH_TIMEOUT)),
             fetch_cap_ms: AtomicU64::new(duration_ms(FETCH_CAP)),
             status_timeout_ms: AtomicU64::new(duration_ms(STATUS_TIMEOUT)),
+            body_search_timeout_ms: AtomicU64::new(duration_ms(BODY_SEARCH_TIMEOUT)),
+            #[cfg(any(test, feature = "testutil"))]
+            body_search_delay_ms: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             status_delay_ms: AtomicU64::new(0),
             opening: Mutex::new(HashMap::new()),
@@ -414,6 +424,7 @@ impl RepoManager {
             status_idle: watch::channel(false).0,
             status_reader: Mutex::new(StatusReader::default()),
             status_seq: AtomicU64::new(0),
+            body_search: Mutex::new(None),
         });
 
         // Nobody else can hold this lock yet; holding it while registering the repository
@@ -639,18 +650,14 @@ impl RepoManager {
     /// Rows whose whole commit message (subject and body) contains `query`, ignoring case,
     /// in the view's commits, found by git (bodies are not kept in memory) and mapped to the
     /// rows of the generation served when git is done. Slower than [`RepoManager::search`]:
-    /// the UI merges these hits in when they come.
+    /// the UI merges these hits in when they come. One runs at a time per repository: a
+    /// newer one stops the one before (its git is killed; that call fails), and one that
+    /// takes longer than 30 s gives up.
     pub async fn search_bodies(&self, repo_id: u32, query: &str) -> Result<BodyHits> {
         let repo = self.get(repo_id)?;
         let args = repo.slot.read().await.current.body_search_args(query);
         let hashes = match args {
-            Some(args) => {
-                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-                repo.runner
-                    .run(&repo.worktree, &argv, CmdKind::Read)
-                    .await?
-                    .text()
-            }
+            Some(args) => self.run_body_search(&repo, args).await?,
             None => String::new(),
         };
         let slot = repo.slot.read().await;
@@ -665,6 +672,64 @@ impl RepoManager {
             generation: state.generation,
             rows,
         })
+    }
+
+    /// Runs the body search `args` on its own task, which a newer search or the timeout
+    /// aborts (dropping git's command kills it). Returns git's output.
+    async fn run_body_search(&self, repo: &Repo, args: Vec<String>) -> Result<String> {
+        let (runner, worktree) = (repo.runner.clone(), repo.worktree.clone());
+        #[cfg(any(test, feature = "testutil"))]
+        let delay = Duration::from_millis(self.body_search_delay_ms.load(Ordering::Relaxed));
+        let task = tokio::spawn(async move {
+            #[cfg(any(test, feature = "testutil"))]
+            tokio::time::sleep(delay).await;
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            runner
+                .run(&worktree, &argv, CmdKind::Read)
+                .await
+                .map(|out| out.text())
+        });
+        let mine = task.abort_handle();
+        let id = mine.id();
+        if let Some(older) = lock(&repo.body_search).replace(mine.clone()) {
+            older.abort();
+        }
+        let timeout = Duration::from_millis(self.body_search_timeout_ms.load(Ordering::Relaxed));
+        let result = tokio::time::timeout(timeout, task).await;
+        {
+            let mut running = lock(&repo.body_search);
+            if running.as_ref().is_some_and(|h| h.id() == id) {
+                *running = None;
+            }
+        }
+        match result {
+            Ok(Ok(out)) => out,
+            Ok(Err(_)) => Err(CoreError::new(
+                ErrorCode::GitFailed,
+                "The message search was replaced by a newer one.",
+            )),
+            Err(_) => {
+                mine.abort();
+                Err(CoreError::new(
+                    ErrorCode::GitFailed,
+                    format!("The message search took longer than {}.", seconds(timeout)),
+                ))
+            }
+        }
+    }
+
+    /// Sets how long a body search may take (tests only; normally 30 s).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_body_search_timeout(&self, timeout: Duration) {
+        self.body_search_timeout_ms
+            .store(duration_ms(timeout), Ordering::Relaxed);
+    }
+
+    /// Makes every body search wait this long before git starts (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_body_search_delay(&self, delay: Duration) {
+        self.body_search_delay_ms
+            .store(duration_ms(delay), Ordering::Relaxed);
     }
 
     /// Metadata, message and files of commit `hash` (a full hash).
@@ -955,6 +1020,9 @@ fn seconds(d: Duration) -> String {
         format!("{} ms", d.as_millis())
     }
 }
+
+/// How long a search of commit messages may take before it is given up on.
+const BODY_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long `git status` may take before it is given up on: long, since a big working tree
 /// can take a while, but not forever.

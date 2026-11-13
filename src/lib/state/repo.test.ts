@@ -417,6 +417,23 @@ describe("RepoView search", () => {
     expect(view.search.index).toBe(1);
   });
 
+  it("says the message search is still running until its answer comes", async () => {
+    const view = await openView(0);
+    let answer: (hits: { generation: number; rows: number[] }) => void = () => {};
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([]);
+    vi.mocked(ipc.api.searchBodies).mockImplementation(() => new Promise((r) => (answer = r)));
+    await view.search.run("only in a body");
+    expect(view.search.bodyPending).toBe(true);
+    answer({ generation: 1, rows: [] });
+    await vi.waitFor(() => expect(view.search.bodyPending).toBe(false));
+    // A failed one ends it too.
+    vi.mocked(ipc.api.searchBodies).mockRejectedValue(new ipc.CoreError({ code: "git_failed", message: "x", detail: null }));
+    await view.search.run("again");
+    await vi.waitFor(() => expect(view.search.bodyPending).toBe(false));
+    await view.search.run("");
+    expect(view.search.bodyPending).toBe(false);
+  });
+
   it("selects the first body hit when nothing else matched", async () => {
     const view = await openView(0);
     vi.mocked(ipc.api.searchCommits).mockResolvedValue([]);

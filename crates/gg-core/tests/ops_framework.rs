@@ -195,7 +195,7 @@ async fn index_lock_held_fails_with_an_explanation() {
             assert!(
                 message
                     .to_lowercase()
-                    .contains("another git process is running in this repository"),
+                    .contains("another git process is working in this repository"),
                 "{message}"
             );
             assert!(detail.contains("index.lock"), "{detail}");

@@ -371,24 +371,6 @@ async fn branch_merged_into_its_upstream_only_deletes_without_confirmation() {
 
 // ---- Local operations: merge and rebase ----
 
-/// `main` and `feature` both change `clash.txt` after `base`. HEAD on `main`.
-fn conflicting(repo: &TestRepo) {
-    repo.write("clash.txt", "base\n");
-    repo.commit_all("base");
-    repo.branch("feature");
-    repo.checkout("feature");
-    repo.write("clash.txt", "feature\n");
-    repo.commit_all("feature side");
-    repo.checkout("main");
-    repo.write("clash.txt", "main\n");
-    repo.commit_all("main side");
-}
-
-/// Whether `name` (`MERGE_HEAD`, `rebase-merge`, …) exists in the repository's git dir.
-fn in_git_dir(repo: &TestRepo, name: &str) -> bool {
-    repo.path().join(".git").join(name).exists()
-}
-
 fn parents(repo: &TestRepo, rev: &str) -> usize {
     repo.git(&["rev-list", "--parents", "-n", "1", rev])
         .split(' ')

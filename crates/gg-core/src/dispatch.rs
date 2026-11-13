@@ -115,7 +115,6 @@ struct RepoPrefsArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OpenInEditorArgs {
     repo_id: u32,
-    #[allow(dead_code)]
     path: Option<String>,
 }
 
@@ -276,11 +275,11 @@ impl Core {
             }
             "open_in_editor" => {
                 let a: OpenInEditorArgs = parse(cmd, args)?;
-                self.repos()?.check_open(a.repo_id)?;
-                Err(CoreError::new(
-                    ErrorCode::BadRequest,
-                    "Opening files in an editor is not implemented yet.",
-                ))
+                let command = self.store.settings().editor_command;
+                self.repos()?
+                    .open_in_editor(a.repo_id, a.path.as_deref(), command.as_deref())
+                    .await?;
+                Ok(Value::Null)
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;

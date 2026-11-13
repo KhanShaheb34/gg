@@ -5,8 +5,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::dto::{
-    CommitRow, FetchState, HeadInfo, RefKind, RefLabel, RepoSnapshot, RowKind, ViewOptions,
-    WorktreeInfo, WorktreeStatus,
+    CommitRow, FetchState, HeadInfo, InProgress, RefKind, RefLabel, RepoSnapshot, RowKind,
+    ViewOptions, WorktreeInfo, WorktreeStatus,
 };
 use crate::git::log::{Commit, LOG_FORMAT, log_args};
 use crate::git::refs::RefInfo;
@@ -29,6 +29,8 @@ pub struct RepoInfo {
     pub worktrees: Vec<WorktreeInfo>,
     /// Status of the active worktree.
     pub status: WorktreeStatus,
+    /// What git is stopped in, in the active worktree; read with the status.
+    pub in_progress: Option<InProgress>,
 }
 
 /// The fixed facts about an open repository that a snapshot repeats.
@@ -257,7 +259,7 @@ impl RepoState {
             view_options: self.view.clone(),
             fetch: fetch.clone(),
             op: None,
-            in_progress: None,
+            in_progress: self.info.in_progress.clone(),
         }
     }
 
@@ -589,6 +591,7 @@ mod tests {
             remotes: vec![],
             worktrees: vec![worktree("/repo", 'd', Some("main"), true)],
             status: WorktreeStatus::default(),
+            in_progress: None,
         }
     }
 

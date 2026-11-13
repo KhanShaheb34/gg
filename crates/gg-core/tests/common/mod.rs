@@ -1,6 +1,6 @@
-//! Helpers shared by the operation tests (`ops_framework`, `ops_local`, `ops_network`):
-//! a manager with a recording sink and a command log, request builders and repository
-//! set-ups.
+//! Helpers shared by the operation tests (`ops_framework`, `ops_local`, `ops_network`,
+//! `ops_progress`): a manager with a recording sink and a command log, request builders and
+//! repository set-ups.
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -171,4 +171,22 @@ pub fn reset(hash: &str, mode: ResetMode) -> OpRequest {
         hash: hash.to_owned(),
         mode,
     }
+}
+
+/// `main` and `feature` both change `clash.txt` after `base`. HEAD on `main`.
+pub fn conflicting(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+}
+
+/// Whether `name` (`MERGE_HEAD`, `rebase-merge`, …) exists in the repository's git dir.
+pub fn in_git_dir(repo: &TestRepo, name: &str) -> bool {
+    repo.path().join(".git").join(name).exists()
 }

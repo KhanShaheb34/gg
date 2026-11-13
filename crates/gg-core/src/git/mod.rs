@@ -3,6 +3,7 @@
 pub mod details;
 pub mod log;
 pub mod names;
+pub mod progress;
 pub mod refs;
 pub mod runner;
 pub mod status;

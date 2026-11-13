@@ -210,6 +210,100 @@ async fn new_worktree_triggers_refresh() {
     );
 }
 
+/// `main` and `other` both change `clash.txt` after `base`. HEAD on `main`.
+fn clashing(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("other");
+    repo.checkout("other");
+    repo.write("clash.txt", "other\n");
+    repo.commit_all("other side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+}
+
+/// Runs git in `dir` (a linked worktree) with the test repository's isolation.
+fn git_in(dir: &Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_EDITOR", "true")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// A merge started and aborted in a terminal shows up and goes away by the watcher alone,
+/// in the main worktree and in a linked one (whose state files live under
+/// `.git/worktrees/<name>/`).
+#[tokio::test]
+async fn in_progress_changes_arrive_by_the_watcher() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    assert!(!repo.git_succeeds(&["merge", "other"]));
+    let changed = h
+        .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
+        .await
+        .expect("the merge showed up");
+    assert_eq!(changed.in_progress.unwrap().conflicted, ["clash.txt"]);
+    repo.git(&["merge", "--abort"]);
+    assert!(
+        h.changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_none()
+            && s.status.conflicted == 0)
+            .await
+            .is_some(),
+        "the merge went away"
+    );
+
+    let wt = repo.add_worktree("linked");
+    let h = harness().await;
+    let id = h.open(&wt).await.repo_id;
+    assert!(!git_in(&wt, &["merge", "other"]));
+    assert!(
+        repo.path()
+            .join(".git/worktrees/wt-linked/MERGE_HEAD")
+            .exists()
+    );
+    let changed = h
+        .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
+        .await
+        .expect("the linked worktree's merge showed up");
+    assert_eq!(changed.in_progress.unwrap().conflicted, ["clash.txt"]);
+    assert!(git_in(&wt, &["merge", "--abort"]));
+    assert!(
+        h.changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_none())
+            .await
+            .is_some(),
+        "the linked worktree's merge went away"
+    );
+}
+
+/// A merge stopped before committing that changes nothing in the working tree (`-s ours`):
+/// the status stays the same, and the change of state is still published.
+#[tokio::test]
+async fn in_progress_change_alone_is_published() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    repo.git(&["merge", "--no-commit", "--no-ff", "-s", "ours", "other"]);
+    h.m.refresh(id).await.unwrap();
+    let changed = h
+        .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
+        .await
+        .expect("published");
+    assert_eq!(changed.status, snap.status, "the status did not change");
+    assert!(changed.in_progress.unwrap().conflicted.is_empty());
+}
+
 #[tokio::test]
 async fn burst_is_debounced() {
     let repo = TestRepo::new();

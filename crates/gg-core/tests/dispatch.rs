@@ -841,3 +841,30 @@ fn unix_ms() -> u64 {
         .unwrap();
     u64::try_from(since.as_millis()).unwrap()
 }
+
+/// `open_in_editor` refuses paths outside the worktree and runs the editor command from
+/// the settings (a program that does not exist here, so nothing is opened).
+#[tokio::test]
+async fn open_in_editor_uses_the_editor_command_setting() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+
+    let err = h
+        .fail("open_in_editor", json!({"repoId": id, "path": "../x"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    let patch = json!({"patch": {"editorCommand": "gg-no-such-editor --wait"}});
+    h.call("update_settings", patch).await;
+    let err = h
+        .fail("open_in_editor", json!({"repoId": id, "path": null}))
+        .await;
+    assert_eq!(err.code, ErrorCode::Io, "{err:?}");
+    assert!(err.message.contains("gg-no-such-editor"), "{err:?}");
+    let err = h
+        .fail("open_in_editor", json!({"repoId": 999, "path": null}))
+        .await;
+    assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
+}

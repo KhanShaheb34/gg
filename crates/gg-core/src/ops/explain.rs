@@ -113,6 +113,12 @@ pub(crate) fn nothing_to_do(args: &[&str], out: &GitOutput) -> Option<String> {
 }
 
 /// The explanation of a failure the core recognises in git's output `all` (stderr, then
+/// stdout), if it recognises it.
+pub(crate) fn recognised(args: &[&str], all: &str) -> Option<String> {
+    known_failure(args, all)
+}
+
+/// The explanation of a failure the core recognises in git's output `all` (stderr, then
 /// stdout).
 fn known_failure(args: &[&str], all: &str) -> Option<String> {
     if lock_file_exists(all) {

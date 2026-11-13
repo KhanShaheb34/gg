@@ -698,6 +698,11 @@ impl GitRunner {
         &self.log
     }
 
+    /// The `PATH` git children get (the login shell's), if it was read.
+    pub(crate) fn login_path(&self) -> Option<&OsString> {
+        self.path.as_ref()
+    }
+
     fn command(&self, cwd: Option<&Path>, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.args(LEADING_ARGS)

@@ -2,12 +2,11 @@
 //! tags. Each body runs git in the active worktree and turns how it ended into a [`Step`]:
 //! done, stopped on conflicts, or failed (with an explanation where one is known).
 
-use std::path::PathBuf;
-
 use crate::dto::{
     Danger, DangerKind, InProgressKind, MergeTarget, MergeTargetKind, OpHint, ResetMode,
 };
 use crate::error::{CoreError, ErrorCode, Result};
+use crate::git::progress::read_kind;
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{NO_BRANCH, nothing_to_do};
 use crate::ops::{OpCtx, Step, explain, network};
@@ -137,28 +136,10 @@ pub(crate) async fn delete_branch(ctx: &OpCtx<'_>, dangers: &[Danger], name: &st
     .await
 }
 
-/// What git is stopped in, in the operation's worktree, if anything: a rebase
-/// (`rebase-merge`, `rebase-apply`; it wins when several are there), a merge (`MERGE_HEAD`),
-/// a cherry-pick (`CHERRY_PICK_HEAD`) or a revert (`REVERT_HEAD`). `None` too if the git dir
-/// cannot be found.
+/// What git is stopped in, in the operation's worktree, if anything (see
+/// [`read_kind`]); `None` too if that cannot be read.
 pub(crate) async fn stopped_kind(ctx: &OpCtx<'_>) -> Option<InProgressKind> {
-    let out = ctx.read(&["rev-parse", "--absolute-git-dir"]).await.ok()?;
-    if out.code != 0 {
-        return None;
-    }
-    let dir = PathBuf::from(out.text().trim_end_matches(['\n', '\r']));
-    let has = |name: &str| dir.join(name).exists();
-    if has("rebase-merge") || has("rebase-apply") {
-        Some(InProgressKind::Rebase)
-    } else if has("MERGE_HEAD") {
-        Some(InProgressKind::Merge)
-    } else if has("CHERRY_PICK_HEAD") {
-        Some(InProgressKind::CherryPick)
-    } else if has("REVERT_HEAD") {
-        Some(InProgressKind::Revert)
-    } else {
-        None
-    }
+    read_kind(&ctx.runner, &ctx.cwd).await.ok().flatten()
 }
 
 /// Runs `args`, a command that can stop on conflicts (with `net`, one that talks to a
@@ -217,7 +198,7 @@ pub(crate) async fn git_may_stop(
 }
 
 /// What `kind` is called in messages.
-fn kind_name(kind: InProgressKind) -> &'static str {
+pub(crate) fn kind_name(kind: InProgressKind) -> &'static str {
     match kind {
         InProgressKind::Merge => "merge",
         InProgressKind::Rebase => "rebase",
@@ -227,14 +208,14 @@ fn kind_name(kind: InProgressKind) -> &'static str {
 }
 
 /// The plain line for git having stopped a `kind` on conflicts.
-fn stopped_message(kind: InProgressKind) -> String {
+pub(crate) fn stopped_message(kind: InProgressKind) -> String {
     let what = kind_name(kind);
     format!("The {what} stopped on conflicts. Resolve them, then continue the {what}, or abort it.")
 }
 
 /// The plain line for git having failed with a `kind` left in progress but no conflicts:
 /// a hook refused the commit, or something else git says below went wrong.
-fn stopped_without_conflicts(kind: InProgressKind) -> String {
+pub(crate) fn stopped_without_conflicts(kind: InProgressKind) -> String {
     match kind {
         InProgressKind::Merge => {
             "A hook stopped the merge commit; the merge is staged and not committed.".to_owned()

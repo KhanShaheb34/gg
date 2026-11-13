@@ -11,6 +11,7 @@ mod danger;
 mod explain;
 mod local;
 mod network;
+mod progress;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -24,10 +25,12 @@ pub use explain::explain;
 
 use crate::EventSink;
 use crate::dto::{
-    Danger, DangerKind, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus, ResetMode,
+    Danger, DangerKind, InProgressKind, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus,
+    ResetMode,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
+use crate::git::progress::read_kind;
 use crate::git::runner::{CmdKind, GitOutput, GitRunner, TimeLimit};
 use crate::repo::{Repo, RepoManager, unknown_repo};
 
@@ -198,9 +201,17 @@ where
     Box::new(f)
 }
 
-/// An operation's title, made in its turn from the branch HEAD is on then ("detached
-/// HEAD" without one): some titles name it ("Merge x into main").
-type Title = Box<dyn FnOnce(&str) -> String + Send>;
+/// What a title is made from, read in the operation's turn.
+struct TurnFacts<'a> {
+    /// The branch HEAD is on ("detached HEAD" without one).
+    head: &'a str,
+    /// What git is stopped in, if anything.
+    in_progress: Option<InProgressKind>,
+}
+
+/// An operation's title, made in its turn: some titles name the branch HEAD is on then
+/// ("Merge x into main") or what git is stopped in ("Continue the merge").
+type Title = Box<dyn FnOnce(&TurnFacts) -> String + Send>;
 
 /// A title that does not depend on HEAD.
 fn fixed(title: String) -> Title {
@@ -209,7 +220,12 @@ fn fixed(title: String) -> Title {
 
 /// A title made from the branch HEAD is on.
 fn on_head(f: impl FnOnce(&str) -> String + Send + 'static) -> Title {
-    Box::new(f)
+    Box::new(move |facts| f(facts.head))
+}
+
+/// A title made from what git is stopped in.
+fn on_progress(f: impl FnOnce(Option<InProgressKind>) -> String + Send + 'static) -> Title {
+    Box::new(move |facts| f(facts.in_progress))
 }
 
 /// A request that can run: its title and its body.
@@ -477,6 +493,14 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
+        OpRequest::Continue => (
+            on_progress(|kind| progress::title("Continue", kind)),
+            body(move |ctx, _| Box::pin(async move { progress::continue_op(ctx).await })),
+        ),
+        OpRequest::Abort => (
+            on_progress(|kind| progress::title("Abort", kind)),
+            body(move |ctx, _| Box::pin(async move { progress::abort(ctx).await })),
+        ),
         _ => {
             return Err(CoreError::new(
                 ErrorCode::BadRequest,
@@ -540,6 +564,8 @@ enum Ran {
     Step(Step),
     /// Nothing ran: these dangers were not all confirmed.
     Unconfirmed(Vec<Danger>),
+    /// Nothing ran: it cannot while git is stopped in something (the plain line why).
+    Refused(String),
 }
 
 /// Said when an operation's body panicked.
@@ -648,6 +674,10 @@ impl RepoManager {
                 outcome.detail = Some(detail);
                 outcome.hints = hints;
             }
+            Ran::Refused(message) => {
+                outcome.status = OpStatus::Failed;
+                outcome.message = message;
+            }
             Ran::Unconfirmed(dangers) => {
                 outcome.status = OpStatus::NeedsConfirmation;
                 outcome.message = dangers
@@ -661,9 +691,11 @@ impl RepoManager {
         Ok(outcome)
     }
 
-    /// Titles the operation after the branch HEAD is on now, checks its request for
-    /// dangers and, if every one is confirmed, publishes it as running (setting `started`)
-    /// and runs its body in the active worktree. Returns the title and how it ended.
+    /// Titles the operation after the branch HEAD is on now and what git is stopped in,
+    /// refuses it if it cannot run while git is stopped (continue or abort with nothing
+    /// stopped is `nothing_to_do`), checks its request for dangers and, if every one is
+    /// confirmed, publishes it as running (setting `started`) and runs its body in the
+    /// active worktree. Returns the title and how it ended.
     async fn run_body(&self, turn: Turn, started: &AtomicBool) -> Result<(String, Ran)> {
         let Turn {
             repo,
@@ -682,7 +714,22 @@ impl RepoManager {
             net_limit: self.net_limit(),
         };
         let head = local::current_branch(&ctx).await?;
-        let title = title(head.as_deref().unwrap_or("detached HEAD"));
+        let in_progress = read_kind(&ctx.runner, &ctx.cwd).await?;
+        let title = title(&TurnFacts {
+            head: head.as_deref().unwrap_or("detached HEAD"),
+            in_progress,
+        });
+        match (&request, in_progress) {
+            (OpRequest::Continue | OpRequest::Abort, None) => {
+                return Err(progress::nothing_in_progress());
+            }
+            (_, Some(kind)) => {
+                if let Some(why) = progress::refused_while(&request, kind, head.as_deref()) {
+                    return Ok((title, Ran::Refused(why)));
+                }
+            }
+            _ => {}
+        }
         let dangers = dangers(&ctx, &request).await?;
         if !all_confirmed(&dangers, &confirmed) {
             return Ok((title, Ran::Unconfirmed(dangers)));
@@ -768,7 +815,12 @@ mod tests {
     #[test]
     fn unbuilt_operations_and_bad_input_are_refused_without_git() {
         let refused = |r: &OpRequest| prepare(r).err().expect("refused").code;
-        assert_eq!(refused(&OpRequest::Continue), ErrorCode::BadRequest);
+        assert_eq!(
+            refused(&OpRequest::StashDrop {
+                stash: "0123456789abcdef0123456789abcdef01234567".into()
+            }),
+            ErrorCode::BadRequest
+        );
         let option_like = OpRequest::CreateBranch {
             name: "x".into(),
             at: "--all".into(),
@@ -780,8 +832,12 @@ mod tests {
             at: "0123456789abcdef0123456789abcdef01234567".into(),
             checkout: false,
         };
+        let facts = |head| TurnFacts {
+            head,
+            in_progress: None,
+        };
         assert_eq!(
-            prepare(&ok).map(|p| (p.title)("main")).expect("ok"),
+            prepare(&ok).map(|p| (p.title)(&facts("main"))).expect("ok"),
             "Create branch x"
         );
         let merge = OpRequest::Merge {
@@ -794,6 +850,14 @@ mod tests {
             no_commit: false,
         };
         let title = prepare(&merge).map(|p| p.title).expect("ok");
-        assert_eq!(title("trunk"), "Merge x into trunk");
+        assert_eq!(title(&facts("trunk")), "Merge x into trunk");
+        let title = prepare(&OpRequest::Abort).map(|p| p.title).expect("ok");
+        assert_eq!(
+            title(&TurnFacts {
+                head: "main",
+                in_progress: Some(InProgressKind::CherryPick)
+            }),
+            "Abort the cherry-pick"
+        );
     }
 }

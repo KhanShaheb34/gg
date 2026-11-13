@@ -28,14 +28,15 @@ use tokio::time::Instant;
 
 use crate::EventSink;
 use crate::dto::{
-    BodyHits, CommitDetails, FetchState, RepoSnapshot, RowsPage, RunningOp, ViewOptions,
-    WorktreeStatus,
+    BodyHits, CommitDetails, FetchState, InProgress, RepoSnapshot, RowsPage, RunningOp,
+    ViewOptions, WorktreeStatus,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::details::read_details;
+use crate::git::progress::read_in_progress_with;
 use crate::git::refs::{read_head, read_refs, read_remotes};
 use crate::git::runner::{CmdKind, GitRunner};
-use crate::git::status::{STATUS_ARGS, read_status};
+use crate::git::status::{STATUS_ARGS, read_status_and_conflicts};
 use crate::git::worktrees::read_worktrees;
 use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule, unix_ms};
 use crate::repo::loader::start_load;
@@ -87,6 +88,9 @@ pub struct RepoManager {
     /// Tests only: refreshes folded into an operation's final refresh so far.
     #[cfg(any(test, feature = "testutil"))]
     folded_refreshes: AtomicU64,
+    /// Tests only: when set, editor launches are recorded here instead of run.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(crate) editor_launches: Mutex<Option<Vec<Vec<String>>>>,
 }
 
 impl Drop for RepoManager {
@@ -195,7 +199,7 @@ pub(super) struct Slot {
     op: Option<RunningOp>,
     /// A status read that ended while an operation ran, with its read number: kept for the
     /// operation's final refresh rather than applied mid-operation.
-    held_status: Option<(u64, WorktreeStatus)>,
+    held_status: Option<(u64, TreeState)>,
     /// Sequence number of the last snapshot built for emitting.
     emit_seq: u64,
 }
@@ -215,11 +219,13 @@ impl Slot {
     }
 
     /// The served state's snapshot, except that `viewOptions` are the newest ones asked for,
-    /// even while the reload they started is still loading.
+    /// even while the reload they started is still loading, and `inProgress` is the newest
+    /// read (it does not depend on the rows).
     fn snapshot(&self, id: &RepoIdentity, loading: bool) -> RepoSnapshot {
         let mut snapshot = self.current.snapshot(id, loading, &self.fetch);
         if let Some(pending) = &self.pending {
             snapshot.view_options = pending.view().clone();
+            snapshot.in_progress.clone_from(&pending.info().in_progress);
         }
         snapshot.op.clone_from(&self.op);
         snapshot
@@ -240,6 +246,24 @@ impl Slot {
 
 /// A snapshot and its emit sequence number.
 pub(super) struct Stamped(u64, RepoSnapshot);
+
+/// What a status read gives: the working tree's changes and what git is stopped in, read
+/// together so that they land together.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TreeState {
+    status: WorktreeStatus,
+    in_progress: Option<InProgress>,
+}
+
+impl TreeState {
+    /// The tree state `info` carries.
+    fn of(info: &RepoInfo) -> Self {
+        Self {
+            status: info.status,
+            in_progress: info.in_progress.clone(),
+        }
+    }
+}
 
 impl Repo {
     /// Emits `repo-error` with `payload`, or, while nobody has asked for this repository yet,
@@ -318,10 +342,10 @@ impl Repo {
         }
     }
 
-    /// Reads what the rows need (HEAD, refs, remotes, worktrees), with `status` as the
-    /// status.
-    async fn read_info(&self, status: WorktreeStatus) -> Result<RepoInfo> {
-        read_info(&self.runner, &self.worktree, status).await
+    /// Reads what the rows need (HEAD, refs, remotes, worktrees), with `tree` as the status
+    /// and in-progress state.
+    async fn read_info(&self, tree: TreeState) -> Result<RepoInfo> {
+        read_info(&self.runner, &self.worktree, tree).await
     }
 }
 
@@ -351,6 +375,8 @@ impl RepoManager {
             op_panic: AtomicBool::new(false),
             #[cfg(any(test, feature = "testutil"))]
             folded_refreshes: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testutil"))]
+            editor_launches: Mutex::new(None),
         })
     }
 
@@ -411,7 +437,7 @@ impl RepoManager {
         };
 
         let runner = self.runner.clone();
-        let info = read_info(&runner, &location.worktree, WorktreeStatus::default()).await?;
+        let info = read_info(&runner, &location.worktree, TreeState::default()).await?;
         let root = info
             .worktrees
             .iter()
@@ -561,8 +587,8 @@ impl RepoManager {
             loop {
                 lock(&repo.status_reader).again = false;
                 let seq = repo.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
-                if let Some(status) = m.read_status_now(&repo).await {
-                    let _ = m.apply_status(&repo, status, seq).await;
+                if let Some(tree) = m.read_status_now(&repo).await {
+                    let _ = m.apply_status(&repo, tree, seq).await;
                 }
                 let mut reader = lock(&repo.status_reader);
                 if !reader.again || lock(&m.repos).get(&repo.identity.repo_id).is_none() {
@@ -574,9 +600,10 @@ impl RepoManager {
         });
     }
 
-    /// Reads the working tree's status, giving up after the status timeout. A failure is
-    /// said once, as `repo-error`, until a read succeeds again: `None`.
-    async fn read_status_now(&self, repo: &Repo) -> Option<WorktreeStatus> {
+    /// Reads the working tree's status and what git is stopped in (one more cheap read,
+    /// using the status's conflicted paths), giving up after the status timeout. A failure
+    /// is said once, as `repo-error`, until a read succeeds again: `None`.
+    async fn read_status_now(&self, repo: &Repo) -> Option<TreeState> {
         let timeout = Duration::from_millis(self.status_timeout_ms.load(Ordering::Relaxed));
         let started = std::time::Instant::now();
         let read = tokio::time::timeout(timeout, async {
@@ -585,14 +612,21 @@ impl RepoManager {
                 let delay = self.status_delay_ms.load(Ordering::Relaxed);
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
-            read_status(&repo.runner, &repo.worktree).await
+            let (status, conflicted) =
+                read_status_and_conflicts(&repo.runner, &repo.worktree).await?;
+            let in_progress =
+                read_in_progress_with(&repo.runner, &repo.worktree, conflicted).await?;
+            Ok::<_, CoreError>(TreeState {
+                status,
+                in_progress,
+            })
         })
         .await;
         let reason = match read {
-            Ok(Ok(status)) => {
+            Ok(Ok(tree)) => {
                 repo.status_failed.store(false, Ordering::SeqCst);
                 repo.clear_held_error(ErrorKind::Status);
-                return Some(status);
+                return Some(tree);
             }
             Ok(Err(e)) => e,
             Err(_) => {
@@ -615,11 +649,12 @@ impl RepoManager {
         None
     }
 
-    /// Applies `status` from read number `seq`, unless a newer read has started since: the
-    /// uncommitted row appears, changes or goes, in a new generation. While an operation
-    /// runs it is held for the operation's final refresh instead. Takes `refresh_lock` only
-    /// for this, which involves no git.
-    async fn apply_status(&self, repo: &Arc<Repo>, status: WorktreeStatus, seq: u64) -> Result<()> {
+    /// Applies `tree` (status and in-progress state) from read number `seq`, unless a newer
+    /// read has started since: the uncommitted row appears, changes or goes, in a new
+    /// generation, and a change of either is emitted. While an operation runs it is held
+    /// for the operation's final refresh instead. Takes `refresh_lock` only for this, which
+    /// involves no git.
+    async fn apply_status(&self, repo: &Arc<Repo>, tree: TreeState, seq: u64) -> Result<()> {
         let _serial = repo.refresh_lock.lock().await;
         if repo.status_seq.load(Ordering::SeqCst) != seq {
             return Ok(());
@@ -628,15 +663,16 @@ impl RepoManager {
             let mut slot = repo.slot.write().await;
             if slot.op.is_some() {
                 // Shown with the operation's end, not before it.
-                slot.held_status = Some((seq, status));
+                slot.held_status = Some((seq, tree));
                 return Ok(());
             }
         }
         let mut info = repo.slot.read().await.target().info().clone();
-        if info.status == status {
+        if TreeState::of(&info) == tree {
             return Ok(());
         }
-        info.status = status;
+        info.status = tree.status;
+        info.in_progress = tree.in_progress;
         self.apply(repo, info, None, None).await.map(|_| ())
     }
 
@@ -871,8 +907,8 @@ impl RepoManager {
             // A refresh that started after this call was made has already run.
             return Ok(repo.snapshot().await);
         }
-        let status = repo.slot.read().await.target().info().status;
-        let info = repo.read_info(status).await?;
+        let tree = TreeState::of(repo.slot.read().await.target().info());
+        let info = repo.read_info(tree).await?;
         let snapshot = self.apply(repo, info, None, None).await?;
         self.request_status(repo);
         Ok(snapshot)
@@ -989,12 +1025,12 @@ impl RepoManager {
 
         let serial = repo.refresh_lock.lock().await;
         repo.refresh_wanted.store(false, Ordering::SeqCst);
-        let status = {
+        let tree = {
             let mut slot = repo.slot.write().await;
             let held = slot.held_status.take().filter(|(seq, _)| *seq > floor);
-            held.map_or_else(|| slot.target().info().status, |(_, status)| status)
+            held.map_or_else(|| TreeState::of(slot.target().info()), |(_, tree)| tree)
         };
-        let snapshot = match repo.read_info(status).await {
+        let snapshot = match repo.read_info(tree).await {
             Ok(info) => self.apply(repo, info, None, Some(id)).await?,
             Err(_) => {
                 let (to_emit, snapshot) = {
@@ -1049,6 +1085,11 @@ impl RepoManager {
     pub fn git_dirs(&self, repo_id: u32) -> Option<(PathBuf, PathBuf)> {
         let repo = self.get(repo_id).ok()?;
         Some((repo.common_dir.clone(), repo.root.clone()))
+    }
+
+    /// The `PATH` programs are found with: the login shell's, as for git, if it was read.
+    pub(crate) fn login_path(&self) -> Option<std::ffi::OsString> {
+        self.runner.login_path().cloned()
     }
 
     /// The runner used for this repository's commands.
@@ -1149,9 +1190,11 @@ impl RepoManager {
                 }
                 true
             } else if let Some(pending) = slot.pending.as_mut() {
-                // Not served yet: nothing visible changes until it replaces `current`.
+                // Not served yet: nothing visible changes until it replaces `current`, except
+                // the in-progress state, which the snapshot takes from it.
+                let before = pending.info().in_progress.clone();
                 pending.update(info, view);
-                false
+                pending.info().in_progress != before
             } else {
                 let changed = slot.current.update(info, view);
                 if changed {
@@ -1297,13 +1340,9 @@ struct Location {
     common_dir: PathBuf,
 }
 
-/// Head, refs, remotes and worktrees, read concurrently in `worktree`, with `status` as the
-/// status.
-async fn read_info(
-    runner: &GitRunner,
-    worktree: &Path,
-    status: WorktreeStatus,
-) -> Result<RepoInfo> {
+/// Head, refs, remotes and worktrees, read concurrently in `worktree`, with `tree` as the
+/// status and in-progress state.
+async fn read_info(runner: &GitRunner, worktree: &Path, tree: TreeState) -> Result<RepoInfo> {
     let (head, refs, remotes, worktrees) = tokio::join!(
         read_head(runner, worktree),
         read_refs(runner, worktree),
@@ -1319,7 +1358,8 @@ async fn read_info(
         refs: refs?,
         remotes: remotes?,
         worktrees,
-        status,
+        status: tree.status,
+        in_progress: tree.in_progress,
     })
 }
 

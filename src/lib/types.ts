@@ -90,6 +90,9 @@ export type FileChange = {
   additions: number | null;
   deletions: number | null;
 };
+/** Rows of `generation` whose commit message (subject and body) matches a search. */
+export type BodyHits = { generation: number; rows: number[] };
+
 export type CommitDetails = {
   hash: string;
   parents: string[];

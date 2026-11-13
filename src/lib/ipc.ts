@@ -4,6 +4,7 @@
 import { isTauri } from "./platform";
 import type {
   AppState,
+  BodyHits,
   CommandRecord,
   CommitDetails,
   CoreErrorDto,
@@ -272,6 +273,8 @@ export const api = {
     call<RowsPage>("get_rows", { repoId, generation, start, count }),
   findRow: (repoId: number, hash: string) => call<number | null>("find_row", { repoId, hash }),
   searchCommits: (repoId: number, query: string) => call<number[]>("search_commits", { repoId, query }),
+  /** Rows whose whole message matches `query` (git searches the bodies: slower). */
+  searchBodies: (repoId: number, query: string) => call<BodyHits>("search_bodies", { repoId, query }),
   commitDetails: (repoId: number, hash: string) => call<CommitDetails>("commit_details", { repoId, hash }),
   setViewOptions: (repoId: number, options: ViewOptions) =>
     call<RepoSnapshot>("set_view_options", { repoId, options }),

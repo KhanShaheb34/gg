@@ -162,6 +162,30 @@ test("unticking Remote branches removes origin from every label", async ({ gg })
   await expect(grid(page).locator('[data-ref="v1.0"]')).toHaveCount(0);
 });
 
+test("search finds a commit by its message body once git has looked", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await page.keyboard.press("ControlOrMeta+f");
+  // Only in the body of "Rework peaches routes": the row is a hit, with nothing marked in
+  // its subject.
+  await page.keyboard.type("old notes into");
+  await expect(searchCount(page)).toHaveText("1 of 1");
+  await expect(subject(selectedRow(page))).toHaveText("Rework peaches routes");
+  await expect(selectedRow(page)).toHaveAttribute("data-hit", "true");
+  await expect(subject(selectedRow(page)).locator("mark:not(:empty)")).toHaveCount(0);
+});
+
+test("search finds a commit by a ref name no subject mentions", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await page.keyboard.press("ControlOrMeta+f");
+  await page.keyboard.type("v1");
+  await expect(searchCount(page)).toHaveText("1 of 1");
+  await expect(selectedRow(page).locator('[data-ref="v1"]')).toHaveCount(1);
+});
+
 test("search: n of m, Enter and Shift+Enter move between hits, Esc closes and clears", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

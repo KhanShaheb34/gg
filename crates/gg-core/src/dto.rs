@@ -216,6 +216,15 @@ pub struct CommitRow {
     pub detached_worktrees: Vec<String>,
 }
 
+/// Rows of one generation whose commit message matches a search (see `search_bodies`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BodyHits {
+    pub generation: u64,
+    /// Ascending row indices.
+    pub rows: Vec<u32>,
+}
+
 /// A window of rows of one generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

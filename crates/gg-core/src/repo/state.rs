@@ -8,7 +8,7 @@ use crate::dto::{
     CommitRow, FetchState, HeadInfo, RefKind, RefLabel, RepoSnapshot, RowKind, ViewOptions,
     WorktreeInfo, WorktreeStatus,
 };
-use crate::git::log::{Commit, log_args};
+use crate::git::log::{Commit, LOG_FORMAT, log_args};
 use crate::git::refs::RefInfo;
 use crate::graph::{LaneAllocator, RowLayout};
 
@@ -179,9 +179,10 @@ impl RepoState {
         (start..end).map(|i| self.row(i)).collect()
     }
 
-    /// Ascending row indices of the commits whose subject or author contains `query`
-    /// (trimmed, case-insensitive), or whose hash starts with it when it is 4 or more hex
-    /// digits. An empty query matches nothing.
+    /// Ascending row indices of the commits whose subject, author or one of whose ref labels
+    /// (as shown in this view) contains `query` (trimmed, case-insensitive), or whose hash
+    /// starts with it when it is 4 or more hex digits. An empty query matches nothing.
+    /// Message bodies are not held here; see [`RepoState::body_search_args`].
     pub fn search(&self, query: &str) -> Vec<u32> {
         let query = query.trim().to_lowercase();
         if query.is_empty() {
@@ -196,9 +197,41 @@ impl RepoState {
                 (hash_prefix && c.hash.starts_with(&query))
                     || contains_lowercase(&c.subject, &query)
                     || contains_lowercase(&c.author, &query)
+                    || self.labels.get(&c.hash).is_some_and(|labels| {
+                        labels.iter().any(|l| contains_lowercase(&l.name, &query))
+                    })
             })
             .map(|(i, _)| i as u32 + offset)
             .collect()
+    }
+
+    /// Arguments of a `git log` that prints the hash of every commit of this view whose
+    /// message (subject and body) contains `query` (trimmed), ignoring case, as plain text.
+    /// `None` for a blank query or a view without commits.
+    pub fn body_search_args(&self, query: &str) -> Option<Vec<String>> {
+        let query = query.trim();
+        if query.is_empty() || !self.has_tips() {
+            return None;
+        }
+        let mut args = self.log_args();
+        // The log's own format and order are not needed: hashes only.
+        args.retain(|a| a != LOG_FORMAT && a != "--date-order");
+        if self.info.head.hash.is_none() {
+            // An unborn HEAD names no commit (an orphan branch with other branches).
+            args.retain(|a| a != "HEAD");
+        }
+        let end = args.len() - 1; // before the final `--`
+        args.splice(
+            end..end,
+            [
+                "--format=%H".to_owned(),
+                "--fixed-strings".to_owned(),
+                "--regexp-ignore-case".to_owned(),
+                // One argument: a query starting with `-` stays the pattern.
+                format!("--grep={query}"),
+            ],
+        );
+        Some(args)
     }
 
     pub fn snapshot(&self, id: &RepoIdentity, loading: bool, fetch: &FetchState) -> RepoSnapshot {
@@ -821,6 +854,54 @@ mod tests {
         assert!(s.search("").is_empty());
         assert!(s.search(" \t ").is_empty());
         assert!(s.search("zzz").is_empty());
+    }
+
+    #[test]
+    fn search_matches_ref_names_shown() {
+        let mut i = info();
+        i.refs.push(rf(RefKind::Tag, "Release-1", 'a'));
+        let s = loaded(i.clone());
+        assert_eq!(s.search("release"), [3]);
+        assert_eq!(
+            s.search("MAIN"),
+            [0],
+            "branch `main` at d; no subject says it"
+        );
+        let mut hidden = RepoState::new(
+            i,
+            ViewOptions {
+                show_tags: false,
+                ..all()
+            },
+            1,
+        );
+        hidden.append(history());
+        assert!(
+            hidden.search("release").is_empty(),
+            "hidden tags do not match"
+        );
+    }
+
+    #[test]
+    fn body_search_args_put_the_query_in_one_argument_before_the_separator() {
+        let s = loaded(info());
+        let args = s.body_search_args("  -x [a] ").unwrap();
+        assert_eq!(args.first().map(String::as_str), Some("log"));
+        assert_eq!(args.last().map(String::as_str), Some("--"));
+        assert!(args.contains(&"--grep=-x [a]".to_owned()), "{args:?}");
+        assert!(args.contains(&"--fixed-strings".to_owned()));
+        assert!(args.contains(&"--regexp-ignore-case".to_owned()));
+        assert!(args.contains(&"--format=%H".to_owned()));
+        assert!(!args.iter().any(|a| a == LOG_FORMAT));
+        assert!(s.body_search_args(" ").is_none());
+        let mut unborn = info();
+        unborn.head.hash = None;
+        let s = RepoState::new(unborn, all(), 1);
+        assert!(
+            !s.body_search_args("x")
+                .unwrap()
+                .contains(&"HEAD".to_owned())
+        );
     }
 
     #[test]

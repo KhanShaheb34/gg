@@ -176,6 +176,10 @@ impl Core {
                 let a: SearchArgs = parse(cmd, args)?;
                 to_json(self.repos()?.search(a.repo_id, &a.query).await?)
             }
+            "search_bodies" => {
+                let a: SearchArgs = parse(cmd, args)?;
+                to_json(self.repos()?.search_bodies(a.repo_id, &a.query).await?)
+            }
             "commit_details" => {
                 let a: HashArgs = parse(cmd, args)?;
                 to_json(self.repos()?.details(a.repo_id, &a.hash).await?)

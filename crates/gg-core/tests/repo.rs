@@ -1024,6 +1024,70 @@ async fn search_matches() {
     assert!(h.m.search(id, "no such thing").await.unwrap().is_empty());
 }
 
+/// Ref names match at once, with the rest of the in-memory search.
+#[tokio::test]
+async fn search_matches_ref_names() {
+    let repo = TestRepo::new();
+    let a = repo.commit("one");
+    repo.commit("two");
+    repo.git(&["branch", "release/Spring", &a]);
+    repo.git(&["tag", "v9-candidate", &a]);
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    let row = h.m.find_row(id, &a).await.unwrap().unwrap();
+    assert_eq!(h.m.search(id, "spring").await.unwrap(), [row]);
+    assert_eq!(h.m.search(id, "V9-CAND").await.unwrap(), [row]);
+}
+
+/// Message bodies are searched by git, case-insensitively and as plain text (a pattern
+/// starting with "-" or holding regex characters included), over the commits of the view.
+#[tokio::test]
+async fn body_search_finds_commits_by_their_whole_message() {
+    let repo = TestRepo::new();
+    let a = repo.commit("Subject one\n\nThe Body mentions frobnication here.");
+    let b = repo.commit("Subject two\n\n--dry-run [x] is literal");
+    repo.commit("Frobnication in the subject");
+    let side = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["switch", "-q", "-c", "hidden", &a]);
+    let hidden = repo.commit("hidden\n\nfrobnication on another branch");
+    repo.git(&["switch", "-q", "main"]);
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    let row = |hash: String| {
+        let m = h.m.clone();
+        async move { m.find_row(id, &hash).await.unwrap().unwrap() }
+    };
+    let (ra, rb, rs, rh) = (
+        row(a.clone()).await,
+        row(b).await,
+        row(side).await,
+        row(hidden).await,
+    );
+
+    let found = h.m.search_bodies(id, "FROBNICATION").await.unwrap();
+    assert_eq!(found.generation, snap.generation);
+    let mut want = vec![ra, rs, rh];
+    want.sort_unstable();
+    assert_eq!(found.rows, want);
+    assert_eq!(
+        h.m.search_bodies(id, "--dry-run [x]").await.unwrap().rows,
+        [rb]
+    );
+    assert!(h.m.search_bodies(id, "  ").await.unwrap().rows.is_empty());
+
+    // Only the commits the view shows.
+    let main_only = ViewOptions {
+        branches: Some(vec!["main".into()]),
+        ..all_refs()
+    };
+    let snap = h.m.set_view_options(id, main_only).await.unwrap();
+    h.wait(id).await;
+    let found = h.m.search_bodies(id, "frobnication").await.unwrap();
+    assert_eq!(found.rows.len(), 2, "{found:?} in {snap:?}");
+}
+
 #[tokio::test]
 async fn find_row_works() {
     let repo = TestRepo::new();

@@ -1,5 +1,8 @@
 // The commit search of one repository view: the query, its hits (row indices from the core)
 // and moving between them. Owned by a RepoView, which tells it when the rows change.
+// Subject, author, hash and ref-name hits come at once; commits whose message body matches
+// are found by git and merged in when they come (searchBodies). A row hit only through its
+// body has the hit marker but nothing highlighted in its subject.
 
 import { api } from "../ipc";
 import { hitPosition, stepHit } from "../search";
@@ -124,6 +127,7 @@ export class SearchState {
     this.hits = hits;
     this.generation = generation;
     this.lookupDone();
+    this.lookUpBodies(token, query, hits.length === 0);
     if (hits.length > 0) await this.host.selectRow(hits[0], true);
   }
 
@@ -186,6 +190,30 @@ export class SearchState {
     this.hits = hits;
     this.generation = generation;
     this.lookupDone();
+    this.lookUpBodies(token, query, false);
+  }
+
+  /**
+   * Asks git for the commits whose message body matches `query` and merges them into the
+   * hits, if they still belong to the lookup `token` and to the rows shown. Not while rows
+   * load: the lookup made when loading ends asks then. With `selectFirst` (a new search that
+   * found nothing else), the first of them is selected.
+   */
+  private lookUpBodies(token: number, query: string, selectFirst: boolean): void {
+    if (this.host.snapshot.loading) return;
+    api.searchBodies(this.host.repoId, query).then(
+      (found) => {
+        if (token !== this.token || this.host.disposed || found.generation !== this.generation) return;
+        if (found.rows.length === 0) return;
+        const merged = new Set([...this.hits, ...found.rows]);
+        if (merged.size === this.hits.length) return;
+        this.hits = [...merged].sort((a, b) => a - b);
+        if (selectFirst && this.hits.length === found.rows.length) void this.host.selectRow(this.hits[0], true);
+      },
+      () => {
+        // Body hits only add to the others; without them the search still works.
+      },
+    );
   }
 
   /**

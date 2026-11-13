@@ -25,6 +25,7 @@ vi.mock("../ipc", async (importOriginal) => {
       }),
       perfMark: vi.fn(async () => {}),
       searchCommits: vi.fn(async () => []),
+      searchBodies: vi.fn(async () => ({ generation: 1, rows: [] })),
       setViewOptions: vi.fn(),
       fetch: vi.fn(async () => {}),
       refresh: vi.fn(),
@@ -119,6 +120,9 @@ beforeEach(async () => {
       return { generation, start, rows };
     });
   vi.mocked(ipc.api.searchCommits).mockReset().mockImplementation(async () => []);
+  vi.mocked(ipc.api.searchBodies)
+    .mockReset()
+    .mockImplementation(async () => ({ generation: core.generation, rows: [] }));
   vi.mocked(ipc.api.setViewOptions).mockReset();
   vi.mocked(ipc.api.fetch).mockReset().mockImplementation(async () => {});
   vi.mocked(ipc.api.refresh).mockReset();
@@ -395,6 +399,55 @@ describe("RepoView search", () => {
     expect(view.selectedHash).toBe("c3");
     expect(view.search.index).toBe(0);
     expect(view.search.generation).toBe(2);
+  });
+
+  it("merges the commits whose message body matches when git has found them, keeping the selection", async () => {
+    const view = await openView(0);
+    let answer: (hits: { generation: number; rows: number[] }) => void = () => {};
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([10, 40]);
+    vi.mocked(ipc.api.searchBodies).mockImplementation(() => new Promise((r) => (answer = r)));
+    await view.search.run("fix");
+    // Subject, author, hash and ref name hits come at once.
+    expect(view.search.hits).toEqual([10, 40]);
+    expect(view.selectedHash).toBe("c10");
+    expect(ipc.api.searchBodies).toHaveBeenCalledWith(7, "fix");
+    answer({ generation: 1, rows: [3, 10, 70] });
+    await vi.waitFor(() => expect(view.search.hits).toEqual([3, 10, 40, 70]));
+    expect(view.selectedHash).toBe("c10");
+    expect(view.search.index).toBe(1);
+  });
+
+  it("selects the first body hit when nothing else matched", async () => {
+    const view = await openView(0);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([]);
+    vi.mocked(ipc.api.searchBodies).mockResolvedValue({ generation: 1, rows: [12, 30] });
+    await view.search.run("only in a body");
+    await vi.waitFor(() => expect(view.selectedHash).toBe("c12"));
+    expect(view.search.hits).toEqual([12, 30]);
+  });
+
+  it("drops body hits of another query or of rows no longer shown", async () => {
+    const view = await openView(0);
+    const answers: ((hits: { generation: number; rows: number[] }) => void)[] = [];
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([10]);
+    vi.mocked(ipc.api.searchBodies).mockImplementation(() => new Promise((r) => answers.push(r)));
+    await view.search.run("fi");
+    await view.search.run("fix");
+    answers[0]({ generation: 1, rows: [5] }); // for "fi"
+    answers[1]({ generation: 0, rows: [6] }); // older rows
+    await settle();
+    expect(view.search.hits).toEqual([10]);
+  });
+
+  it("does not search bodies while the rows are still loading, but once they are loaded", async () => {
+    vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => snapshot({ loading: true }));
+    const view = repo.repoView(7, snapshot({ loading: true }));
+    await settle();
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([3]);
+    await view.search.run("fix");
+    expect(ipc.api.searchBodies).not.toHaveBeenCalled();
+    await view.applySnapshot(snapshot({ loading: false }));
+    await vi.waitFor(() => expect(ipc.api.searchBodies).toHaveBeenCalledWith(7, "fix"));
   });
 
   it("closeSearch clears the query and the hits", async () => {

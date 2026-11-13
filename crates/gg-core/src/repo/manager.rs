@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::EventSink;
-use crate::dto::{CommitDetails, FetchState, RepoSnapshot, RowsPage, ViewOptions};
+use crate::dto::{BodyHits, CommitDetails, FetchState, RepoSnapshot, RowsPage, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::details::read_details;
 use crate::git::refs::{read_head, read_refs, read_remotes};
@@ -477,6 +477,37 @@ impl RepoManager {
         let repo = self.get(repo_id)?;
         let slot = repo.slot.read().await;
         Ok(slot.current.search(query))
+    }
+
+    /// Rows whose whole commit message (subject and body) contains `query`, ignoring case,
+    /// in the view's commits, found by git (bodies are not kept in memory) and mapped to the
+    /// rows of the generation served when git is done. Slower than [`RepoManager::search`]:
+    /// the UI merges these hits in when they come.
+    pub async fn search_bodies(&self, repo_id: u32, query: &str) -> Result<BodyHits> {
+        let repo = self.get(repo_id)?;
+        let args = repo.slot.read().await.current.body_search_args(query);
+        let hashes = match args {
+            Some(args) => {
+                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+                repo.runner
+                    .run(&repo.worktree, &argv, CmdKind::Read)
+                    .await?
+                    .text()
+            }
+            None => String::new(),
+        };
+        let slot = repo.slot.read().await;
+        let state = &slot.current;
+        let mut rows: Vec<u32> = hashes
+            .lines()
+            .filter_map(|h| state.find_row(h.trim()))
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        Ok(BodyHits {
+            generation: state.generation,
+            rows,
+        })
     }
 
     /// Metadata, message and files of commit `hash` (a full hash).

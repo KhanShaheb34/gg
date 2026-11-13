@@ -232,11 +232,21 @@ test("uncommitted changes show as a row after the window regains focus", async (
   await expect(subject(row(page, 1))).toHaveText("Add part 19");
 });
 
-test("an empty repository says so", async ({ gg }) => {
+test("an empty repository says so, and the controls that need commits are off", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("empty"));
   await expect(page.getByText("No commits yet")).toBeVisible();
+  await expect(page.getByText("Commits made on main show up here.")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Branches:/ })).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: "Remote branches" })).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: "Tags" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Search commits" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Search commits" })).toHaveAttribute("title", /no commits/i);
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  // Cmd+F opens no search box either.
+  await page.keyboard.press("ControlOrMeta+f");
+  await expect(page.getByRole("searchbox")).toHaveCount(0);
 });
 
 test("switching tabs keeps each graph's scroll and selection without fetching rows again", async ({ gg }) => {

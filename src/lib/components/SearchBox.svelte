@@ -10,7 +10,7 @@
   import { countLabel } from "../search";
   import type { RepoView } from "../state/repo.svelte";
 
-  let { view }: { view: RepoView } = $props();
+  let { view, disabled = false }: { view: RepoView; disabled?: boolean } = $props();
 
   /** Pause after typing before the search runs, ms. */
   const DEBOUNCE_MS = 150;
@@ -141,7 +141,13 @@
     </button>
   </div>
 {:else}
-  <button class="icon-btn" aria-label="Search commits" title="Search commits ({KEYS})" onclick={() => view.search.show()}>
+  <button
+    class="icon-btn"
+    aria-label="Search commits"
+    title={disabled ? "Nothing to search yet: this repository has no commits" : `Search commits (${KEYS})`}
+    {disabled}
+    onclick={() => view.search.show()}
+  >
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5" />
       <path d="m10.5 10.5 3.2 3.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />

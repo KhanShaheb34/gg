@@ -211,6 +211,16 @@ button {
   background: var(--bg-pressed);
 }
 
+.icon-btn:disabled {
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 0.6;
+}
+
+.checkbox:disabled {
+  opacity: 0.5;
+}
+
 .icon-btn svg {
   display: block;
 }

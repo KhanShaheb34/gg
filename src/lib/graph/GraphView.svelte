@@ -748,7 +748,10 @@
 
   {#if empty}
     <div class="empty">
-      <p>No commits yet</p>
+      <p class="empty-title">No commits yet</p>
+      <p class="empty-hint">
+        Commits made {view.snapshot.head.branch ? `on ${view.snapshot.head.branch}` : "in this repository"} show up here.
+      </p>
     </div>
   {/if}
 </div>
@@ -996,9 +999,21 @@
   .empty {
     position: absolute;
     inset: var(--header-h) 0 0;
-    display: grid;
-    place-items: center;
-    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
     pointer-events: none;
+  }
+
+  .empty-title {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .empty-hint {
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
   }
 </style>

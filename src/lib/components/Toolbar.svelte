@@ -20,6 +20,10 @@
   /** The time tooltips are written for; set as the pointer (or focus) arrives. */
   let now = $state(Date.now());
 
+  /** A repository without commits: filtering and searching have nothing to work on. */
+  const noCommits = $derived(!view.snapshot.loading && view.snapshot.totalRows === 0);
+  const NO_COMMITS = "Nothing to show yet: this repository has no commits";
+
   const fetchInfo = $derived(view.snapshot.fetch);
   const noRemotes = $derived(view.snapshot.remotes.length === 0);
   const fetchState = $derived(view.fetching ? "running" : fetchInfo.lastError ? "error" : "idle");
@@ -39,21 +43,23 @@
 
 <div class="toolbar">
   <span class="divider" aria-hidden="true"></span>
-  <BranchFilter {view} />
+  <BranchFilter {view} disabled={noCommits} />
 
-  <label class="toggle">
+  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
     <input
       type="checkbox"
       class="checkbox"
+      disabled={noCommits}
       checked={view.viewOptions.showRemotes}
       onchange={(e) => view.setViewOptions({ showRemotes: e.currentTarget.checked })}
     />
     <span>Remote branches</span>
   </label>
-  <label class="toggle">
+  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
     <input
       type="checkbox"
       class="checkbox"
+      disabled={noCommits}
       checked={view.viewOptions.showTags}
       onchange={(e) => view.setViewOptions({ showTags: e.currentTarget.checked })}
     />
@@ -62,7 +68,7 @@
 
   <span class="spacer"></span>
 
-  <SearchBox {view} />
+  <SearchBox {view} disabled={noCommits} />
 
   <button
     class="icon-btn tool"
@@ -161,6 +167,12 @@
 
   .toggle:active {
     background: var(--bg-pressed);
+  }
+
+  /* Off (a repository without commits): faint, and no hover. */
+  .toggle:has(:disabled) {
+    background: transparent;
+    color: var(--text-faint);
   }
 
   .spacer {

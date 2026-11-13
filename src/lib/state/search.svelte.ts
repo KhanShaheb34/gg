@@ -79,8 +79,10 @@ export class SearchState {
     return this.generation === this.host.snapshot.generation ? this.hitSet : NO_HITS;
   }
 
-  /** Opens the search box and asks it to take the focus. */
+  /** Opens the search box and asks it to take the focus; not in a repository without commits. */
   show(): void {
+    const s = this.host.snapshot;
+    if (!s.loading && s.totalRows === 0) return;
     this.open = true;
     this.focus++;
   }

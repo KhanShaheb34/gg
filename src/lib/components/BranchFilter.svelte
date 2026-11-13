@@ -13,7 +13,7 @@
   import { matchParts, searchPattern } from "../search";
   import type { RepoView } from "../state/repo.svelte";
 
-  let { view }: { view: RepoView } = $props();
+  let { view, disabled = false }: { view: RepoView; disabled?: boolean } = $props();
 
   const ITEM_H = 28;
   const LIST_MAX_H = 336;
@@ -225,7 +225,8 @@
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-controls={open ? `${id}-dialog` : undefined}
-    title="Branches the graph shows"
+    title={disabled ? "Nothing to show yet: this repository has no commits" : "Branches the graph shows"}
+    {disabled}
     bind:this={button}
     onclick={() => (open ? hide(false) : show())}
     onkeydown={onButtonKeydown}
@@ -334,6 +335,11 @@
   .trigger:active,
   .trigger.open {
     background: var(--bg-pressed);
+  }
+
+  .trigger:disabled {
+    background: transparent;
+    color: var(--text-faint);
   }
 
   /* Filtered: the choice reads in the accent colour, on a faint accent fill. */

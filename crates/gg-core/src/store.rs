@@ -167,11 +167,14 @@ impl Store {
     }
 
     /// Puts the repository at `path` first in the recents, removing any other entry for the
-    /// same folder (compared with symlinks resolved), and keeps the newest 20.
+    /// same folder, and keeps the newest 20. `path` is stored with symlinks resolved; the
+    /// stored ones were stored that way, so they are compared as text and their folders are
+    /// never touched (one on an unreachable volume would stall this).
     pub fn add_recent(&self, path: &Path) -> Result<()> {
         let path = canonical(path);
+        let text = path.to_string_lossy().into_owned();
         let recent = Recent {
-            path: path.to_string_lossy().into_owned(),
+            path: text.clone(),
             name: path.file_name().map_or_else(
                 || path.to_string_lossy().into_owned(),
                 |n| n.to_string_lossy().into_owned(),
@@ -179,18 +182,17 @@ impl Store {
             last_opened_ms: unix_ms(),
         };
         self.change(|data| {
-            data.recents.retain(|r| !same_folder(&r.path, &path));
+            data.recents.retain(|r| r.path != text);
             data.recents.insert(0, recent);
             data.recents.truncate(MAX_RECENTS);
             Ok(())
         })
     }
 
-    /// Removes the recent for `path` (as listed, or another spelling of the same folder);
-    /// returns the recents left. Removing a path that is not listed changes nothing.
+    /// Removes the recent for `path`, as listed; returns the recents left. Removing a path
+    /// that is not listed changes nothing. The folder is never touched.
     pub fn remove_recent(&self, path: &str) -> Result<Vec<Recent>> {
-        let target = canonical(Path::new(path));
-        let listed = |r: &Recent| r.path == path || same_folder(&r.path, &target);
+        let listed = |r: &Recent| r.path == path;
         if !self.lock().recents.iter().any(listed) {
             return Ok(self.recents());
         }
@@ -340,11 +342,6 @@ impl StoreData {
 
 fn valid_fetch_interval(secs: u32) -> bool {
     secs == 0 || FETCH_INTERVAL_RANGE.contains(&secs)
-}
-
-/// Whether the recent at `listed` is the folder `canonical_path`.
-fn same_folder(listed: &str, canonical_path: &Path) -> bool {
-    canonical(Path::new(listed)) == canonical_path
 }
 
 /// `path` with symlinks resolved (unchanged if it cannot be, for example a deleted folder).
@@ -539,6 +536,38 @@ mod tests {
         assert_eq!(all.len(), 20);
         assert_eq!(all[0], s(&dirs[24]));
         assert_eq!(all[19], s(&dirs[5]));
+    }
+
+    /// Stored recents are canonical already and are compared as text: adding one never
+    /// touches the folders of the others (one on an unreachable network volume would stall
+    /// every open). Seen here through a symlink entry, which is not resolved.
+    #[cfg(unix)]
+    #[test]
+    fn add_recent_never_resolves_the_stored_paths() {
+        let config = tempfile::tempdir().unwrap();
+        let repos = tempfile::tempdir().unwrap();
+        let real = dunce::canonicalize(repos.path()).unwrap().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = real.with_file_name("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        fs::write(
+            config.path().join("state.json"),
+            serde_json::json!({"recents": [
+                {"path": link.to_string_lossy(), "name": "link", "lastOpenedMs": 1}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let store = Store::load(config.path());
+        store.add_recent(&real).unwrap();
+        let paths: Vec<_> = store.recents().into_iter().map(|r| r.path).collect();
+        assert_eq!(
+            paths,
+            [
+                real.to_string_lossy().into_owned(),
+                link.to_string_lossy().into_owned()
+            ]
+        );
     }
 
     #[test]

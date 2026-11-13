@@ -123,11 +123,31 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
     )
 }
 
+/// Script that turns on the UI's scroll measurement (see `src/lib/perf/scrollProbe.ts`):
+/// with `GG_PERF_SCROLL=1` the graph scrolls itself top to bottom once the repository has
+/// loaded and reports frame times as perf marks; with `GG_PERF_SCROLL=still` it records
+/// frame times for as long without scrolling (the control). `None` otherwise.
+fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<&'static str> {
+    match gg_perf_scroll?.to_str()? {
+        "1" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = true;"),
+        "still" => Some("window.__GG_PROBE__ = {}; window.__GG_PERF_SCROLL__ = \"still\";"),
+        _ => None,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu);
+    let builder = match perf_scroll_script(std::env::var_os("GG_PERF_SCROLL")) {
+        Some(script) => builder.plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("perf-scroll")
+                .js_init_script(script)
+                .build(),
+        ),
+        None => builder,
+    };
     builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -166,5 +186,16 @@ mod tests {
         assert_eq!(launch_path(None, os(&dir)), Some(dir));
         assert_eq!(launch_path(None, Some(missing)), None);
         assert_eq!(launch_path(None, None), None);
+    }
+
+    #[test]
+    fn perf_scroll_only_with_gg_perf_scroll_1_or_still() {
+        let script = perf_scroll_script(Some("1".into())).unwrap();
+        assert!(script.contains("__GG_PROBE__") && script.contains("__GG_PERF_SCROLL__ = true"));
+        let still = perf_scroll_script(Some("still".into())).unwrap();
+        assert!(still.contains("__GG_PROBE__") && still.contains("__GG_PERF_SCROLL__ = \"still\""));
+        assert_eq!(perf_scroll_script(None), None);
+        assert_eq!(perf_scroll_script(Some("0".into())), None);
+        assert_eq!(perf_scroll_script(Some("".into())), None);
     }
 }

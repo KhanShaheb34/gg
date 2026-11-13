@@ -4,6 +4,9 @@ const baseURL = "http://127.0.0.1:1420";
 
 export default defineConfig({
   testDir: "e2e",
+  // Performance runs (e2e/perf) only with GG_PERF=1: they need large generated repositories
+  // and a release build, and they measure rather than check behaviour.
+  testIgnore: process.env.GG_PERF === "1" ? [] : ["perf/**"],
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   // Each test runs its own gg-devserver and git; keep the load on the machine modest.

@@ -92,8 +92,10 @@ impl Core {
         })
     }
 
-    /// Sets the file `perf_mark` appends `name<TAB>ms` lines to; `None` keeps marks in
-    /// memory only.
+    /// Sets the file `perf_mark` appends `name<TAB>ms<TAB>epoch_ms` lines to, where
+    /// `epoch_ms` is the wall-clock time the mark was recorded (unix milliseconds), so marks
+    /// can be compared with timestamps taken outside the app; `None` keeps marks in memory
+    /// only.
     pub fn set_perf_log(&self, path: Option<PathBuf>) {
         self.perf().log = path;
     }
@@ -119,7 +121,7 @@ impl Core {
             .create(true)
             .append(true)
             .open(path)
-            .and_then(|mut f| f.write_all(format!("{name}\t{ms}\n").as_bytes()))
+            .and_then(|mut f| f.write_all(format!("{name}\t{ms}\t{}\n", unix_ms()).as_bytes()))
             .map_err(|e| {
                 CoreError::new(
                     ErrorCode::Io,
@@ -137,6 +139,13 @@ impl Core {
     fn perf(&self) -> MutexGuard<'_, Perf> {
         self.perf.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// Milliseconds since the unix epoch (0 if the clock is before it).
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
 }
 
 /// The gg-core crate version (`MAJOR.MINOR.PATCH`).

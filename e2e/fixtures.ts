@@ -239,10 +239,13 @@ const REPOS: Record<string, RepoScript> = {
 /** A running gg-devserver. */
 type Devserver = { url: string; process: ChildProcess };
 
-/** Starts a devserver whose home folder is `home` (so paths under it show as `~/…`). */
-function startDevserver(configDir: string, home: string): Promise<Devserver> {
+/**
+ * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
+ * debug build unless `binary` names another.
+ */
+export function startDevserver(configDir: string, home: string, binary = DEVSERVER): Promise<Devserver> {
   const child = spawn(
-    DEVSERVER,
+    binary,
     ["--port", "0", "--config-dir", configDir, "--allow-origin", VITE_ORIGIN],
     { stdio: ["ignore", "pipe", "pipe"], env: { ...isolatedEnv(), HOME: home, USERPROFILE: home } },
   );
@@ -269,7 +272,7 @@ function startDevserver(configDir: string, home: string): Promise<Devserver> {
   });
 }
 
-async function stopDevserver(server: Devserver): Promise<void> {
+export async function stopDevserver(server: Devserver): Promise<void> {
   const child = server.process;
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));

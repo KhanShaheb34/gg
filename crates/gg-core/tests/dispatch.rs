@@ -342,6 +342,7 @@ async fn perf_marks_are_kept_and_logged() {
     let h = harness().await;
     let log = h.config.path().join("perf.log");
     h.core.set_perf_log(Some(log.clone()));
+    let before = unix_ms();
     assert_eq!(
         h.call("perf_mark", json!({"name": "first-rows", "ms": 412.5}))
             .await,
@@ -349,6 +350,7 @@ async fn perf_marks_are_kept_and_logged() {
     );
     h.call("perf_mark", json!({"name": "fully-loaded", "ms": 900}))
         .await;
+    let after = unix_ms();
     assert_eq!(
         h.core.perf_marks(),
         vec![
@@ -356,10 +358,20 @@ async fn perf_marks_are_kept_and_logged() {
             ("fully-loaded".to_owned(), 900.0)
         ]
     );
-    assert_eq!(
-        std::fs::read_to_string(&log).unwrap(),
-        "first-rows\t412.5\nfully-loaded\t900\n"
-    );
+    // `name<TAB>ms<TAB>unix epoch ms when the mark was recorded`.
+    let text = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+    assert_eq!(lines.len(), 2, "{text:?}");
+    assert_eq!(lines[0][..2], ["first-rows", "412.5"]);
+    assert_eq!(lines[1][..2], ["fully-loaded", "900"]);
+    for line in &lines {
+        assert_eq!(line.len(), 3, "{text:?}");
+        let at: u64 = line[2].parse().expect("epoch ms is an integer");
+        assert!(
+            (before..=after).contains(&at),
+            "{at} not in {before}..={after}"
+        );
+    }
 
     // Without a log path, marks are only kept in memory.
     h.core.set_perf_log(None);
@@ -403,4 +415,11 @@ async fn fetch_returns_before_git_finishes() {
 
     let unknown = h.fail("fetch", json!({"repoId": 999})).await;
     assert_eq!(unknown.code, ErrorCode::UnknownRepo);
+}
+
+fn unix_ms() -> u64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    u64::try_from(since.as_millis()).unwrap()
 }

@@ -20,6 +20,8 @@
   import type { CommitRow, RefLabel } from "../types";
   import { displayedRows, graphWidth, laneX, NODE_R, ROW_H, rowWindow, traceEdge, type RowWindow } from "./geometry";
   import RefLabels from "./RefLabels.svelte";
+  import { api } from "../ipc";
+  import { runScrollProbe, type Probe } from "../perf/scrollProbe";
 
   let { view }: { view: RepoView } = $props();
 
@@ -132,12 +134,14 @@
 
   // --- Dev probe for performance measurement (window.__GG_PROBE__, set before load) -------
 
-  type Probe = { frames: number[]; skeletonMaxMs: number };
   const probe = (window as { __GG_PROBE__?: Probe }).__GG_PROBE__;
   if (probe) {
     probe.frames ??= [];
     probe.skeletonMaxMs ??= 0;
+    probe.slowSkeletonFrames ??= 0;
   }
+  /** Skeletons visible this long count as slow, ms. */
+  const SLOW_SKELETON_MS = 150;
   let scrolledSinceFrame = false;
   let lastScrollFrame = 0;
 
@@ -148,16 +152,45 @@
       lastScrollFrame = now;
       scrolledSinceFrame = false;
     }
+    let slow = false;
     for (const slot of slots) {
       const visible = slot.index >= w.visibleFirst && slot.index < w.visibleLast;
       if (visible && !slot.row) {
         if (slot.skeletonSince < 0) slot.skeletonSince = now;
+        else if (now - slot.skeletonSince > SLOW_SKELETON_MS) slow = true;
       } else if (slot.skeletonSince >= 0) {
         if (visible) probe.skeletonMaxMs = Math.max(probe.skeletonMaxMs, now - slot.skeletonSince);
         slot.skeletonSince = -1;
       }
     }
+    if (slow) probe.slowSkeletonFrames++;
   }
+
+  // A perf run (window.__GG_PERF_SCROLL__) scrolls the fully loaded graph top to bottom once
+  // and reports the result as perf marks (scroll-p50, scroll-p95, ...).
+  const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: boolean | "still" }).__GG_PERF_SCROLL__;
+  const perfScroll = perfScrollMode === true || perfScrollMode === "still";
+  let perfScrollStarted = false;
+  $effect(() => {
+    if (!perfScroll || perfScrollStarted || view.snapshot.loading || view.snapshot.totalRows === 0) return;
+    perfScrollStarted = true;
+    void runScrollProbe(scroller, probe!, { scroll: perfScrollMode === true }).then(async (s) => {
+      const marks: [string, number][] = [
+        ["scroll-frames", s.frames],
+        ["scroll-p50", s.p50],
+        ["scroll-p95", s.p95],
+        ["scroll-p99", s.p99],
+        ["scroll-max", s.max],
+        ["scroll-over17", s.over17],
+        ["scroll-over25", s.over25],
+        ["scroll-skeleton-max", s.skeletonMaxMs],
+        ["scroll-slow-skeleton-frames", s.slowSkeletonFrames],
+        ["scroll-skeletons-after-stop", s.skeletonsAfterStop],
+      ];
+      for (const [name, value] of marks) await api.perfMark(name, value).catch(() => {});
+      await api.perfMark("scroll-done", performance.now()).catch(() => {});
+    });
+  });
 
   // --- Frame: slots, fetching, canvas -------------------------------------------------------
 

@@ -9,6 +9,7 @@ use crate::git::status::read_status;
 use crate::ops::OpCtx;
 use crate::ops::local::current_branch;
 use crate::ops::network::{push_target, ref_commit};
+use crate::ops::stash;
 
 /// The dangers `request` would run into now.
 pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<Danger>> {
@@ -29,7 +30,8 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
         OpRequest::DeleteRemoteBranch { remote, branch } => {
             vec![remote_branch_deleted(ctx, remote, branch).await?]
         }
-        // The others carry none (the stash ones are added with them).
+        OpRequest::StashDrop { stash } => stash::dropped(ctx, stash).await?,
+        // The others carry none.
         _ => Vec::new(),
     })
 }

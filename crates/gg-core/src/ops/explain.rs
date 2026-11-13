@@ -371,7 +371,7 @@ fn files_in_the_way(all: &str, lead: &str) -> Option<(String, String)> {
 }
 
 /// `files` for a sentence: "a, b and c", at most [`MAX_FILES_LISTED`] named.
-fn file_list(files: &[&str]) -> String {
+pub(crate) fn file_list(files: &[&str]) -> String {
     match files {
         [] => "some files".to_owned(),
         [one] => (*one).to_owned(),

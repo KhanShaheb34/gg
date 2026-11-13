@@ -12,6 +12,7 @@ mod explain;
 mod local;
 mod network;
 mod progress;
+mod stash;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -234,9 +235,9 @@ struct Prepared {
     body: Body,
 }
 
-/// Checks `request` (names, arguments, whether it is built yet) without git, and returns
-/// its title and body. `bad_name` for a bad name, `bad_request` for a bad argument or an
-/// operation not built yet. Every operation is matched here, once.
+/// Checks `request` (names, arguments) without git, and returns its title and body.
+/// `bad_name` for a bad name, `bad_request` for a bad argument. Every operation is matched
+/// here, once.
 fn prepare(request: &OpRequest) -> Result<Prepared> {
     let (title, body) = match request.clone() {
         OpRequest::CheckoutBranch {
@@ -495,6 +496,59 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
+        OpRequest::StashSave {
+            message,
+            include_untracked,
+        } => (
+            fixed(if include_untracked {
+                "Stash changes and untracked files".to_owned()
+            } else {
+                "Stash changes".to_owned()
+            }),
+            body(move |ctx, _| {
+                Box::pin(
+                    async move { stash::save(ctx, message.as_deref(), include_untracked).await },
+                )
+            }),
+        ),
+        OpRequest::StashApply { stash: hash } => {
+            check_full_hash(&hash)?;
+            (
+                fixed(format!("Apply stash {}", local::short(&hash))),
+                body(move |ctx, _| {
+                    Box::pin(
+                        async move { stash::put_back(ctx, &hash, stash::PutBack::Apply).await },
+                    )
+                }),
+            )
+        }
+        OpRequest::StashPop { stash: hash } => {
+            check_full_hash(&hash)?;
+            (
+                fixed(format!("Pop stash {}", local::short(&hash))),
+                body(move |ctx, _| {
+                    Box::pin(async move { stash::put_back(ctx, &hash, stash::PutBack::Pop).await })
+                }),
+            )
+        }
+        OpRequest::StashDrop { stash: hash } => {
+            check_full_hash(&hash)?;
+            (
+                fixed(format!("Drop stash {}", local::short(&hash))),
+                body(move |ctx, _| Box::pin(async move { stash::drop(ctx, &hash).await })),
+            )
+        }
+        OpRequest::StashBranch { stash: hash, name } => {
+            check_full_hash(&hash)?;
+            check_branch_name(&name)?;
+            (
+                fixed(format!(
+                    "Create branch {name} from stash {}",
+                    local::short(&hash)
+                )),
+                body(move |ctx, _| Box::pin(async move { stash::branch(ctx, &hash, &name).await })),
+            )
+        }
         OpRequest::Continue => (
             on_progress(|kind| progress::title("Continue", kind)),
             body(move |ctx, _| Box::pin(async move { progress::continue_op(ctx).await })),
@@ -503,12 +557,6 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             on_progress(|kind| progress::title("Abort", kind)),
             body(move |ctx, _| Box::pin(async move { progress::abort(ctx).await })),
         ),
-        _ => {
-            return Err(CoreError::new(
-                ErrorCode::BadRequest,
-                "This operation is not implemented yet.",
-            ));
-        }
     };
     Ok(Prepared { title, body })
 }
@@ -739,6 +787,11 @@ impl RepoManager {
         {
             return Ok((title, Ran::Refused(why)));
         }
+        if let Some(hash) = stash_of(&request)
+            && let Some(why) = stash::gone(&ctx, hash).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
         let dangers = dangers(&ctx, &request).await?;
         if !all_confirmed(&dangers, &confirmed, lease_of(&request)) {
             return Ok((title, Ran::Unconfirmed(dangers)));
@@ -778,6 +831,17 @@ fn remote_of(request: &OpRequest) -> Option<&str> {
             remote: Some(remote),
             ..
         } => Some(remote),
+        _ => None,
+    }
+}
+
+/// The stash a request names (by commit), if any: it must still be in the list.
+fn stash_of(request: &OpRequest) -> Option<&str> {
+    match request {
+        OpRequest::StashApply { stash }
+        | OpRequest::StashPop { stash }
+        | OpRequest::StashDrop { stash }
+        | OpRequest::StashBranch { stash, .. } => Some(stash),
         _ => None,
     }
 }
@@ -864,13 +928,20 @@ mod tests {
     }
 
     #[test]
-    fn unbuilt_operations_and_bad_input_are_refused_without_git() {
+    fn bad_input_is_refused_without_git() {
         let refused = |r: &OpRequest| prepare(r).err().expect("refused").code;
         assert_eq!(
             refused(&OpRequest::StashDrop {
-                stash: "0123456789abcdef0123456789abcdef01234567".into()
+                stash: "stash@{0}".into()
             }),
             ErrorCode::BadRequest
+        );
+        assert_eq!(
+            refused(&OpRequest::StashBranch {
+                stash: "0123456789abcdef0123456789abcdef01234567".into(),
+                name: "-x".into(),
+            }),
+            ErrorCode::BadName
         );
         let option_like = OpRequest::CreateBranch {
             name: "x".into(),

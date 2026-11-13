@@ -29,8 +29,9 @@
     deviceLineWidth,
     displayedRows,
     edgeShape,
+    autoGraphWidth,
+    GRAPH_MIN_AUTO_W,
     GRAPH_PAD,
-    graphWidth,
     HEADER_H,
     LANE_COLORS,
     laneX,
@@ -84,8 +85,13 @@
   }
 
   let stored = $state(readStored());
+  /** The Graph column's own width; it only grows while the view lives (see autoGraphWidth). */
+  const autoGraphW = $derived.by(() => {
+    view.graphAutoWidth = autoGraphWidth(view.snapshot.maxLane, view.graphAutoWidth);
+    return view.graphAutoWidth;
+  });
   const widths = $derived({
-    graph: stored.graph ?? Math.min(graphWidth(view.snapshot.maxLane) + 2 * GRAPH_PAD, 240),
+    graph: stored.graph ?? autoGraphW,
     date: stored.date ?? DEFAULT_W.date,
     author: stored.author ?? DEFAULT_W.author,
     hash: stored.hash ?? DEFAULT_W.hash,
@@ -594,7 +600,7 @@
     onkeydown={onKeydown}
   >
     <div class="header" role="row" aria-rowindex={1} data-header>
-      <div class="hcell lanes-h" class:narrow={widths.graph < 52} role="columnheader">
+      <div class="hcell lanes-h" class:narrow={widths.graph < GRAPH_MIN_AUTO_W} role="columnheader">
         <span class="hlabel">Graph</span>
         <Splitter label="Resize Graph column" edge="right" value={widths.graph} {...resizer("graph", 1)} />
       </div>

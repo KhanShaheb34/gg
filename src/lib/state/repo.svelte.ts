@@ -146,6 +146,8 @@ export class RepoView {
   /** Shows an error to the user (set by the app shell). */
   onNotice: ((message: string, detail?: string) => void) | null = null;
 
+  /** Widest the Graph column has sized itself, px; it never narrows while the view lives. */
+  graphAutoWidth = 0;
   /** Where the graph is scrolled to, px; kept while the tab is in the background. */
   scrollTop = 0;
   /** Height of the graph's row area, px; set by the mounted graph. */

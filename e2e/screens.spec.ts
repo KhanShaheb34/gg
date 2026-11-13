@@ -79,7 +79,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.keyboard.type("feat");
     await page.waitForTimeout(250);
     await page.screenshot({ path: path.join(OUT, `toolbar-filter-${theme}.png`) });
-    await dialog.getByRole("option", { name: "Show All", exact: true }).click();
+    await dialog.getByRole("option", { name: "Show all", exact: true }).click();
     await page.keyboard.press("Escape");
 
     // Search active, a few hits, the second one selected.

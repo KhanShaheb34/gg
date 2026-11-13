@@ -13,6 +13,10 @@ export const LANE_W = 16;
 export const NODE_R = 4;
 /** Space left of lane 0 (and right of the last lane, by default), px. */
 export const GRAPH_PAD = 6;
+/** Narrowest the Graph column sizes itself: enough to show its "Graph" header, px. */
+export const GRAPH_MIN_AUTO_W = 52;
+/** Widest the Graph column sizes itself (wider only when dragged), px. */
+export const GRAPH_MAX_AUTO_W = 240;
 /** Number of lane colours (`--lane-0` … `--lane-9`). */
 export const LANE_COLORS = 10;
 /** Rows rendered above and below the viewport. */
@@ -34,6 +38,16 @@ export function laneX(lane: number): number {
 /** Width that holds lanes 0..maxLane. */
 export function graphWidth(maxLane: number): number {
   return LANE_W * (maxLane + 1);
+}
+
+/**
+ * Width the Graph column gives itself: its lanes (0..maxLane) with padding, between
+ * GRAPH_MIN_AUTO_W and GRAPH_MAX_AUTO_W, and never narrower than `widest`, the widest it has
+ * been, so the columns to its right do not move when a filter shows fewer lanes.
+ */
+export function autoGraphWidth(maxLane: number, widest: number): number {
+  const fit = Math.min(graphWidth(maxLane) + 2 * GRAPH_PAD, GRAPH_MAX_AUTO_W);
+  return Math.max(GRAPH_MIN_AUTO_W, fit, widest);
 }
 
 export type Line = { x1: number; y1: number; x2: number; y2: number };

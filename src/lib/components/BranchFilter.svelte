@@ -1,6 +1,6 @@
 <!--
-  Which branches the graph shows: a button naming the choice ("Show All", "3 branches") that
-  opens a popover with a filter field and a checklist (Show All, local branches, then remote
+  Which branches the graph shows: a button naming the choice ("Show all", "3 branches") that
+  opens a popover with a filter field and a checklist (Show all, local branches, then remote
   branches when they are shown). Each tick applies at once. Only the rows in view are
   rendered, so thousands of branches cost nothing. Keys: arrows (and Page keys) move through
   the list from the field, Enter ticks, Esc or a click outside closes.
@@ -237,7 +237,7 @@
               >
                 <span class="checkbox" data-checked={on} aria-hidden="true"></span>
                 {#if item.kind === "all"}
-                  <span class="name">Show All</span>
+                  <span class="name">Show all</span>
                 {:else}
                   <span class="name" class:current={!item.remote && item.name === current}
                     >{#each matchParts(item.name, pattern) as part}{#if part.match}<mark>{part.text}</mark

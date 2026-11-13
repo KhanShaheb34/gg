@@ -5,7 +5,7 @@ describe("branchItems", () => {
   const local = ["main", "feature/login", "fix/typo"];
   const remote = ["origin/main", "origin/fix/typo"];
 
-  it("lists Show All, then local branches, then remote branches under headings", () => {
+  it("lists Show all, then local branches, then remote branches under headings", () => {
     expect(branchItems(local, remote, true, "")).toEqual([
       { kind: "all" },
       { kind: "heading", label: "Branches" },
@@ -67,8 +67,8 @@ describe("toggleBranch", () => {
 
 describe("filterLabel", () => {
   it("names the selection", () => {
-    expect(filterLabel(null)).toBe("Show All");
-    expect(filterLabel([])).toBe("Show All");
+    expect(filterLabel(null)).toBe("Show all");
+    expect(filterLabel([])).toBe("Show all");
     expect(filterLabel(["main"])).toBe("1 branch");
     expect(filterLabel(["main", "dev", "x"])).toBe("3 branches");
   });

@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Edge } from "../types";
 import {
   alignedFirstRow,
+  autoGraphWidth,
+  GRAPH_MAX_AUTO_W,
+  GRAPH_MIN_AUTO_W,
   canvasSize,
   crispOffset,
   deviceLineWidth,
@@ -233,5 +236,20 @@ describe("canvas sizing for the device pixel ratio", () => {
     expect(alignedFirstRow(7, 26, 1.5)).toBe(7); // 273 device px
     expect(alignedFirstRow(7, 26, 1.25)).toBe(6); // 7 rows = 227.5 device px
     expect(alignedFirstRow(0, 26, 1.25)).toBe(0);
+  });
+});
+
+describe("autoGraphWidth", () => {
+  it("fits the lanes with padding, between the floor and the cap", () => {
+    expect(autoGraphWidth(0, 0)).toBe(GRAPH_MIN_AUTO_W);
+    expect(autoGraphWidth(4, 0)).toBe(graphWidth(4) + 2 * GRAPH_PAD);
+    expect(autoGraphWidth(100, 0)).toBe(GRAPH_MAX_AUTO_W);
+  });
+  it("never gets narrower than the widest it has been", () => {
+    expect(autoGraphWidth(0, 120)).toBe(120);
+    expect(autoGraphWidth(9, 120)).toBe(graphWidth(9) + 2 * GRAPH_PAD);
+  });
+  it("leaves room for the Graph header's label", () => {
+    expect(GRAPH_MIN_AUTO_W).toBeGreaterThanOrEqual(52);
   });
 });

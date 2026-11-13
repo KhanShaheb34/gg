@@ -35,13 +35,13 @@ function gitSubjects(gg: { git(name: string, ...args: string[]): string }, repo:
   return gg.git(repo, "log", "--format=%s", "--date-order", ...revs).trim().split("\n");
 }
 
-test("selecting only one branch leaves exactly its commits; Show All restores them", async ({ gg }) => {
+test("selecting only one branch leaves exactly its commits; Show all restores them", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("small"));
   const all = gitSubjects(gg, "small", "--all");
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(all.length + 1));
-  await expect(filterButton(page)).toHaveText(/Show All/);
+  await expect(filterButton(page)).toHaveText(/Show all/);
 
   await filterButton(page).click();
   await expect(filterDialog(page)).toBeVisible();
@@ -54,8 +54,8 @@ test("selecting only one branch leaves exactly its commits; Show All restores th
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(feature.length + 1));
   await expect.poll(() => subjects(page)).toEqual(feature);
 
-  await option(page, "Show All").click();
-  await expect(filterButton(page)).toHaveText(/Show All/);
+  await option(page, "Show all").click();
+  await expect(filterButton(page)).toHaveText(/Show all/);
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(all.length + 1));
   await expect.poll(() => subjects(page)).toEqual(all);
 
@@ -73,7 +73,7 @@ test("the branch filter works from the keyboard", async ({ gg }) => {
   const input = filterDialog(page).getByRole("combobox", { name: "Filter branches" });
   await expect(input).toBeFocused();
   await page.keyboard.type("typo");
-  await expect(filterDialog(page).getByRole("option")).toHaveText(["Show All", "fix/typo", "origin/fix/typo"]);
+  await expect(filterDialog(page).getByRole("option")).toHaveText(["Show all", "fix/typo", "origin/fix/typo"]);
   // Typing makes the first matching branch the active one; arrows move it.
   await expect(option(page, "fix/typo")).toHaveAttribute("data-active", "true");
   await page.keyboard.press("ArrowDown");
@@ -110,7 +110,7 @@ test("the branch filter stays quick with thousands of branches", async ({ gg }) 
   expect(await options.count()).toBeLessThan(60); // only what is in view is rendered
 
   await page.keyboard.type("b-2499");
-  await expect(options).toHaveText(["Show All", "topic/b-2499"]);
+  await expect(options).toHaveText(["Show all", "topic/b-2499"]);
   await filterDialog(page).getByRole("combobox", { name: "Filter branches" }).fill("");
   // The last branch can be reached by scrolling the list.
   await filterDialog(page)
@@ -289,4 +289,39 @@ test("changing the filter keeps the selected commit selected and in view", async
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(gitSubjects(gg, "small", "feature/login").length + 1));
   await expect(subject(selectedRow(page))).toHaveText(target);
   await expect(selectedRow(page)).toBeInViewport();
+});
+
+test("filtering to one branch and back never moves the Description column", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  await expect(subject(row(page, 0))).not.toBeEmpty();
+  const description = page.getByRole("columnheader", { name: "Description" });
+  const graphHeader = page.getByRole("columnheader", { name: "Graph" });
+  const x = (await description.boundingBox())!.x;
+
+  await filterButton(page).click();
+  await option(page, "feature/search").click(); // a single lane
+  await expect(subject(row(page, 0))).toHaveText("Search keyboard shortcuts");
+  expect((await description.boundingBox())!.x).toBe(x);
+  await expect(graphHeader.locator(".hlabel")).toBeVisible();
+
+  await option(page, "Show all").click();
+  await expect(subject(row(page, 0))).toHaveText("Row hover states");
+  expect((await description.boundingBox())!.x).toBe(x);
+});
+
+test("a filtered repository opens with a Graph column wide enough for its header", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await filterButton(page).click();
+  await option(page, "fix/typo").click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Close small" }).click();
+  await open(page, gg.repoPath("small"));
+  await expect(subject(row(page, 0))).toHaveText("Fix typo 4");
+  const graph = (await page.getByRole("columnheader", { name: "Graph" }).boundingBox())!;
+  expect(graph.width).toBeGreaterThanOrEqual(52);
+  await expect(page.getByRole("columnheader", { name: "Graph" }).locator(".hlabel")).toBeVisible();
 });

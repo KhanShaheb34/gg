@@ -8,7 +8,7 @@ export type FilterItem =
 const ALL: FilterItem = { kind: "all" };
 
 /**
- * The filter's rows: "Show All", then the local branches, then (when shown) the remote ones,
+ * The filter's rows: "Show all", then the local branches, then (when shown) the remote ones,
  * each under a heading, keeping only names that contain `text` (any case).
  */
 export function branchItems(local: string[], remote: string[], showRemotes: boolean, text: string): FilterItem[] {
@@ -35,6 +35,6 @@ export function toggleBranch(selected: string[] | null, name: string): string[] 
 /** The filter button's text for a selection. */
 export function filterLabel(selected: string[] | null): string {
   const n = selected?.length ?? 0;
-  if (n === 0) return "Show All";
+  if (n === 0) return "Show all";
   return n === 1 ? "1 branch" : `${n} branches`;
 }

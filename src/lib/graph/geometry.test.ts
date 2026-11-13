@@ -4,7 +4,9 @@ import {
   alignedFirstRow,
   alignSlackFor,
   FILL_DELAY_MS,
-  fillTime,
+  fillFrame,
+  type FillState,
+  FILL_THROTTLE_MS,
   autoGraphWidth,
   GRAPH_MAX_AUTO_W,
   GRAPH_MIN_AUTO_W,
@@ -380,17 +382,43 @@ describe("alignSlackFor", () => {
   });
 });
 
-describe("fillTime (rows are not filled during fast jumps)", () => {
-  it("holds filling for a moment after a frame that moved more than a viewport", () => {
+describe("fillFrame (rows are filled at most every FILL_THROTTLE_MS during fast jumps)", () => {
+  const idle: FillState = { fillAt: 0, lastJumpFill: -Infinity };
+
+  it("fills the first frame of a jump, then at most once per throttle interval while it goes on", () => {
     expect(FILL_DELAY_MS).toBe(50);
-    expect(fillTime(801, 800, 1000, 0)).toBe(1050);
-    expect(fillTime(-5000, 800, 2000, 1050)).toBe(2050);
+    expect(FILL_THROTTLE_MS).toBe(120);
+    let s = idle;
+    const fills: number[] = [];
+    // A scrollbar drag: two screens a frame, every 16 ms, for about a second.
+    for (let now = 1000; now <= 2000; now += 16) {
+      const d = fillFrame(1600, 800, now, s);
+      s = d.state;
+      if (d.fill) fills.push(now);
+    }
+    expect(fills[0]).toBe(1000);
+    for (let k = 1; k < fills.length; k++) expect(fills[k] - fills[k - 1]).toBeGreaterThanOrEqual(120);
+    // Never blank for much longer than the interval plus a frame.
+    for (let k = 1; k < fills.length; k++) expect(fills[k] - fills[k - 1]).toBeLessThan(120 + 16);
+    expect(fills.length).toBeGreaterThanOrEqual(7);
+    // And 50 ms after the last fast frame, everything fills.
+    expect(s.fillAt).toBe(1992 + 50);
   });
 
-  it("leaves it as it was for moves of up to a viewport: smooth scrolling and page keys fill at once", () => {
-    expect(fillTime(13, 800, 1000, 0)).toBe(0);
-    expect(fillTime(800, 800, 1000, 0)).toBe(0);
-    expect(fillTime(-774, 800, 1000, 0)).toBe(0);
-    expect(fillTime(13, 800, 1020, 1050)).toBe(1050); // still within the hold
+  it("holds slow frames until FILL_DELAY_MS after the last fast one, then fills them", () => {
+    let { state } = fillFrame(-5000, 800, 2000, idle);
+    expect(state.fillAt).toBe(2050);
+    const held = fillFrame(13, 800, 2020, state);
+    expect(held.fill).toBe(false);
+    state = held.state;
+    expect(fillFrame(13, 800, 2050, state).fill).toBe(true);
+  });
+
+  it("fills every frame of moves up to a viewport: smooth scrolling and page keys", () => {
+    for (const moved of [13, 800, -774]) {
+      const d = fillFrame(moved, 800, 1000, idle);
+      expect(d.fill).toBe(true);
+      expect(d.state).toEqual(idle);
+    }
   });
 });

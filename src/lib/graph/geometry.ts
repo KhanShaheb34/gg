@@ -448,19 +448,39 @@ export function alignSlackFor(dpr: number): number {
   return slack;
 }
 
-/** How long rows stay unfilled after the last fast frame, ms. */
+/** How long rows stay unfilled after the last fast frame, ms, before they are all filled. */
 export const FILL_DELAY_MS = 50;
+/** During a fast jump, the least time between two frames that fill the rows, ms. */
+export const FILL_THROTTLE_MS = 120;
+
+/** What fillFrame remembers between frames (performance.now ms). */
+export type FillState = {
+  /** Slow frames fill again from this time on: FILL_DELAY_MS after the last fast frame. */
+  fillAt: number;
+  /** When a fast frame last filled the rows. */
+  lastJumpFill: number;
+};
 
 /**
- * When the rows may be filled again (performance.now ms), after a frame at `now` that
- * scrolled `movedPx` px with a viewport `viewportH` px tall, given the time set before
- * (`previous`). A frame that moves more than a viewport (a fling, a scrollbar drag, End)
- * shows rows nobody can read: they are left as skeletons until FILL_DELAY_MS after the last
- * such frame, so WebKit does not lay out and paint thousands of rows nobody sees. Moves of
- * up to a viewport (trackpad scrolling, page keys) leave it as it was.
+ * Whether the frame at `now`, which scrolled `movedPx` px with a viewport `viewportH` px
+ * tall, fills the visible rows, and the state for the next frame. A frame that moves more
+ * than a viewport (a fling, a scrollbar drag, End) shows rows nobody can read for long: such
+ * frames fill at most once every FILL_THROTTLE_MS (the first one at once), so WebKit does not
+ * lay out and paint thousands of rows nobody sees, yet no row stays blank for longer than
+ * that. Slower frames that follow within FILL_DELAY_MS wait for it; then every frame fills.
+ * Moves of up to a viewport (trackpad scrolling, page keys) always fill.
  */
-export function fillTime(movedPx: number, viewportH: number, now: number, previous: number): number {
-  return Math.abs(movedPx) > viewportH ? now + FILL_DELAY_MS : previous;
+export function fillFrame(
+  movedPx: number,
+  viewportH: number,
+  now: number,
+  state: FillState,
+): { fill: boolean; state: FillState } {
+  if (Math.abs(movedPx) > viewportH) {
+    const fill = now - state.lastJumpFill >= FILL_THROTTLE_MS;
+    return { fill, state: { fillAt: now + FILL_DELAY_MS, lastJumpFill: fill ? now : state.lastJumpFill } };
+  }
+  return { fill: now >= state.fillAt, state };
 }
 
 /** How many of `totalRows` rows the view shows: all, unless that passes MAX_SCROLL_PX. */

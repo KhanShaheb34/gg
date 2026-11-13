@@ -569,14 +569,14 @@ test("scrolling creates no elements: ref labels use fixed slots, with +k for the
   await expect(more).toHaveAttribute("title", "Tag x3\nTag x4\nTag x5");
 });
 
-test("a jump of more than a screen leaves rows unfilled for a moment, then fills them", async ({ gg }) => {
+test("a drag of more than a screen a frame fills the rows now and then, and all of them once it stops", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("big"));
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
   await expect(subject(row(page, 0))).not.toBeEmpty();
   await page.waitForTimeout(300); // rows 0..440 are loaded ahead
-  const busyThenFilled = await grid(page).evaluate(async (el) => {
+  const seen = await grid(page).evaluate(async (el) => {
     const busy = () => {
       const box = el.getBoundingClientRect();
       return [...el.querySelectorAll<HTMLElement>('[role="row"][data-index]:not([hidden])')].filter((r) => {
@@ -584,23 +584,27 @@ test("a jump of more than a screen leaves rows unfilled for a moment, then fills
         return b.bottom > box.top + 28 && b.top < box.bottom && r.getAttribute("aria-busy") === "true";
       }).length;
     };
-    el.scrollTop = 400 * 26; // loaded rows, far below
-    await new Promise((r) => requestAnimationFrame(r));
-    await new Promise((r) => requestAnimationFrame(r));
-    const during = busy();
-    // Frames until the rows are filled: the order matters, not how long a loaded machine
-    // takes (the 5 s bound only keeps a broken view from hanging the test).
-    const stopped = performance.now();
-    let frames = 0;
-    while (busy() > 0 && performance.now() - stopped < 5000) {
+    // Like a scrollbar drag over the loaded rows: down and up again, a screen and a half
+    // per frame, for 60 frames.
+    const screen = el.clientHeight;
+    const frames: boolean[] = [];
+    for (let k = 1; k <= 60; k++) {
+      const step = k % 20;
+      el.scrollTop = (k % 40 < 20 ? step : 20 - step) * 1.5 * screen;
       await new Promise((r) => requestAnimationFrame(r));
-      frames++;
+      await new Promise((r) => requestAnimationFrame(r));
+      frames.push(busy() === 0);
     }
-    return { during, frames, after: busy() };
+    // The frames until every row is filled: the order matters, not how long a loaded
+    // machine takes (the 5 s bound only keeps a broken view from hanging the test).
+    const stopped = performance.now();
+    while (busy() > 0 && performance.now() - stopped < 5000) await new Promise((r) => requestAnimationFrame(r));
+    return { filled: frames.filter(Boolean).length, after: busy() };
   });
-  expect(busyThenFilled.during).toBeGreaterThan(0);
-  expect(busyThenFilled.frames).toBeGreaterThan(0);
-  expect(busyThenFilled.after).toBe(0);
+  // Some frames of the drag were filled (before, none were until it stopped); then all are.
+  // How many were held depends on the frame rate, so it is not asserted.
+  expect(seen.filled).toBeGreaterThan(0);
+  expect(seen.after).toBe(0);
 });
 
 test("scrolling a few px a frame, as a trackpad does, fills every row in every frame", async ({ gg }) => {

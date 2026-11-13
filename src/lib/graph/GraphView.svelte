@@ -30,7 +30,8 @@
     alignSlackFor,
     autoGraphWidth,
     displayedRows,
-    fillTime,
+    fillFrame,
+    type FillState,
     HEADER_H,
     LANE_COLORS,
     OVERSCAN,
@@ -91,8 +92,8 @@
   let scrollTop = 0;
   let lastTop = 0;
   let rafId = 0;
-  /** Rows are filled again from this time on (see fillTime); a timer brings that frame. */
-  let fillAt = 0;
+  /** When rows are filled during and after fast jumps (see fillFrame). */
+  let fill: FillState = { fillAt: 0, lastJumpFill: -Infinity };
   let fillTimer: ReturnType<typeof setTimeout> | null = null;
 
   const total = $derived(view.snapshot.totalRows);
@@ -163,20 +164,24 @@
 
   /**
    * Brings slots, fetching and the canvas up to date with the scroll position. During a fast
-   * jump by the user (a fling, a scrollbar drag) the rows are left unfilled until it slows
-   * (fillTime); a scroll the view makes itself (`moved`: a page key, a search hit) fills them
-   * at once.
+   * jump by the user (a fling, a scrollbar drag) the rows are filled at most every
+   * FILL_THROTTLE_MS, and all of them once it slows (fillFrame); a scroll the view makes
+   * itself (`moved`: a page key, a search hit) fills them at once.
    */
   function frame(now: number, moved = false) {
     if (rafId !== 0) cancelAnimationFrame(rafId);
     rafId = 0;
-    if (!moved) fillAt = fillTime(scrollTop - lastTop, viewportH, now, fillAt);
-    const filling = moved || now >= fillAt;
-    if (!filling && fillTimer === null) {
+    let filling = true;
+    if (!moved) {
+      const decided = fillFrame(scrollTop - lastTop, viewportH, now, fill);
+      fill = decided.state;
+      filling = decided.fill;
+    }
+    if (now < fill.fillAt && fillTimer === null) {
       fillTimer = setTimeout(() => {
         fillTimer = null;
         schedule();
-      }, fillAt - now + 1);
+      }, fill.fillAt - now + 1);
     }
     const cache = view.cache;
     const rows: RowSource = filling ? cache : NO_ROWS;

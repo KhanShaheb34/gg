@@ -17,6 +17,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::dto::{Recent, Session, Settings, Theme};
 use crate::error::{CoreError, ErrorCode, Result};
@@ -55,6 +56,17 @@ pub struct Store {
     /// Why `state.json` is not saved to, when it exists but could not be read (or moved
     /// aside): it is not written over until [`Store::reset`].
     unreadable: Mutex<Option<String>>,
+    /// The file's top-level object as read, so that saving keeps what this version does not
+    /// know (keys of a newer version), and whether the file as it was is still to be copied
+    /// aside before the first save (it held a value that fell back, which saving loses).
+    original: Mutex<Original>,
+}
+
+/// See [`Store::original`].
+#[derive(Default)]
+struct Original {
+    top: Map<String, Value>,
+    copy_aside: bool,
 }
 
 impl Store {
@@ -66,12 +78,18 @@ impl Store {
     pub fn load(config_dir: &Path) -> Self {
         let path = config_dir.join(FILE_NAME);
         let mut unreadable = None;
+        let mut original = Original::default();
         let data = match fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes)
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes)
                 .map_err(|e| e.to_string())
-                .and_then(StoreData::from_json)
+                .and_then(|v| StoreData::from_json(v.clone()).map(|d| (d.sanitized(), v)))
             {
-                Ok(data) => data.sanitized(),
+                Ok((data, Value::Object(top))) => {
+                    original.copy_aside = data.lost_something_of(&top);
+                    original.top = top;
+                    data
+                }
+                Ok((data, _)) => data,
                 Err(parse) => {
                     // Kept for the user to look at. If it cannot be moved aside, it is not
                     // written over either.
@@ -103,6 +121,7 @@ impl Store {
             dir: config_dir.to_path_buf(),
             data: Mutex::new(data),
             unreadable: Mutex::new(unreadable),
+            original: Mutex::new(original),
         }
     }
 
@@ -254,9 +273,17 @@ impl Store {
     }
 
     /// Writes `data` to a temp file next to `state.json` and renames it over it.
+    /// Writes `data` over the file's original object, so keys this version does not know
+    /// stay; first copies the file aside once if a value of it fell back (see `load`).
     fn write(&self, data: &StoreData) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
-        let json = serde_json::to_vec_pretty(data).map_err(io::Error::other)?;
+        let mut original = lock(&self.original);
+        if original.copy_aside {
+            copy_aside(&self.dir)?;
+            original.copy_aside = false;
+        }
+        let json = serde_json::to_vec_pretty(&data.merged_into(&original.top))
+            .map_err(io::Error::other)?;
         let tmp = self
             .dir
             .join(format!("{FILE_NAME}.{}.tmp", std::process::id()));
@@ -330,6 +357,44 @@ impl StoreData {
         })
     }
 
+    /// Whether reading `top` lost a value it held: a field present there that this data
+    /// would write differently (an unknown theme, an unreadable recent, a bad interval).
+    fn lost_something_of(&self, top: &Map<String, Value>) -> bool {
+        let Ok(Value::Object(known)) = serde_json::to_value(self) else {
+            return false;
+        };
+        let differs = |was: &Map<String, Value>, now: &Map<String, Value>, key: &str| {
+            was.get(key).is_some_and(|v| Some(v) != now.get(key))
+        };
+        let lost_inner = |key: &str, fields: &[&str]| match (top.get(key), known.get(key)) {
+            (None, _) => false,
+            (Some(Value::Object(was)), Some(Value::Object(now))) => {
+                fields.iter().any(|f| differs(was, now, f))
+            }
+            _ => true,
+        };
+        differs(top, &known, "recents")
+            || lost_inner("session", &["tabs", "active"])
+            || lost_inner("settings", &["theme", "fetchIntervalSecs"])
+    }
+
+    /// `top` with this data's fields written over it: unknown keys at the top level and in
+    /// `session` and `settings` are kept.
+    fn merged_into(&self, top: &Map<String, Value>) -> Map<String, Value> {
+        let mut merged = top.clone();
+        if let Ok(Value::Object(known)) = serde_json::to_value(self) {
+            for (key, value) in known {
+                match (merged.get_mut(&key), value) {
+                    (Some(Value::Object(old)), Value::Object(new)) => old.extend(new),
+                    (_, value) => {
+                        merged.insert(key, value);
+                    }
+                }
+            }
+        }
+        merged
+    }
+
     /// Replaces values a hand-edited file may hold but the app never writes.
     fn sanitized(mut self) -> Self {
         self.recents.truncate(MAX_RECENTS);
@@ -337,6 +402,25 @@ impl StoreData {
             self.settings.fetch_interval_secs = Settings::default().fetch_interval_secs;
         }
         self
+    }
+}
+
+/// Copies `state.json` in `dir` to `state.json.before-<ms>` (with `-<n>` added if that
+/// exists): the file as it was before this version first saved over it.
+fn copy_aside(dir: &Path) -> io::Result<()> {
+    let from = dir.join(FILE_NAME);
+    let stamp = unix_ms();
+    let mut to = dir.join(format!("{FILE_NAME}.before-{stamp}"));
+    let mut n = 1;
+    while to.exists() {
+        to = dir.join(format!("{FILE_NAME}.before-{stamp}-{n}"));
+        n += 1;
+    }
+    match fs::copy(&from, &to) {
+        Ok(_) => Ok(()),
+        // Gone meanwhile: nothing left to keep.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -464,6 +548,71 @@ mod tests {
         assert_eq!(store.session(), Session::default());
         assert_eq!(store.settings().theme, Theme::Dark);
         assert_eq!(store.settings().fetch_interval_secs, 300);
+    }
+
+    /// Saving keeps what this version does not know: keys of a newer version, at the top
+    /// and inside `session` and `settings`, are written back as they were.
+    #[test]
+    fn unknown_keys_survive_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(
+            &path,
+            r#"{"future": {"x": [1, 2]},
+                "session": {"tabs": ["/a"], "active": "/a", "pinned": ["/a"]},
+                "settings": {"theme": "dark", "fetchIntervalSecs": 600, "newSetting": true}}"#,
+        )
+        .unwrap();
+        let store = Store::load(dir.path());
+        store
+            .save_session(Session {
+                tabs: vec!["/b".into()],
+                active: Some("/b".into()),
+            })
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["future"], serde_json::json!({"x": [1, 2]}));
+        assert_eq!(saved["session"]["tabs"], serde_json::json!(["/b"]));
+        assert_eq!(saved["session"]["pinned"], serde_json::json!(["/a"]));
+        assert_eq!(saved["settings"]["newSetting"], true);
+        assert_eq!(saved["settings"]["theme"], "dark");
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names.len(),
+            1,
+            "nothing fell back, nothing set aside: {names:?}"
+        );
+    }
+
+    /// A value that fell back would be lost by the first save: the file as it was is copied
+    /// aside once, under a name of its own, before that save.
+    #[test]
+    fn a_file_with_values_that_fell_back_is_copied_aside_before_the_first_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let original = r#"{"settings": {"theme": "neon", "fetchIntervalSecs": 300}, "extra": 1}"#;
+        fs::write(&path, original).unwrap();
+        let store = Store::load(dir.path());
+        store.save_session(Session::default()).unwrap();
+        store.save_session(Session::default()).unwrap();
+        let aside: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("state.json.before-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(&aside[0])).unwrap(),
+            original
+        );
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["settings"]["theme"], "system");
+        assert_eq!(saved["extra"], 1);
     }
 
     /// JSON that is not an object holds nothing this version could use: set aside too.

@@ -199,7 +199,16 @@ impl GitRunner {
     /// and git runs with it, else with the inherited `PATH`. Fails with `GitNotFound` if
     /// neither works. The check itself is not logged.
     pub async fn detect(log: Arc<CommandLog>) -> Result<Self> {
-        let path = tokio::task::spawn_blocking(|| cached_login_path().clone())
+        Self::detect_from(log, || LOGIN_PATH.get(resolve_login_path)).await
+    }
+
+    /// [`GitRunner::detect`] with the login shell's `PATH` from `login_path`, which may
+    /// block (it runs on a blocking thread).
+    async fn detect_from(
+        log: Arc<CommandLog>,
+        login_path: impl FnOnce() -> Option<OsString> + Send + 'static,
+    ) -> Result<Self> {
+        let path = tokio::task::spawn_blocking(login_path)
             .await
             .unwrap_or(None);
         Self::detect_with_login_path(log, path).await
@@ -376,22 +385,38 @@ fn spawn_error(cwd: &Path, e: io::Error) -> CoreError {
     }
 }
 
-/// The login shell's `PATH`, read once per process.
-static LOGIN_PATH: OnceLock<Option<OsString>> = OnceLock::new();
+/// The login shell's `PATH`, read at most once; callers that come while it is being read
+/// wait for that read.
+struct LoginPath(OnceLock<Option<OsString>>);
 
-fn cached_login_path() -> &'static Option<OsString> {
-    LOGIN_PATH.get_or_init(resolve_login_path)
+impl LoginPath {
+    const fn new() -> Self {
+        Self(OnceLock::new())
+    }
+
+    /// The `PATH`, reading it with `resolve` unless it has been read (or is being read).
+    fn get(&self, resolve: fn() -> Option<OsString>) -> Option<OsString> {
+        self.0.get_or_init(resolve).clone()
+    }
+
+    /// Starts reading the `PATH` on a background thread, unless it has been read.
+    fn prefetch(&'static self, resolve: fn() -> Option<OsString>) {
+        if self.0.get().is_none() {
+            std::thread::spawn(move || {
+                self.0.get_or_init(resolve);
+            });
+        }
+    }
 }
+
+/// The process's login shell `PATH`.
+static LOGIN_PATH: LoginPath = LoginPath::new();
 
 /// Starts reading the login shell's `PATH` on a background thread, so that
 /// [`GitRunner::detect`] finds it ready instead of waiting for the shell (a few hundred ms
 /// with a typical profile). Call first thing at app start; calling it again does nothing.
 pub fn prefetch_login_path() {
-    if LOGIN_PATH.get().is_none() {
-        std::thread::spawn(|| {
-            cached_login_path();
-        });
-    }
+    LOGIN_PATH.prefetch(resolve_login_path);
 }
 
 /// The `PATH` of the user's login shell (`$SHELL -ilc`, printing `PATH` between markers), so
@@ -677,16 +702,36 @@ mod tests {
         }
     }
 
-    #[test]
-    fn prefetched_login_path_is_cached_in_the_background() {
-        prefetch_login_path();
-        let deadline = Instant::now() + LOGIN_SHELL_TIMEOUT + Duration::from_secs(2);
-        while LOGIN_PATH.get().is_none() {
-            assert!(Instant::now() < deadline, "the login PATH was never cached");
-            std::thread::sleep(Duration::from_millis(10));
+    /// `detect` started while a prefetch is still running waits for it and uses its PATH;
+    /// the shell runs once. The resolver is a stand-in, so no real shell is started.
+    #[tokio::test]
+    async fn detect_waits_for_an_in_flight_prefetch() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SLOT: LoginPath = LoginPath::new();
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn slow_shell() -> Option<OsString> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Some(OsString::from("/usr/bin:/bin"))
         }
-        let cached = LOGIN_PATH.get().cloned();
-        prefetch_login_path();
-        assert_eq!(LOGIN_PATH.get().cloned(), cached);
+
+        let started = Instant::now();
+        SLOT.prefetch(slow_shell);
+        let runner = GitRunner::detect_from(CommandLog::new(), || SLOT.get(slow_shell))
+            .await
+            .expect("git runs with /usr/bin:/bin");
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "detect did not wait for the prefetch ({:?})",
+            started.elapsed()
+        );
+        assert_eq!(runner.path, Some(OsString::from("/usr/bin:/bin")));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "the shell ran twice");
+        SLOT.prefetch(slow_shell);
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            1,
+            "a finished prefetch ran again"
+        );
     }
 }

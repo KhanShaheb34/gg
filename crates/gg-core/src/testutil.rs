@@ -340,16 +340,12 @@ impl TestRepo {
     }
 }
 
-/// An empty file to use as git's global config, so that no test reads the developer's
-/// (the core's runner uses it in test builds; see `GitRunner`). One file in the temp
-/// folder, shared by every test process and emptied by each when it first asks.
+/// What git's global config is in tests, so that no test reads the developer's (the
+/// core's runner uses it in test builds; see `GitRunner`): the platform's null device,
+/// which reads as empty. No file is made, so there is nothing another user could put
+/// config into.
 pub fn empty_git_config() -> &'static Path {
-    static FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    FILE.get_or_init(|| {
-        let path = std::env::temp_dir().join("gg-core-test-empty-gitconfig");
-        fs::write(&path, "").expect("write the empty git config");
-        path
-    })
+    Path::new(if cfg!(windows) { "NUL" } else { "/dev/null" })
 }
 
 /// An [`EventSink`] that records every event, for tests.

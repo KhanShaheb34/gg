@@ -38,6 +38,7 @@
 </script>
 
 <div class="toolbar">
+  <span class="divider" aria-hidden="true"></span>
   <BranchFilter {view} />
 
   <label class="toggle">
@@ -80,12 +81,13 @@
         <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
       </svg>
     {:else}
+      <!-- A cloud with an arrow coming down out of it: fetch from the remotes. -->
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
         <path
-          d="M8 2.5v7.2M4.9 6.8 8 9.9l3.1-3.1M3 11.2v1.1c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2v-1.1"
+          d="M5.4 10.2H4.6a2.9 2.9 0 0 1-.3-5.78 3.9 3.9 0 0 1 7.5-.3 2.95 2.95 0 0 1-.3 6.08h-.9M8 6.6v7.6M5.9 12.1 8 14.2l2.1-2.1"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.5"
+          stroke-width="1.45"
           stroke-linecap="round"
           stroke-linejoin="round"
         />
@@ -129,6 +131,15 @@
     flex: 1 1 auto;
     min-width: 0;
     height: 100%;
+  }
+
+  /* Separates the repository's name and path from the controls. */
+  .divider {
+    flex: none;
+    width: 1px;
+    height: 18px;
+    margin: 0 10px 0 2px;
+    background: var(--border-strong);
   }
 
   .toggle {

@@ -67,7 +67,7 @@ for (const theme of ["light", "dark"] as const) {
     await open(page, gg.repoPath("branchy"));
     const grid = page.getByRole("grid", { name: "Commits" });
     await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
-    await page.mouse.move(900, 790);
+    await page.mouse.move(700, 60);
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `toolbar-${theme}.png`) });
 
@@ -77,6 +77,7 @@ for (const theme of ["light", "dark"] as const) {
     await dialog.getByRole("option", { name: "feature/ui", exact: true }).click();
     await expect(grid.locator('[data-index="0"] .subject')).toHaveText("Row hover states");
     await page.keyboard.type("feat");
+    await page.mouse.move(1000, 60); // off the list and the grid
     await page.waitForTimeout(250);
     await page.screenshot({ path: path.join(OUT, `toolbar-filter-${theme}.png`) });
     await dialog.getByRole("option", { name: "Show all", exact: true }).click();
@@ -88,7 +89,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByTestId("search-count")).toHaveText(/^1 of \d+$/);
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("search-count")).toHaveText(/^2 of \d+$/);
-    await page.mouse.move(900, 790);
+    await page.mouse.move(700, 60);
     await page.waitForTimeout(200);
     await page.screenshot({ path: path.join(OUT, `toolbar-search-${theme}.png`) });
   });

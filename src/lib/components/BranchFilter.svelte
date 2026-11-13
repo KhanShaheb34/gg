@@ -311,34 +311,44 @@
     flex: none;
   }
 
+  /* A macOS-style recessed pop-up button: no border; filled on hover and while open. */
   .trigger {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: 6px;
     height: 28px;
     max-width: 220px;
-    padding: 0 8px 0 9px;
-    border: 1px solid var(--border-strong);
+    padding: 0 7px 0 8px;
+    border: 0;
     border-radius: var(--radius);
-    background: var(--field-bg);
+    background: transparent;
     color: var(--text);
     font-size: var(--fs-sm);
-    transition: background-color 80ms linear, border-color 80ms linear;
+    transition: background-color 80ms linear, color 80ms linear;
   }
 
   .trigger:hover {
-    border-color: var(--text-faint);
+    background: var(--bg-hover);
   }
 
   .trigger:active,
   .trigger.open {
-    background: var(--bg-hover);
+    background: var(--bg-pressed);
   }
 
+  /* Filtered: the choice reads in the accent colour, on a faint accent fill. */
   .trigger.filtered {
-    border-color: var(--accent);
     color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 8%, var(--field-bg));
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+  }
+
+  .trigger.filtered:hover {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+
+  .trigger.filtered:active,
+  .trigger.filtered.open {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
 
   .lead,

@@ -22,6 +22,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use error::{CoreError, ErrorCode, Result};
 
+/// Whether this build carries the test helpers and test-only hooks (`testutil`: temp
+/// repositories, operation delays, a body that panics on request). The app refuses to be
+/// built for release with them.
+pub const TEST_HOOKS: bool = cfg!(feature = "testutil");
+
 use git::runner::{CommandLog, GitRunner};
 use repo::RepoManager;
 use store::Store;

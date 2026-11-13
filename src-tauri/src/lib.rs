@@ -6,6 +6,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gg_core::{Core, CoreError, ErrorCode, EventSink};
+
+// A release build of the app never carries gg-core's test helpers and hooks. (Test builds of
+// the workspace can: cargo unifies the features of gg-core's own dev-dependency on itself.)
+#[cfg(not(debug_assertions))]
+const _: () = assert!(
+    !gg_core::TEST_HOOKS,
+    "gg-core's `testutil` feature must not be built into the release app"
+);
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::OnceCell;

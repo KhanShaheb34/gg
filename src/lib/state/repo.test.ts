@@ -65,7 +65,7 @@ function snapshot(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     head: { branch: "main", hash: core.hashes[0] ?? null },
     branches: ["main"],
     remoteBranches: [],
-    remotes: [],
+    remotes: ["origin"],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0 },
     viewOptions: { branches: null, showRemotes: true, showTags: true },
@@ -398,14 +398,72 @@ describe("RepoView view options", () => {
     });
   });
 
-  it("hiding remote branches also drops them from the branch selection", async () => {
+  it("hiding remote branches sends only the visible selection, and showing them restores it", async () => {
     const s = snapshot({ remoteBranches: ["origin/main"], viewOptions: { ...ALL, branches: ["main", "origin/main"] } });
     vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => s);
     const view = repo.repoView(7, s);
     await settle();
-    vi.mocked(ipc.api.setViewOptions).mockImplementation(async (_id, options) => snapshot({ viewOptions: options }));
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(async (_id, options) =>
+      snapshot({ remoteBranches: ["origin/main"], viewOptions: options }),
+    );
     await view.setViewOptions({ showRemotes: false });
     expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main"], showRemotes: false, showTags: true });
+    // The whole choice is kept (and remembered), only the visible part is shown.
+    const kept = { branches: ["main", "origin/main"], showRemotes: false, showTags: true };
+    expect(view.viewOptions).toEqual(kept);
+    expect(JSON.parse(localStorage.getItem("gg.view.v1:/r")!)).toEqual(kept);
+    // An event with the core's (visible) options does not overwrite it.
+    core.handler?.(snapshot({ remoteBranches: ["origin/main"], viewOptions: { ...ALL, branches: ["main"], showRemotes: false } }));
+    await settle();
+    expect(view.viewOptions).toEqual(kept);
+
+    await view.setViewOptions({ showRemotes: true });
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main", "origin/main"], showRemotes: true, showTags: true });
+  });
+
+  it("a selection of only hidden remote branches shows all branches", async () => {
+    const s = snapshot({ remoteBranches: ["origin/main"], viewOptions: { ...ALL, branches: ["origin/main"] } });
+    vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => s);
+    const view = repo.repoView(7, s);
+    await settle();
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(async (_id, options) =>
+      snapshot({ remoteBranches: ["origin/main"], viewOptions: options }),
+    );
+    await view.setViewOptions({ showRemotes: false });
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: null, showRemotes: false, showTags: true });
+    expect(view.viewOptions.branches).toEqual(["origin/main"]);
+    expect(view.visibleOptions.branches).toBeNull();
+  });
+
+  it("a failed change goes back to the options the core has, and remembers those", async () => {
+    const view = await openView(0);
+    const notice = vi.fn();
+    view.onNotice = notice;
+    vi.mocked(ipc.api.setViewOptions).mockRejectedValue(
+      new ipc.CoreError({ code: "git_failed", message: "boom", detail: null }),
+    );
+    await view.setViewOptions({ showTags: false });
+    expect(view.viewOptions).toEqual(ALL);
+    expect(localStorage.getItem("gg.view.v1:/r")).toBeNull(); // the defaults are not stored
+    expect(notice).toHaveBeenCalledWith("Could not change the view", "boom");
+  });
+
+  it("applies the answer to a change only if no event came meanwhile; else asks again", async () => {
+    const view = await openView(0);
+    let answer: (s: RepoSnapshot) => void = () => {};
+    vi.mocked(ipc.api.setViewOptions).mockImplementation(() => new Promise((r) => (answer = r)));
+    const done = view.setViewOptions({ showTags: false });
+    // An event (newer than the answer) arrives first: the fetch finished.
+    const fetched = { running: false, lastError: "fatal: x", lastAtMs: 5 };
+    const latest = snapshot({ viewOptions: { ...ALL, showTags: false }, fetch: fetched });
+    core.handler?.(latest);
+    await settle();
+    vi.mocked(ipc.api.getSnapshot).mockClear().mockImplementation(async () => latest);
+    answer(snapshot({ viewOptions: { ...ALL, showTags: false } })); // built before the event
+    await done;
+    await settle();
+    expect(view.snapshot.fetch).toEqual(fetched);
+    expect(ipc.api.getSnapshot).toHaveBeenCalled();
   });
 
   it("sends quick successive changes one at a time, the newest last", async () => {
@@ -500,7 +558,93 @@ describe("RepoView view options", () => {
   });
 });
 
+describe("RepoView search while loading", () => {
+  it("looks the hits up again as rows arrive and once loading ends, one lookup at a time", async () => {
+    const loading = (totalRows: number) => snapshot({ loading: true, totalRows });
+    vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => loading(300));
+    const view = repo.repoView(7, loading(300));
+    await settle();
+    const answers: ((hits: number[]) => void)[] = [];
+    vi.mocked(ipc.api.searchCommits).mockImplementation(() => new Promise((r) => answers.push(r)));
+    const first = view.runSearch("fix");
+    answers[0]([3]);
+    await first;
+    expect(view.searchHits).toEqual([3]);
+
+    core.handler?.(loading(500)); // more rows: look again
+    await settle();
+    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
+    core.handler?.(loading(700)); // while that lookup runs: one more afterwards, not one each
+    core.handler?.(loading(800));
+    await settle();
+    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(2);
+    answers[1]([3, 400]);
+    await settle();
+    expect(view.searchHits).toEqual([3, 400]);
+    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(3);
+    answers[2]([3, 400, 750]);
+    await settle();
+
+    core.handler?.(snapshot({ loading: false, totalRows: 1000 })); // loaded: a last lookup
+    await settle();
+    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(4);
+    answers[3]([3, 400, 750, 900]);
+    await settle();
+    expect(view.searchHits).toEqual([3, 400, 750, 900]);
+    expect(view.selectedHash).toBe("c3"); // the selection stays
+
+    core.handler?.(snapshot({ loading: false, totalRows: 1000 })); // nothing new: no lookup
+    await settle();
+    expect(ipc.api.searchCommits).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps the same hit set while only load progress changes", async () => {
+    const view = await openView(0);
+    vi.mocked(ipc.api.searchCommits).mockResolvedValue([3, 10]);
+    await view.runSearch("fix");
+    const set = view.hitSet;
+    expect([...set]).toEqual([3, 10]);
+    await view.applySnapshot(snapshot({ totalRows: 1000 }));
+    expect(view.hitSet).toBe(set);
+  });
+});
+
 describe("RepoView fetch and refresh", () => {
+  it("refresh applies its answer only if no event came meanwhile; else asks again", async () => {
+    const view = await openView(0);
+    let answer: (s: RepoSnapshot) => void = () => {};
+    vi.mocked(ipc.api.refresh).mockImplementation(() => new Promise((r) => (answer = r)));
+    const done = view.refresh();
+    const fetched = { running: false, lastError: "fatal: x", lastAtMs: 5 };
+    const latest = snapshot({ fetch: fetched });
+    core.handler?.(latest);
+    await settle();
+    vi.mocked(ipc.api.getSnapshot).mockClear().mockImplementation(async () => latest);
+    answer(snapshot()); // built before the event
+    await done;
+    expect(view.snapshot.fetch).toEqual(fetched);
+    expect(ipc.api.getSnapshot).toHaveBeenCalled();
+  });
+
+  it("fetch does nothing (and shows nothing) without remotes", async () => {
+    vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => snapshot({ remotes: [] }));
+    const view = repo.repoView(7, snapshot({ remotes: [] }));
+    await settle();
+    await view.fetch();
+    expect(view.fetching).toBe(false);
+    expect(ipc.api.fetch).not.toHaveBeenCalled();
+  });
+
+  it("a fetch that cannot start is reported like a failed one", async () => {
+    const view = await openView(0);
+    const notice = vi.fn();
+    view.onNotice = notice;
+    vi.mocked(ipc.api.fetch).mockRejectedValue(new ipc.CoreError({ code: "io", message: "boom", detail: "x" }));
+    await view.fetch();
+    expect(view.fetching).toBe(false);
+    expect(notice).toHaveBeenCalledWith("Fetch failed", "boom");
+  });
+
   it("refresh shows progress and applies the snapshot it returns", async () => {
     const view = await openView(0);
     commitOnTop(1);

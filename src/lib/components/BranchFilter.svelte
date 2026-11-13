@@ -29,7 +29,9 @@
   let input: HTMLInputElement | undefined = $state();
   let list: HTMLElement | undefined = $state();
 
+  /** The whole selection (hidden remote branches included), and what of it the graph shows. */
   const selected = $derived(view.viewOptions.branches);
+  const shown = $derived(view.visibleOptions.branches);
   const chosen = $derived(new Set(selected ?? []));
   const items: FilterItem[] = $derived(
     open ? branchItems(view.snapshot.branches, view.snapshot.remoteBranches, view.viewOptions.showRemotes, text) : [],
@@ -37,13 +39,13 @@
   const pattern = $derived(searchPattern(text));
   const first = $derived(Math.max(0, Math.floor(listTop / ITEM_H) - OVERSCAN));
   const last = $derived(Math.min(items.length, Math.ceil((listTop + LIST_MAX_H) / ITEM_H) + OVERSCAN));
-  const label = $derived(filterLabel(selected));
+  const label = $derived(filterLabel(shown));
   const current = $derived(view.snapshot.head.branch);
 
   const isOption = (item: FilterItem | undefined) => item !== undefined && item.kind !== "heading";
 
   function checked(item: FilterItem): boolean {
-    if (item.kind === "all") return selected === null;
+    if (item.kind === "all") return shown === null;
     return item.kind === "branch" && chosen.has(item.name);
   }
 
@@ -150,7 +152,7 @@
 <div class="filter" bind:this={root} onfocusout={onFocusOut}>
   <button
     class="trigger"
-    class:filtered={selected !== null}
+    class:filtered={shown !== null}
     class:open
     aria-haspopup="dialog"
     aria-expanded={open}

@@ -57,6 +57,20 @@ function writeOptions(path: string, options: ViewOptions): void {
   }
 }
 
+/**
+ * The part of `options` the graph can show: with remote branches hidden, the selection
+ * without them (and all branches when nothing else is selected).
+ */
+function visible(options: ViewOptions, remoteBranches: string[] | undefined): ViewOptions {
+  if (options.showRemotes || options.branches === null) return options;
+  const remote = new Set(remoteBranches ?? []);
+  const branches = options.branches.filter((name) => !remote.has(name));
+  if (branches.length === options.branches.length) return options;
+  return { ...options, branches: branches.length > 0 ? branches : null };
+}
+
+const NO_HITS: ReadonlySet<number> = new Set();
+
 /** The newer of two snapshots of one repository (`b` when they are alike). */
 function newer(a: RepoSnapshot | null, b: RepoSnapshot): RepoSnapshot {
   if (!a || b.generation > a.generation) return b;
@@ -106,7 +120,11 @@ export class RepoView {
   /** The selected commit's details, for the details panel; remembers recent ones. */
   readonly details: CommitDetailsLoader;
 
-  /** The view options asked for last: what the toolbar shows, ahead of the core's answer. */
+  /**
+   * The view options chosen last: what the toolbar shows, ahead of the core's answer. With
+   * remote branches hidden, the branch selection still holds the remote ones chosen, so
+   * showing them again brings them back; the core gets `visibleOptions`.
+   */
   viewOptions: ViewOptions = $state.raw(DEFAULT_OPTIONS);
 
   /** The search box is open. */
@@ -161,8 +179,18 @@ export class RepoView {
   private optionsSending: Promise<void> | null = null;
   /** The next generation change keeps the selection in place (the view options changed). */
   private revealSelection = false;
+  /** The last view options the core is known to have taken (whole, as in `viewOptions`). */
+  private confirmedOptions: ViewOptions = DEFAULT_OPTIONS;
 
   private searchToken = 0;
+  /** Rows there were, and whether they were still loading, when the hits were looked up. */
+  private lookupRows = 0;
+  private lookupWhileLoading = false;
+  /** A lookup of the hits is underway; another is wanted once it is done. */
+  private lookingUp = false;
+  private lookUpAgain = false;
+  private hitSetOf: number[] | null = null;
+  private hitSetCache: ReadonlySet<number> = NO_HITS;
   /** The hit row being moved to, while its row loads. */
   private steppingTo: number | null = null;
 
@@ -221,22 +249,34 @@ export class RepoView {
 
   // --- View options -------------------------------------------------------------------------
 
+  /** What the graph shows of `viewOptions` (see `visible`); what the core is sent. */
+  get visibleOptions(): ViewOptions {
+    return visible(this.viewOptions, this.snapshot.remoteBranches);
+  }
+
   /**
    * Changes the view options (merged into the current ones) and remembers them for this
-   * repository. Hiding remote branches also drops them from the branch selection. The graph
-   * keeps its rows until the new ones are loaded, and the selection where it was on screen.
+   * repository. The graph keeps its rows until the new ones are loaded, and the selection
+   * where it was on screen. A failed change goes back to the options the core has.
    */
   setViewOptions(patch: Partial<ViewOptions>): Promise<void> {
     const next: ViewOptions = { ...this.viewOptions, ...patch };
-    if (!next.showRemotes && next.branches !== null) {
-      const remote = new Set(this.snapshot.remoteBranches ?? []);
-      next.branches = next.branches.filter((name) => !remote.has(name));
-    }
     if (next.branches !== null && next.branches.length === 0) next.branches = null;
     this.viewOptions = next;
-    if (this.snapshot.rootPath) writeOptions(this.snapshot.rootPath, next);
+    this.remember(next);
     this.revealSelection = true;
-    return this.sendOptions(next);
+    return this.sendOptions(visible(next, this.snapshot.remoteBranches));
+  }
+
+  private remember(options: ViewOptions): void {
+    if (this.snapshot.rootPath) writeOptions(this.snapshot.rootPath, options);
+  }
+
+  /** Takes the core's options, unless they are what `viewOptions` shows already. */
+  private adoptOptions(core: ViewOptions | undefined, remoteBranches: string[] | undefined): void {
+    if (!core) return;
+    if (!sameOptions(core, visible(this.viewOptions, remoteBranches))) this.viewOptions = core;
+    this.confirmedOptions = this.viewOptions;
   }
 
   /** Sends `options` to the core: one request at a time, the newest options last. */
@@ -251,16 +291,23 @@ export class RepoView {
       while (this.optionsWanted !== null && !this.disposed) {
         const options = this.optionsWanted;
         this.optionsWanted = null;
+        const seen = this.events;
         let s: RepoSnapshot;
         try {
           s = await api.setViewOptions(this.repoId, options);
         } catch (e) {
           this.notice(e, "Could not change the view");
           this.releaseHold();
+          if (this.optionsWanted === null) {
+            // Back to what the core has.
+            this.viewOptions = this.confirmedOptions;
+            this.remember(this.confirmedOptions);
+            this.revealSelection = false;
+          }
           continue;
         }
         if (this.optionsWanted !== null || this.disposed) continue; // a newer choice follows
-        if (s.viewOptions && !sameOptions(s.viewOptions, this.viewOptions)) this.viewOptions = s.viewOptions;
+        this.adoptOptions(s.viewOptions, s.remoteBranches);
         // Nothing to wait for: the rows did not change.
         if (!s.loading && s.generation <= this.snapshot.generation) this.revealSelection = false;
         if (this.hold) {
@@ -270,7 +317,7 @@ export class RepoView {
           this.hold.ready = (x) =>
             x.generation > answer.generation || (!x.loading && sameOptions(x.viewOptions, answer.viewOptions));
         }
-        void this.applySnapshot(s);
+        this.applyAnswer(s, seen);
       }
     } finally {
       this.optionsSending = null;
@@ -284,16 +331,38 @@ export class RepoView {
   private restoreOptions(s: RepoSnapshot): void {
     this.restoreChecked = true;
     const stored = readOptions(s.rootPath);
-    if (!stored || sameOptions(stored, s.viewOptions ?? DEFAULT_OPTIONS)) return;
+    if (!stored) return;
     this.viewOptions = stored;
+    const wanted = visible(stored, s.remoteBranches);
+    if (sameOptions(wanted, s.viewOptions ?? DEFAULT_OPTIONS)) {
+      this.confirmedOptions = stored;
+      return;
+    }
     this.hold = { newest: null, ready: null, timer: setTimeout(() => this.releaseHold(), RESTORE_HOLD_MS) };
-    void this.sendOptions(stored);
+    void this.sendOptions(wanted);
   }
 
   private holdBack(s: RepoSnapshot): void {
-    const hold = this.hold!;
-    hold.newest = newer(hold.newest, s);
-    if (hold.ready?.(hold.newest)) this.releaseHold();
+    this.hold!.newest = newer(this.hold!.newest, s);
+    this.checkHold();
+  }
+
+  private checkHold(): void {
+    const hold = this.hold;
+    if (hold?.newest && hold.ready?.(hold.newest)) this.releaseHold();
+  }
+
+  /**
+   * Applies `s`, the answer to a request made when `seen` events had arrived, unless an event
+   * (which is newer) came meanwhile; then the newest snapshot is asked for instead.
+   */
+  private applyAnswer(s: RepoSnapshot, seen: number): void {
+    if (this.events === seen) {
+      void this.applySnapshot(s);
+      return;
+    }
+    this.checkHold();
+    void this.refreshSnapshot();
   }
 
   private releaseHold(): void {
@@ -316,6 +385,21 @@ export class RepoView {
     return this.searchGeneration === this.snapshot.generation ? this.searchHits : [];
   }
 
+  /** The hits as a set; the same object until the hits change. */
+  get hitSet(): ReadonlySet<number> {
+    const hits = this.searchHits;
+    if (hits !== this.hitSetOf) {
+      this.hitSetOf = hits;
+      this.hitSetCache = hits.length > 0 ? new Set(hits) : NO_HITS;
+    }
+    return this.hitSetCache;
+  }
+
+  /** `hitSet`, when the hits belong to the rows shown. */
+  get liveHitSet(): ReadonlySet<number> {
+    return this.searchGeneration === this.snapshot.generation ? this.hitSet : NO_HITS;
+  }
+
   openSearch(): void {
     this.searchOpen = true;
     this.searchFocus++;
@@ -334,16 +418,19 @@ export class RepoView {
       this.searchHits = [];
       this.searchGeneration = -1;
       this.searchPending = false;
+      this.lookingUp = this.lookUpAgain = false;
       return;
     }
     const generation = this.snapshot.generation;
     this.searchPending = true;
+    this.startLookup();
     let hits: number[];
     try {
       hits = await api.searchCommits(this.repoId, query);
     } catch (e) {
       if (token === this.searchToken) {
         this.searchPending = false;
+        this.lookupDone();
         this.notice(e, "Search failed");
       }
       return;
@@ -353,6 +440,7 @@ export class RepoView {
     if (generation !== this.snapshot.generation) return; // looked up again for the new rows
     this.searchHits = hits;
     this.searchGeneration = generation;
+    this.lookupDone();
     if (hits.length > 0) await this.selectRow(hits[0], true);
   }
 
@@ -383,18 +471,49 @@ export class RepoView {
     const query = this.searchQuery;
     const token = ++this.searchToken;
     const generation = this.snapshot.generation;
+    this.startLookup();
     let hits: number[];
     try {
       hits = await api.searchCommits(this.repoId, query);
     } catch {
-      if (token === this.searchToken) this.searchPending = false;
-      return; // the next change looks again
+      if (token === this.searchToken) {
+        this.searchPending = false;
+        this.lookingUp = this.lookUpAgain = false; // the next change looks again
+      }
+      return;
     }
     if (token !== this.searchToken || this.disposed) return;
     this.searchPending = false;
     if (generation !== this.snapshot.generation) return;
     this.searchHits = hits;
     this.searchGeneration = generation;
+    this.lookupDone();
+  }
+
+  /**
+   * The core searches only the commits it has loaded: while they load, the hits are looked
+   * up again as rows arrive and once more when loading ends; one lookup at a time, with at
+   * most one more for all the rows that arrived meanwhile.
+   */
+  private refreshHitsAfterLoad(): void {
+    if (this.searchQuery.trim() === "" || !this.lookupWhileLoading) return;
+    const s = this.snapshot;
+    if (s.totalRows <= this.lookupRows && s.loading) return;
+    if (this.lookingUp) this.lookUpAgain = true;
+    else void this.refreshHits();
+  }
+
+  private startLookup(): void {
+    this.lookupRows = this.snapshot.totalRows;
+    this.lookupWhileLoading = this.snapshot.loading;
+    this.lookingUp = true;
+  }
+
+  private lookupDone(): void {
+    this.lookingUp = false;
+    if (!this.lookUpAgain) return;
+    this.lookUpAgain = false;
+    this.refreshHitsAfterLoad();
   }
 
   // --- Fetch and refresh --------------------------------------------------------------------
@@ -406,7 +525,7 @@ export class RepoView {
 
   /** Fetches from all remotes; progress shows at once, and its failure as a notice. */
   async fetch(): Promise<void> {
-    if (this.fetching) return;
+    if (this.fetching || (this.snapshot.remotes ?? []).length === 0) return;
     this.fetchStarting = true;
     this.fetchWatched = true;
     this.fetchAskedAt = Date.now();
@@ -446,8 +565,9 @@ export class RepoView {
     if (this.refreshing) return;
     this.refreshing = true;
     const started = performance.now();
+    const seen = this.events;
     try {
-      void this.applySnapshot(await api.refresh(this.repoId));
+      this.applyAnswer(await api.refresh(this.repoId), seen);
     } catch (e) {
       this.notice(e, "Could not refresh");
     }
@@ -456,10 +576,9 @@ export class RepoView {
     this.refreshing = false;
   }
 
+  /** Reports `e` as "<message>" with the error's own message below (as a failed fetch is). */
   private notice(e: unknown, message: string): void {
-    const text = e instanceof Error ? e.message : String(e);
-    const detail = e instanceof CoreError ? (e.detail ?? undefined) : undefined;
-    this.onNotice?.(`${message}: ${text}`, detail);
+    this.onNotice?.(message, e instanceof Error ? e.message : String(e));
   }
 
   /** Records first paint of real rows, once (`first-rows`). */
@@ -605,11 +724,10 @@ export class RepoView {
     this.snapshot = s;
     this.cache.reset(s.generation, s.totalRows);
     // The core's options, unless newer ones are on their way to it.
-    if (this.optionsSending === null && s.viewOptions && !sameOptions(s.viewOptions, this.viewOptions)) {
-      this.viewOptions = s.viewOptions;
-    }
+    if (this.optionsSending === null && this.hold === null) this.adoptOptions(s.viewOptions, s.remoteBranches);
     this.trackFetch(s);
     if (generationChanged && this.searchQuery.trim() !== "") void this.refreshHits();
+    else this.refreshHitsAfterLoad();
     if (!s.loading && !this.markedLoaded) {
       this.markedLoaded = true;
       void api.perfMark("fully-loaded", performance.now()).catch(() => {});

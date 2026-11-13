@@ -200,7 +200,8 @@ pub(super) struct Slot {
     /// A status read that ended while an operation ran, with its read number: kept for the
     /// operation's final refresh rather than applied mid-operation.
     held_status: Option<(u64, TreeState)>,
-    /// Sequence number of the last snapshot built for emitting.
+    /// Sequence number of the last snapshot built for emitting (or for an operation's
+    /// outcome): the snapshots' `seq`.
     emit_seq: u64,
 }
 
@@ -228,6 +229,7 @@ impl Slot {
             snapshot.in_progress.clone_from(&pending.info().in_progress);
         }
         snapshot.op.clone_from(&self.op);
+        snapshot.seq = self.emit_seq;
         snapshot
     }
 
@@ -237,10 +239,28 @@ impl Slot {
             || (self.load_id != 0 && repo.abandoned_load.load(Ordering::SeqCst) == self.load_id)
     }
 
-    /// A snapshot to emit, stamped so that emits arriving out of order can be dropped.
+    /// A snapshot to emit, stamped (and its `seq` set) so that emits arriving out of order
+    /// can be dropped.
     pub(super) fn snapshot_to_emit(&mut self, id: &RepoIdentity, loading: bool) -> Stamped {
         self.emit_seq += 1;
         Stamped(self.emit_seq, self.snapshot(id, loading))
+    }
+
+    /// `to_emit` if there is a change to emit, with the snapshot to return (the emitted one,
+    /// or else the snapshot as it is).
+    fn emitted_or_current(
+        &mut self,
+        id: &RepoIdentity,
+        loading: bool,
+        changed: bool,
+    ) -> (Option<Stamped>, RepoSnapshot) {
+        if changed {
+            let stamped = self.snapshot_to_emit(id, loading);
+            let snapshot = stamped.1.clone();
+            (Some(stamped), snapshot)
+        } else {
+            (None, self.snapshot(id, loading))
+        }
     }
 }
 
@@ -714,6 +734,14 @@ impl RepoManager {
         Ok(self.get(repo_id)?.snapshot().await)
     }
 
+    /// The snapshot of an operation's outcome that published nothing (it needed
+    /// confirmation or was refused): as it is, under a `seq` of its own.
+    pub(crate) async fn outcome_snapshot(&self, repo: &Repo) -> RepoSnapshot {
+        let mut slot = repo.slot.write().await;
+        slot.emit_seq += 1;
+        slot.snapshot(&repo.identity, repo.is_loading())
+    }
+
     /// Rows `start..start + count` of `generation`, clamped to the rows there are (at most
     /// 1000). `StaleGeneration` if the rows have changed since `generation`.
     pub async fn rows(
@@ -1042,11 +1070,7 @@ impl RepoManager {
                     if mine {
                         slot.op = None;
                     }
-                    let loading = repo.is_loading();
-                    (
-                        mine.then(|| slot.snapshot_to_emit(&repo.identity, loading)),
-                        slot.snapshot(&repo.identity, loading),
-                    )
+                    slot.emitted_or_current(&repo.identity, repo.is_loading(), mine)
                 };
                 if let Some(stamped) = to_emit {
                     repo.publish(self.sink.as_ref(), stamped);
@@ -1208,12 +1232,7 @@ impl RepoManager {
                 slot.op = None;
             }
             let changed = changed || op_cleared;
-            let loading = repo.is_loading();
-            let snapshot = slot.snapshot(&repo.identity, loading);
-            (
-                changed.then(|| slot.snapshot_to_emit(&repo.identity, loading)),
-                snapshot,
-            )
+            slot.emitted_or_current(&repo.identity, repo.is_loading(), changed)
         };
         if let Some(stamped) = to_emit {
             repo.publish(self.sink.as_ref(), stamped);

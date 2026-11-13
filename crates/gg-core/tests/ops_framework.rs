@@ -734,3 +734,66 @@ async fn outcome_does_not_wait_long_for_a_slow_status() {
         .await
         .expect("the status arrives");
 }
+
+/// Every snapshot carries `seq`: it grows by one per repository with each snapshot that
+/// changes anything (emitted or returned as an operation's outcome), so the UI can drop
+/// one older than what it has. A plain read repeats the latest.
+#[tokio::test]
+async fn snapshot_seq_increases_with_every_change() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    let seqs = |h: &Harness| -> Vec<u64> {
+        h.changes(id)
+            .iter()
+            .map(|v| v["seq"].as_u64().expect("seq"))
+            .collect()
+    };
+    assert_eq!(
+        snap.seq,
+        *seqs(&h).last().unwrap(),
+        "a read repeats the latest"
+    );
+    let mut last = snap.seq;
+
+    // A refresh after a commit made outside.
+    repo.commit("two");
+    let refreshed = h.m.refresh(id).await.unwrap();
+    assert!(refreshed.seq > last, "{} > {last}", refreshed.seq);
+    last = refreshed.seq;
+    // The status arriving on its own.
+    repo.write("dirty.txt", "x");
+    h.m.refresh(id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, h.m.wait_status(id))
+        .await
+        .unwrap();
+    let dirty = h.m.snapshot(id).await.unwrap();
+    assert_eq!(dirty.status.untracked, 1);
+    assert!(dirty.seq > last);
+    last = dirty.seq;
+    // An operation's end, and an outcome where nothing changed.
+    let out = h.run(id, create_branch("b", &head)).await;
+    assert!(out.snapshot.seq > last);
+    last = out.snapshot.seq;
+    let out = h.run(id, reset(&head, ResetMode::Hard)).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation);
+    assert!(out.snapshot.seq > last, "every outcome gets its own seq");
+    last = out.snapshot.seq;
+    // A view-option change.
+    let mut view = h.m.snapshot(id).await.unwrap().view_options;
+    view.show_tags = false;
+    let changed = h.m.set_view_options(id, view).await.unwrap();
+    assert!(changed.seq > last);
+    tokio::time::timeout(TIMEOUT, h.m.wait_loaded(id))
+        .await
+        .unwrap();
+
+    let all = seqs(&h);
+    assert!(
+        all.windows(2).all(|w| w[0] < w[1]),
+        "emitted in increasing order: {all:?}"
+    );
+    assert_eq!(h.m.snapshot(id).await.unwrap().seq, *all.last().unwrap());
+}

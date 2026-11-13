@@ -57,6 +57,8 @@ export type RepoSnapshot = {
   /** The operation running on this repository; `queued`: requests waiting behind it. */
   op: { id: number; title: string; startedAtMs: number; queued: number } | null;
   inProgress: InProgress | null;
+  /** Grows by one per repository with each snapshot that changes anything and each operation outcome; drop older ones. */
+  seq: number;
 };
 
 /** A merge, rebase, cherry-pick or revert git stopped in. */
@@ -200,7 +202,7 @@ export type OpOutcome = {
   logTo: number;
   dangers: Danger[]; // non-empty only for needs_confirmation
   hints: OpHint[];
-  snapshot: RepoSnapshot; // after the operation and its refresh
+  snapshot: RepoSnapshot; // after the operation and its refresh; after pull / fetch_into_local maybe before the log reload (a repo-changed with a higher seq follows)
 };
 
 /** `op-progress` event: the latest progress line of a network operation (at most 10 a second). */

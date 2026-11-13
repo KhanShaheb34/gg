@@ -630,7 +630,7 @@ impl RepoManager {
         let snapshot = if started.load(Ordering::SeqCst) {
             self.finish_op(&repo, op_id).await
         } else {
-            self.snapshot(repo.identity.repo_id).await
+            Ok(self.outcome_snapshot(&repo).await)
         };
         let (title, ran) = ran?;
         let snapshot = snapshot?;

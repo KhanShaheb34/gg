@@ -260,6 +260,7 @@ impl RepoState {
             fetch: fetch.clone(),
             op: None,
             in_progress: self.info.in_progress.clone(),
+            seq: 0,
         }
     }
 

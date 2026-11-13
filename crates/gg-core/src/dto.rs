@@ -176,6 +176,10 @@ pub struct RepoSnapshot {
     pub op: Option<RunningOp>,
     /// A merge, rebase, cherry-pick or revert git stopped in, if any.
     pub in_progress: Option<InProgress>,
+    /// Grows by one, per repository, with each snapshot that changes anything (every
+    /// `repo-changed`) and with every operation's outcome; a plain read repeats the latest.
+    /// The UI drops a snapshot whose `seq` is below the one it has.
+    pub seq: u64,
 }
 
 /// The operation a repository is busy with.
@@ -555,7 +559,9 @@ pub struct OpOutcome {
     /// Non-empty only for `needs_confirmation`.
     pub dangers: Vec<Danger>,
     pub hints: Vec<OpHint>,
-    /// The repository after the operation and its refresh.
+    /// The repository after the operation and its refresh. After a pull or a fetch into a
+    /// local branch it may still be the state before the log reload has caught up; a
+    /// `repo-changed` with a higher `seq` follows.
     pub snapshot: RepoSnapshot,
 }
 
@@ -772,6 +778,7 @@ mod tests {
                 fetch: FetchState::default(),
                 op: None,
                 in_progress: None,
+                seq: 0,
             },
         };
         let v = serde_json::to_value(&outcome).unwrap();
@@ -948,6 +955,7 @@ mod tests {
                 total: None,
                 subject: Some("fix".into()),
             }),
+            seq: 12,
         };
         let v = serde_json::to_value(&snap).unwrap();
         assert_eq!(
@@ -963,7 +971,8 @@ mod tests {
                 "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},
                 "op": {"id": 4, "title": "Create branch x", "startedAtMs": 9, "queued": 1},
                 "inProgress": {"kind": "cherry-pick", "conflicted": ["a b.txt"], "step": null,
-                               "total": null, "subject": "fix"}
+                               "total": null, "subject": "fix"},
+                "seq": 12
             })
         );
         assert_eq!(serde_json::from_value::<RepoSnapshot>(v).unwrap(), snap);

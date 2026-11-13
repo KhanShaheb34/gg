@@ -1943,3 +1943,30 @@ async fn outcome_does_not_wait_long_for_a_slow_status() {
         .await
         .expect("the status arrives");
 }
+
+#[tokio::test]
+async fn checkout_with_untracked_files_in_the_way_explains() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("other");
+    repo.checkout("other");
+    repo.write("made.txt", "tracked on other\n");
+    repo.commit_all("add made.txt");
+    repo.checkout("main");
+    repo.write("made.txt", "mine, untracked\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, checkout_branch("other")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message
+            .starts_with("Untracked files would be overwritten by checkout: made.txt."),
+        "{}",
+        out.message
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("made.txt")).unwrap(),
+        "mine, untracked\n"
+    );
+}

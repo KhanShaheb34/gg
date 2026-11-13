@@ -97,8 +97,8 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
         "The following untracked working tree files would be overwritten by ",
     ) {
         return Some(format!(
-            "The untracked files {files} would be overwritten by {what}. Move or delete \
-             them first."
+            "Untracked files would be overwritten by {what}: {files}. Move or delete them \
+             first."
         ));
     }
     for line in all.lines().map(str::trim) {

@@ -71,16 +71,44 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     })
 }
 
-/// Whether `s` looks like a web origin: `http(s)://host[:port]`, with no path.
+/// Whether `s` is a web origin: `http(s)://host[:port]` with no path, where host is a name
+/// or IPv4 address (letters, digits, `.` and `-`, not starting with `-`) or a bracketed IPv6
+/// address, and port is 1 to 65535.
 fn is_origin(s: &str) -> bool {
-    let rest = s
+    let Some(rest) = s
         .strip_prefix("http://")
-        .or_else(|| s.strip_prefix("https://"));
-    rest.is_some_and(|r| {
-        !r.is_empty()
-            && r.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
-    })
+        .or_else(|| s.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let (host_ok, port) = if let Some(v6) = rest.strip_prefix('[') {
+        let Some((addr, after)) = v6.split_once(']') else {
+            return false;
+        };
+        let ok = !addr.is_empty() && addr.bytes().all(|b| b.is_ascii_hexdigit() || b == b':');
+        match after.strip_prefix(':') {
+            Some(port) => (ok, Some(port)),
+            None if after.is_empty() => (ok, None),
+            None => return false,
+        }
+    } else {
+        let (host, port) = match rest.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (rest, None),
+        };
+        let ok = !host.is_empty()
+            && !host.starts_with('-')
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+        (ok, port)
+    };
+    let port_ok = port.is_none_or(|p| {
+        !p.is_empty()
+            && p.bytes().all(|b| b.is_ascii_digit())
+            && p.parse::<u16>().is_ok_and(|n| n > 0)
+    });
+    host_ok && port_ok
 }
 
 #[tokio::main]
@@ -173,6 +201,13 @@ mod tests {
             "http://",
             "http://x/path",
             "http://a b",
+            "http://a:b:c",
+            "http://:5173",
+            "http://host:",
+            "http://host:99999",
+            "http://[::1",
+            "http://h]:1",
+            "http://-host",
         ] {
             let args = ["--config-dir", "/c", "--allow-origin", bad];
             assert!(parse(&args).is_err(), "{bad} accepted");

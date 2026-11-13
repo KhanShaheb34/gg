@@ -42,6 +42,9 @@ use crate::repo::loader::start_load;
 use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, normalize_view};
 use crate::watcher::{RepoWatcher, watch_git_dir_reporting};
 
+/// How long an operation's final refresh waits for the working tree's status.
+const OP_STATUS_WAIT: Duration = Duration::from_secs(2);
+
 /// Opens repositories and keeps their state. Create one per app with [`RepoManager::new`].
 pub struct RepoManager {
     runner: GitRunner,
@@ -187,6 +190,9 @@ pub(super) struct Slot {
     pub(super) closed: bool,
     /// The operation running, if any. Set and cleared while holding `refresh_lock` too.
     op: Option<RunningOp>,
+    /// A status read that ended while an operation ran, with its read number: kept for the
+    /// operation's final refresh rather than applied mid-operation.
+    held_status: Option<(u64, WorktreeStatus)>,
     /// Sequence number of the last snapshot built for emitting.
     emit_seq: u64,
 }
@@ -445,6 +451,7 @@ impl RepoManager {
                 fetch: FetchState::default(),
                 closed: false,
                 op: None,
+                held_status: None,
                 emit_seq: 0,
             }),
             loading: watch::channel(None).0,
@@ -605,12 +612,21 @@ impl RepoManager {
     }
 
     /// Applies `status` from read number `seq`, unless a newer read has started since: the
-    /// uncommitted row appears, changes or goes, in a new generation. Takes `refresh_lock`
-    /// only for this, which involves no git.
+    /// uncommitted row appears, changes or goes, in a new generation. While an operation
+    /// runs it is held for the operation's final refresh instead. Takes `refresh_lock` only
+    /// for this, which involves no git.
     async fn apply_status(&self, repo: &Arc<Repo>, status: WorktreeStatus, seq: u64) -> Result<()> {
         let _serial = repo.refresh_lock.lock().await;
         if repo.status_seq.load(Ordering::SeqCst) != seq {
             return Ok(());
+        }
+        {
+            let mut slot = repo.slot.write().await;
+            if slot.op.is_some() {
+                // Shown with the operation's end, not before it.
+                slot.held_status = Some((seq, status));
+                return Ok(());
+            }
         }
         let mut info = repo.slot.read().await.target().info().clone();
         if info.status == status {
@@ -920,6 +936,7 @@ impl RepoManager {
             if slot.closed {
                 return Err(unknown_repo(repo.identity.repo_id));
             }
+            slot.held_status = None;
             slot.op = Some(RunningOp {
                 id,
                 title: title.to_owned(),
@@ -949,16 +966,30 @@ impl RepoManager {
 
     /// Ends operation `id` on `repo`: refreshes (covering every refresh asked for until
     /// now, the ones folded while it ran included) and clears `op` in the same
-    /// `repo-changed`, then asks for the status. If the repository cannot be read, `op` is
-    /// still cleared, and the snapshot is the last one read. `unknown_repo` once closed.
+    /// `repo-changed`. The working tree's status is read first and waited for up to
+    /// [`OP_STATUS_WAIT`], so that the snapshot returned (the operation's outcome) and that
+    /// event carry the status after the operation; a status that takes longer lands later,
+    /// in its own `repo-changed`, as after any refresh. If the repository cannot be read,
+    /// `op` is still cleared, and the snapshot is the last one read. `unknown_repo` once
+    /// closed.
     pub(crate) async fn finish_op(
         self: &Arc<Self>,
         repo: &Arc<Repo>,
         id: u64,
     ) -> Result<RepoSnapshot> {
+        // Reads numbered above `floor` start after the operation's changes.
+        let floor = repo.status_seq.load(Ordering::SeqCst);
+        self.request_status(repo);
+        let mut idle = repo.status_idle.subscribe();
+        let _ = tokio::time::timeout(OP_STATUS_WAIT, idle.wait_for(|idle| *idle)).await;
+
         let serial = repo.refresh_lock.lock().await;
         repo.refresh_wanted.store(false, Ordering::SeqCst);
-        let status = repo.slot.read().await.target().info().status;
+        let status = {
+            let mut slot = repo.slot.write().await;
+            let held = slot.held_status.take().filter(|(seq, _)| *seq > floor);
+            held.map_or_else(|| slot.target().info().status, |(_, status)| status)
+        };
         let snapshot = match repo.read_info(status).await {
             Ok(info) => self.apply(repo, info, None, Some(id)).await?,
             Err(_) => {
@@ -980,11 +1011,13 @@ impl RepoManager {
                 if let Some(stamped) = to_emit {
                     repo.publish(self.sink.as_ref(), stamped);
                 }
-                snapshot
+                drop(serial);
+                // The status read (if it came) was not applied: read it again.
+                self.request_status(repo);
+                return Ok(snapshot);
             }
         };
         drop(serial);
-        self.request_status(repo);
         Ok(snapshot)
     }
 

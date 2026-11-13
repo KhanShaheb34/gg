@@ -1874,3 +1874,72 @@ async fn needs_confirmation_publishes_and_refreshes_nothing() {
         "{ran:#?}"
     );
 }
+
+// ---- The outcome's snapshot and the working tree's status (ruling R4) ----
+
+/// `main` ignores `build.log`, which is in the working tree; `plain` has no `.gitignore`, so
+/// checking it out turns `build.log` into an untracked file.
+fn ignored_file_becomes_untracked(repo: &TestRepo) {
+    repo.commit("one");
+    repo.branch("plain");
+    repo.write(".gitignore", "build.log\n");
+    repo.commit_all("ignore the build log");
+    repo.write("build.log", "log\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outcome_snapshot_has_the_status_after_checkout() {
+    let repo = TestRepo::new();
+    ignored_file_becomes_untracked(&repo);
+    let h = harness().await;
+    let before = h.open(repo.path()).await;
+    let id = before.repo_id;
+    assert_eq!(before.status.untracked, 0);
+    let seen = h.changes(id).len();
+    // A status that takes a moment is waited for.
+    h.m.set_status_delay(Duration::from_millis(300));
+
+    let out = h.run(id, checkout_branch("plain")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(
+        out.snapshot.status.untracked, 1,
+        "{:?}",
+        out.snapshot.status
+    );
+    // The end of the operation is published once, with the new status.
+    let ended: Vec<Value> = h.changes(id)[seen..]
+        .iter()
+        .filter(|v| v["op"].is_null())
+        .cloned()
+        .collect();
+    assert_eq!(
+        ended.first().map(|v| v["status"]["untracked"].clone()),
+        Some(json!(1)),
+        "{ended:#?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outcome_does_not_wait_long_for_a_slow_status() {
+    let repo = TestRepo::new();
+    ignored_file_becomes_untracked(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_status_delay(Duration::from_millis(3500));
+
+    let asked = std::time::Instant::now();
+    let out = h.run(id, checkout_branch("plain")).await;
+    let took = asked.elapsed();
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(took >= Duration::from_secs(2), "waited {took:?}");
+    assert!(took < Duration::from_millis(3000), "waited {took:?}");
+    assert_eq!(out.snapshot.status.untracked, 0, "not read yet");
+    assert_eq!(out.snapshot.op, None);
+    // It arrives later, by event.
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["status"]["untracked"] == 1
+        })
+        .await
+        .expect("the status arrives");
+}

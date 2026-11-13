@@ -30,7 +30,11 @@ impl RepoManager {
         let worktree = self.get(repo_id)?.worktree.clone();
         let root = dunce::canonicalize(&worktree).unwrap_or_else(|_| worktree.clone());
         let file = path.map(|p| inside_worktree(&root, p)).transpose()?;
-        let (argv, note) = launch_plan(std::env::consts::OS, command, &root, file.as_deref())?;
+        let target = file.as_deref().map(|path| Target {
+            path,
+            regular: path.metadata().is_ok_and(|m| m.is_file()),
+        });
+        let (argv, note) = launch_plan(std::env::consts::OS, command, &root, target)?;
         #[cfg(any(test, feature = "testutil"))]
         if let Some(launches) = crate::lock_ignoring_poison(&self.editor_launches).as_mut() {
             launches.push(
@@ -91,6 +95,14 @@ const FOLDER_INSTEAD: &str = "No editor command is set, so the worktree folder w
                               file from a repository could run it. Set an editor command in \
                               Settings to open files.";
 
+/// What was asked to be opened: a path inside the worktree, and whether it is a regular file
+/// (not a folder, which an `X.app` bundle is).
+#[derive(Debug, Clone, Copy)]
+struct Target<'a> {
+    path: &'a Path,
+    regular: bool,
+}
+
 /// The program and arguments that open `file` (`None`: the worktree folder `root`) on
 /// operating system `os` (`std::env::consts::OS`), and a note for the user if something
 /// else than asked was opened.
@@ -98,29 +110,32 @@ const FOLDER_INSTEAD: &str = "No editor command is set, so the worktree folder w
 /// With `command` (its words, then the path) the editor gets the file. Without one, no
 /// file of the repository ever goes to the system's default application, which picks a
 /// program by file type and could run it (a `.command`, `.sh`, `.exe`, `.desktop`): on
-/// macOS it opens as text (`open -t`); elsewhere the worktree folder opens instead, with
-/// the note. Folders open with `open`, `xdg-open` or `explorer`, each given the path as a
+/// macOS a regular file opens as text (`open -t`); otherwise (a folder such as an `X.app`
+/// bundle, which `open` would start, or any file elsewhere) the worktree folder opens
+/// instead, with the note. Asked for the worktree itself (`.`), it opens without one. Folders open with `open`, `xdg-open` or `explorer`, each given the path as a
 /// plain argument; no shell (`cmd.exe`) is ever involved.
 fn launch_plan(
     os: &str,
     command: Option<&str>,
     root: &Path,
-    file: Option<&Path>,
+    file: Option<Target>,
 ) -> Result<(Vec<OsString>, Option<String>)> {
     let words = command.map(split_command).transpose()?.unwrap_or_default();
     if !words.is_empty() {
         let mut argv: Vec<OsString> = words.into_iter().map(OsString::from).collect();
-        argv.push(file.unwrap_or(root).as_os_str().to_owned());
+        argv.push(file.map_or(root, |f| f.path).as_os_str().to_owned());
         return Ok((argv, None));
     }
+    // The worktree itself is the folder, not a file.
+    let file = file.filter(|f| f.path != root);
     let folder_opener = match os {
         "macos" => "open",
         "windows" => "explorer",
         _ => "xdg-open",
     };
     Ok(match file {
-        Some(file) if os == "macos" => (
-            vec!["open".into(), "-t".into(), file.as_os_str().to_owned()],
+        Some(file) if os == "macos" && file.regular => (
+            vec!["open".into(), "-t".into(), file.path.as_os_str().to_owned()],
             None,
         ),
         Some(_) => (
@@ -240,9 +255,44 @@ mod tests {
         );
     }
 
+    /// On macOS without an editor command, only a regular file goes to `open -t`: a folder
+    /// inside the worktree (an `X.app` bundle, which `open` would start) opens the worktree
+    /// folder instead, with the note; the worktree itself (`.`) opens without one.
+    #[test]
+    fn folders_never_go_to_open_as_text() {
+        let (argv, note) = launch_plan(
+            "macos",
+            None,
+            Path::new("/r"),
+            Some(Target {
+                path: Path::new("/r/X.app"),
+                regular: false,
+            }),
+        )
+        .unwrap();
+        assert_eq!(argv, ["open", "/r"]);
+        assert!(note.is_some());
+        let (argv, note) = launch_plan(
+            "macos",
+            None,
+            Path::new("/r"),
+            Some(Target {
+                path: Path::new("/r"),
+                regular: false,
+            }),
+        )
+        .unwrap();
+        assert_eq!(argv, ["open", "/r"]);
+        assert!(note.is_none());
+    }
+
     /// The argv (as strings) and whether there is a note.
     fn plan_on(os: &str, command: Option<&str>, file: Option<&str>) -> (Vec<String>, bool) {
-        let (argv, note) = launch_plan(os, command, Path::new("/r"), file.map(Path::new)).unwrap();
+        let target = file.map(|f| Target {
+            path: Path::new(f),
+            regular: true,
+        });
+        let (argv, note) = launch_plan(os, command, Path::new("/r"), target).unwrap();
         let argv = argv
             .iter()
             .map(|a| a.to_string_lossy().into_owned())

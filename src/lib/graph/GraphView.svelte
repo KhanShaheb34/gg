@@ -18,7 +18,7 @@
   import { onMount, tick } from "svelte";
   import Splitter from "../components/Splitter.svelte";
   import { formatDate, formatDateLong, shortHash } from "../format";
-  import { matchParts, searchPattern } from "../search";
+  import { hashMatch, needleOf, splitMatch } from "../search";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { CommitRow, RefLabel } from "../types";
@@ -155,8 +155,10 @@
   const rowsHeight = $derived((waiting ? slots.length : shown) * ROW_H);
   const detachedHead = $derived(view.snapshot.head.branch === null);
   /** Rows matching the search, and how to find the match in their subjects. */
-  const hits = $derived(new Set(view.liveHits));
-  const pattern = $derived(hits.size > 0 ? searchPattern(view.searchQuery) : null);
+  // The set stays the same object while only load progress changes, so rows do not re-render.
+  const hits = $derived(view.liveHitSet);
+  /** The search query as matched (lowercased), while there are hits to mark. */
+  const needle = $derived(hits.size > 0 ? needleOf(view.searchQuery) : null);
 
   /** Rows the grid has right now (skeletons included while waiting). */
   function rowCount(): number {
@@ -199,8 +201,10 @@
   }
 
   // A perf run (window.__GG_PERF_SCROLL__) scrolls the fully loaded graph top to bottom once
-  // and reports the result as perf marks (scroll-p50, scroll-p95, ...).
+  // and reports the result as perf marks (scroll-p50, scroll-p95, ...). With
+  // window.__GG_PERF_SEARCH__ set to a query, that search is active while it scrolls.
   const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: boolean | "still" }).__GG_PERF_SCROLL__;
+  const perfSearch = probe && (window as { __GG_PERF_SEARCH__?: string }).__GG_PERF_SEARCH__;
   const perfScroll = perfScrollMode === true || perfScrollMode === "still";
   let perfScrollStarted = false;
   $effect(() => {
@@ -208,6 +212,10 @@
     perfScrollStarted = true;
     // Loaded only in a perf run, so the probe is not part of the app's main chunk.
     void import("../perf/scrollProbe").then(async ({ runScrollProbe, runClickProbe }) => {
+      if (perfSearch) {
+        view.openSearch();
+        await view.runSearch(perfSearch);
+      }
       const s = await runScrollProbe(scroller, probe!, { scroll: perfScrollMode === true });
       const c = await runClickProbe(scroller);
       const marks: [string, number][] = [
@@ -627,6 +635,13 @@
         <canvas class="lanes" data-testid="graph-canvas" aria-hidden="true" bind:this={canvas}></canvas>
         {#each slots as slot (slot)}
           {@const r = slot.row}
+          <!-- A hit's match is marked in fixed elements (before, mark, after) whose text alone
+               changes as rows scroll by: nothing is created or destroyed. -->
+          {@const hit = r !== undefined && needle !== null && hits.has(slot.index)}
+          {@const subj = hit ? splitMatch(r!.subject, needle!) : null}
+          {@const auth = hit ? splitMatch(r!.author, needle!) : null}
+          {@const short = r?.kind === "commit" ? shortHash(r.hash) : ""}
+          {@const hashMarked = hit && r!.kind === "commit" ? hashMatch(r!.hash, needle) : 0}
           <div
             class="row"
             role="row"
@@ -636,7 +651,7 @@
             aria-rowindex={slot.index >= 0 ? slot.index + 2 : undefined}
             aria-selected={r !== undefined && r.hash === view.selectedHash}
             aria-busy={r === undefined}
-            data-hit={hits.has(slot.index) ? "true" : undefined}
+            data-hit={hit ? "true" : undefined}
             class:merge={r?.isMerge}
             class:head={r?.isHead}
             class:uncommitted={r?.kind === "uncommitted"}
@@ -652,21 +667,21 @@
                 homeDir={app.homeDir}
               />
               <span class="subject"
-                >{#if r && pattern && hits.has(slot.index)}{#each matchParts(r.subject, pattern) as part}{#if part.match}<mark
-                        >{part.text}</mark
-                      >{:else}{part.text}{/if}{/each}{:else}{r?.subject ?? ""}{/if}</span
+                ><span>{subj ? subj[0] : (r?.subject ?? "")}</span><mark>{subj ? subj[1] : ""}</mark><span
+                  >{subj ? subj[2] : ""}</span
+                ></span
               >
             </div>
             <div class="cell date" role="gridcell">
               {r?.kind === "commit" ? formatDate(r.time) : ""}
             </div>
-            <div class="cell author" role="gridcell">
-              {r?.author ?? ""}
-            </div>
+            <div class="cell author" role="gridcell"
+              ><span>{auth ? auth[0] : (r?.author ?? "")}</span><mark>{auth ? auth[1] : ""}</mark><span
+                >{auth ? auth[2] : ""}</span
+              ></div
+            >
             <div class="cell hash-cell" role="gridcell">
-              <span class="hash"
-                >{r?.kind === "commit" ? shortHash(r.hash) : ""}</span
-              >
+              <span class="hash"><mark>{short.slice(0, hashMarked)}</mark>{short.slice(hashMarked)}</span>
             </div>
           </div>
         {/each}
@@ -801,11 +816,22 @@
     background: var(--bg-selected);
   }
 
-  .subject mark {
+  .row mark {
     border-radius: 2px;
     background: var(--hit-mark);
-    color: inherit;
+    color: var(--hit-mark-text);
     box-shadow: 0 0 0 1px var(--hit-mark);
+  }
+
+  .row mark:empty {
+    display: none;
+  }
+
+  /* The current hit (the selected row) stands out from the others, as in Safari or Xcode. */
+  .row[aria-selected="true"] mark {
+    background: var(--hit-current);
+    color: var(--hit-current-text);
+    box-shadow: 0 0 0 1px var(--hit-current);
   }
 
   .scroller:focus-visible .row[aria-selected="true"] {

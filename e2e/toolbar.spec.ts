@@ -173,9 +173,26 @@ test("search: n of m, Enter and Shift+Enter move between hits, Esc closes and cl
 
   await page.keyboard.press("Escape");
   await expect(searchBox(page)).toHaveCount(0);
-  await expect(grid(page).locator("mark")).toHaveCount(0);
+  await expect(grid(page).locator("mark:not(:empty)")).toHaveCount(0);
   await expect(grid(page).locator('[data-hit="true"]')).toHaveCount(0);
   await expect(subject(selectedRow(page))).toHaveText(bigSubject(15));
+});
+
+test("search marks what matched: the subject, the author or the hash", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await page.keyboard.press("ControlOrMeta+f");
+  await page.keyboard.type("LOVELACE");
+  await expect(searchCount(page)).toHaveText("1 of 30");
+  await expect(row(page, 0).locator(".author mark")).toHaveText("Lovelace");
+  await expect(row(page, 0).locator(".subject mark")).toHaveText("");
+
+  const hash = gg.git("small", "rev-parse", "HEAD~3").trim();
+  await searchBox(page).fill(hash.slice(0, 6));
+  await expect(searchCount(page)).toHaveText("1 of 1");
+  await expect(selectedRow(page).locator(".hash mark")).toHaveText(hash.slice(0, 6));
+  await expect(selectedRow(page).locator(".hash")).toHaveText(hash.slice(0, 8));
 });
 
 test("search finds nothing: says so", async ({ gg }) => {

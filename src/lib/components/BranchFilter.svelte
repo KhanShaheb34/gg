@@ -453,7 +453,7 @@
   mark {
     border-radius: 2px;
     background: var(--hit-mark);
-    color: inherit;
+    color: var(--hit-mark-text);
   }
 
   .none {

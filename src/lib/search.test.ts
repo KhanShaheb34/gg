@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hitPosition, matchParts, searchPattern, stepHit } from "./search";
+import { hashMatch, hitPosition, matchParts, needleOf, searchPattern, splitMatch, stepHit } from "./search";
 
 describe("searchPattern and matchParts", () => {
   it("splits text into matched and unmatched parts, ignoring case", () => {
@@ -68,5 +68,40 @@ describe("stepHit", () => {
     expect(stepHit(hits, null, 1)).toBe(2);
     expect(stepHit(hits, null, -1)).toBe(40);
     expect(stepHit([], 3, 1)).toBeNull();
+  });
+});
+
+describe("needleOf and splitMatch", () => {
+  it("lowercases and trims the query; blank is null", () => {
+    expect(needleOf("  Fix ")).toBe("fix");
+    expect(needleOf("   ")).toBeNull();
+  });
+  it("splits around the first match, ignoring case", () => {
+    expect(splitMatch("Fix the fixture", "fix")).toEqual(["", "Fix", " the fixture"]);
+    expect(splitMatch("Add part 19", "part")).toEqual(["Add ", "part", " 19"]);
+    expect(splitMatch("Größe ÄNDERN", "änd")).toEqual(["Größe ", "ÄND", "ERN"]);
+  });
+  it("leaves text without a match whole", () => {
+    expect(splitMatch("Nothing here", "zzz")).toEqual(["Nothing here", "", ""]);
+  });
+  it("lowercases character by character, as the core does, even when that changes lengths", () => {
+    expect(splitMatch("İstanbul trip", "trip")).toEqual(["İstanbul ", "trip", ""]);
+    expect(splitMatch("Ünïcode 😀 Fix", "fix")).toEqual(["Ünïcode 😀 ", "Fix", ""]);
+    // Σ lowercases to σ one character at a time (no final-sigma rule), like the core.
+    expect(splitMatch("ΟΔΟΣ", "οδοσ")).toEqual(["", "ΟΔΟΣ", ""]);
+  });
+});
+
+describe("hashMatch", () => {
+  const hash = "0fa322a9c0ffee00000000000000000000000000";
+  it("is the length of a hex prefix of 4 or more digits the hash starts with, at most the short hash", () => {
+    expect(hashMatch(hash, "0fa3")).toBe(4);
+    expect(hashMatch(hash, "0fa322a9c0")).toBe(8);
+  });
+  it("is 0 for short, non-hex or non-matching queries", () => {
+    expect(hashMatch(hash, "0fa")).toBe(0);
+    expect(hashMatch(hash, "fa32")).toBe(0);
+    expect(hashMatch(hash, "0fa3 x")).toBe(0);
+    expect(hashMatch(hash, null)).toBe(0);
   });
 });

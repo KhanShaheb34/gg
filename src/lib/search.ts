@@ -62,3 +62,56 @@ export function stepHit(hits: number[], from: number | null, dir: 1 | -1): numbe
   const at = lowerBound(hits, from) - 1;
   return hits[at >= 0 ? at : hits.length - 1];
 }
+
+/** A query as matched: trimmed and lowercased; null when blank. */
+export function needleOf(query: string): string | null {
+  const q = query.trim().toLowerCase();
+  return q === "" ? null : q;
+}
+
+/**
+ * `text` split around the first stretch that matches `needle` (from `needleOf`) ignoring
+ * case: [before, match, after]; [text, "", ""] without a match. Characters are lowercased
+ * one at a time, as the core's search does (`char::to_lowercase`), so a match found there is
+ * found here, also where lowercasing changes the text's length.
+ */
+export function splitMatch(text: string, needle: string): [string, string, string] {
+  let at: number;
+  let end: number;
+  // ASCII lowercases in place: one indexOf.
+  if (/^[\x00-\x7f]*$/.test(text)) {
+    at = text.toLowerCase().indexOf(needle);
+    end = at + needle.length;
+  } else {
+    let lowered = "";
+    const starts: number[] = []; // index in `text` of each code unit of `lowered`
+    for (let i = 0; i < text.length; ) {
+      const cp = text.codePointAt(i)!;
+      const ch = String.fromCodePoint(cp);
+      const low = ch.toLowerCase();
+      for (let k = 0; k < low.length; k++) starts.push(i);
+      lowered += low;
+      i += ch.length;
+    }
+    starts.push(text.length);
+    const found = lowered.indexOf(needle);
+    at = found < 0 ? -1 : starts[found];
+    end = found < 0 ? -1 : starts[found + needle.length];
+    // A match ending inside a character's lowercase form takes the whole character.
+    if (found >= 0 && found + needle.length < lowered.length && starts[found + needle.length] === starts[found + needle.length - 1]) {
+      const cp = text.codePointAt(end)!;
+      end += String.fromCodePoint(cp).length;
+    }
+  }
+  if (at < 0) return [text, "", ""];
+  return [text.slice(0, at), text.slice(at, end), text.slice(end)];
+}
+
+/**
+ * How many characters of the short hash to mark for `needle`: its length (at most 8) when it
+ * is 4 or more hex digits the hash starts with, as the core matches hashes; else 0.
+ */
+export function hashMatch(hash: string, needle: string | null): number {
+  if (needle === null || needle.length < 4 || !/^[0-9a-f]+$/.test(needle) || !hash.startsWith(needle)) return 0;
+  return Math.min(needle.length, 8);
+}

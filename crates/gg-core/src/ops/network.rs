@@ -21,8 +21,41 @@ pub(crate) struct Upstream {
     pub remote: String,
     /// The branch on the remote, as a full ref (`refs/heads/x`).
     pub remote_ref: String,
+    /// Its remote-tracking branch here, as a full ref (`refs/remotes/origin/x`).
+    pub tracking: String,
     /// Its short name for messages (`origin/x`).
     pub short: String,
+}
+
+/// Where a push of a local branch to a remote goes.
+pub(crate) struct PushTarget {
+    /// The branch on the remote, as a full ref (`refs/heads/x`).
+    pub remote_ref: String,
+    /// Its remote-tracking branch here (`refs/remotes/origin/x`).
+    pub tracking: String,
+    /// Its short name for messages (`origin/x`).
+    pub short: String,
+}
+
+/// Where pushing `branch` to `remote` goes (R12): to the branch's upstream when that is on
+/// `remote` (whatever its name there), else to the branch of the same name.
+pub(crate) async fn push_target(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<PushTarget> {
+    if let Some(up) = upstream(ctx, branch).await?
+        && up.remote == remote
+        && up.remote_ref.starts_with("refs/heads/")
+        && up.tracking.starts_with("refs/remotes/")
+    {
+        return Ok(PushTarget {
+            remote_ref: up.remote_ref,
+            tracking: up.tracking,
+            short: up.short,
+        });
+    }
+    Ok(PushTarget {
+        remote_ref: format!("refs/heads/{branch}"),
+        tracking: format!("refs/remotes/{remote}/{branch}"),
+        short: format!("{remote}/{branch}"),
+    })
 }
 
 /// The upstream of local branch `branch`, if one is configured.
@@ -31,24 +64,30 @@ pub(crate) async fn upstream(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Ups
     let out = ctx
         .read(&[
             "for-each-ref",
-            "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:short)",
+            "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)%00%(upstream:short)",
             &full,
         ])
         .await?;
     Ok(out.text().lines().find_map(|line| {
         let mut parts = line.split('\0');
-        let (name, remote, remote_ref, short) =
-            (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        let (name, remote, remote_ref, tracking, short) = (
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+        );
         (name == full && !remote.is_empty() && !remote_ref.is_empty()).then(|| Upstream {
             remote: remote.to_owned(),
             remote_ref: remote_ref.to_owned(),
+            tracking: tracking.to_owned(),
             short: short.to_owned(),
         })
     }))
 }
 
 /// The commit `full` (a full ref) points at, if it exists.
-async fn ref_commit(ctx: &OpCtx<'_>, full: &str) -> Result<Option<String>> {
+pub(crate) async fn ref_commit(ctx: &OpCtx<'_>, full: &str) -> Result<Option<String>> {
     let out = ctx
         .read(&[
             "rev-parse",
@@ -79,27 +118,42 @@ fn pushed_nothing(out: &GitOutput) -> bool {
     out.stderr.contains("Everything up-to-date") || out.text().contains("Everything up-to-date")
 }
 
-/// `push --progress [--set-upstream] [--force-with-lease] <remote>
-/// refs/heads/<branch>:refs/heads/<branch>`. A branch without an upstream gets one (the
-/// branch on `remote`), whether or not `set_upstream` asks for it: a pushed branch should
-/// know where it was pushed. `force` only once confirmed (see the `force_push` danger).
+/// `push --progress [--set-upstream] [--force-with-lease=<remote ref>:<lease>] <remote>
+/// refs/heads/<branch>:<remote ref>`, to the branch's upstream on `remote` or the branch of
+/// the same name (see [`push_target`]). A branch without an upstream gets one (the branch
+/// on `remote`), whether or not `set_upstream` asks for it: a pushed branch should know
+/// where it was pushed. `force` only once confirmed with a `lease` that is still the
+/// remote-tracking commit (see the `force_push` danger); git then refuses unless the
+/// remote branch is exactly there (no lease: unless it does not exist).
 pub(crate) async fn push(
     ctx: &OpCtx<'_>,
     branch: &str,
     remote: &str,
     set_upstream: bool,
     force: bool,
+    lease: Option<&str>,
 ) -> Result<Step> {
     let set_upstream = set_upstream || upstream(ctx, branch).await?.is_none();
-    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    let target = push_target(ctx, branch, remote).await?;
+    let refspec = format!("refs/heads/{branch}:{}", target.remote_ref);
+    let lease_arg = format!(
+        "--force-with-lease={}:{}",
+        target.remote_ref,
+        lease.unwrap_or("")
+    );
     let mut args = vec!["push", "--progress"];
     if set_upstream {
         args.push("--set-upstream");
     }
     if force {
-        args.push("--force-with-lease");
+        args.push(&lease_arg);
     }
     args.extend([remote, refspec.as_str()]);
+    let to = if target.remote_ref == format!("refs/heads/{branch}") {
+        remote.to_owned()
+    } else {
+        target.short.clone()
+    };
     let out = ctx.git_net(&args).await?;
     if out.code != 0 {
         let all = format!("{}\n{}", out.stderr, out.text());
@@ -121,14 +175,17 @@ pub(crate) async fn push(
     }
     if pushed_nothing(&out) {
         return Ok(Step::Done(format!(
-            "Already up to date: {remote} has every commit of {branch}."
+            "Already up to date: {to} has every commit of {branch}."
         )));
     }
     let what = if force { "Force-pushed" } else { "Pushed" };
     Ok(Step::Done(if set_upstream {
-        format!("{what} {branch} to {remote}, and set {remote}/{branch} as its upstream.")
+        format!(
+            "{what} {branch} to {to}, and set {} as its upstream.",
+            target.short
+        )
     } else {
-        format!("{what} {branch} to {remote}.")
+        format!("{what} {branch} to {to}.")
     }))
 }
 

@@ -172,7 +172,8 @@ export type OpRequest =
   | { op: "create_tag"; name: string; hash: string; message: string | null }
   | { op: "delete_tag"; name: string; remote: string | null } // remote set = also delete there
   | { op: "push_tag"; name: string; remote: string }
-  | { op: "push"; branch: string; remote: string; setUpstream: boolean; force: boolean }
+  // lease: with force, the token of the force_push danger the user confirmed (R11)
+  | { op: "push"; branch: string; remote: string; setUpstream: boolean; force: boolean; lease: string | null }
   | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase" }
   | { op: "fetch_into_local"; remoteBranch: string; localName: string }
   | { op: "delete_remote_branch"; remote: string; branch: string }
@@ -183,7 +184,9 @@ export type OpRequest =
   | { op: "abort" };
 
 export type DangerKind = "force_push" | "hard_reset" | "delete_unmerged_branch" | "delete_remote_branch" | "drop_stash";
-export type Danger = { kind: DangerKind; message: string; detail: string | null };
+// token: force_push only, the remote-tracking commit the message was worked out from (null without one);
+// send it back as the push's lease to confirm.
+export type Danger = { kind: DangerKind; message: string; detail: string | null; token: string | null };
 export type OpHint =
   | { kind: "push"; branch: string; remote: string; setUpstream: boolean }
   | { kind: "fetch" }

@@ -440,6 +440,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             remote,
             set_upstream,
             force,
+            lease,
         } => {
             check_branch_name(&branch)?;
             check_arg(&remote, "remote")?;
@@ -452,7 +453,8 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 fixed(title),
                 body(move |ctx, _| {
                     Box::pin(async move {
-                        network::push(ctx, &branch, &remote, set_upstream, force).await
+                        network::push(ctx, &branch, &remote, set_upstream, force, lease.as_deref())
+                            .await
                     })
                 }),
             )
@@ -731,7 +733,7 @@ impl RepoManager {
             _ => {}
         }
         let dangers = dangers(&ctx, &request).await?;
-        if !all_confirmed(&dangers, &confirmed) {
+        if !all_confirmed(&dangers, &confirmed, lease_of(&request)) {
             return Ok((title, Ran::Unconfirmed(dangers)));
         }
         self.start_op(&repo, op_id, &title).await?;
@@ -749,9 +751,22 @@ impl RepoManager {
     }
 }
 
-/// Whether every kind in `dangers` is in `confirmed`.
-fn all_confirmed(dangers: &[Danger], confirmed: &[DangerKind]) -> bool {
-    dangers.iter().all(|d| confirmed.contains(&d.kind))
+/// Whether every danger in `dangers` is confirmed: its kind is in `confirmed`, and a
+/// `force_push` comes with `lease` equal to its token (the user saw the remote branch as it
+/// is now; R11).
+fn all_confirmed(dangers: &[Danger], confirmed: &[DangerKind], lease: Option<&str>) -> bool {
+    dangers.iter().all(|d| {
+        confirmed.contains(&d.kind)
+            && (d.kind != DangerKind::ForcePush || d.token.as_deref() == lease)
+    })
+}
+
+/// The lease a request carries (a push's).
+fn lease_of(request: &OpRequest) -> Option<&str> {
+    match request {
+        OpRequest::Push { lease, .. } => lease.as_deref(),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -794,22 +809,37 @@ mod tests {
 
     #[test]
     fn confirmation_covers_every_danger() {
-        let danger = |kind| Danger {
+        let danger = |kind, token: Option<&str>| Danger {
             kind,
             message: String::new(),
             detail: None,
+            token: token.map(str::to_owned),
         };
-        let both = [danger(DangerKind::HardReset), danger(DangerKind::DropStash)];
-        assert!(all_confirmed(&[], &[]));
-        assert!(!all_confirmed(&both, &[DangerKind::HardReset]));
+        let both = [
+            danger(DangerKind::HardReset, None),
+            danger(DangerKind::DropStash, None),
+        ];
+        assert!(all_confirmed(&[], &[], None));
+        assert!(!all_confirmed(&both, &[DangerKind::HardReset], None));
         assert!(all_confirmed(
             &both,
             &[
                 DangerKind::DropStash,
                 DangerKind::HardReset,
                 DangerKind::ForcePush
-            ]
+            ],
+            None
         ));
+        // A force push is confirmed only with the token the user saw.
+        let force = [danger(DangerKind::ForcePush, Some("abc"))];
+        let yes = [DangerKind::ForcePush];
+        assert!(all_confirmed(&force, &yes, Some("abc")));
+        assert!(!all_confirmed(&force, &yes, Some("old")));
+        assert!(!all_confirmed(&force, &yes, None));
+        assert!(!all_confirmed(&force, &[], Some("abc")));
+        let untracked = [danger(DangerKind::ForcePush, None)];
+        assert!(all_confirmed(&untracked, &yes, None));
+        assert!(!all_confirmed(&untracked, &yes, Some("abc")));
     }
 
     #[test]

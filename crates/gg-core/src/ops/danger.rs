@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::git::status::read_status;
 use crate::ops::OpCtx;
 use crate::ops::local::current_branch;
+use crate::ops::network::{push_target, ref_commit};
 
 /// The dangers `request` would run into now.
 pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<Danger>> {
@@ -107,30 +108,39 @@ async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>
         kind: DangerKind::DeleteUnmergedBranch,
         message,
         detail: None,
+        token: None,
     }))
 }
 
 /// Most commits a danger's detail lists.
 const MAX_COMMITS_LISTED: &str = "10";
 
-/// `force_push`, always: it replaces `<remote>/<branch>` with the local branch. The message
-/// counts the commits there that the local branch lacks, as of the last fetch, which a
-/// force push discards (the detail lists them); `--force-with-lease` refuses if the remote
-/// has moved since that fetch.
+/// `force_push`, always: it replaces the push's target on the remote (see
+/// [`push_target`]) with the local branch. The message counts the commits there that the
+/// local branch lacks, as of the last fetch, which a force push discards (the detail lists
+/// them). Its token is that remote-tracking commit: the push runs only if it is confirmed
+/// with that token, and git refuses unless the remote branch is still there.
 async fn force_push(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<Danger> {
-    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let target = push_target(ctx, branch, remote).await?;
+    let tracking = target.tracking;
     let local = format!("refs/heads/{branch}");
-    let shown = format!("{remote}/{branch}");
-    if !verifies(ctx, &tracking).await? {
+    let shown = target.short;
+    let Some(token) = ref_commit(ctx, &tracking).await? else {
+        let there = target
+            .remote_ref
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&target.remote_ref);
         return Ok(Danger {
             kind: DangerKind::ForcePush,
             message: format!(
-                "A force push replaces {branch} on {remote} with yours, whatever it holds. It \
-                 has not been fetched, so what it would discard is not known here."
+                "A force push replaces {there} on {remote} with {branch}. It has not been \
+                 fetched, so what it would discard is not known here; if it exists there, the \
+                 push is refused."
             ),
             detail: None,
+            token: None,
         });
-    }
+    };
     let mut only_there = vec![tracking.as_str()];
     if verifies(ctx, &local).await? {
         only_there.extend(["--not", local.as_str()]);
@@ -165,6 +175,7 @@ async fn force_push(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<Dange
         kind: DangerKind::ForcePush,
         message,
         detail,
+        token: Some(token),
     })
 }
 
@@ -196,6 +207,7 @@ async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> R
         kind: DangerKind::DeleteRemoteBranch,
         message,
         detail: None,
+        token: None,
     })
 }
 
@@ -227,6 +239,7 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
         kind: DangerKind::HardReset,
         message: format!("{lost} {kept}"),
         detail: None,
+        token: None,
     })
 }
 

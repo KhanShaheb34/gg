@@ -25,6 +25,19 @@ fn push(branch: &str, remote: &str, set_upstream: bool, force: bool) -> OpReques
         remote: remote.to_owned(),
         set_upstream,
         force,
+        lease: None,
+    }
+}
+
+/// A force push of `branch` to `remote`, with `lease` (the token of the `force_push` danger
+/// the user confirmed).
+fn force_push(branch: &str, remote: &str, lease: Option<&str>) -> OpRequest {
+    OpRequest::Push {
+        branch: branch.to_owned(),
+        remote: remote.to_owned(),
+        set_upstream: false,
+        force: true,
+        lease: lease.map(str::to_owned),
     }
 }
 
@@ -244,11 +257,26 @@ async fn force_push_needs_confirmation_and_uses_lease() {
         h.writes_since(mark)
     );
     assert_ne!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
+    // The token is the remote-tracking commit the count was made from.
+    let token = rev(&repo, "refs/remotes/origin/main");
+    assert_eq!(out.dangers[0].token.as_deref(), Some(token.as_str()));
 
+    // Confirmed without the token: asked again, nothing runs.
+    let mark = h.last_log_id();
     let out = h
         .run_confirmed(
             id,
             push("main", "origin", false, true),
+            &[DangerKind::ForcePush],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert!(h.writes_since(mark).is_empty());
+
+    let out = h
+        .run_confirmed(
+            id,
+            force_push("main", "origin", Some(&token)),
             &[DangerKind::ForcePush],
         )
         .await;
@@ -259,7 +287,8 @@ async fn force_push_needs_confirmation_and_uses_lease() {
         .filter(|a| a.first().is_some_and(|c| c == "push"))
         .collect();
     assert_eq!(pushes.len(), 1, "{pushes:?}");
-    assert!(pushes[0].iter().any(|a| a == "--force-with-lease"));
+    let lease = format!("--force-with-lease=refs/heads/main:{token}");
+    assert!(pushes[0].contains(&lease), "{pushes:?}");
     assert!(
         pushes[0]
             .iter()
@@ -278,10 +307,11 @@ async fn force_with_lease_fails_when_remote_moved_since_fetch() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
 
+    let token = rev(&repo, "refs/remotes/origin/main");
     let out = h
         .run_confirmed(
             id,
-            push("main", "origin", false, true),
+            force_push("main", "origin", Some(&token)),
             &[DangerKind::ForcePush],
         )
         .await;
@@ -294,6 +324,170 @@ async fn force_with_lease_fails_when_remote_moved_since_fetch() {
     assert_eq!(out.hints, [OpHint::Fetch]);
     assert!(out.detail.unwrap().contains("stale info"));
     assert_eq!(rev(&origin, "refs/heads/main"), newer);
+}
+
+/// The reviewer's scenario: the user sees the danger, someone pushes, a background fetch
+/// moves the tracking branch, and the user confirms what they saw. A bare lease would
+/// pass (it compares with the tracking branch as now fetched) and discard the commit
+/// nobody saw; the lease token makes the core ask again, with the new count.
+#[tokio::test]
+async fn confirming_with_an_old_lease_asks_again() {
+    let (repo, origin, other) = with_remote();
+    diverged_from_remote(&repo, &other);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, force_push("main", "origin", None)).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation);
+    let seen = out.dangers[0].token.clone().expect("a token");
+    assert!(out.dangers[0].message.contains("1 commit "));
+
+    let unseen = other.commit("unseen");
+    other.git(&["push", "-q", "origin", "main"]);
+    h.m.fetch(id).await.expect("the background fetch");
+    assert_eq!(rev(&repo, "refs/remotes/origin/main"), unseen);
+
+    let mark = h.last_log_id();
+    let out = h
+        .run_confirmed(
+            id,
+            force_push("main", "origin", Some(&seen)),
+            &[DangerKind::ForcePush],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert!(h.writes_since(mark).is_empty(), "nothing ran");
+    assert_eq!(rev(&origin, "refs/heads/main"), unseen, "nothing discarded");
+    assert_eq!(out.dangers[0].token.as_deref(), Some(unseen.as_str()));
+    assert!(out.dangers[0].message.contains("2 commits"), "{out:?}");
+    assert!(
+        out.dangers[0]
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("unseen"),
+        "{out:?}"
+    );
+
+    let out = h
+        .run_confirmed(
+            id,
+            force_push("main", "origin", Some(&unseen)),
+            &[DangerKind::ForcePush],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
+}
+
+/// Without a remote-tracking branch the token is null and the lease is "the branch must
+/// not exist there": a push that would create it runs, one that would replace a branch
+/// never fetched is refused.
+#[tokio::test]
+async fn force_push_without_a_tracking_branch() {
+    let (repo, origin, other) = with_remote();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    repo.git(&["branch", "fresh"]);
+    let out = h.run(id, force_push("fresh", "origin", None)).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation);
+    assert_eq!(out.dangers[0].token, None);
+    let out = h
+        .run_confirmed(
+            id,
+            force_push("fresh", "origin", None),
+            &[DangerKind::ForcePush],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(ran(
+        &h,
+        &out,
+        &[
+            "push",
+            "--progress",
+            "--set-upstream",
+            "--force-with-lease=refs/heads/fresh:",
+            "origin",
+            "refs/heads/fresh:refs/heads/fresh"
+        ]
+    ));
+    assert_eq!(rev(&origin, "refs/heads/fresh"), rev(&repo, "fresh"));
+
+    // Someone else made `theirs` there; it was never fetched here.
+    other.git(&["checkout", "-q", "-b", "theirs"]);
+    other.commit("their branch");
+    other.git(&["push", "-q", "origin", "theirs"]);
+    let theirs = rev(&origin, "refs/heads/theirs");
+    repo.git(&["branch", "theirs"]);
+    let out = h
+        .run_confirmed(
+            id,
+            force_push("theirs", "origin", None),
+            &[DangerKind::ForcePush],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        rev(&origin, "refs/heads/theirs"),
+        theirs,
+        "nothing replaced"
+    );
+}
+
+/// R12: a branch with an upstream on the remote pushed to pushes to that upstream branch,
+/// whatever its name; the danger and the lease use it too.
+#[tokio::test]
+async fn push_goes_to_the_upstream_branch() {
+    let (repo, origin, other) = with_remote();
+    other.git(&["checkout", "-q", "-b", "feature"]);
+    other.commit("feature base");
+    other.git(&["push", "-q", "origin", "feature"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    repo.git(&["branch", "-q", "--track", "feat", "origin/feature"]);
+    repo.checkout("feat");
+    let mine = repo.commit("on feat");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, push("feat", "origin", false, false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(ran(
+        &h,
+        &out,
+        &[
+            "push",
+            "--progress",
+            "origin",
+            "refs/heads/feat:refs/heads/feature"
+        ]
+    ));
+    assert_eq!(rev(&origin, "refs/heads/feature"), mine);
+    assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/feat"]));
+
+    // Diverge, then force: the danger names origin/feature, the lease refs/heads/feature.
+    other.git(&["pull", "-q", "--ff-only", "origin", "feature"]);
+    other.commit("theirs on feature");
+    other.git(&["push", "-q", "origin", "feature"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    repo.git(&["commit", "-q", "--amend", "-m", "on feat, amended"]);
+    let out = h.run(id, force_push("feat", "origin", None)).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation);
+    assert!(out.dangers[0].message.contains("origin/feature"), "{out:?}");
+    let token = out.dangers[0].token.clone().unwrap();
+    assert_eq!(token, rev(&repo, "refs/remotes/origin/feature"));
+    let out = h
+        .run_confirmed(
+            id,
+            force_push("feat", "origin", Some(&token)),
+            &[DangerKind::ForcePush],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    let lease = format!("--force-with-lease=refs/heads/feature:{token}");
+    assert!(op_args(&h, &out).iter().any(|a| a.contains(&lease)));
+    assert_eq!(rev(&origin, "refs/heads/feature"), rev(&repo, "feat"));
 }
 
 // ---- pull ----

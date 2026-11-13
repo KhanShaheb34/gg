@@ -448,6 +448,10 @@ pub enum OpRequest {
         remote: String,
         set_upstream: bool,
         force: bool,
+        /// With `force`: the `token` of the `force_push` danger the user confirmed. The
+        /// push runs only if it is still the remote-tracking commit, and git refuses it if
+        /// the remote branch is anywhere else (`--force-with-lease=<ref>:<lease>`).
+        lease: Option<String>,
     },
     Pull {
         branch: String,
@@ -501,6 +505,10 @@ pub struct Danger {
     pub kind: DangerKind,
     pub message: String,
     pub detail: Option<String>,
+    /// `force_push` only: the remote-tracking commit the message was worked out from
+    /// (`null` when there is no remote-tracking branch). Confirming means sending it back as
+    /// the push's `lease`; if it no longer matches, the core asks again.
+    pub token: Option<String>,
 }
 
 /// A follow-up the outcome's notice offers. Serialized with its name in `kind`.
@@ -687,7 +695,7 @@ mod tests {
             json!({"op": "delete_tag", "name": "v1", "remote": "origin"}),
             json!({"op": "push_tag", "name": "v1", "remote": "origin"}),
             json!({"op": "push", "branch": "b", "remote": "origin", "setUpstream": true,
-                   "force": false}),
+                   "force": true, "lease": "abc"}),
             json!({"op": "pull", "branch": "b", "mode": "default"}),
             json!({"op": "fetch_into_local", "remoteBranch": "origin/b", "localName": "b"}),
             json!({"op": "delete_remote_branch", "remote": "origin", "branch": "b"}),
@@ -739,6 +747,7 @@ mod tests {
                 kind: DangerKind::DeleteUnmergedBranch,
                 message: "x has 2 commits".into(),
                 detail: None,
+                token: None,
             }],
             hints: vec![
                 OpHint::Push {
@@ -789,7 +798,8 @@ mod tests {
         assert_eq!(v["detail"], Value::Null);
         assert_eq!(
             v["dangers"],
-            json!([{"kind": "delete_unmerged_branch", "message": "x has 2 commits", "detail": null}])
+            json!([{"kind": "delete_unmerged_branch", "message": "x has 2 commits", "detail": null,
+                    "token": null}])
         );
         assert_eq!(
             v["hints"],

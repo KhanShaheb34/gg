@@ -301,6 +301,30 @@ describe("RepoView.applySnapshot", () => {
     expect(notice.mock.calls[0][0]).toBe("Could not keep your place in the history");
     expect(vi.mocked(ipc.api.getSnapshot).mock.calls.length).toBeLessThan(8);
   });
+
+  it("when the new rows cannot be loaded, says why (not that commits kept changing) and recovers later", async () => {
+    const view = await openView(26 * 50);
+    const notice = vi.fn();
+    view.onNotice = notice;
+    commitOnTop(1);
+    const working = vi.mocked(ipc.api.getRows).getMockImplementation()!;
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(ipc.api.getRows).mockImplementation(async () => {
+      throw new ipc.CoreError({ code: "git_failed", message: "Could not read the history", detail: "fatal: bad object" });
+    });
+    await view.applySnapshot(snapshot());
+    await vi.waitFor(() => expect(notice).toHaveBeenCalledTimes(1));
+    expect(notice).toHaveBeenCalledWith("Could not load the commits", "Could not read the history\nfatal: bad object");
+    expect(view.snapshot.generation).toBe(2);
+
+    // git works again: the next event (or a refresh) loads the rows.
+    vi.mocked(ipc.api.getRows).mockImplementation(working);
+    core.handler?.(snapshot());
+    await view.cache.ensure(51, 60);
+    expect(view.cache.get(51)?.hash).toBe(core.hashes[51]);
+    expect(warned).toHaveBeenCalled();
+    warned.mockRestore();
+  });
 });
 
 const ALL: ViewOptions = { branches: null, showRemotes: true, showTags: true };

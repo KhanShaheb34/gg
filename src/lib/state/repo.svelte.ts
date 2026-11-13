@@ -457,6 +457,13 @@ export class RepoView {
         ? 0
         : restoreScrollTop(Math.min(anchorIndex ?? anchor.index, lastRow), anchor.offset, ROW_H);
     const next = this.newCache(target.generation, target.totalRows);
+    // Why rows could not be loaded, if that is why this attempt fails.
+    let rowsError: unknown = null;
+    const warn = next.onError;
+    next.onError = (e) => {
+      rowsError = e;
+      warn(e);
+    };
     const first = Math.floor(top / ROW_H);
     await Promise.all([
       next.ensure(first, first + SWAP_PREFETCH_ROWS),
@@ -481,11 +488,15 @@ export class RepoView {
         return;
       }
       // The old rows may not be served much longer either: show the new ones where they
-      // should be, loading what is missing, and say why the view may have moved.
-      this.onNotice?.(
-        "Could not keep your place in the history",
-        "The commits kept changing while the graph was being updated; the view may have moved.",
-      );
+      // should be (rows that failed load again as the view asks for them, on the next change
+      // or a refresh) and say why the view may have moved.
+      if (rowsError !== null) this.notice(rowsError, "Could not load the commits");
+      else {
+        this.onNotice?.(
+          "Could not keep your place in the history",
+          "The commits kept changing while the graph was being updated; the view may have moved.",
+        );
+      }
     }
     this.failures = 0;
     this.failedGeneration = -1;

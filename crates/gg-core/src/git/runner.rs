@@ -296,54 +296,77 @@ impl GitRunner {
     /// everything it started (a remote helper, ssh) are killed, the command is logged as
     /// timed out, and the result is `Ok(None)`. On Unix git runs in its own process group
     /// for this; elsewhere only git itself is killed.
+    ///
+    /// The group is killed while git is still unreaped, so its id cannot have been reused,
+    /// and then git is waited for. Its own group also means that, under a terminal, a
+    /// helper that tries to read the terminal (an ssh passphrase prompt; git's own prompts are
+    /// off) is stopped rather than prompting, until the timeout kills it. In the app there is
+    /// no terminal and such a prompt fails at once.
     pub async fn run_with_timeout(
         &self,
         cwd: &Path,
         args: &[&str],
         kind: CmdKind,
-        timeout: std::time::Duration,
+        timeout: Duration,
     ) -> Result<Option<GitOutput>> {
+        use tokio::io::AsyncReadExt;
+
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(unix)]
         cmd.process_group(0);
-        let child = cmd.spawn().map_err(|e| {
+        let fail = |e: io::Error| {
             let err = spawn_error(cwd, e);
             self.log
                 .push(kind, cwd, args, started, -1, b"", &err.message);
             err
-        })?;
-        let group = child.id();
-        match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            Ok(Ok(out)) => {
-                let code = out.status.code().unwrap_or(-1);
-                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-                self.log
-                    .push(kind, cwd, args, started, code, &out.stdout, &stderr);
+        };
+        let mut child = cmd.spawn().map_err(fail)?;
+        let mut stdout_pipe = child.stdout.take();
+        let mut stderr_pipe = child.stderr.take();
+        let read = async {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let read_out = async {
+                if let Some(p) = stdout_pipe.as_mut() {
+                    let _ = p.read_to_end(&mut out).await;
+                }
+            };
+            let read_err = async {
+                if let Some(p) = stderr_pipe.as_mut() {
+                    let _ = p.read_to_end(&mut err).await;
+                }
+            };
+            tokio::join!(read_out, read_err);
+            (out, err)
+        };
+        let finished = tokio::time::timeout(timeout, async {
+            let ((out, err), status) = tokio::join!(read, child.wait());
+            (out, err, status)
+        })
+        .await;
+        match finished {
+            Ok((out, err, Ok(status))) => {
+                let code = status.code().unwrap_or(-1);
+                let stderr = String::from_utf8_lossy(&err).into_owned();
+                self.log.push(kind, cwd, args, started, code, &out, &stderr);
                 Ok(Some(GitOutput {
-                    stdout: out.stdout,
+                    stdout: out,
                     stderr,
                     code,
                 }))
             }
-            Ok(Err(e)) => {
-                let err = spawn_error(cwd, e);
-                self.log
-                    .push(kind, cwd, args, started, -1, b"", &err.message);
-                Err(err)
-            }
+            Ok((_, _, Err(e))) => Err(fail(e)),
             Err(_) => {
-                // Dropping the wait killed git; its helpers are in its process group.
+                // git is not reaped yet, so its pid (the group's id) is still its own.
                 #[cfg(unix)]
-                if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
+                if let Some(pid) = child.id().and_then(|p| libc::pid_t::try_from(p).ok()) {
                     // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
                     unsafe {
                         libc::killpg(pid, libc::SIGKILL);
                     }
                 }
-                #[cfg(not(unix))]
-                let _ = group;
+                let _ = child.kill().await;
                 self.log_timed_out(cwd, args, kind, started);
                 Ok(None)
             }

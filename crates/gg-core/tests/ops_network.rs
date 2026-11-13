@@ -1391,3 +1391,59 @@ async fn a_running_scheduled_fetch_is_cancelled_when_an_operation_takes_its_turn
         );
     }
 }
+
+/// If the task of a fetch the user asked for panics, the next fetch asked for still runs
+/// (the "one is waiting or running" flag is cleared on every way out).
+#[tokio::test]
+async fn a_user_fetch_that_panics_does_not_block_the_next() {
+    let (repo, _origin, other) = with_remote();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.panic_next_fetch();
+    h.m.fetch(id)
+        .await
+        .expect("a panicked fetch is Ok, like a dropped one");
+    let theirs = other.commit("theirs");
+    other.git(&["push", "-q", "origin", "main"]);
+    tokio::time::timeout(TIMEOUT, h.m.fetch(id))
+        .await
+        .expect("the fetch ends")
+        .expect("fetch");
+    assert_eq!(rev(&repo, "refs/remotes/origin/main"), theirs);
+}
+
+/// Closing a repository while a fetch the user asked for runs is refused, saying so (not
+/// that an operation runs).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_during_a_user_fetch_says_a_fetch_runs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _origin, _other) = with_remote();
+    let script = repo.path().join(".git/slow-upload-pack");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 2\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    repo.git(&[
+        "config",
+        "remote.origin.uploadpack",
+        script.to_str().unwrap(),
+    ]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let fetch = tokio::spawn({
+        let m = h.m.clone();
+        async move { m.fetch(id).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["fetch"]["running"] == true
+        })
+        .await
+        .expect("the fetch runs");
+    let err = h.m.close(id).await.expect_err("busy");
+    assert_eq!(err.code, gg_core::error::ErrorCode::Busy);
+    assert!(err.message.contains("fetch"), "{}", err.message);
+    assert!(!err.message.contains("operation"), "{}", err.message);
+    let _ = tokio::time::timeout(TIMEOUT, fetch).await.expect("ends");
+    h.m.close(id).await.expect("closes once the fetch is done");
+}

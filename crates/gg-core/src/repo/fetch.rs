@@ -31,6 +31,16 @@ const MAX_DETAIL: usize = 8 * 1024;
 /// Where scheduled fetches look for hooks: nowhere.
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
+/// Clears `user_fetch` when dropped: when the task of a fetch the user asked for ends,
+/// whether it ran, did not (no remotes, closed, one already running) or panicked.
+struct ClearUserFetch(Arc<Repo>);
+
+impl Drop for ClearUserFetch {
+    fn drop(&mut self) {
+        self.0.user_fetch.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Who started a fetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Initiator {
@@ -84,6 +94,12 @@ impl RepoManager {
         self.fetch_by(repo_id, Initiator::User).await
     }
 
+    /// Makes the next fetch the user asks for panic once it has its turn (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn panic_next_fetch(&self) {
+        self.fetch_panic.store(true, Ordering::SeqCst);
+    }
+
     /// Sets how long a fetch the user asked for may run in any case (tests only; normally
     /// 2 h).
     #[cfg(any(test, feature = "testutil"))]
@@ -115,14 +131,18 @@ impl RepoManager {
                 }
                 let m = self.clone();
                 let task = tokio::spawn(async move {
+                    // However this task ends (a panic included), a fetch asked for later runs.
+                    let _clear = ClearUserFetch(repo.clone());
                     repo.op_waiting.fetch_add(1, Ordering::SeqCst);
                     m.op_queue_changed(&repo).await;
                     let turn = repo.op_queue.lock().await;
                     repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
                     m.cancel_scheduled_fetch(&repo).await;
+                    #[cfg(any(test, feature = "testutil"))]
+                    if m.fetch_panic.swap(false, Ordering::SeqCst) {
+                        panic!("test: the fetch panicked");
+                    }
                     let done = m.start_fetch(repo.clone(), initiator).await;
-                    // Also when it did not run (no remotes, closed, one already running).
-                    repo.user_fetch.store(false, Ordering::SeqCst);
                     drop(turn);
                     done
                 });

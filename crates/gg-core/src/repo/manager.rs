@@ -88,6 +88,9 @@ pub struct RepoManager {
     /// Tests only: refreshes folded into an operation's final refresh so far.
     #[cfg(any(test, feature = "testutil"))]
     folded_refreshes: AtomicU64,
+    /// Tests only: the next fetch the user asks for panics once it has its turn.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) fetch_panic: AtomicBool,
     /// Tests only: when set, editor launches are recorded here instead of run.
     #[cfg(any(test, feature = "testutil"))]
     pub(crate) editor_launches: Mutex<Option<Vec<Vec<String>>>>,
@@ -400,6 +403,8 @@ impl RepoManager {
             #[cfg(any(test, feature = "testutil"))]
             folded_refreshes: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
+            fetch_panic: AtomicBool::new(false),
+            #[cfg(any(test, feature = "testutil"))]
             editor_launches: Mutex::new(None),
         })
     }
@@ -709,11 +714,15 @@ impl RepoManager {
         let repo = self.get(repo_id)?;
         // Held until the repository is marked closed: an operation that takes its turn
         // after this finds it closed and runs nothing.
-        let Ok(_idle) = repo.op_queue.try_lock() else {
-            return Err(busy_with_op());
-        };
-        if repo.op_waiting.load(Ordering::SeqCst) > 0 {
-            return Err(busy_with_op());
+        let idle = repo.op_queue.try_lock().ok();
+        if idle.is_none() || repo.op_waiting.load(Ordering::SeqCst) > 0 {
+            let fetching =
+                repo.user_fetch.load(Ordering::SeqCst) && repo.slot.read().await.op.is_none();
+            return Err(if fetching {
+                busy_with_fetch()
+            } else {
+                busy_with_op()
+            });
         }
         lock(&self.repos)
             .remove(&repo_id)
@@ -1432,6 +1441,13 @@ fn bare_repo() -> CoreError {
     CoreError::new(
         ErrorCode::BareRepo,
         "This folder is a bare repository, which has no working tree to show.",
+    )
+}
+
+fn busy_with_fetch() -> CoreError {
+    CoreError::new(
+        ErrorCode::Busy,
+        "A fetch is running on this repository. Close it once the fetch is done.",
     )
 }
 

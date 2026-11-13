@@ -213,4 +213,62 @@ describe("RepoView.applySnapshot", () => {
     expect(core.handler).toBeNull();
     expect(view.cache.get(0)).toBeUndefined();
   });
+
+  it("never shows an empty or mixed generation when the rows change again mid-refresh", async () => {
+    const view = await openView(26 * 300 + 9); // row 301 is the first fully visible, 17 px down
+    const anchorHash = "c301";
+    const renders: { generation: number; cache: unknown; anchorRow: string | undefined; loaded: boolean }[] = [];
+    view.onChange = () => {
+      const top = view.pendingScroll ?? view.scrollTop;
+      const first = Math.ceil(top / 26);
+      renders.push({
+        generation: view.snapshot.generation,
+        cache: view.cache,
+        anchorRow: view.cache.get(first)?.hash,
+        loaded: view.cache.loaded(Math.floor(top / 26), Math.floor(top / 26) + 25),
+      });
+    };
+    const cacheBefore = view.cache;
+
+    // The core answers for a snapshot after a round trip, as over IPC.
+    vi.mocked(ipc.api.getSnapshot).mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return snapshot();
+    });
+    // Generation 2 arrives; right after the anchor is looked up, the core moves on to 3.
+    commitOnTop(2);
+    vi.mocked(ipc.api.findRow).mockImplementationOnce(async (_id, hash) => {
+      const i = core.hashes.indexOf(hash);
+      commitOnTop(5);
+      return i;
+    });
+    await view.applySnapshot(snapshot());
+    await vi.waitFor(() => expect(view.snapshot.generation).toBe(3));
+    await settle();
+
+    // Every render showed loaded rows; the cache was swapped exactly once, straight to 3.
+    expect(renders.length).toBeGreaterThan(0);
+    for (const r of renders) expect(r.loaded).toBe(true);
+    const caches = new Set(renders.map((r) => r.cache));
+    caches.delete(cacheBefore);
+    expect(caches.size).toBe(1);
+    expect(renders.some((r) => r.generation === 2)).toBe(false);
+    // The anchored commit is still 17 px below the top: 7 new commits above it.
+    expect(view.scrollTop).toBe(26 * 308 - 17);
+    expect(renders[renders.length - 1].anchorRow).toBe(anchorHash);
+  });
+
+  it("gives up after a few failed attempts and keeps the old rows", async () => {
+    const view = await openView(26 * 50);
+    const cacheBefore = view.cache;
+    commitOnTop(1);
+    vi.mocked(ipc.api.getRows).mockImplementation(async () => {
+      throw new ipc.CoreError({ code: "stale_generation", message: "stale", detail: null });
+    });
+    await view.applySnapshot(snapshot());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(view.cache).toBe(cacheBefore);
+    expect(view.snapshot.generation).toBe(1);
+    expect(vi.mocked(ipc.api.getSnapshot).mock.calls.length).toBeLessThan(8);
+  });
 });

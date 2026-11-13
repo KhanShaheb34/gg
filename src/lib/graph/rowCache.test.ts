@@ -160,4 +160,17 @@ describe("RowCache", () => {
     void cache.ensure(0, 10);
     expect(core.fetchPage).toHaveBeenCalledTimes(4);
   });
+
+  it("tells whether every row of a range is loaded", async () => {
+    const core = fakeCore(() => 5000);
+    const cache = new RowCache(core.fetchPage);
+    cache.reset(1, 5000);
+    expect(cache.loaded(0, 10)).toBe(false);
+    await Promise.all([cache.ensure(0, 10), core.flush()]);
+    expect(cache.loaded(0, 399)).toBe(true);
+    expect(cache.loaded(390, 410)).toBe(false);
+    // Clipped to the rows there are.
+    cache.reset(1, 300);
+    expect(cache.loaded(250, 900)).toBe(true);
+  });
 });

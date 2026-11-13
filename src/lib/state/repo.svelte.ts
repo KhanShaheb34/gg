@@ -9,6 +9,8 @@ import type { RepoSnapshot, RowsPage } from "../types";
 
 /** Rows fetched around the restored position before a new generation is shown. */
 const SWAP_PREFETCH_ROWS = 80;
+/** Attempts to show one generation before keeping the old rows until the next change. */
+const MAX_SWAP_ATTEMPTS = 3;
 
 /** A snapshot for a view created before its repository's first snapshot has arrived. */
 function placeholder(repoId: number): RepoSnapshot {
@@ -62,6 +64,11 @@ export class RepoView {
   private markedLoaded = false;
   /** Count of `repo-changed` events received; a snapshot asked for earlier is older than they. */
   private events = 0;
+  /** The request for the newest snapshot in flight, shared by everyone who asks. */
+  private refreshing: Promise<void> | null = null;
+  /** The generation that failed to show, and how often in a row. */
+  private failedGeneration = -1;
+  private failures = 0;
 
   constructor(repoId: number, initial?: RepoSnapshot) {
     this.repoId = repoId;
@@ -74,7 +81,7 @@ export class RepoView {
     });
     if (initial) void this.applySnapshot(initial);
     // Events sent before this view subscribed are lost; catch up once.
-    void this.catchUp();
+    void this.refreshSnapshot();
   }
 
   select(hash: string | null, index: number | null = null): void {
@@ -107,7 +114,10 @@ export class RepoView {
    * Takes in a new snapshot. Same generation: the row count may have grown, nothing moves.
    * New generation: anchors the first fully visible commit (or the top, when scrolled to the
    * top), finds it and the selection in the new rows, loads the rows there, and only then
-   * swaps everything at once, so the view neither jumps nor flashes empty rows.
+   * swaps everything at once, so the view neither jumps nor flashes empty rows. If the rows
+   * changed again meanwhile (the loaded window is incomplete, or the anchor or selection is
+   * not where `findRow` said), the old rows stay and the newest snapshot is tried instead; a
+   * generation that fails MAX_SWAP_ATTEMPTS times in a row waits for the next change.
    */
   async applySnapshot(s: RepoSnapshot): Promise<void> {
     if (this.disposed || s.repoId !== this.repoId) return;
@@ -123,6 +133,7 @@ export class RepoView {
       if (s.totalRows >= this.incoming.totalRows) this.incoming = s;
       return;
     }
+    if (s.generation === this.failedGeneration && this.failures >= MAX_SWAP_ATTEMPTS) return;
     const token = ++this.applyToken;
     this.incoming = s;
 
@@ -149,8 +160,28 @@ export class RepoView {
       : restoreScrollTop(Math.min(anchorIndex ?? anchor.index, lastRow), anchor.offset, ROW_H);
     const next = this.newCache(target.generation, target.totalRows);
     const first = Math.floor(top / ROW_H);
-    await next.ensure(first, first + SWAP_PREFETCH_ROWS);
+    await Promise.all([
+      next.ensure(first, first + SWAP_PREFETCH_ROWS),
+      selectedIndex === null ? null : next.ensure(selectedIndex, selectedIndex),
+    ]);
     if (token !== this.applyToken || this.disposed) return;
+
+    const lastVisible = first + Math.ceil(this.viewportH / ROW_H);
+    const consistent =
+      next.loaded(first, lastVisible) &&
+      (anchorIndex === null || next.get(anchorIndex)?.hash === anchorHash) &&
+      (selectedIndex === null || next.get(selectedIndex)?.hash === selected);
+    if (!consistent) {
+      this.incoming = null;
+      if (this.failedGeneration === target.generation) this.failures++;
+      else {
+        this.failedGeneration = target.generation;
+        this.failures = 1;
+      }
+      void this.refreshSnapshot();
+      return;
+    }
+    this.failures = 0;
 
     // Scrolling done while this was underway moves the restored position along.
     const scrolled = atTop ? 0 : this.scrollTop - startTop;
@@ -198,16 +229,23 @@ export class RepoView {
     this.onChange?.();
   }
 
-  /** Applies a freshly asked-for snapshot, unless an event (which is newer) came meanwhile. */
-  private async catchUp(): Promise<void> {
+  /**
+   * Asks the core for its newest snapshot and applies it, unless an event (which is newer)
+   * arrives meanwhile. Calls while one request is in flight share it.
+   */
+  private refreshSnapshot(): Promise<void> {
+    if (this.refreshing) return this.refreshing;
     const seen = this.events;
-    let s: RepoSnapshot;
-    try {
-      s = await api.getSnapshot(this.repoId);
-    } catch {
-      return; // the events will bring the next one
-    }
-    if (this.events === seen) await this.applySnapshot(s);
+    this.refreshing = api.getSnapshot(this.repoId).then(
+      (s) => {
+        this.refreshing = null;
+        if (this.events === seen) void this.applySnapshot(s);
+      },
+      () => {
+        this.refreshing = null; // the events will bring the next one
+      },
+    );
+    return this.refreshing;
   }
 
   private newCache(generation: number, totalRows: number): RowCache {
@@ -222,15 +260,15 @@ export class RepoView {
 
   /**
    * Rows from the core. When they changed since `generation` (`stale_generation`), the error
-   * is swallowed: the fresh snapshot is applied, which loads the rows again under its
-   * generation; the old cache ignores this page.
+   * is swallowed: the newest snapshot is applied, which loads the rows again under its
+   * generation; the cache that asked ignores this empty page.
    */
   private async fetchPage(generation: number, start: number, count: number): Promise<RowsPage> {
     try {
       return await api.getRows(this.repoId, generation, start, count);
     } catch (e) {
       if (!(e instanceof CoreError && e.code === "stale_generation")) throw e;
-      void this.catchUp();
+      void this.refreshSnapshot();
       return { generation: -1, start, rows: [] };
     }
   }

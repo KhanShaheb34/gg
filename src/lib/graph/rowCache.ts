@@ -46,6 +46,13 @@ export class RowCache {
     return this.pages.get(page)?.[index - page * this.pageSize];
   }
 
+  /** Whether every row of `first..=last` (clipped to the rows there are) is loaded. */
+  loaded(first: number, last: number): boolean {
+    const end = Math.min(last, this.totalRows - 1);
+    for (let i = Math.max(0, first); i <= end; i++) if (this.get(i) === undefined) return false;
+    return true;
+  }
+
   /**
    * Loads the pages covering rows `first..=last` that are missing, plus one page either side.
    * Resolves when they have all arrived (or failed); never rejects.

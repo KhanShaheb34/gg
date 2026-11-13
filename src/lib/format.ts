@@ -1,3 +1,5 @@
+import { LANE_COLORS } from "./graph/geometry";
+
 /** Abbreviated commit hash for display: the first 8 characters. */
 export function shortHash(hash: string): string {
   return hash.slice(0, 8);
@@ -72,8 +74,6 @@ export function formatDateLong(unixSecs: number): string {
   return `${WEEKDAYS[d.getDay()]}, ${formatDate(unixSecs)}:${pad2(d.getSeconds())} (${zone})`;
 }
 
-/** Number of lane colours (`--lane-0` … `--lane-9`). */
-export const LANE_COLORS = 10;
 
 /** A stable lane colour index for `key` (a repository path, say): FNV-1a, folded to 0..9. */
 export function colorIndex(key: string): number {

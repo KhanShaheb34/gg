@@ -812,7 +812,18 @@ async fn reload_is_superseded_by_a_newer_one() {
     let rows = h.rows(snap.repo_id).await;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].hash, f);
-    let last = h.repo_changed(snap.repo_id).pop().unwrap();
+    // `wait_loaded` can return just before the loader emits its final snapshot.
+    let id = snap.repo_id;
+    h.sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed"
+                && v["repoId"] == id
+                && v["loading"] == false
+                && v["totalRows"] == 2
+        })
+        .await
+        .expect("final snapshot");
+    let last = h.repo_changed(id).pop().unwrap();
     assert!(!last.loading);
     assert_eq!(last.total_rows, 2);
 }

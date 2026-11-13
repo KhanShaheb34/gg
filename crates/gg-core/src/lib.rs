@@ -7,6 +7,7 @@ pub mod graph;
 pub mod repo;
 #[cfg(any(test, feature = "testutil"))]
 pub mod testutil;
+pub mod watcher;
 
 pub use error::{CoreError, ErrorCode, Result};
 

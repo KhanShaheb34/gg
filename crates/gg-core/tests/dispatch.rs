@@ -268,6 +268,57 @@ async fn open_missing_recent_path_errors_and_recent_is_removable() {
     assert_eq!(state["recents"], Value::Array(rest.clone()));
 }
 
+/// The session's tabs and the launch path start opening (and loading) before the UI asks;
+/// the UI's `open_repo` then finds them open.
+#[tokio::test]
+async fn startup_repos_open_before_the_ui_asks() {
+    let session_repo = TestRepo::new();
+    session_repo.commit("in the session");
+    let launch_repo = TestRepo::new();
+    launch_repo.commit("launched");
+    let config = tempfile::tempdir().unwrap();
+    let session = json!({"tabs": [session_repo.path()], "active": session_repo.path()});
+    let first = Core::new(
+        config.path().to_path_buf(),
+        None,
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .unwrap();
+    first.dispatch("save_session", session).await.unwrap();
+
+    let sink = Arc::new(RecordingSink::default());
+    let core = Core::new(
+        config.path().to_path_buf(),
+        Some(launch_repo.path().to_path_buf()),
+        sink.clone(),
+    )
+    .await
+    .unwrap();
+    core.open_startup_repos();
+    for id in [1, 2] {
+        let loaded = sink
+            .wait_for(TIMEOUT, |name, v| {
+                name == "repo-changed" && v["repoId"] == id && v["loading"] == false
+            })
+            .await;
+        assert!(
+            loaded.is_some(),
+            "repository {id} was not opened and loaded"
+        );
+    }
+    let mut ids = Vec::new();
+    for path in [session_repo.path(), launch_repo.path()] {
+        let snap = core
+            .dispatch("open_repo", json!({ "path": path }))
+            .await
+            .unwrap();
+        ids.push(snap["repoId"].as_u64().unwrap());
+    }
+    ids.sort_unstable();
+    assert_eq!(ids, [1, 2], "open_repo opened a repository again");
+}
+
 #[tokio::test]
 async fn launch_path_is_reported() {
     let dir = tempfile::tempdir().unwrap();

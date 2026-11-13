@@ -44,6 +44,7 @@ async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
     let launch = launch_path(std::env::args_os().nth(1), std::env::var_os("GG_OPEN"));
     let core = Core::new(config_dir, launch, Arc::new(TauriSink(app))).await?;
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
+    core.open_startup_repos();
     Ok(core)
 }
 

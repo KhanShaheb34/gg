@@ -92,6 +92,24 @@ impl Core {
         })
     }
 
+    /// Starts opening, in the background, the repositories the UI opens at start: the saved
+    /// session's tabs and the launch path. Their logs then load while the window and page
+    /// are still starting, and the UI's own `open_repo` finds them open. Failures are left
+    /// to that call, which fails the same way and reports it. Call once, after `new`, inside
+    /// a Tokio runtime.
+    pub fn open_startup_repos(self: &Arc<Self>) {
+        let Ok(repos) = self.repos() else {
+            return;
+        };
+        let session = self.store.session().tabs.into_iter();
+        for path in session.chain(self.launch_path.clone()) {
+            let repos = repos.clone();
+            tokio::spawn(async move {
+                let _ = repos.open(std::path::Path::new(&path)).await;
+            });
+        }
+    }
+
     /// Sets the file `perf_mark` appends `name<TAB>ms<TAB>epoch_ms` lines to, where
     /// `epoch_ms` is the wall-clock time the mark was recorded (unix milliseconds), so marks
     /// can be compared with timestamps taken outside the app; `None` keeps marks in memory

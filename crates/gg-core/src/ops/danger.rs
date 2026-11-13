@@ -180,7 +180,8 @@ async fn force_push(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<Dange
 }
 
 /// `delete_remote_branch`, always: the branch goes for everyone who uses the remote. The
-/// message says how many of its commits (as last fetched) are on no local branch here.
+/// message says how many of its commits (as last fetched) are on no local branch here, and
+/// whether it is the remote's default branch.
 async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> Result<Danger> {
     let tracking = format!("refs/remotes/{remote}/{branch}");
     let gone = format!(
@@ -202,6 +203,19 @@ async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> R
         }
     } else {
         format!("{gone} It has not been fetched, so its commits are not known here.")
+    };
+    // `<remote>/HEAD`, as last learnt (at clone, or `remote set-head`), names the remote's
+    // default branch.
+    let head = ctx
+        .read(&["symbolic-ref", "-q", &format!("refs/remotes/{remote}/HEAD")])
+        .await?;
+    let message = if head.code == 0 && head.text().trim() == tracking {
+        format!(
+            "{message} It is {remote}'s default branch: clones, and the remote's own pages, \
+             expect it to be there."
+        )
+    } else {
+        message
     };
     Ok(Danger {
         kind: DangerKind::DeleteRemoteBranch,

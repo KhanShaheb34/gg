@@ -1496,3 +1496,24 @@ async fn only_the_repositorys_remotes_are_pushed_to() {
     );
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v1"]));
 }
+
+/// Deleting the remote's default branch (what `<remote>/HEAD` points at) says so.
+#[tokio::test]
+async fn deleting_the_remotes_default_branch_says_so() {
+    let (repo, _origin, other) = with_remote();
+    other.git(&["push", "-q", "origin", "main:side"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, delete_remote_branch("origin", "main")).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation);
+    assert!(out.dangers[0].message.contains("default branch"), "{out:?}");
+    let out = h.run(id, delete_remote_branch("origin", "side")).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation);
+    assert!(
+        !out.dangers[0].message.contains("default branch"),
+        "{out:?}"
+    );
+}

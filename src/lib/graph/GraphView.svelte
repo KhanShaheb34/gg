@@ -444,8 +444,11 @@
     const before = viewportH;
     viewportH = Math.max(0, height - HEADER_H);
     view.viewportH = viewportH;
+    // The pool grows as needed and is kept when the viewport shrinks (the details panel
+    // being dragged), so no row element is made again; only a much smaller viewport trims it.
     const n = Math.ceil(viewportH / ROW_H) + 1 + 2 * OVERSCAN;
-    if (n !== slots.length) slots = Array.from({ length: n }, () => new Slot());
+    if (n > slots.length) slots = [...slots, ...Array.from({ length: n - slots.length }, () => new Slot())];
+    else if (2 * n < slots.length) slots = slots.slice(0, n);
     keepSelectionInView(before);
     frame(performance.now());
   }

@@ -97,9 +97,9 @@ test("lists the changed files with status, counts, renames and binaries, as a tr
   ]);
 
   // Collapsing a folder hides what is in it.
-  await tree.getByRole("treeitem", { name: "app" }).click();
+  await tree.getByRole("treeitem", { name: "app", exact: true }).click();
   await expect(fileRow(p, "app/routes/r.py")).toHaveCount(0);
-  await tree.getByRole("treeitem", { name: "app" }).click();
+  await tree.getByRole("treeitem", { name: "app", exact: true }).click();
   await expect(fileRow(p, "app/routes/r.py")).toBeVisible();
 
   // A flat list, remembered across commits and reloads.
@@ -311,4 +311,230 @@ test("a commit with ten thousand files shows at once and draws only the rows in 
   await p.getByRole("button", { name: "List" }).click();
   await expect(p.getByRole("list", { name: "Changed files" }).locator("[data-row]").first()).toBeVisible();
   expect(await p.getByRole("list", { name: "Changed files" }).locator("[data-row]").count()).toBeLessThan(100);
+});
+
+// --- Fix round 1 ---------------------------------------------------------------------------
+
+test("git text is isolated from its neighbours and controls in paths are shown", async ({ gg }) => {
+  const { page } = gg;
+  const RLO = "‮";
+  const dir = makeRepo(
+    "bidi",
+    (git, write) => {
+      git("init", "-q", "-b", "main");
+      write(`evil${RLO}txt.exe`, "x\n");
+      write("odd\nname.txt", "y\n");
+      git("add", "-A");
+      git("commit", "-q", "--author", `Mallory ${RLO}evil <m${RLO}@example.com>`, "-m", `Subject ${RLO}reversed`);
+    },
+    path.dirname(gg.repoPath("empty")),
+  );
+  await page.goto("/");
+  await open(page, dir);
+  await rowWith(page, `Subject ${RLO}reversed`).click();
+  const p = panel(page);
+  await expect(p.getByTestId("details-files-count")).toHaveText("2 files changed");
+
+  /** Every text node with `needle` in it sits in its own bidi isolate inside `l`. */
+  const isolated = (l: Locator, needle: string) =>
+    l.evaluate((el, n) => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const found: boolean[] = [];
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+        if (!t.textContent!.includes(n)) continue;
+        let e = t.parentElement;
+        let ok = false;
+        // An isolate inside the field, around this piece: the field itself does not count.
+        while (e && e !== el) {
+          if (getComputedStyle(e).unicodeBidi === "isolate") ok = true;
+          e = e.parentElement;
+        }
+        found.push(ok);
+      }
+      return found.length > 0 && found.every(Boolean);
+    }, needle);
+
+  expect(await isolated(p.getByTestId("details-author"), "Mallory")).toBe(true);
+  expect(await isolated(p.getByTestId("details-author"), "example.com")).toBe(true);
+  expect(await isolated(p.getByTestId("details-committer"), "Ada Lovelace")).toBe(true);
+  expect(await isolated(p.getByTestId("details-message"), "Subject")).toBe(true);
+
+  // The override is shown by name, the newline as ␊; the tooltip keeps the exact path.
+  const evil = fileRow(p, `evil${RLO}txt.exe`);
+  await expect(evil.locator(".name")).toHaveText("evil‹U+202E›txt.exe");
+  expect(await isolated(evil, "evil")).toBe(true);
+  await expect(evil).toHaveAttribute("title", `Added: evil${RLO}txt.exe`);
+  const odd = p.locator("[data-row]").filter({ hasText: "odd␊name.txt" });
+  await expect(odd).toHaveAttribute("data-file", "odd\nname.txt");
+  await p.getByRole("button", { name: "List" }).click();
+  expect(await isolated(fileRow(p, `evil${RLO}txt.exe`), "evil")).toBe(true);
+});
+
+test("the list is in the same natural order as the tree", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Generate the module scaffolding").click();
+  const p = panel(page);
+  const order = (l: Locator) =>
+    l.evaluateAll((rows) => rows.map((r) => r.getAttribute("data-file")).filter((f) => f?.startsWith("packages/module-01/")));
+  await expect(fileRow(p, "packages/module-01/src/file-8.ts")).toBeVisible();
+  const inTree = await order(p.getByRole("tree").locator("[data-file]"));
+  await p.getByRole("button", { name: "List" }).click();
+  await expect(fileRow(p, "packages/module-01/src/file-8.ts")).toBeVisible();
+  const inList = await order(p.getByRole("list").locator("[data-file]"));
+  expect(inList).toEqual(inTree);
+  expect(inList.indexOf("packages/module-01/src/file-8.ts")).toBeLessThan(
+    inList.indexOf("packages/module-01/src/file-16.ts"),
+  );
+});
+
+test("the tree's folders line up with the header; counts line up down the list", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Rework peaches routes").click();
+  const p = panel(page);
+  const header = (await p.getByTestId("details-files-count").boundingBox())!;
+  const chevron = (await p.locator('[role="treeitem"][aria-level="1"] .chevron').first().boundingBox())!;
+  expect(Math.abs(chevron.x - header.x)).toBeLessThanOrEqual(1);
+  // A file sits where its folder's name starts, one level in.
+  const folderName = (await p.getByRole("treeitem", { name: "app", exact: true }).locator(".name").boundingBox())!;
+  const peaches = (await p.getByRole("treeitem", { name: "peaches", exact: true }).locator(".chevron").boundingBox())!;
+  expect(Math.abs(peaches.x - (chevron.x + 14))).toBeLessThanOrEqual(1);
+  const rootFile = await p.locator('[role="treeitem"][aria-level="2"][data-file] .name').first().boundingBox();
+  expect(rootFile).not.toBeNull();
+  expect(folderName.x).toBeGreaterThan(chevron.x);
+
+  const bars = await p.locator("[data-file] .bar").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().x)));
+  expect(bars.length).toBeGreaterThan(1);
+  expect(new Set(bars).size).toBe(1);
+});
+
+test("tree items tell assistive technology where they are and what changed", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Rework peaches routes").click();
+  const tree = panel(page).getByRole("tree", { name: "Changed files" });
+  const b = tree.getByRole("treeitem", { name: "added, app/peaches/b.py, 2 added, 0 deleted", exact: true });
+  await expect(b).toHaveAttribute("aria-level", "3");
+  await expect(b).toHaveAttribute("aria-posinset", "1");
+  await expect(b).toHaveAttribute("aria-setsize", "1");
+  await expect(tree.getByRole("treeitem", { name: "assets", exact: true })).toHaveAttribute("aria-posinset", "2");
+  await expect(tree.getByRole("treeitem", { name: "assets", exact: true })).toHaveAttribute("aria-setsize", "3");
+  await expect(tree.getByRole("treeitem", { name: "added, assets/logo.bin, binary", exact: true })).toBeVisible();
+  await expect(
+    tree.getByRole("treeitem", { name: "renamed, notes/old-name.txt to docs/new-name.txt, 0 added, 0 deleted", exact: true }),
+  ).toBeVisible();
+});
+
+test("a parent's hash in the merge note goes to it; failures to go are told", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Merge branch 'side'").click();
+  const p = panel(page);
+  await p.getByTestId("details-files-note").getByRole("button", { name: hashOf(gg, "Main work").slice(0, 8) }).click();
+  await expect(selectedRow(page).locator(".subject")).toHaveText("Main work");
+
+  // The core cannot look the commit up: said so, not taken for "not shown".
+  await page.route("**/invoke", async (route) => {
+    const body = route.request().postDataJSON() as { cmd?: string } | null;
+    if (body?.cmd !== "find_row") return route.continue();
+    await route.fulfill({ json: { err: { code: "git_failed", message: "index is locked", detail: null } } });
+  });
+  await panel(page).getByTestId("details-parents").getByRole("button").first().click();
+  await expect(page.getByText(/Could not go to that commit: index is locked/)).toBeVisible();
+  await expect(page.getByText("That commit is not shown in the graph")).toHaveCount(0);
+
+  await page.unroute("**/invoke");
+  await page.route("**/invoke", async (route) => {
+    const body = route.request().postDataJSON() as { cmd?: string } | null;
+    if (body?.cmd !== "find_row") return route.continue();
+    await route.fulfill({ json: { ok: null } });
+  });
+  await panel(page).getByTestId("details-parents").getByRole("button").first().click();
+  await expect(page.getByText("That commit is not shown in the graph")).toBeVisible();
+});
+
+test("when the selected commit goes away with the focus in the panel, the focus goes to the graph", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Generate the module scaffolding").click();
+  await panel(page).getByRole("button", { name: "List" }).focus();
+  gg.git("details", "reset", "-q", "--hard", "HEAD~1");
+  await page.keyboard.press("ControlOrMeta+r");
+  await expect(panel(page)).toHaveCount(0);
+  await expect(grid(page)).toBeFocused();
+});
+
+test("the panel's height fits the window: a stored height too tall, and a smaller window", async ({ gg }) => {
+  const { page } = gg;
+  await page.addInitScript(() => localStorage.setItem("gg.details.v1", JSON.stringify({ height: 5000, files: "tree" })));
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Main work").click();
+  const sizes = () =>
+    page.evaluate(() => {
+      const panel = document.querySelector<HTMLElement>('[aria-label="Commit details"]')!;
+      const body = panel.parentElement!;
+      const sep = panel.querySelector('[role="separator"]')!;
+      return {
+        panel: Math.round(panel.getBoundingClientRect().height),
+        body: Math.round(body.getBoundingClientRect().height),
+        valuenow: Number(sep.getAttribute("aria-valuenow")),
+      };
+    });
+  let s = await sizes();
+  expect(s.panel).toBe(s.body - 160);
+  expect(s.valuenow).toBe(s.panel);
+
+  await page.setViewportSize({ width: 1280, height: 560 });
+  await expect
+    .poll(async () => {
+      const now = await sizes();
+      return [now.panel, now.valuenow];
+    })
+    .toEqual([s.body - 160 - 160, s.body - 160 - 160]);
+});
+
+test("resizing the panel keeps the graph's rows (no new row elements) and its top edge leaves the last row clickable", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
+  await grid(page).locator('[data-index="1"]').click();
+  await expect(panel(page)).toBeVisible();
+  await grid(page).evaluate((el) => el.querySelectorAll('[role="row"]').forEach((r) => ((r as HTMLElement).dataset.mark = "1")));
+  const marked = () => grid(page).evaluate((el) => el.querySelectorAll('[role="row"][data-mark]').length);
+  const before = await marked();
+
+  const splitter = page.getByRole("separator", { name: "Resize details panel" });
+  const box = (await splitter.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (const dy of [-40, -120, -60, 80, 200]) await page.mouse.move(x, y + dy, { steps: 6 });
+  await page.mouse.up();
+  expect(await marked()).toBe(before);
+
+  // The strip overlaps the graph by 2 px at most.
+  const strip = (await splitter.boundingBox())!;
+  const top = (await panel(page).boundingBox())!.y;
+  expect(top - strip.y).toBeLessThanOrEqual(2);
+});
+
+test("a short message leaves the changed files more room", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Main work").click();
+  const p = panel(page);
+  const info = (await p.getByTestId("details-message").locator("..").boundingBox())!;
+  const files = (await p.getByTestId("details-files-count").locator("../..").boundingBox())!;
+  expect(info.width).toBeGreaterThanOrEqual(320);
+  expect(files.width).toBeGreaterThan(info.width * 1.4);
 });

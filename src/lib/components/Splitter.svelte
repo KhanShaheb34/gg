@@ -97,8 +97,9 @@
     right: -5px;
   }
 
+  /* Mostly inside the panel: it overlaps what is above by 2 px only. */
   .top {
-    top: -5px;
+    top: -2px;
     bottom: auto;
     left: 0;
     right: 0;
@@ -132,7 +133,7 @@
   .top:hover::after,
   .top.dragging::after,
   .top:focus-visible::after {
-    top: 4px;
+    top: 1px;
     bottom: auto;
     left: 0;
     right: 0;

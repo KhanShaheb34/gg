@@ -1,21 +1,21 @@
 <!--
   The selected commit's details, docked under the graph: on the left the commit's hash,
   parents, author, committer and date, then its whole message; on the right the files it
-  changed, as a tree or a flat list. The row's own information shows at once; the rest when
-  the core answers (see CommitDetailsLoader). The uncommitted row opens no panel.
+  changed (ChangedFiles), as a tree or a flat list. The row's own information shows at once;
+  the rest when the core answers (see CommitDetailsLoader). The uncommitted row opens no
+  panel.
 
-  Everything that comes from git (message, names, paths) is shown as text, never as HTML.
-  The file list draws only the rows in view, so a commit with ten thousand files is as quick
-  to show as one with ten.
+  Everything that comes from git (message, names, paths) is shown as text, never as HTML,
+  each piece in its own bidi isolate so that a right-to-left override in it cannot reorder
+  the text around it.
 -->
 <script lang="ts">
-  import { untrack } from "svelte";
-  import { buildFileTree, flattenTree, type TreeNode, type TreeRow } from "../fileTree";
-  import { formatDateLong, shortHash } from "../format";
-  import { api } from "../ipc";
+  import { tick, untrack } from "svelte";
+  import { formatDateLong, groupDigits, shortHash } from "../format";
+  import { api, CoreError } from "../ipc";
   import { toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
-  import type { FileChange } from "../types";
+  import ChangedFiles from "./ChangedFiles.svelte";
   import Splitter from "./Splitter.svelte";
 
   let { view }: { view: RepoView } = $props();
@@ -26,7 +26,11 @@
   $effect(() => {
     const hash = view.selectedHash;
     const index = view.selectedIndex;
-    untrack(() => view.details.show(hash, index === null ? null : (view.cache.get(index) ?? null)));
+    untrack(() => {
+      const wasOpen = view.details.hash !== null;
+      view.details.show(hash, index === null ? null : (view.cache.get(index) ?? null));
+      if (wasOpen && view.details.hash === null) keepFocus();
+    });
   });
 
   // --- Height and how files are shown, remembered for every repository -----------------
@@ -53,6 +57,7 @@
     return out;
   }
 
+  /** The height the user chose (kept when the window is too small for it), and the file view. */
   let prefs = $state(readStored());
 
   function save() {
@@ -64,13 +69,25 @@
   }
 
   let panel: HTMLElement | undefined = $state();
+  /** The tallest the panel may be now: the repository view's height less the graph's minimum. */
+  let room = $state(Infinity);
+  /** The height shown: the chosen one, as far as the window allows. */
+  const height = $derived(Math.max(MIN_H, Math.min(prefs.height, room)));
+
+  $effect(() => {
+    const host = panel?.parentElement;
+    if (!host) return;
+    const measure = () => (room = host.clientHeight - MIN_GRAPH_H);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  });
+
   let resizeFrom = 0;
   const resizer = {
-    onstart: () => (resizeFrom = panel?.offsetHeight ?? prefs.height),
-    onmove: (dy: number) => {
-      const room = (panel?.parentElement?.clientHeight ?? Infinity) - MIN_GRAPH_H;
-      prefs.height = Math.max(MIN_H, Math.min(room, Math.round(resizeFrom - dy)));
-    },
+    onstart: () => (resizeFrom = height),
+    onmove: (dy: number) => (prefs.height = Math.max(MIN_H, Math.min(room, Math.round(resizeFrom - dy)))),
     onend: save,
     onreset: () => {
       prefs.height = DEFAULT_H;
@@ -102,6 +119,15 @@
   /** The message's first line, shown as its title, and the rest as written. */
   const title = $derived(message.split("\n", 1)[0]);
   const rest = $derived(message.slice(title.length));
+  /**
+   * The information column is as wide as the message's longest line needs (within 48 to 80
+   * characters, at most half the panel); the files take the rest.
+   */
+  const infoCh = $derived.by(() => {
+    let longest = 0;
+    for (const line of message.split("\n")) longest = Math.max(longest, line.length);
+    return Math.min(80, Math.max(48, longest + 4));
+  });
 
   const files = $derived(details?.files ?? []);
   const totals = $derived.by(() => {
@@ -140,26 +166,45 @@
     // A row number is good only for the rows it was looked up in; look again if they changed.
     for (let attempt = 0; attempt < 2; attempt++) {
       const generation = view.snapshot.generation;
-      const index = await api.findRow(view.repoId, target).catch(() => null);
+      let index: number | null;
+      try {
+        index = await api.findRow(view.repoId, target);
+      } catch (e) {
+        const text = e instanceof Error ? e.message : String(e);
+        toast("error", `Could not go to that commit: ${text}`, e instanceof CoreError ? (e.detail ?? undefined) : undefined);
+        return;
+      }
       if (view.snapshot.generation !== generation) continue;
       if (index === null) {
         toast("info", "That commit is not shown in the graph");
         return;
       }
       await view.selectRow(index, true);
-      focusGraph();
+      focusGraph(panel?.parentElement);
       return;
     }
+    toast("info", "The graph changed while looking for that commit; try again");
   }
 
-  function focusGraph() {
-    panel?.parentElement?.querySelector<HTMLElement>('[role="grid"]')?.focus({ preventScroll: true });
+  function focusGraph(host: Element | null | undefined) {
+    host?.querySelector<HTMLElement>('[role="grid"]')?.focus({ preventScroll: true });
   }
 
   function close() {
-    const inside = panel?.contains(document.activeElement) ?? false;
     view.select(null);
-    if (inside || document.activeElement === document.body) focusGraph();
+  }
+
+  /**
+   * The panel is closing (Escape, its button, or the selection gone after a refresh or a
+   * change of filter) and still on screen: a focus inside it (or nowhere) goes to the graph,
+   * once the panel is gone.
+   */
+  function keepFocus() {
+    if (!panel) return;
+    const focus = document.activeElement;
+    if (focus !== document.body && !panel.contains(focus)) return;
+    const host = panel.parentElement;
+    void tick().then(() => focusGraph(host));
   }
 
   /** Escape closes the panel from inside it, or when nothing else has the focus. */
@@ -171,159 +216,34 @@
     close();
   }
 
-  // --- Files --------------------------------------------------------------------------------
+  // --- The message's scroll fade --------------------------------------------------------
 
-  /** Height of one file row, px. */
-  const FILE_ROW_H = 24;
-  /** Rows drawn beyond each edge of the list's viewport. */
-  const FILE_OVERSCAN = 8;
+  let info: HTMLElement | undefined = $state();
+  /** The information column has more below what shows. */
+  let more = $state(false);
 
-  const tree = $derived(prefs.files === "tree" ? buildFileTree(files) : null);
-  /** Folders closed in the tree, for the commit shown. */
-  let closed = $state.raw({ hash: null as string | null, paths: new Set<string>() });
-  const closedPaths = $derived(closed.hash === hash ? closed.paths : new Set<string>());
-  const rows: TreeRow[] = $derived(
-    tree
-      ? flattenTree(tree, closedPaths)
-      : files.map((file) => ({ node: { name: file.path, path: file.path, children: [], file }, depth: 0 })),
-  );
+  function checkMore() {
+    if (info) more = info.scrollHeight - info.scrollTop - info.clientHeight > 1;
+  }
 
-  let filesEl: HTMLDivElement | undefined = $state();
-  let filesTop = $state(0);
-  let filesH = $state(0);
-  const first = $derived(Math.max(0, Math.floor(filesTop / FILE_ROW_H) - FILE_OVERSCAN));
-  const last = $derived(Math.min(rows.length, Math.ceil((filesTop + filesH) / FILE_ROW_H) + FILE_OVERSCAN));
-  const shown = $derived(rows.slice(first, last));
-  /** The tree row the keyboard is on (-1: none yet). */
-  let active = $state(-1);
-
-  // Another commit, or another way of showing its files: start at the top.
   $effect(() => {
-    void hash;
-    void prefs.files;
-    untrack(() => {
-      if (filesEl) filesEl.scrollTop = 0;
-      filesTop = 0;
-      active = -1;
-    });
+    void message;
+    void committer;
+    if (!info) return;
+    checkMore();
+    const observer = new ResizeObserver(checkMore);
+    observer.observe(info);
+    return () => observer.disconnect();
   });
 
-  function toggle(node: TreeNode) {
-    const paths = new Set(closedPaths);
-    if (!paths.delete(node.path)) paths.add(node.path);
-    closed = { hash, paths };
-  }
-
-  function onRowClick(index: number) {
-    const node = rows[index]?.node;
-    if (!node || !tree) return;
-    active = index;
-    if (node.file === null) toggle(node);
-  }
-
-  /** Moves the keyboard to tree row `index` and scrolls it into view. */
-  function moveTo(index: number) {
-    if (rows.length === 0 || !filesEl) return;
-    active = Math.max(0, Math.min(rows.length - 1, index));
-    const top = active * FILE_ROW_H;
-    if (top < filesEl.scrollTop) filesEl.scrollTop = top;
-    else if (top + FILE_ROW_H > filesEl.scrollTop + filesEl.clientHeight)
-      filesEl.scrollTop = top + FILE_ROW_H - filesEl.clientHeight;
-    filesTop = filesEl.scrollTop;
-  }
-
-  /** Arrow keys walk the tree, Left and Right close and open folders (as in a file tree). */
-  function onTreeKey(e: KeyboardEvent) {
-    if (!tree || rows.length === 0 || e.metaKey || e.ctrlKey || e.altKey) return;
-    const at = active < 0 ? 0 : Math.min(active, rows.length - 1);
-    const current = rows[at];
-    const folder = current.node.file === null;
-    const isOpen = folder && !closedPaths.has(current.node.path);
-    const page = Math.max(1, Math.floor((filesEl?.clientHeight ?? 0) / FILE_ROW_H) - 1);
-    switch (e.key) {
-      case "ArrowDown":
-        moveTo(active < 0 ? 0 : at + 1);
-        break;
-      case "ArrowUp":
-        moveTo(active < 0 ? 0 : at - 1);
-        break;
-      case "PageDown":
-        moveTo(at + page);
-        break;
-      case "PageUp":
-        moveTo(at - page);
-        break;
-      case "Home":
-        moveTo(0);
-        break;
-      case "End":
-        moveTo(rows.length - 1);
-        break;
-      case "ArrowRight":
-        if (!folder) return;
-        if (isOpen) moveTo(at + 1);
-        else {
-          toggle(current.node);
-          active = at;
-        }
-        break;
-      case "ArrowLeft": {
-        if (isOpen) {
-          toggle(current.node);
-          active = at;
-          break;
-        }
-        let parent = at - 1;
-        while (parent >= 0 && rows[parent].depth >= current.depth) parent--;
-        if (parent < 0) return;
-        moveTo(parent);
-        break;
-      }
-      case "Enter":
-      case " ":
-        if (!folder) return;
-        toggle(current.node);
-        active = at;
-        break;
-      default:
-        return;
-    }
-    e.preventDefault();
-  }
-
-  /** The folder part of `path`, with its trailing `/` ("" at the root). */
-  const folderOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
-
-  /**
-   * Where a renamed or copied file came from, as its row shows it: in the list the old path;
-   * in the tree the old name when it stayed in its folder, else the old path.
-   */
-  function oldLabel(file: FileChange, inTree: boolean): string | null {
-    if (file.oldPath === null) return null;
-    if (!inTree) return file.oldPath;
-    const dir = folderOf(file.oldPath);
-    // Moved within its folder: just the old name; from elsewhere: the whole old path.
-    return dir === folderOf(file.path) ? file.oldPath.slice(dir.length) : file.oldPath;
-  }
-
-  const STATUS_NAMES: Record<FileChange["status"], string> = {
-    A: "Added",
-    M: "Modified",
-    D: "Deleted",
-    R: "Renamed",
-    C: "Copied",
-    T: "Type changed",
-  };
-
-  function rowTitle(file: FileChange): string {
-    const path = file.oldPath === null ? file.path : `${file.oldPath} → ${file.path}`;
-    return `${STATUS_NAMES[file.status]}: ${path}`;
-  }
-
-  const plural = (n: number, word: string) => `${n.toLocaleString("en-US")} ${word}${n === 1 ? "" : "s"}`;
+  const plural = (n: number, word: string) => `${groupDigits(n)} ${word}${n === 1 ? "" : "s"}`;
 </script>
 
 <svelte:window onkeydown={onWindowKey} />
+
+{#snippet parentButton(parent: string)}
+  <button class="parent" title="Go to {parent}" onclick={() => goTo(parent)}>{shortHash(parent)}</button>
+{/snippet}
 
 {#if hash}
   <section
@@ -331,11 +251,12 @@
     aria-label="Commit details"
     data-testid="commit-details"
     bind:this={panel}
-    style:height="{prefs.height}px"
+    style:height="{height}px"
+    style:--info-w="{infoCh}ch"
   >
-    <Splitter label="Resize details panel" edge="top" value={prefs.height} {...resizer} />
+    <Splitter label="Resize details panel" edge="top" value={height} {...resizer} />
 
-    <div class="info">
+    <div class="info" class:more bind:this={info} onscroll={checkMore}>
       <dl class="fields">
         <dt>Commit</dt>
         <dd>
@@ -364,7 +285,7 @@
         <dt>{parents.length > 1 ? "Parents" : "Parent"}</dt>
         <dd class="parents" data-testid="details-parents">
           {#each parents as parent (parent)}
-            <button class="parent" title="Go to {parent}" onclick={() => goTo(parent)}>{shortHash(parent)}</button>
+            {@render parentButton(parent)}
           {:else}
             <span class="faint">None (root commit)</span>
           {/each}
@@ -372,13 +293,13 @@
 
         <dt>Author</dt>
         <dd class="selectable" data-testid="details-author">
-          {#if author}{author.name} <span class="email">&lt;{author.email}&gt;</span>{/if}
+          {#if author}<bdi>{author.name}</bdi> <span class="email">&lt;<bdi>{author.email}</bdi>&gt;</span>{/if}
         </dd>
 
         {#if committer}
           <dt>Committer</dt>
           <dd class="selectable" data-testid="details-committer">
-            {committer.name} <span class="email">&lt;{committer.email}&gt;</span>
+            <bdi>{committer.name}</bdi> <span class="email">&lt;<bdi>{committer.email}</bdi>&gt;</span>
           </dd>
         {/if}
 
@@ -386,7 +307,7 @@
         <dd class="selectable date" data-testid="details-date">{time === null ? "" : formatDateLong(time)}</dd>
       </dl>
 
-      <div class="message selectable" data-testid="details-message"><span class="title">{title}</span>{rest}</div>
+      <div class="message selectable" data-testid="details-message"><bdi class="title">{title}</bdi>{rest}</div>
     </div>
 
     <div class="changes">
@@ -395,8 +316,8 @@
           <span class="count" data-testid="details-files-count">{plural(files.length, "file")} changed</span>
           {#if files.length > 0}
             <span class="totals"
-              ><span class="add" class:zero={totals.add === 0}>+{totals.add.toLocaleString("en-US")}</span>
-              <span class="del" class:zero={totals.del === 0}>−{totals.del.toLocaleString("en-US")}</span></span
+              ><span class="add" class:zero={totals.add === 0}>+{groupDigits(totals.add)}</span>
+              <span class="del" class:zero={totals.del === 0}>−{groupDigits(totals.del)}</span></span
             >
           {/if}
         {:else}
@@ -430,13 +351,7 @@
             onclick={() => setFileView("list")}
           >
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-              <path
-                d="M2.5 3h9M2.5 7h9M2.5 11h9"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linecap="round"
-              />
+              <path d="M2.5 3h9M2.5 7h9M2.5 11h9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
             </svg>
           </button>
         </div>
@@ -448,12 +363,14 @@
       </div>
 
       {#if details && parents.length > 1}
-        <p class="note" data-testid="details-files-note">Compared with the first parent {shortHash(parents[0])}</p>
+        <p class="note" data-testid="details-files-note">
+          Compared with the first parent {@render parentButton(parents[0])}
+        </p>
       {/if}
 
       {#if loader.error}
         <div class="state">
-          <p>Could not load the changes: <span class="selectable">{loader.error}</span></p>
+          <p>Could not load the changes: <bdi class="selectable">{loader.error}</bdi></p>
           <button class="retry" onclick={() => loader.retry()}>Try again</button>
         </div>
       {:else if !details}
@@ -461,88 +378,7 @@
       {:else if files.length === 0}
         <div class="state"><p>No files changed</p></div>
       {:else}
-        <!-- A scrolled list takes the focus for the keys; a tree's rows are reached through it
-             (aria-activedescendant), as the graph's are. -->
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div
-          class="files"
-          role={tree ? "tree" : "list"}
-          aria-label="Changed files"
-          aria-activedescendant={tree && active >= first && active < last ? `gg-file-${active}` : undefined}
-          tabindex="0"
-          bind:this={filesEl}
-          bind:clientHeight={filesH}
-          onscroll={() => (filesTop = filesEl!.scrollTop)}
-          onkeydown={onTreeKey}
-        >
-          <div class="files-inner" style:height="{rows.length * FILE_ROW_H}px">
-            {#each shown as item, k (`${item.node.file ? "f" : "d"}:${item.node.path}`)}
-              {@const index = first + k}
-              {@const node = item.node}
-              {@const file = node.file}
-              {#if file}
-                {@const old = oldLabel(file, tree !== null)}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <div
-                  class="file-row"
-                  class:flat={!tree}
-                  class:active={index === active}
-                  role={tree ? "treeitem" : "listitem"}
-                  id={tree ? `gg-file-${index}` : undefined}
-                  aria-level={tree ? item.depth + 1 : undefined}
-                  aria-selected={tree ? index === active : undefined}
-                  data-row
-                  data-file={file.path}
-                  data-status={file.status}
-                  title={rowTitle(file)}
-                  style:transform="translateY({index * FILE_ROW_H}px)"
-                  style:--depth={item.depth}
-                  onclick={() => onRowClick(index)}
-                >
-                  <span class="name selectable" class:deleted={file.status === "D"}
-                    >{#if old !== null}<span class="old">{old}</span><span class="arrow">{" → "}</span>{/if}{#if !tree}<span
-                        class="dir">{folderOf(node.name)}</span
-                      >{node.name.slice(folderOf(node.name).length)}{:else}{node.name}{/if}</span
-                  >
-                  <span class="counts"
-                    >{#if file.additions === null && file.deletions === null}<span class="binary">binary</span
-                      >{:else}<span class="add" class:zero={!file.additions}>+{file.additions ?? 0}</span>
-                      <span class="bar">|</span>
-                      <span class="del" class:zero={!file.deletions}>−{file.deletions ?? 0}</span>{/if}</span
-                  >
-                  <span class="status s-{file.status}">{file.status}</span>
-                </div>
-              {:else}
-                {@const isOpen = !closedPaths.has(node.path)}
-                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
-                <div
-                  class="file-row folder"
-                  class:active={index === active}
-                  role="treeitem"
-                  id="gg-file-{index}"
-                  aria-level={item.depth + 1}
-                  aria-expanded={isOpen}
-                  aria-selected={index === active}
-                  data-row
-                  style:transform="translateY({index * FILE_ROW_H}px)"
-                  style:--depth={item.depth}
-                  onclick={() => onRowClick(index)}
-                >
-                  <svg class="chevron" class:open={isOpen} width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"
-                    ><path
-                      d="M3.5 2l3 3-3 3"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.3"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    /></svg
-                  ><span class="name">{node.name}</span>
-                </div>
-              {/if}
-            {/each}
-          </div>
-        </div>
+        <ChangedFiles {files} mode={prefs.files} commit={hash} />
       {/if}
     </div>
   </section>
@@ -552,7 +388,8 @@
   .details {
     position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    /* The information column fits the message (--info-w), the files take the rest. */
+    grid-template-columns: minmax(380px, min(var(--info-w), 50%)) minmax(0, 1fr);
     flex: 0 1 auto;
     min-height: 120px;
     border-top: 1px solid var(--border);
@@ -564,8 +401,15 @@
   .info {
     min-width: 0;
     overflow: auto;
-    padding: 12px 16px 16px;
+    /* The first field sits on the files header's centre line (36 px). */
+    padding: 9px 16px 16px;
     border-right: 1px solid var(--border);
+  }
+
+  /* More below: the text fades out at the bottom edge. */
+  .info.more {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
   }
 
   .fields {
@@ -606,10 +450,7 @@
     transition: color 80ms linear;
   }
 
-  .hash:hover {
-    color: var(--accent);
-  }
-
+  .hash:hover,
   .hash:hover .copy {
     color: var(--accent);
   }
@@ -696,6 +537,19 @@
     white-space: nowrap;
   }
 
+  .add {
+    color: var(--success);
+  }
+
+  .del {
+    color: var(--danger);
+  }
+
+  .add.zero,
+  .del.zero {
+    color: var(--text-faint);
+  }
+
   .spacer {
     flex: 1;
   }
@@ -732,6 +586,12 @@
     font-size: var(--fs-xs);
   }
 
+  .note .parent {
+    margin-left: 2px;
+    font-size: var(--fs-xs);
+    line-height: inherit;
+  }
+
   .state {
     display: flex;
     flex-direction: column;
@@ -765,151 +625,5 @@
 
   .retry:hover {
     background: var(--bg-hover);
-  }
-
-  .files {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    padding: 4px 0;
-    outline: none;
-  }
-
-  .files:focus-visible {
-    box-shadow: inset 0 0 0 2px var(--focus-ring);
-  }
-
-  .files-inner {
-    position: relative;
-    contain: strict;
-    width: 100%;
-  }
-
-  .file-row {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 24px;
-    padding: 0 12px 0 calc(17px + var(--depth) * 14px);
-    font-size: var(--fs-sm);
-    white-space: nowrap;
-  }
-
-  .file-row.flat {
-    padding-left: 14px;
-  }
-
-  .file-row:hover {
-    background: var(--bg-hover);
-  }
-
-  .file-row.active {
-    background: var(--bg-selected);
-  }
-
-  .folder {
-    gap: 5px;
-    padding-left: calc(2px + var(--depth) * 14px);
-    color: var(--text-muted);
-  }
-
-  .chevron {
-    flex: none;
-    margin-left: 0;
-    color: var(--text-faint);
-    transition: transform 80ms var(--ease);
-  }
-
-  .chevron.open {
-    transform: rotate(90deg);
-  }
-
-  .name {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .name.deleted {
-    color: var(--text-muted);
-    text-decoration: line-through;
-    text-decoration-color: color-mix(in srgb, var(--danger) 55%, transparent);
-  }
-
-  .old {
-    color: var(--text-muted);
-  }
-
-  .arrow {
-    color: var(--text-faint);
-  }
-
-  .counts {
-    flex: none;
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    color: var(--text-faint);
-  }
-
-  .add {
-    color: var(--success);
-  }
-
-  .del {
-    color: var(--danger);
-  }
-
-  .add.zero,
-  .del.zero {
-    color: var(--text-faint);
-  }
-
-  .bar {
-    color: var(--border-strong);
-  }
-
-  .dir {
-    color: var(--text-muted);
-  }
-
-  .binary {
-    font-family: var(--font-ui);
-    font-style: italic;
-  }
-
-  .status {
-    display: inline-grid;
-    place-items: center;
-    flex: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-    background: color-mix(in srgb, currentColor 13%, transparent);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .s-A {
-    color: var(--success);
-  }
-
-  .s-M,
-  .s-T {
-    color: var(--warning);
-  }
-
-  .s-D {
-    color: var(--danger);
-  }
-
-  .s-R,
-  .s-C {
-    color: var(--info);
   }
 </style>

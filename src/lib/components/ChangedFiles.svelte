@@ -360,11 +360,11 @@
     color: var(--text-faint);
   }
 
-  /* Fixed widths, so the bars line up down the list (up to four digits each). */
+  /* Fixed widths, so the bars line up down the list (up to three digits each). */
   .add,
   .del {
     display: inline-block;
-    min-width: 5ch;
+    min-width: 4ch;
   }
 
   .add {

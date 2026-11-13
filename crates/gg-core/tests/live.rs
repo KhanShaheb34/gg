@@ -412,7 +412,8 @@ async fn fetch_updates_remote_refs() {
         .filter(|r| r.args.first().map(String::as_str) == Some("fetch"))
         .collect();
     assert_eq!(fetches.len(), 1);
-    assert_eq!(fetches[0].args, ["fetch", "--all", "--prune"]);
+    // A fetch the user asks for reports progress, which keeps it from timing out.
+    assert_eq!(fetches[0].args, ["fetch", "--all", "--prune", "--progress"]);
     assert_eq!(
         serde_json::to_value(fetches[0].kind).unwrap(),
         "write",
@@ -611,7 +612,9 @@ async fn a_timed_out_fetch_kills_the_helpers_git_started() {
         &format!("echo $$ > '{}'\nexec sleep 600", pid_file.display()),
     );
     let h = harness().await;
-    h.m.set_fetch_timeout(Duration::from_millis(500));
+    // Long enough for git to start the helper under a loaded test run (at 500 ms it was
+    // sometimes killed before the helper had written its pid).
+    h.m.set_fetch_timeout(Duration::from_secs(2));
     let snap = h.open(repo.path()).await;
     tokio::time::timeout(TIMEOUT, h.m.fetch(snap.repo_id))
         .await
@@ -681,6 +684,51 @@ async fn a_helper_that_outlives_git_is_killed_on_timeout() {
             .status();
     }
     assert!(gone, "the helper ({pid}) outlived the timed-out fetch");
+}
+
+/// A fetch the user asked for is killed only after the timeout passes with no output at all:
+/// one that keeps reporting progress (here the remote's upload-pack, writing to git's stderr
+/// for longer than the timeout) finishes. A scheduled fetch keeps the hard timeout.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_user_fetch_that_keeps_reporting_is_not_killed_but_a_scheduled_one_is() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    upload_pack(
+        &repo,
+        "chatty-upload-pack",
+        "for i in 1 2 3 4 5 6 7 8 9 10; do echo \"remote: working $i\" >&2; sleep 0.2; done\n\
+         exec git-upload-pack \"$@\"",
+    );
+    let h = harness().await;
+    h.m.set_fetch_timeout(Duration::from_millis(700));
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+
+    tokio::time::timeout(TIMEOUT, h.m.fetch(id))
+        .await
+        .expect("the fetch ends")
+        .unwrap();
+    let now = h.m.snapshot(id).await.unwrap();
+    assert_eq!(
+        now.fetch.last_error, None,
+        "killed while reporting: {:?}",
+        now.fetch.last_error_detail
+    );
+
+    h.m.set_fetch_interval(1);
+    let scheduled = h
+        .changed(id, TIMEOUT, |s| {
+            !s.fetch.running && s.fetch.last_at_ms > now.fetch.last_at_ms
+        })
+        .await;
+    h.m.set_fetch_interval(0);
+    let scheduled = scheduled.expect("a scheduled fetch ran");
+    assert_eq!(
+        scheduled.fetch.last_error.as_deref(),
+        Some("Fetch timed out")
+    );
 }
 
 #[cfg(unix)]

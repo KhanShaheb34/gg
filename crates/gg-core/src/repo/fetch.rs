@@ -1,8 +1,9 @@
 //! Fetching: `git fetch` on request and on a background schedule, and the window focus
 //! that both the schedule and refresh-on-focus depend on.
 //!
-//! A fetch the user asks for runs like one in a terminal, hooks included. A scheduled fetch
-//! happens without anyone asking, so it never runs the repository's hooks.
+//! A fetch the user asks for runs like one in a terminal, hooks included, and runs for as long
+//! as git keeps reporting progress. A scheduled fetch happens without anyone asking, so it
+//! never runs the repository's hooks and is killed after a fixed time.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
@@ -13,16 +14,17 @@ use tokio::time::Instant;
 
 use crate::dto::FetchState;
 use crate::error::{ErrorCode, Result};
-use crate::git::runner::CmdKind;
+use crate::git::runner::{CmdKind, TimeLimit};
 use crate::repo::manager::{Repo, RepoManager, lock, unknown_repo};
 
 /// Scheduled fetches keep running for this long after the window loses focus.
 const FOCUS_GRACE: Duration = Duration::from_secs(10 * 60);
 /// Arguments of every fetch.
 const FETCH_ARGS: [&str; 3] = ["fetch", "--all", "--prune"];
-/// A fetch running longer than this is killed.
+/// A scheduled fetch running longer than this is killed, and so is a fetch the user asked
+/// for that has written nothing for this long.
 pub(super) const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
-/// `lastError` of a fetch that was killed for running too long.
+/// `lastError` of a fetch that was killed for running too long (or silent too long).
 const TIMED_OUT: &str = "Fetch timed out";
 /// Where scheduled fetches look for hooks: nowhere.
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
@@ -66,17 +68,19 @@ impl Schedule {
 impl RepoManager {
     /// Runs `git fetch --all --prune`, then refreshes. `fetch.running` is set (and
     /// `repo-changed` emitted) before git starts; when it ends, `lastAtMs`, `lastError`
-    /// (see [`fetch_error`]; "Fetch timed out" after 120 s; `None` after a success) and
-    /// `lastErrorDetail` (git's whole stderr) are set and emitted. Only an unknown (or
-    /// meanwhile closed) repository is an `Err`; a failed fetch, or a failed refresh after
-    /// it, is `Ok`. Does nothing for a repository without remotes
-    /// or while a fetch is running. The fetch runs on its own task, so dropping the returned
-    /// future does not stop it and `running` is always cleared.
+    /// (see [`fetch_error`]; "Fetch timed out" once git has written nothing for 120 s; `None`
+    /// after a success) and `lastErrorDetail` (git's whole stderr) are set and emitted. git
+    /// runs with `--progress`, so a long fetch that is getting somewhere keeps running. Only
+    /// an unknown (or meanwhile closed) repository is an `Err`; a failed fetch, or a failed
+    /// refresh after it, is `Ok`. Does nothing for a repository without remotes or while a
+    /// fetch is running. The fetch runs on its own task, so dropping the returned future does
+    /// not stop it and `running` is always cleared.
     pub async fn fetch(self: &Arc<Self>, repo_id: u32) -> Result<()> {
         self.fetch_by(repo_id, Initiator::User).await
     }
 
-    /// Sets how long a fetch may run before it is killed (tests only; normally 120 s).
+    /// Sets how long a scheduled fetch may run, and a user's fetch stay silent, before it is
+    /// killed (tests only; normally 120 s).
     #[cfg(any(test, feature = "testutil"))]
     pub fn set_fetch_timeout(&self, timeout: Duration) {
         self.fetch_timeout_ms.store(
@@ -109,24 +113,35 @@ impl RepoManager {
     async fn run_fetch(self: Arc<Self>, repo: Arc<Repo>, initiator: Initiator) -> Result<()> {
         let repo_id = repo.identity.repo_id;
         let no_hooks = format!("core.hooksPath={NULL_DEVICE}");
-        let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 2);
+        let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 3);
         if initiator == Initiator::Schedule {
             args.extend(["-c", no_hooks.as_str()]);
         }
         args.extend(FETCH_ARGS);
         let timeout = Duration::from_millis(self.fetch_timeout_ms.load(Ordering::Relaxed));
+        let limit = match initiator {
+            Initiator::User => {
+                // Progress goes to stderr even without a terminal; any output counts.
+                args.push("--progress");
+                TimeLimit::Idle(timeout)
+            }
+            Initiator::Schedule => TimeLimit::Total(timeout),
+        };
         // On timeout git and the transport helpers it started are killed.
         let run = repo
             .runner
-            .run_with_timeout(&repo.worktree, &args, CmdKind::Write, timeout)
+            .run_with_timeout(&repo.worktree, &args, CmdKind::Write, limit)
             .await;
         let (error, detail) = match run {
             Ok(None) => (Some(TIMED_OUT.to_owned()), None),
             Ok(Some(out)) if out.code == 0 => (None, None),
-            Ok(Some(out)) => (
-                Some(fetch_error(&out.stderr, out.code)),
-                Some(out.stderr).filter(|s| !s.trim().is_empty()),
-            ),
+            Ok(Some(out)) => {
+                let stderr = without_progress(&out.stderr);
+                (
+                    Some(fetch_error(&stderr, out.code)),
+                    Some(stderr).filter(|s| !s.trim().is_empty()),
+                )
+            }
             Err(e) => (Some(e.message), e.detail),
         };
         let finished = {
@@ -288,11 +303,24 @@ fn fetch_error(stderr: &str, code: i32) -> String {
     let lines = || stderr.lines().map(str::trim).filter(|l| !l.is_empty());
     lines()
         .find(|l| l.starts_with("fatal:") || l.starts_with("error:"))
-        .or_else(|| lines().last())
+        .or_else(|| lines().next_back())
         .map_or_else(
             || format!("git fetch exited with code {code}"),
             str::to_owned,
         )
+}
+
+/// `stderr` with each progress line (redrawn with carriage returns) reduced to its last
+/// state, as a terminal would show it.
+fn without_progress(stderr: &str) -> String {
+    let mut out = String::with_capacity(stderr.len());
+    for line in stderr.split_inclusive('\n') {
+        let (body, end) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        out.push_str(body.rsplit('\r').next().unwrap_or(body));
+        out.push_str(end);
+    }
+    out
 }
 
 /// Current time in unix milliseconds.
@@ -402,6 +430,22 @@ mod tests {
         );
         assert_eq!(fetch_error("From x\nsomething odd\n\n", 1), "something odd");
         assert_eq!(fetch_error("  \n", 128), "git fetch exited with code 128");
+    }
+
+    #[test]
+    fn progress_lines_keep_their_last_state() {
+        assert_eq!(
+            without_progress(
+                "remote: Counting objects:  50% (1/2)\rremote: Counting objects: 100% (2/2), done.\n\
+                 Receiving objects:  10% (1/9)\rReceiving objects: 100% (9/9), done.\r\n\
+                 fatal: the end\n"
+            ),
+            "remote: Counting objects: 100% (2/2), done.\n\
+             Receiving objects: 100% (9/9), done.\n\
+             fatal: the end\n"
+        );
+        assert_eq!(without_progress("no newline"), "no newline");
+        assert_eq!(without_progress(""), "");
     }
 
     #[test]

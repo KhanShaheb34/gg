@@ -69,6 +69,15 @@ pub enum CmdKind {
     Write,
 }
 
+/// When [`GitRunner::run_with_timeout`] gives up on a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeLimit {
+    /// After this long, whatever it is doing.
+    Total(Duration),
+    /// Once it has written nothing (stdout or stderr) for this long.
+    Idle(Duration),
+}
+
 /// Result of a finished git command.
 #[derive(Debug, Clone)]
 pub struct GitOutput {
@@ -292,23 +301,23 @@ impl GitRunner {
         }
     }
 
-    /// Like [`GitRunner::run_unchecked`], but gives up after `timeout`: then git and
+    /// Like [`GitRunner::run_unchecked`], but gives up when `limit` is reached: then git and
     /// everything it started (a remote helper, ssh) are killed, the command is logged as
     /// timed out, and the result is `Ok(None)`. On Unix git runs in its own process group
     /// for this; elsewhere only git itself is killed.
     ///
     /// The group's id is git's pid, taken at spawn. On timeout the group is killed even when
     /// git has already exited (a helper it started still holding its output open): a group
-    /// id is not reused while the group has members. Then git is waited for. Its own group also means that, under a terminal, a
-    /// helper that tries to read the terminal (an ssh passphrase prompt; git's own prompts are
-    /// off) is stopped rather than prompting, until the timeout kills it. In the app there is
-    /// no terminal and such a prompt fails at once.
+    /// id is not reused while the group has members. Then git is waited for. Its own group
+    /// also means that, under a terminal, a helper that tries to read the terminal (an ssh
+    /// passphrase prompt; git's own prompts are off) is stopped rather than prompting, until
+    /// the timeout kills it. In the app there is no terminal and such a prompt fails at once.
     pub async fn run_with_timeout(
         &self,
         cwd: &Path,
         args: &[&str],
         kind: CmdKind,
-        timeout: Duration,
+        limit: TimeLimit,
     ) -> Result<Option<GitOutput>> {
         use tokio::io::AsyncReadExt;
 
@@ -327,28 +336,55 @@ impl GitRunner {
         let group = child.id();
         let mut stdout_pipe = child.stdout.take();
         let mut stderr_pipe = child.stderr.take();
+        // When git last wrote anything, for an idle limit.
+        let last_output = Mutex::new(tokio::time::Instant::now());
+        let output_seen =
+            || *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
         let read = async {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let read_out = async {
                 if let Some(p) = stdout_pipe.as_mut() {
-                    let _ = p.read_to_end(&mut out).await;
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n @ 1..) = p.read(&mut buf).await {
+                        out.extend_from_slice(&buf[..n]);
+                        output_seen();
+                    }
                 }
             };
             let read_err = async {
                 if let Some(p) = stderr_pipe.as_mut() {
-                    let _ = p.read_to_end(&mut err).await;
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n @ 1..) = p.read(&mut buf).await {
+                        err.extend_from_slice(&buf[..n]);
+                        output_seen();
+                    }
                 }
             };
             tokio::join!(read_out, read_err);
             (out, err)
         };
-        let finished = tokio::time::timeout(timeout, async {
+        let run = async {
             let ((out, err), status) = tokio::join!(read, child.wait());
             (out, err, status)
-        })
-        .await;
+        };
+        let expired = async {
+            match limit {
+                TimeLimit::Total(timeout) => tokio::time::sleep(timeout).await,
+                TimeLimit::Idle(idle) => loop {
+                    let due = *last_output.lock().unwrap_or_else(|e| e.into_inner()) + idle;
+                    if tokio::time::Instant::now() >= due {
+                        break;
+                    }
+                    tokio::time::sleep_until(due).await;
+                },
+            }
+        };
+        let finished = tokio::select! {
+            done = run => Some(done),
+            () = expired => None,
+        };
         match finished {
-            Ok((out, err, Ok(status))) => {
+            Some((out, err, Ok(status))) => {
                 let code = status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&err).into_owned();
                 self.log.push(kind, cwd, args, started, code, &out, &stderr);
@@ -358,8 +394,8 @@ impl GitRunner {
                     code,
                 }))
             }
-            Ok((_, _, Err(e))) => Err(fail(e)),
-            Err(_) => {
+            Some((_, _, Err(e))) => Err(fail(e)),
+            None => {
                 #[cfg(unix)]
                 if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
                     // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.

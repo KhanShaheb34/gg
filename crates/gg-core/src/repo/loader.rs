@@ -130,12 +130,14 @@ async fn load(mut guard: LoadGuard, sink: Arc<dyn EventSink>, args: Vec<String>)
         guard.finished = true;
         slot.snapshot_to_emit(&repo.identity, false)
     };
-    if let Err(error) = result {
-        repo.report_error(
+    match result {
+        Err(error) => repo.report_error(
             sink.as_ref(),
             ErrorKind::Load,
             serde_json::json!({ "repoId": repo.identity.repo_id, "error": error }),
-        );
+        ),
+        // A load error held for the UI from an earlier load is out of date now.
+        Ok(()) => repo.clear_held_error(ErrorKind::Load),
     }
     repo.publish(sink.as_ref(), to_emit);
 }

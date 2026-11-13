@@ -110,15 +110,19 @@ impl Core {
             }
             "save_session" => {
                 let a: SaveSessionArgs = parse(cmd, args)?;
-                self.store.save_session(Session {
+                let session = Session {
                     tabs: a.tabs,
                     active: a.active,
-                })?;
+                };
+                self.blocking(move |core| core.store.save_session(session))
+                    .await?;
                 Ok(Value::Null)
             }
             "update_settings" => {
                 let a: UpdateSettingsArgs = parse(cmd, args)?;
-                let settings = self.store.update_settings(a.patch)?;
+                let settings = self
+                    .blocking(move |core| core.store.update_settings(a.patch))
+                    .await?;
                 if let Ok(repos) = self.repos() {
                     repos.set_fetch_interval(settings.fetch_interval_secs);
                 }
@@ -126,14 +130,20 @@ impl Core {
             }
             "remove_recent" => {
                 let a: RemoveRecentArgs = parse(cmd, args)?;
-                to_json(self.store.remove_recent(&a.path)?)
+                to_json(
+                    self.blocking(move |core| core.store.remove_recent(&a.path))
+                        .await?,
+                )
             }
             "open_repo" => {
                 let a: OpenRepoArgs = parse(cmd, args)?;
                 let snapshot = self.repos()?.open(&a.path).await?;
                 // The repository is open either way; a recent that cannot be saved is only
                 // missing from the next start's list.
-                let _ = self.store.add_recent(Path::new(&snapshot.root_path));
+                let root = snapshot.root_path.clone();
+                let _ = self
+                    .blocking(move |core| core.store.add_recent(Path::new(&root)))
+                    .await;
                 to_json(snapshot)
             }
             "close_repo" => {
@@ -174,7 +184,7 @@ impl Core {
                 let a: RepoArgs = parse(cmd, args)?;
                 let repos = self.repos()?.clone();
                 // Fails for an unknown repository; the fetch's own outcome arrives as events.
-                repos.snapshot(a.repo_id).await?;
+                repos.check_open(a.repo_id)?;
                 // On its own task, so a caller that goes away (a closed HTTP request) does
                 // not cancel it.
                 tokio::spawn(async move {
@@ -200,7 +210,8 @@ impl Core {
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;
-                self.perf_mark(&a.name, a.ms)?;
+                self.blocking(move |core| core.perf_mark(&a.name, a.ms))
+                    .await?;
                 Ok(Value::Null)
             }
             _ => Err(CoreError::new(
@@ -208,6 +219,20 @@ impl Core {
                 format!("Unknown command: {cmd}"),
             )),
         }
+    }
+
+    /// Runs `f`, which does file I/O (the store writes and syncs `state.json` under its
+    /// lock), on Tokio's blocking pool rather than on an async worker.
+    async fn blocking<T: Send + 'static>(
+        self: &Arc<Self>,
+        f: impl FnOnce(&Core) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let core = self.clone();
+        tokio::task::spawn_blocking(move || f(&core))
+            .await
+            .unwrap_or_else(|e| {
+                Err(CoreError::new(ErrorCode::Io, "Could not save").with_detail(e.to_string()))
+            })
     }
 
     fn app_state(&self) -> AppState {

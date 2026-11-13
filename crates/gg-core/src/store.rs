@@ -1,10 +1,12 @@
 //! The persistent store: recent repositories, the open tabs and settings, kept in
 //! `<config_dir>/state.json`.
 //!
-//! The file is read once, when the store is created; a missing file gives defaults and an
-//! unreadable one is renamed to `state.json.bad` first. Every change is written at once and
-//! atomically (a temp file renamed over the old one). A change that cannot be written is an
-//! `Io` error and is not applied in memory either.
+//! The file is read once, when the store is created; a missing file gives defaults and one
+//! that cannot be parsed is renamed to `state.json.bad` first. A file that exists but cannot
+//! be read (permissions, say) also gives defaults, but is never written over: every change
+//! then fails. Every change is written at once and atomically (a temp file renamed over the
+//! old one). A change that cannot be written is an `Io` error and is not applied in memory
+//! either.
 
 use std::fs;
 use std::io::{self, Write as _};
@@ -47,28 +49,41 @@ struct StoreData {
 pub struct Store {
     dir: PathBuf,
     data: Mutex<StoreData>,
+    /// Why `state.json` could not be read, when it exists but could not be: it is not
+    /// written over.
+    unreadable: Option<String>,
 }
 
 impl Store {
     /// Loads `<config_dir>/state.json`. Never fails: a missing file gives defaults, and a
-    /// file that cannot be parsed is renamed to `state.json.bad` and gives defaults. The
-    /// directory is created on the first write.
+    /// file that cannot be parsed is renamed to `state.json.bad` and gives defaults. A file
+    /// that cannot be read gives defaults too, and makes every change fail rather than
+    /// replace it. The directory is created on the first write.
     pub fn load(config_dir: &Path) -> Self {
         let path = config_dir.join(FILE_NAME);
+        let mut unreadable = None;
         let data = match fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<StoreData>(&bytes) {
                 Ok(data) => data.sanitized(),
                 Err(_) => {
-                    // Keep it for the user to look at; the next write replaces it anyway.
-                    let _ = fs::rename(&path, config_dir.join(BAD_FILE_NAME));
+                    // Kept for the user to look at. If it cannot be moved aside, it is not
+                    // written over either.
+                    if let Err(e) = fs::rename(&path, config_dir.join(BAD_FILE_NAME)) {
+                        unreadable = Some(e.to_string());
+                    }
                     StoreData::default()
                 }
             },
-            Err(_) => StoreData::default(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => StoreData::default(),
+            Err(e) => {
+                unreadable = Some(e.to_string());
+                StoreData::default()
+            }
         };
         Self {
             dir: config_dir.to_path_buf(),
             data: Mutex::new(data),
+            unreadable,
         }
     }
 
@@ -151,6 +166,16 @@ impl Store {
     /// Applies `f` to a copy of the data and writes it; the copy replaces the data in memory
     /// only once it is written. Holds the lock throughout, so writes land in order.
     fn change<R>(&self, f: impl FnOnce(&mut StoreData) -> Result<R>) -> Result<R> {
+        if let Some(error) = &self.unreadable {
+            return Err(CoreError::new(
+                ErrorCode::Io,
+                format!(
+                    "Settings are not saved: {} could not be read, and is kept as it is",
+                    self.dir.join(FILE_NAME).display()
+                ),
+            )
+            .with_detail(error.clone()));
+        }
         let mut data = self.lock();
         let mut next = data.clone();
         let out = f(&mut next)?;
@@ -383,6 +408,31 @@ mod tests {
             serde_json::from_value::<SettingsPatch>(serde_json::json!({"color": 1})).is_err(),
             "unknown settings are rejected"
         );
+    }
+
+    /// A file that exists but cannot be read (here: no permission) is the user's data: it
+    /// gives defaults for now, and nothing is written over it.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_never_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let contents = r#"{"settings":{"theme":"dark","fetchIntervalSecs":600}}"#;
+        fs::write(&path, contents).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let store = Store::load(dir.path());
+        assert_eq!(store.settings().fetch_interval_secs, 300);
+        let err = store.save_session(Session::default()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io);
+        assert!(err.message.contains("could not be read"), "{}", err.message);
+        assert!(
+            store
+                .update_settings(patch(serde_json::json!({"theme": "light"})))
+                .is_err()
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), contents);
     }
 
     #[test]

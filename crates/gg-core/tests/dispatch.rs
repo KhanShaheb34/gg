@@ -102,6 +102,10 @@ async fn malformed_args_is_bad_request() {
         ("get_app_state", json!([])),
         ("update_settings", json!({"patch": {"theme": "blue"}})),
         ("set_window_focused", json!({})),
+        (
+            "set_view_options",
+            json!({"repoId": 1, "options": {"branches": null, "showRemotes": true, "showTags": true, "showStashes": true}}),
+        ),
     ] {
         let err = h.fail(cmd, args.clone()).await;
         assert_eq!(err.code, ErrorCode::BadRequest, "{cmd} {args}");
@@ -357,6 +361,89 @@ async fn errors_of_a_pre_opened_repo_reach_the_ui_once() {
     assert_eq!(repo_errors(&sink).len(), 1, "delivered again");
 }
 
+/// Moves the loose object of commit `hash` out of `repo` (so `git log` fails on it) and
+/// returns a closure that puts it back.
+fn hide_object(repo: &TestRepo, hash: &str) -> impl FnOnce() {
+    let from = repo
+        .path()
+        .join(".git/objects")
+        .join(&hash[..2])
+        .join(&hash[2..]);
+    let to = repo.path().join(".git/hidden-object");
+    std::fs::rename(&from, &to).expect("the commit is a loose object");
+    move || std::fs::rename(&to, &from).unwrap()
+}
+
+/// Waits until `n` snapshots of repository `id` with `loading: false` have been emitted.
+async fn wait_loaded_events(sink: &RecordingSink, id: u64, n: usize) {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let loaded = sink
+            .events()
+            .iter()
+            .filter(|(name, v)| {
+                name == "repo-changed" && v["repoId"] == id && v["loading"] == false
+            })
+            .count();
+        if loaded >= n {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "repository {id} did not load {n} times"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A failed log load of a repository opened at start is held like any other error, and
+/// delivered once to the UI's `open_repo`.
+#[tokio::test]
+async fn a_failed_load_of_a_pre_opened_repo_reaches_the_ui_once() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    repo.commit("two");
+    let _restore = hide_object(&repo, &first);
+    let config = tempfile::tempdir().unwrap();
+    let (core, sink) = core_with_session(config.path(), &[], Some(repo.path())).await;
+    core.open_startup_repos();
+    wait_loaded_event(&sink, 1).await;
+    assert!(repo_errors(&sink).is_empty(), "nobody is listening yet");
+
+    core.dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    let errors = repo_errors(&sink);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0]["repoId"], 1);
+    assert_eq!(errors[0]["error"]["code"], "git_failed");
+}
+
+/// A failed load that a later reload makes good is not reported when the UI finally asks.
+#[tokio::test]
+async fn a_held_load_error_is_dropped_when_a_reload_succeeds() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    repo.commit("two");
+    let restore = hide_object(&repo, &first);
+    let config = tempfile::tempdir().unwrap();
+    let (core, sink) = core_with_session(config.path(), &[], Some(repo.path())).await;
+    core.open_startup_repos();
+    wait_loaded_events(&sink, 1, 1).await;
+
+    restore();
+    core.dispatch("refresh", json!({ "repoId": 1 }))
+        .await
+        .unwrap();
+    wait_loaded_events(&sink, 1, 2).await;
+    let snap = core
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["totalRows"], 2, "the reload read the whole history");
+    assert!(repo_errors(&sink).is_empty(), "{:?}", repo_errors(&sink));
+}
+
 /// The same failure for a repository the UI opens itself is reported at once, as before.
 #[tokio::test]
 async fn errors_of_a_repo_the_ui_opens_are_reported_at_once() {
@@ -580,6 +667,20 @@ async fn perf_marks_are_kept_and_logged() {
     h.call("perf_mark", json!({"name": "later", "ms": 1})).await;
     assert_eq!(h.core.perf_marks().len(), 3);
     assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
+}
+
+/// Marks kept in memory are bounded: the oldest go once there are 1,000.
+#[tokio::test]
+async fn perf_marks_in_memory_are_bounded() {
+    let h = harness().await;
+    for i in 0..1_200 {
+        h.call("perf_mark", json!({"name": format!("m{i}"), "ms": i}))
+            .await;
+    }
+    let marks = h.core.perf_marks();
+    assert_eq!(marks.len(), 1_000);
+    assert_eq!(marks[0].0, "m200");
+    assert_eq!(marks[999].0, "m1199");
 }
 
 /// `fetch` returns as soon as the fetch has started; progress arrives as events.

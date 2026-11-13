@@ -44,6 +44,9 @@ pub struct Core {
     perf: Mutex<Perf>,
 }
 
+/// Most perf marks kept in memory; older ones go first (the perf log keeps them all).
+const MAX_PERF_MARKS: usize = 1_000;
+
 /// Perf marks reported by the UI.
 #[derive(Default)]
 struct Perf {
@@ -131,6 +134,10 @@ impl Core {
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         let mut perf = self.perf();
+        if perf.marks.len() >= MAX_PERF_MARKS {
+            let excess = perf.marks.len() + 1 - MAX_PERF_MARKS;
+            perf.marks.drain(..excess);
+        }
         perf.marks.push((name.clone(), ms));
         let Some(path) = &perf.log else {
             return Ok(());

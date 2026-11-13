@@ -192,6 +192,15 @@ impl Repo {
         }
     }
 
+    /// Forgets a held error of `kind` that no longer applies: a later load succeeded.
+    pub(super) fn clear_held_error(&self, kind: ErrorKind) {
+        let mut held = lock(&self.errors);
+        match kind {
+            ErrorKind::Load => held.load = None,
+            ErrorKind::LiveUpdates => held.live_updates = None,
+        }
+    }
+
     /// Marks the repository as asked for by the UI and emits the errors held until now.
     fn adopt(&self, sink: &dyn EventSink) {
         let held = {
@@ -414,6 +423,11 @@ impl RepoManager {
         }
         repo.loading.send_replace(None);
         Ok(())
+    }
+
+    /// `Ok` if repository `repo_id` is open, else `unknown_repo`.
+    pub fn check_open(&self, repo_id: u32) -> Result<()> {
+        self.get(repo_id).map(|_| ())
     }
 
     pub async fn snapshot(&self, repo_id: u32) -> Result<RepoSnapshot> {

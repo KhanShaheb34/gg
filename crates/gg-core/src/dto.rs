@@ -7,7 +7,7 @@ pub use crate::graph::Edge;
 
 /// Which refs the graph shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ViewOptions {
     /// Short names of the branches to show (local or remote); `None` shows all.
     pub branches: Option<Vec<String>>,

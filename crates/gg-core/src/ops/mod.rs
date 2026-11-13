@@ -21,7 +21,9 @@ pub(crate) use danger::dangers;
 pub use explain::explain;
 
 use crate::EventSink;
-use crate::dto::{Danger, DangerKind, HeadInfo, OpHint, OpOutcome, OpRequest, OpStatus};
+use crate::dto::{
+    Danger, DangerKind, HeadInfo, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus,
+};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, GitOutput, GitRunner, TimeLimit};
@@ -32,6 +34,8 @@ use crate::repo::{Repo, RepoManager};
 pub enum Step {
     /// It worked; a plain line saying what was done.
     Done(String),
+    /// It worked, and these follow-ups are worth offering (push after a merge).
+    DoneWithHints { message: String, hints: Vec<OpHint> },
     /// git stopped on conflicts (not a failure); a plain line saying so.
     Stopped(String),
     /// It failed: a plain line (an explanation where one is known), git's own output and
@@ -200,7 +204,6 @@ struct Prepared {
 /// `bad_name` for a bad name, `bad_request` for a bad argument or an operation not built
 /// yet. Every operation is matched here, once.
 fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
-    let _ = head;
     let (title, body) = match request.clone() {
         OpRequest::CheckoutBranch {
             branch,
@@ -272,6 +275,36 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
                 }),
             )
         }
+        OpRequest::Merge {
+            target,
+            no_ff,
+            squash,
+            no_commit,
+        } => {
+            match target.kind {
+                MergeTargetKind::Commit => check_commit(&target.name)?,
+                _ => check_arg(&target.name, "branch")?,
+            }
+            let shown = match target.kind {
+                MergeTargetKind::Commit => local::short(&target.name).to_owned(),
+                _ => target.name.clone(),
+            };
+            (
+                format!("Merge {shown} into {}", head_name(head)),
+                body(move |ctx, _| {
+                    Box::pin(
+                        async move { local::merge(ctx, &target, no_ff, squash, no_commit).await },
+                    )
+                }),
+            )
+        }
+        OpRequest::Rebase { onto } => {
+            check_arg(&onto, "branch")?;
+            (
+                format!("Rebase {} onto {onto}", head_name(head)),
+                body(move |ctx, _| Box::pin(async move { local::rebase(ctx, &onto).await })),
+            )
+        }
         _ => {
             return Err(CoreError::new(
                 ErrorCode::BadRequest,
@@ -280,6 +313,11 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         }
     };
     Ok(Prepared { title, body })
+}
+
+/// HEAD's branch for a title, or "detached HEAD".
+fn head_name(head: &HeadInfo) -> &str {
+    head.branch.as_deref().unwrap_or("detached HEAD")
 }
 
 /// `Ok` if `at` can be given to git as a commit: not empty and not option-like.
@@ -386,6 +424,10 @@ impl RepoManager {
         };
         match ran {
             Ran::Step(Step::Done(message)) => outcome.message = message,
+            Ran::Step(Step::DoneWithHints { message, hints }) => {
+                outcome.message = message;
+                outcome.hints = hints;
+            }
             Ran::Step(Step::Stopped(message)) => {
                 outcome.status = OpStatus::Stopped;
                 outcome.message = message;

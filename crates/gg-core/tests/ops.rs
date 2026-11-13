@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gg_core::Core;
-use gg_core::dto::{DangerKind, OpOutcome, OpRequest, OpStatus, RepoSnapshot};
+use gg_core::dto::{
+    DangerKind, MergeTarget, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus, RepoSnapshot,
+};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::{CmdKind, CommandLog, CommandRecord, GitRunner};
 use gg_core::ops::{Step, explain};
@@ -969,4 +971,384 @@ async fn branch_not_merged_into_its_upstream_explains() {
     );
     assert!(out.detail.unwrap().contains("not fully merged"));
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
+}
+
+// ---- Local operations: merge and rebase ----
+
+fn merge(
+    kind: MergeTargetKind,
+    name: &str,
+    no_ff: bool,
+    squash: bool,
+    no_commit: bool,
+) -> OpRequest {
+    OpRequest::Merge {
+        target: MergeTarget {
+            kind,
+            name: name.to_owned(),
+        },
+        no_ff,
+        squash,
+        no_commit,
+    }
+}
+
+fn merge_branch(name: &str) -> OpRequest {
+    merge(MergeTargetKind::Branch, name, true, false, false)
+}
+
+fn rebase(onto: &str) -> OpRequest {
+    OpRequest::Rebase {
+        onto: onto.to_owned(),
+    }
+}
+
+/// `main` and `feature`, each with one commit of its own after `base`, touching different
+/// files. HEAD on `main`. Returns the tip of `feature`.
+fn diverged(repo: &TestRepo) -> String {
+    repo.commit("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    let tip = repo.commit("on feature");
+    repo.checkout("main");
+    repo.commit("on main");
+    tip
+}
+
+/// `main` and `feature` both change `clash.txt` after `base`. HEAD on `main`.
+fn conflicting(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+}
+
+/// Whether `name` (`MERGE_HEAD`, `rebase-merge`, …) exists in the repository's git dir.
+fn in_git_dir(repo: &TestRepo, name: &str) -> bool {
+    repo.path().join(".git").join(name).exists()
+}
+
+fn parents(repo: &TestRepo, rev: &str) -> usize {
+    repo.git(&["rev-list", "--parents", "-n", "1", rev])
+        .split(' ')
+        .count()
+        - 1
+}
+
+#[tokio::test]
+async fn merge_no_ff_creates_a_merge_commit_and_ff_does_not() {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    repo.branch("a");
+    repo.branch("b");
+    repo.checkout("a");
+    let a_tip = repo.commit("on a");
+    repo.checkout("b");
+    let b_tip = repo.commit("on b");
+    repo.checkout("main");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(id, merge(MergeTargetKind::Branch, "a", true, false, false))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Merge a into main");
+    assert_eq!(parents(&repo, "HEAD"), 2);
+    assert_eq!(repo.git(&["rev-parse", "HEAD^2"]), a_tip);
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "Merge branch 'a'");
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["merge", "--no-edit", "--no-ff", "a"])
+    );
+    // No remote: nothing to push to.
+    assert!(out.hints.is_empty(), "{:?}", out.hints);
+
+    repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    let out = h
+        .run(id, merge(MergeTargetKind::Branch, "b", false, false, false))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), b_tip, "fast-forwarded");
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["merge", "--no-edit", "--ff", "b"])
+    );
+}
+
+#[tokio::test]
+async fn merge_of_a_remote_branch_and_of_a_commit() {
+    let repo = TestRepo::new();
+    let tip = diverged(&repo);
+    let _origin = repo.clone_as_remote();
+    let main_tip = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            merge(
+                MergeTargetKind::Remote,
+                "origin/feature",
+                true,
+                false,
+                false,
+            ),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD^2"]), tip);
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "Merge remote-tracking branch 'origin/feature'"
+    );
+
+    repo.git(&["reset", "-q", "--hard", &main_tip]);
+    let out = h
+        .run(id, merge(MergeTargetKind::Commit, &tip, true, false, false))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD^2"]), tip);
+}
+
+/// A tag named like the branch does not take its place.
+#[tokio::test]
+async fn merge_of_a_branch_named_like_a_tag_merges_the_branch() {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    let old = repo.git(&["rev-parse", "HEAD"]);
+    let tip = diverged(&repo);
+    repo.git(&["tag", "feature", &old]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, merge_branch("feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD^2"]), tip);
+}
+
+#[tokio::test]
+async fn merge_squash_leaves_changes_staged() {
+    let repo = TestRepo::new();
+    diverged(&repo);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    // noFf is ignored with squash (git refuses the two together).
+    let out = h
+        .run(
+            id,
+            merge(MergeTargetKind::Branch, "feature", true, true, false),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD"]),
+        before,
+        "nothing committed"
+    );
+    assert!(!repo.git(&["diff", "--cached", "--name-only"]).is_empty());
+    assert!(!in_git_dir(&repo, "MERGE_HEAD"));
+    assert!(out.hints.is_empty());
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["merge", "--no-edit", "--ff", "--squash", "feature"])
+    );
+}
+
+#[tokio::test]
+async fn merge_no_commit_leaves_merge_in_progress_without_conflicts() {
+    let repo = TestRepo::new();
+    diverged(&repo);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            merge(MergeTargetKind::Branch, "feature", true, false, true),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
+    assert!(out.message.contains("commit"), "{}", out.message);
+}
+
+#[tokio::test]
+async fn merge_with_conflicts_stops() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let started = std::time::Instant::now();
+    let out = h.run(id, merge_branch("feature")).await;
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+    assert!(out.message.contains("conflict"), "{}", out.message);
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
+    assert_eq!(out.detail, None);
+}
+
+#[tokio::test]
+async fn merge_already_up_to_date_is_done() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("same");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, merge_branch("same")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        out.message.starts_with("Already up to date"),
+        "{}",
+        out.message
+    );
+    assert!(out.hints.is_empty());
+}
+
+/// After a merge, push is offered: to the upstream, or, without one, to the only remote
+/// (setting it as upstream).
+#[tokio::test]
+async fn merge_hints_push_when_there_is_somewhere_to_push() {
+    let repo = TestRepo::new();
+    diverged(&repo);
+    let main_tip = repo.git(&["rev-parse", "HEAD"]);
+    let _origin = repo.clone_as_remote();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, merge_branch("feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(
+        out.hints,
+        [OpHint::Push {
+            branch: "main".into(),
+            remote: "origin".into(),
+            set_upstream: true,
+        }]
+    );
+
+    repo.git(&["reset", "-q", "--hard", &main_tip]);
+    repo.git(&["branch", "-q", "-u", "origin/main", "main"]);
+    let out = h.run(id, merge_branch("feature")).await;
+    assert_eq!(
+        out.hints,
+        [OpHint::Push {
+            branch: "main".into(),
+            remote: "origin".into(),
+            set_upstream: false,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn rebase_replays_the_branch_onto_another() {
+    let repo = TestRepo::new();
+    let feature_tip = diverged(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, rebase("feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Rebase main onto feature");
+    assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), feature_tip);
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "on main");
+    assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+
+    let out = h.run(id, rebase("feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        out.message.starts_with("Already up to date"),
+        "{}",
+        out.message
+    );
+}
+
+#[tokio::test]
+async fn rebase_onto_a_remote_branch() {
+    let repo = TestRepo::new();
+    let feature_tip = diverged(&repo);
+    let _origin = repo.clone_as_remote();
+    repo.git(&["branch", "-D", "feature"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, rebase("origin/feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), feature_tip);
+}
+
+#[tokio::test]
+async fn rebase_with_conflicts_stops() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let started = std::time::Instant::now();
+    let out = h.run(id, rebase("feature")).await;
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+    assert!(in_git_dir(&repo, "rebase-merge") || in_git_dir(&repo, "rebase-apply"));
+}
+
+#[tokio::test]
+async fn operations_on_detached_head() {
+    let repo = TestRepo::new();
+    let feature_tip = diverged(&repo);
+    repo.git(&["checkout", "-q", "--detach"]);
+    let detached = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, merge_branch("feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Merge feature into detached HEAD");
+    assert_eq!(current_branch(&repo), None);
+    assert_eq!(repo.git(&["rev-parse", "HEAD^2"]), feature_tip);
+    assert!(out.hints.is_empty());
+
+    repo.git(&["checkout", "-q", "--detach", &detached]);
+    let mark = h.last_log_id();
+    let out = h.run(id, rebase("feature")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(out.message.contains("HEAD is detached"), "{}", out.message);
+    assert!(h.writes_since(mark).is_empty());
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), detached);
+}
+
+/// The detached-HEAD explanation, on git's own words for it.
+#[tokio::test]
+async fn no_current_branch_explains() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&["checkout", "-q", "--detach"]);
+    let runner = GitRunner::detect(CommandLog::new()).await.unwrap();
+    for args in [&["rebase"][..], &["merge"][..]] {
+        let out = runner
+            .run_unchecked(repo.path(), args, CmdKind::Write)
+            .await
+            .unwrap();
+        assert_ne!(out.code, 0);
+        match explain(args, &out) {
+            Step::Failed { message, .. } => {
+                assert!(message.contains("HEAD is detached"), "{args:?}: {message}");
+            }
+            other => panic!("not a failure: {other:?}"),
+        }
+    }
 }

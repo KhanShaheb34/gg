@@ -573,14 +573,53 @@ test("resizing the panel keeps the graph's rows (no new row elements) and its to
   expect(top - strip.y).toBeLessThanOrEqual(2);
 });
 
-test("a short message leaves the changed files more room", async ({ gg }) => {
+test("the column divider stays put from commit to commit, short message or long", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  // The scaffolding commit has a long message; the merge and "Main work" short ones.
+  await rowWith(page, "Generate the module scaffolding").click();
+  const p = panel(page);
+  const divider = async () => (await p.getByTestId("details-files-count").locator("../..").boundingBox())!.x;
+  const at = await divider();
+  for (const subject of ["Merge branch 'side'", "Main work"]) {
+    await page.keyboard.press("ArrowDown");
+    await expect(p.getByTestId("details-message")).toContainText(subject);
+    expect(await divider()).toBe(at);
+  }
+  // 44 % of the panel by default.
+  const width = (await p.boundingBox())!.width;
+  expect(Math.abs(at - (await p.boundingBox())!.x - Math.round(width * 0.44))).toBeLessThanOrEqual(1);
+});
+
+test("the column divider can be dragged, keeps both minimums, is remembered and resets", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("details"));
   await rowWith(page, "Main work").click();
   const p = panel(page);
-  const info = (await p.getByTestId("details-message").locator("..").boundingBox())!;
-  const files = (await p.getByTestId("details-files-count").locator("../..").boundingBox())!;
-  expect(info.width).toBeGreaterThanOrEqual(320);
-  expect(files.width).toBeGreaterThan(info.width * 1.4);
+  const handle = p.getByRole("separator", { name: "Resize details columns" });
+  const infoWidth = async () => (await p.getByTestId("details-message").locator("..").boundingBox())!.width;
+  const drag = async (dx: number) => {
+    const box = (await handle.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.up();
+  };
+  const before = await infoWidth();
+  await drag(-100);
+  await expect.poll(infoWidth).toBeCloseTo(before - 100, 0);
+  await drag(-2000);
+  await expect.poll(infoWidth).toBeCloseTo(320, 0);
+  await drag(4000);
+  const panelW = (await p.boundingBox())!.width;
+  await expect.poll(infoWidth).toBeCloseTo(panelW - 280, 0);
+  await drag(-300);
+  const chosen = await infoWidth();
+  await page.reload();
+  await rowWith(page, "Main work").click();
+  await expect.poll(infoWidth).toBeCloseTo(chosen, 0);
+  await handle.dblclick();
+  await expect.poll(infoWidth).toBeCloseTo(Math.round(panelW * 0.44), 0);
 });

@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import { DEFAULT_SPLIT, infoWidth, splitFor } from "../detailsLayout";
   import { formatDateLong, groupDigits, shortHash } from "../format";
   import { api, CoreError } from "../ipc";
   import { toast } from "../state/app.svelte";
@@ -42,14 +43,15 @@
   /** Room the graph keeps above the panel, px (matches the graph area's min-height). */
   const MIN_GRAPH_H = 160;
 
-  function readStored(): { height: number; files: FileView } {
-    const out = { height: DEFAULT_H, files: "tree" as FileView };
+  function readStored(): { height: number; files: FileView; split: number } {
+    const out = { height: DEFAULT_H, files: "tree" as FileView, split: DEFAULT_SPLIT };
     try {
       const raw: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
       if (raw && typeof raw === "object") {
         const o = raw as Record<string, unknown>;
         if (typeof o.height === "number" && Number.isFinite(o.height)) out.height = Math.max(MIN_H, Math.round(o.height));
         if (o.files === "tree" || o.files === "list") out.files = o.files;
+        if (typeof o.split === "number" && o.split > 0 && o.split < 1) out.split = o.split;
       }
     } catch {
       // Defaults, then.
@@ -57,7 +59,10 @@
     return out;
   }
 
-  /** The height the user chose (kept when the window is too small for it), and the file view. */
+  /**
+   * The height the user chose (kept when the window is too small for it), the file view, and
+   * the share of the panel's width the information column takes.
+   */
   let prefs = $state(readStored());
 
   function save() {
@@ -74,10 +79,18 @@
   /** The height shown: the chosen one, as far as the window allows. */
   const height = $derived(Math.max(MIN_H, Math.min(prefs.height, room)));
 
+  /** The panel's width, px. */
+  let panelW = $state(0);
+  /** Width of the information column: the user's share of the panel, never the content's. */
+  const infoW = $derived(infoWidth(prefs.split, panelW));
+
   $effect(() => {
     const host = panel?.parentElement;
     if (!host) return;
-    const measure = () => (room = host.clientHeight - MIN_GRAPH_H);
+    const measure = () => {
+      room = host.clientHeight - MIN_GRAPH_H;
+      panelW = host.clientWidth;
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(host);
@@ -91,6 +104,17 @@
     onend: save,
     onreset: () => {
       prefs.height = DEFAULT_H;
+      save();
+    },
+  };
+
+  let splitFrom = 0;
+  const splitter = {
+    onstart: () => (splitFrom = infoW),
+    onmove: (dx: number) => (prefs.split = splitFor(splitFrom + dx, panelW)),
+    onend: save,
+    onreset: () => {
+      prefs.split = DEFAULT_SPLIT;
       save();
     },
   };
@@ -119,15 +143,6 @@
   /** The message's first line, shown as its title, and the rest as written. */
   const title = $derived(message.split("\n", 1)[0]);
   const rest = $derived(message.slice(title.length));
-  /**
-   * The information column is as wide as the message's longest line needs (within 48 to 80
-   * characters, at most half the panel); the files take the rest.
-   */
-  const infoCh = $derived.by(() => {
-    let longest = 0;
-    for (const line of message.split("\n")) longest = Math.max(longest, line.length);
-    return Math.min(80, Math.max(48, longest + 4));
-  });
 
   const files = $derived(details?.files ?? []);
   const totals = $derived.by(() => {
@@ -252,7 +267,7 @@
     data-testid="commit-details"
     bind:this={panel}
     style:height="{height}px"
-    style:--info-w="{infoCh}ch"
+    style:--info-w="{infoW}px"
   >
     <Splitter label="Resize details panel" edge="top" value={height} {...resizer} />
 
@@ -311,6 +326,7 @@
     </div>
 
     <div class="changes">
+      <Splitter label="Resize details columns" edge="left" value={infoW} {...splitter} />
       <div class="changes-head">
         {#if details}
           <span class="count" data-testid="details-files-count">{plural(files.length, "file")} changed</span>
@@ -388,8 +404,8 @@
   .details {
     position: relative;
     display: grid;
-    /* The information column fits the message (--info-w), the files take the rest. */
-    grid-template-columns: minmax(380px, min(var(--info-w), 50%)) minmax(0, 1fr);
+    /* The user's split (--info-w, see detailsLayout.ts); the files take the rest. */
+    grid-template-columns: var(--info-w, 44%) minmax(0, 1fr);
     flex: 0 1 auto;
     min-height: 120px;
     border-top: 1px solid var(--border);
@@ -504,6 +520,7 @@
   /* --- Changed files --- */
 
   .changes {
+    position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;

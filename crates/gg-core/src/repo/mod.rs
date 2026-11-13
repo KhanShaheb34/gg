@@ -6,4 +6,5 @@ mod loader;
 mod manager;
 pub mod state;
 
+pub(crate) use manager::Repo;
 pub use manager::RepoManager;

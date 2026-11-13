@@ -135,6 +135,7 @@ fn all_refs() -> ViewOptions {
         branches: None,
         show_remotes: true,
         show_tags: true,
+        show_stashes: true,
     }
 }
 
@@ -464,6 +465,7 @@ async fn labels_respect_view_options() {
             id,
             ViewOptions {
                 show_tags: false,
+                show_stashes: true,
                 ..all_refs()
             },
         )

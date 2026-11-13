@@ -26,6 +26,7 @@ fn all_refs() -> ViewOptions {
         branches: None,
         show_remotes: true,
         show_tags: true,
+        show_stashes: true,
     }
 }
 
@@ -160,6 +161,7 @@ async fn read_log_empty_repo_is_ok_without_batches() {
             branches: Some(vec!["main".into()]),
             show_remotes: false,
             show_tags: false,
+            show_stashes: true,
         },
     ] {
         let batches = log_batches(&git, repo.path(), &log_args(&opts, &[])).await;
@@ -197,6 +199,7 @@ async fn read_log_with_files_named_like_revisions() {
         branches: Some(vec!["main".into()]),
         show_remotes: false,
         show_tags: false,
+        show_stashes: true,
     };
     let commits = log_batches(&git, repo.path(), &log_args(&opts, &[]))
         .await
@@ -235,6 +238,7 @@ async fn read_log_unknown_branch_is_git_failed() {
         branches: Some(vec!["nope".into()]),
         show_remotes: false,
         show_tags: false,
+        show_stashes: true,
     };
     let err = read_log(&git, repo.path(), &log_args(&opts, &[]), |_| {
         panic!("no batches expected")
@@ -252,6 +256,7 @@ async fn read_log_selected_branches() {
         branches: Some(vec!["feature".into()]),
         show_remotes: false,
         show_tags: false,
+        show_stashes: true,
     };
     let commits = log_batches(&git, h.repo.path(), &log_args(&opts, &[]))
         .await

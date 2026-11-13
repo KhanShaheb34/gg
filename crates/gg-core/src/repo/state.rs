@@ -256,6 +256,8 @@ impl RepoState {
             status: self.info.status,
             view_options: self.view.clone(),
             fetch: fetch.clone(),
+            op: None,
+            in_progress: None,
         }
     }
 
@@ -398,6 +400,7 @@ fn tips<'a>(info: &'a RepoInfo, view: &ViewOptions) -> BTreeSet<&'a str> {
                 RefKind::Branch => true,
                 RefKind::Remote => view.show_remotes,
                 RefKind::Tag => view.show_tags,
+                RefKind::Stash => false,
             })
             .map(|r| r.hash.as_str())
             .chain(info.head.hash.as_deref())
@@ -479,7 +482,7 @@ fn build_labels(info: &RepoInfo, view: &ViewOptions) -> HashMap<String, Vec<RefL
                 plain_label(r)
             }
             RefKind::Tag if view.show_tags => plain_label(r),
-            RefKind::Remote | RefKind::Tag => continue,
+            RefKind::Remote | RefKind::Tag | RefKind::Stash => continue,
         };
         labels.entry(r.hash.clone()).or_default().push(label);
     }
@@ -594,6 +597,7 @@ mod tests {
             branches: None,
             show_remotes: true,
             show_tags: true,
+            show_stashes: true,
         }
     }
 
@@ -819,6 +823,7 @@ mod tests {
         assert_eq!(label_names(&s, 3), [(RefKind::Tag, "v1".into())]);
         let no_tags = ViewOptions {
             show_tags: false,
+            show_stashes: true,
             ..all()
         };
         assert!(s.update(i, no_tags));
@@ -871,6 +876,7 @@ mod tests {
             i,
             ViewOptions {
                 show_tags: false,
+                show_stashes: true,
                 ..all()
             },
             1,
@@ -980,6 +986,7 @@ mod tests {
         let with_tag = RepoState::new(i.clone(), all(), 1);
         let no_tags = ViewOptions {
             show_tags: false,
+            show_stashes: true,
             ..all()
         };
         assert!(with_tag.needs_reload(&i, &no_tags));

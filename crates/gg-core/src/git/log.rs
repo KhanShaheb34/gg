@@ -523,6 +523,7 @@ mod tests {
             branches: None,
             show_remotes: true,
             show_tags: true,
+            show_stashes: true,
         };
         assert_eq!(
             log_args(&opts, &[]),
@@ -545,6 +546,7 @@ mod tests {
             branches: None,
             show_remotes: false,
             show_tags: false,
+            show_stashes: true,
         };
         assert_eq!(
             log_args(&opts, &strings(&["origin/main"])),
@@ -565,6 +567,7 @@ mod tests {
             branches: Some(strings(&["main", "origin/dev"])),
             show_remotes: true,
             show_tags: true,
+            show_stashes: true,
         };
         assert_eq!(
             log_args(&opts, &strings(&["origin/dev"])),

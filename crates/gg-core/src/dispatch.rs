@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Core;
-use crate::dto::{AppState, Session, ViewOptions};
+use crate::dto::{AppState, DangerKind, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::store::SettingsPatch;
+use crate::git::runner::LogFilter;
+use crate::store::{RepoPrefsPatch, SettingsPatch};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +90,33 @@ struct FocusArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CommandLogArgs {
     since_id: u64,
+    #[serde(default)]
+    repo_id: Option<u32>,
+    #[serde(default)]
+    writes_only: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunOpArgs {
+    repo_id: u32,
+    request: OpRequest,
+    confirmed: Vec<DangerKind>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepoPrefsArgs {
+    repo_id: u32,
+    patch: RepoPrefsPatch,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenInEditorArgs {
+    repo_id: u32,
+    #[allow(dead_code)]
+    path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -219,7 +247,40 @@ impl Core {
             }
             "command_log" => {
                 let a: CommandLogArgs = parse(cmd, args)?;
-                to_json(self.log.since(a.since_id))
+                to_json(self.log.query(LogFilter {
+                    since_id: a.since_id,
+                    repo_id: a.repo_id,
+                    writes_only: a.writes_only,
+                }))
+            }
+            "run_op" => {
+                let a: RunOpArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .run_op(a.repo_id, a.request, &a.confirmed)
+                        .await?,
+                )
+            }
+            "get_repo_prefs" => {
+                let a: RepoArgs = parse(cmd, args)?;
+                let root = self.repo_root(a.repo_id)?;
+                to_json(self.store.repo_prefs(&root))
+            }
+            "set_repo_prefs" => {
+                let a: RepoPrefsArgs = parse(cmd, args)?;
+                let root = self.repo_root(a.repo_id)?;
+                to_json(
+                    self.blocking(move |core| core.store.set_repo_prefs(&root, a.patch))
+                        .await?,
+                )
+            }
+            "open_in_editor" => {
+                let a: OpenInEditorArgs = parse(cmd, args)?;
+                self.repos()?.check_open(a.repo_id)?;
+                Err(CoreError::new(
+                    ErrorCode::BadRequest,
+                    "Opening files in an editor is not implemented yet.",
+                ))
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;
@@ -247,6 +308,21 @@ impl Core {
             .await
             .unwrap_or_else(|e| {
                 Err(CoreError::new(ErrorCode::Io, "Could not save").with_detail(e.to_string()))
+            })
+    }
+
+    /// The main worktree of open repository `repo_id`: what its preferences are kept by.
+    fn repo_root(&self, repo_id: u32) -> Result<PathBuf> {
+        let repos = self.repos()?;
+        repos.check_open(repo_id)?;
+        repos
+            .git_dirs(repo_id)
+            .map(|(_, root)| root)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::UnknownRepo,
+                    format!("No open repository has id {repo_id}."),
+                )
             })
     }
 

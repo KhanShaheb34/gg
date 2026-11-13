@@ -104,7 +104,7 @@ async fn malformed_args_is_bad_request() {
         ("set_window_focused", json!({})),
         (
             "set_view_options",
-            json!({"repoId": 1, "options": {"branches": null, "showRemotes": true, "showTags": true, "showStashes": true}}),
+            json!({"repoId": 1, "options": {"branches": null, "showRemotes": true, "showTags": true, "showNotes": true}}),
         ),
     ] {
         let err = h.fail(cmd, args.clone()).await;
@@ -181,7 +181,9 @@ async fn open_then_rows_via_dispatch() {
     let changed = h
         .call("set_view_options", json!({"repoId": id, "options": opts}))
         .await;
-    assert_eq!(changed["viewOptions"], opts);
+    let mut shown = opts.clone();
+    shown["showStashes"] = json!(true);
+    assert_eq!(changed["viewOptions"], shown);
     let refreshed = h.call("refresh", json!({"repoId": id})).await;
     assert_eq!(refreshed["repoId"], *id);
     // No remotes: nothing to fetch, still `null`.
@@ -602,7 +604,7 @@ async fn launch_path_is_reported() {
         json!({
             "recents": [],
             "session": {"tabs": [], "active": null},
-            "settings": {"theme": "system", "fetchIntervalSecs": 300},
+            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null},
             "launchPath": null,
             "homeDir": home,
             "settingsProblem": null
@@ -626,7 +628,10 @@ async fn session_and_settings_persist() {
             json!({"patch": {"theme": "dark", "fetchIntervalSecs": 0}}),
         )
         .await;
-    assert_eq!(settings, json!({"theme": "dark", "fetchIntervalSecs": 0}));
+    assert_eq!(
+        settings,
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
+    );
     let err = h
         .fail(
             "update_settings",
@@ -650,7 +655,7 @@ async fn session_and_settings_persist() {
     );
     assert_eq!(
         state["settings"],
-        json!({"theme": "dark", "fetchIntervalSecs": 0})
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
     );
 }
 

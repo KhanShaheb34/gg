@@ -14,7 +14,7 @@ use tokio::process::{Child, Command};
 
 use crate::error::{CoreError, ErrorCode, Result};
 
-/// Number of commands the log keeps; older ones are dropped.
+/// Number of reads, and separately of writes, the log keeps; older ones are dropped.
 const LOG_CAPACITY: usize = 500;
 /// Longest stdout/stderr text kept per log record, in bytes.
 const MAX_LOG_TEXT: usize = 16 * 1024;
@@ -24,12 +24,15 @@ const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(unix)]
 const READ_GRACE: Duration = Duration::from_millis(500);
 
-/// Environment for every git child: never prompt, never open an editor or pager, never
-/// take optional locks, and keep messages in a stable (C) locale.
-const GIT_ENV: [(&str, &str); 5] = [
+/// Environment for every git child: never prompt, never open an editor (for messages, rebase
+/// todo lists or merge messages) or pager, never take optional locks, and keep messages in a
+/// stable (C) locale.
+const GIT_ENV: [(&str, &str); 7] = [
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_OPTIONAL_LOCKS", "0"),
     ("GIT_EDITOR", "true"),
+    ("GIT_SEQUENCE_EDITOR", "true"),
+    ("GIT_MERGE_AUTOEDIT", "no"),
     ("GIT_PAGER", "cat"),
     ("LC_ALL", "C"),
 ];
@@ -150,16 +153,33 @@ pub struct CommandRecord {
     pub stdout: String,
     /// Always kept, truncated to 16 KiB.
     pub stderr: String,
+    /// The open repository it ran for, if any (not while a repository is being opened).
+    pub repo_id: Option<u32>,
+    /// The operation it was part of, if any.
+    pub op_id: Option<u64>,
 }
 
-/// Ring buffer of the last 500 git commands. Ids start at 1 and increase by one.
+/// The last 500 reads and, separately, the last 500 writes, so that a write stays findable
+/// however many reads come after it. Ids start at 1 and increase by one across both.
 pub struct CommandLog {
     inner: Mutex<LogInner>,
 }
 
 struct LogInner {
     next_id: u64,
-    records: VecDeque<CommandRecord>,
+    reads: VecDeque<CommandRecord>,
+    writes: VecDeque<CommandRecord>,
+}
+
+/// Which records [`CommandLog::query`] returns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogFilter {
+    /// Only records with a greater id.
+    pub since_id: u64,
+    /// Only records of this repository.
+    pub repo_id: Option<u32>,
+    /// Only writes.
+    pub writes_only: bool,
 }
 
 impl CommandLog {
@@ -167,21 +187,66 @@ impl CommandLog {
         Arc::new(Self {
             inner: Mutex::new(LogInner {
                 next_id: 1,
-                records: VecDeque::with_capacity(LOG_CAPACITY),
+                reads: VecDeque::with_capacity(LOG_CAPACITY),
+                writes: VecDeque::with_capacity(LOG_CAPACITY),
             }),
         })
     }
 
     /// Records with an id greater than `id`, oldest first. `since(0)` returns everything kept.
     pub fn since(&self, id: u64) -> Vec<CommandRecord> {
+        self.query(LogFilter {
+            since_id: id,
+            ..LogFilter::default()
+        })
+    }
+
+    /// The records `filter` selects, oldest first.
+    pub fn query(&self, filter: LogFilter) -> Vec<CommandRecord> {
         let inner = self.lock();
-        let start = inner.records.partition_point(|r| r.id <= id);
-        inner.records.range(start..).cloned().collect()
+        let after = |ring: &VecDeque<CommandRecord>| {
+            let start = ring.partition_point(|r| r.id <= filter.since_id);
+            ring.range(start..)
+                .filter(|r| filter.repo_id.is_none_or(|id| r.repo_id == Some(id)))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let writes = after(&inner.writes);
+        if filter.writes_only {
+            return writes;
+        }
+        let reads = after(&inner.reads);
+        // Merged by id: each ring is in id order.
+        let mut merged = Vec::with_capacity(reads.len() + writes.len());
+        let (mut r, mut w) = (reads.into_iter().peekable(), writes.into_iter().peekable());
+        loop {
+            let next = match (r.peek(), w.peek()) {
+                (Some(a), Some(b)) if a.id < b.id => r.next(),
+                (Some(_), Some(_)) | (None, Some(_)) => w.next(),
+                (Some(_), None) => r.next(),
+                (None, None) => break,
+            };
+            merged.extend(next);
+        }
+        merged
+    }
+
+    /// Ids of the first and last write of operation `op_id` still kept, if any.
+    pub fn op_writes(&self, op_id: u64) -> Option<(u64, u64)> {
+        let inner = self.lock();
+        let mut ids = inner
+            .writes
+            .iter()
+            .filter(|r| r.op_id == Some(op_id))
+            .map(|r| r.id);
+        let first = ids.next()?;
+        Some((first, ids.next_back().unwrap_or(first)))
     }
 
     #[allow(clippy::too_many_arguments)]
     fn push(
         &self,
+        tags: Tags,
         kind: CmdKind,
         cwd: &Path,
         args: &[&str],
@@ -202,10 +267,14 @@ impl CommandLog {
         let mut inner = self.lock();
         let id = inner.next_id;
         inner.next_id += 1;
-        if inner.records.len() == LOG_CAPACITY {
-            inner.records.pop_front();
+        let ring = match kind {
+            CmdKind::Read => &mut inner.reads,
+            CmdKind::Write => &mut inner.writes,
+        };
+        if ring.len() == LOG_CAPACITY {
+            ring.pop_front();
         }
-        inner.records.push_back(CommandRecord {
+        ring.push_back(CommandRecord {
             id,
             kind,
             cwd: cwd.to_string_lossy().into_owned(),
@@ -215,6 +284,8 @@ impl CommandLog {
             exit_code,
             stdout,
             stderr: truncate_text(stderr.to_owned()),
+            repo_id: tags.repo_id,
+            op_id: tags.op_id,
         });
     }
 
@@ -282,12 +353,20 @@ fn truncate_text(mut s: String) -> String {
     s
 }
 
+/// What a runner's log records are tagged with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Tags {
+    repo_id: Option<u32>,
+    op_id: Option<u64>,
+}
+
 /// Runs git commands. Cheap to clone; clones share the command log.
 #[derive(Clone)]
 pub struct GitRunner {
     log: Arc<CommandLog>,
     /// `PATH` for git children, from the user's login shell when it could be read.
     path: Option<OsString>,
+    tags: Tags,
 }
 
 impl GitRunner {
@@ -319,14 +398,33 @@ impl GitRunner {
             let runner = Self {
                 log: log.clone(),
                 path: Some(path),
+                tags: Tags::default(),
             };
             if runner.check().await.is_ok() {
                 return Ok(runner);
             }
         }
-        let runner = Self { log, path: None };
+        let runner = Self {
+            log,
+            path: None,
+            tags: Tags::default(),
+        };
         runner.check().await?;
         Ok(runner)
+    }
+
+    /// This runner, logging its commands as run for repository `repo_id`.
+    pub fn for_repo(&self, repo_id: u32) -> Self {
+        let mut runner = self.clone();
+        runner.tags.repo_id = Some(repo_id);
+        runner
+    }
+
+    /// This runner, logging its commands as part of operation `op_id`.
+    pub(crate) fn for_op(&self, op_id: u64) -> Self {
+        let mut runner = self.clone();
+        runner.tags.op_id = Some(op_id);
+        runner
     }
 
     /// Runs `git --version`; `GitNotFound` unless it succeeds.
@@ -371,8 +469,16 @@ impl GitRunner {
             Ok(out) => {
                 let code = out.status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-                self.log
-                    .push(kind, cwd, args, started, code, &out.stdout, &stderr);
+                self.log.push(
+                    self.tags,
+                    kind,
+                    cwd,
+                    args,
+                    started,
+                    code,
+                    &out.stdout,
+                    &stderr,
+                );
                 Ok(GitOutput {
                     stdout: out.stdout,
                     stderr,
@@ -382,7 +488,7 @@ impl GitRunner {
             Err(e) => {
                 let err = spawn_error(cwd, e);
                 self.log
-                    .push(kind, cwd, args, started, -1, b"", &err.message);
+                    .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
                 Err(err)
             }
         }
@@ -408,6 +514,20 @@ impl GitRunner {
         kind: CmdKind,
         limit: TimeLimit,
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_with_progress(cwd, args, kind, limit, &|_| {})
+            .await
+    }
+
+    /// [`GitRunner::run_with_timeout`] that also hands each chunk of stderr to `on_stderr`
+    /// as it arrives (git writes its progress there).
+    pub async fn run_with_progress(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+        on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
         use tokio::io::AsyncReadExt;
 
         let started = Instant::now();
@@ -418,7 +538,7 @@ impl GitRunner {
         let fail = |e: io::Error| {
             let err = spawn_error(cwd, e);
             self.log
-                .push(kind, cwd, args, started, -1, b"", &err.message);
+                .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
             err
         };
         let mut child = cmd.spawn().map_err(fail)?;
@@ -450,6 +570,7 @@ impl GitRunner {
                     while let Ok(n @ 1..) = p.read(&mut buf).await {
                         lock_tail(&err).push(&buf[..n]);
                         output_seen();
+                        on_stderr(&buf[..n]);
                     }
                 }
             };
@@ -485,7 +606,8 @@ impl GitRunner {
             Ok((out, err, Ok(status))) => {
                 let code = status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&err).into_owned();
-                self.log.push(kind, cwd, args, started, code, &out, &stderr);
+                self.log
+                    .push(self.tags, kind, cwd, args, started, code, &out, &stderr);
                 Ok(Ok(GitOutput {
                     stdout: out,
                     stderr,
@@ -529,8 +651,16 @@ impl GitRunner {
         let started = Instant::now();
         cmd.spawn().map_err(|e| {
             let err = spawn_error(cwd, e);
-            self.log
-                .push(CmdKind::Read, cwd, args, started, -1, b"", &err.message);
+            self.log.push(
+                self.tags,
+                CmdKind::Read,
+                cwd,
+                args,
+                started,
+                -1,
+                b"",
+                &err.message,
+            );
             err
         })
     }
@@ -544,8 +674,16 @@ impl GitRunner {
         exit_code: i32,
         stderr: &str,
     ) {
-        self.log
-            .push(CmdKind::Read, cwd, args, started, exit_code, b"", stderr);
+        self.log.push(
+            self.tags,
+            CmdKind::Read,
+            cwd,
+            args,
+            started,
+            exit_code,
+            b"",
+            stderr,
+        );
     }
 
     /// Records a command started at `started` with [`GitRunner::run_unchecked`] that was
@@ -553,7 +691,7 @@ impl GitRunner {
     /// "timed out".
     pub(crate) fn log_timed_out(&self, cwd: &Path, args: &[&str], kind: CmdKind, started: Instant) {
         self.log
-            .push(kind, cwd, args, started, -1, b"", "timed out");
+            .push(self.tags, kind, cwd, args, started, -1, b"", "timed out");
     }
 
     pub fn log(&self) -> &Arc<CommandLog> {
@@ -774,6 +912,7 @@ mod tests {
         let runner = GitRunner {
             log: CommandLog::new(),
             path: None,
+            tags: Tags::default(),
         };
         let dir = tempfile::tempdir().unwrap();
         // git prints back a 300 KiB config value given on its command line.
@@ -803,6 +942,7 @@ mod tests {
         let runner = GitRunner {
             log: CommandLog::new(),
             path: None,
+            tags: Tags::default(),
         };
         let cmd = runner.command(None, &["status"]);
         let removed: Vec<_> = cmd
@@ -852,6 +992,7 @@ mod tests {
         let runner = GitRunner {
             log: log.clone(),
             path: None,
+            tags: Tags::default(),
         };
         runner.log_timed_out(
             Path::new("/r"),
@@ -881,6 +1022,114 @@ mod tests {
         assert_eq!(err.to_string(), "nope");
     }
 
+    fn record(log: &CommandLog, tags: Tags, kind: CmdKind, arg: &str) {
+        log.push(
+            tags,
+            kind,
+            Path::new("/r"),
+            &[arg],
+            Instant::now(),
+            0,
+            b"out",
+            "",
+        );
+    }
+
+    /// Writes have their own ring: 600 reads after a write leave it kept, with ids still
+    /// global and increasing; filters by repository and writes only.
+    #[test]
+    fn writes_are_kept_apart_from_reads() {
+        let log = CommandLog::new();
+        let op = Tags {
+            repo_id: Some(1),
+            op_id: Some(7),
+        };
+        record(&log, op, CmdKind::Write, "branch");
+        record(&log, op, CmdKind::Write, "checkout");
+        for i in 0..600 {
+            let repo = Tags {
+                repo_id: Some(1 + i % 2),
+                op_id: None,
+            };
+            record(&log, repo, CmdKind::Read, "status");
+        }
+        record(&log, Tags::default(), CmdKind::Write, "fetch");
+
+        let all = log.since(0);
+        assert_eq!(all.len(), 3 + LOG_CAPACITY);
+        assert!(all.windows(2).all(|w| w[0].id < w[1].id));
+        assert_eq!(all[0].args, ["branch"]);
+        assert_eq!(all[0].stdout, "out");
+        assert_eq!(all.last().unwrap().id, 603);
+        let filter = |since_id, repo_id, writes_only| {
+            log.query(LogFilter {
+                since_id,
+                repo_id,
+                writes_only,
+            })
+        };
+        let writes: Vec<u64> = filter(0, None, true).iter().map(|r| r.id).collect();
+        assert_eq!(writes, [1, 2, 603]);
+        assert_eq!(filter(1, None, true).len(), 2);
+        assert_eq!(filter(0, Some(1), true).len(), 2);
+        let repo2 = filter(0, Some(2), false);
+        assert_eq!(repo2.len(), LOG_CAPACITY / 2);
+        assert!(
+            repo2
+                .iter()
+                .all(|r| r.repo_id == Some(2) && r.kind == CmdKind::Read)
+        );
+        assert_eq!(log.op_writes(7), Some((1, 2)));
+        assert_eq!(log.op_writes(8), None);
+    }
+
+    #[test]
+    fn runners_tag_what_they_log() {
+        let log = CommandLog::new();
+        let runner = GitRunner {
+            log: log.clone(),
+            path: None,
+            tags: Tags::default(),
+        };
+        let op = runner.for_repo(4).for_op(9);
+        op.log_timed_out(Path::new("/r"), &["push"], CmdKind::Write, Instant::now());
+        runner.log_timed_out(Path::new("/r"), &["fetch"], CmdKind::Write, Instant::now());
+        let records = log.since(0);
+        assert_eq!((records[0].repo_id, records[0].op_id), (Some(4), Some(9)));
+        assert_eq!((records[1].repo_id, records[1].op_id), (None, None));
+    }
+
+    #[test]
+    fn git_never_waits_for_an_editor() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+        };
+        let cmd = runner.command(None, &["rebase"]);
+        let env: Vec<(String, String)> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        for (var, value) in [
+            ("GIT_EDITOR", "true"),
+            ("GIT_SEQUENCE_EDITOR", "true"),
+            ("GIT_MERGE_AUTOEDIT", "no"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+        ] {
+            assert!(
+                env.iter().any(|(k, v)| k == var && v == value),
+                "{var}={value} missing"
+            );
+        }
+    }
+
     #[test]
     fn command_record_serializes_camel_case() {
         let rec = CommandRecord {
@@ -893,12 +1142,16 @@ mod tests {
             exit_code: 0,
             stdout: String::new(),
             stderr: String::new(),
+            repo_id: Some(3),
+            op_id: None,
         };
         let json = serde_json::to_value(&rec).unwrap();
         assert_eq!(json["kind"], "write");
         assert_eq!(json["startedAtMs"], 5);
         assert_eq!(json["durationMs"], 2);
         assert_eq!(json["exitCode"], 0);
+        assert_eq!(json["repoId"], 3);
+        assert_eq!(json["opId"], serde_json::Value::Null);
         assert_eq!(serde_json::to_value(CmdKind::Read).unwrap(), "read");
     }
 

@@ -163,15 +163,26 @@ describe("edgeShape / shapePath (R17)", () => {
     const row = [E("bottom", 0), E("bottom", 0, 1, 1)];
     // Next row not available (not loaded, or past the canvas edge).
     expect(edgeShape(row[1], undefined, row, undefined)).toBe(SHAPE_HALF);
-    // Two lines meet at lane 1 at the row boundary: which one continues is ambiguous.
-    const converging = [E("full", 1, 1, 2), E("bottom", 0, 1, 1)];
-    expect(edgeShape(converging[1], undefined, converging, [E("full", 1, 1, 1)])).toBe(SHAPE_HALF);
+    // Two straight lines leave the boundary point below: which one continues is ambiguous.
+    const split = [E("full", 1, 1, 1), E("top", 1, 1, 1)];
+    expect(edgeShape(row[1], undefined, row, split)).toBe(SHAPE_HALF);
     // The line changes lane in both halves: no straight partner.
     const next = [E("top", 1, 2, 1)];
     expect(edgeShape(row[1], undefined, row, next)).toBe(SHAPE_HALF);
     expect(edgeShape(next[0], row, next, undefined)).toBe(SHAPE_HALF);
     // A full edge with nothing to pair keeps its whole line.
     expect(edgeShape(E("full", 3), undefined, [E("full", 3)], undefined)).toBe(SHAPE_HALF);
+  });
+
+  it("merge into a lane that already carries a line: S-curve, and the shared line stays whole", () => {
+    // Row 0: a line passes on lane 0; the merge node on lane 2 sends its second parent to lane 0.
+    const row = [E("full", 0), E("top", 2, 2, 2), E("bottom", 2, 2, 2), E("bottom", 2, 0, 0)];
+    const next = [E("top", 0), E("bottom", 0), E("full", 2, 2, 2)];
+    expect(edgeShape(row[3], undefined, row, next)).toBe(SHAPE_S);
+    expect(shapePath(row[3], SHAPE_S, 0, 26)).toEqual({ x1: 40, y1: 13, cx1: 40, cy1: 26, cx2: 8, cy2: 26, x2: 8, y2: 39 });
+    // The passing line and its continuation into the parent are still drawn in full.
+    expect(edgeShape(row[0], undefined, row, next)).toBe(SHAPE_HALF);
+    expect(edgeShape(next[0], row, next, undefined)).toBe(SHAPE_HALF);
   });
 
   it("pairs two lane changes in the same row independently", () => {

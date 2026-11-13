@@ -91,9 +91,10 @@ export function edgePath(edge: Edge, rowTop: number, rowH: number): Line | Curve
 
 // --- Lane changes across two rows (R17) ------------------------------------------------------
 // The core changes lane within half a row: a `bottom` half in one row, or a `top` half in the
-// next. Drawn as they are, a change across two lanes squeezes into 13 px. Where a change is
-// joined to a straight line in the neighbouring row at the row boundary, and nothing else
-// meets there, the two halves are drawn as one S-curve between the two rows' centres instead.
+// next. Drawn as they are, a change across two lanes squeezes into 13 px. Where exactly one
+// change meets exactly one straight edge of the neighbouring row at the row boundary, the
+// change is drawn as one S-curve between the two rows' centres instead, and the straight
+// edge's half under it is left out unless another line still needs it.
 
 /** Drawn as given (half-row curve or line). */
 export const SHAPE_HALF = 0;
@@ -107,32 +108,47 @@ export const SHAPE_UPPER = 3;
 export const SHAPE_LOWER = 4;
 export type EdgeShape = 0 | 1 | 2 | 3 | 4;
 
+/** At a junction: a lane change above meets one straight edge below. */
+const J_DOWN = 1;
+/** At a junction: a lane change below meets one straight edge above. */
+const J_UP = 2;
+/** The straight partner serves only that change, so its half under the S-curve is left out. */
+const J_TRIM = 4;
+
 /**
- * Whether the line through `lane` at the boundary between a row (edges `above`) and the next
- * (edges `below`) is one S-curve: exactly one edge reaches that point from each side, and
- * exactly one of the two changes lane.
+ * What happens at the point where `lane` crosses the boundary between a row (edges `above`)
+ * and the next (edges `below`): whether exactly one lane change meets exactly one straight
+ * edge there (J_DOWN or J_UP), and whether that straight edge is the only one on its side
+ * (J_TRIM). 0 when either row is unavailable or the pairing is ambiguous.
  */
-function joins(above: readonly Edge[] | undefined, below: readonly Edge[] | undefined, lane: number): boolean {
-  if (!above || !below) return false;
+function junction(above: readonly Edge[] | undefined, below: readonly Edge[] | undefined, lane: number): number {
+  if (!above || !below) return 0;
   let up = 0;
-  let upChanges = false;
+  let upChanges = 0;
   for (const e of above) {
     if (e.half === "full" && e.from === lane) up++;
     else if (e.half === "bottom" && e.to === lane) {
       up++;
-      upChanges = e.from !== lane;
+      if (e.from !== lane) upChanges++;
     }
   }
   let down = 0;
-  let downChanges = false;
+  let downChanges = 0;
   for (const e of below) {
     if (e.half === "full" && e.from === lane) down++;
     else if (e.half === "top" && e.from === lane) {
       down++;
-      downChanges = e.to !== lane;
+      if (e.to !== lane) downChanges++;
     }
   }
-  return up === 1 && down === 1 && upChanges !== downChanges;
+  if (upChanges === 1 && downChanges === 0 && down === 1) return J_DOWN | (up === 1 ? J_TRIM : 0);
+  if (downChanges === 1 && upChanges === 0 && up === 1) return J_UP | (down === 1 ? J_TRIM : 0);
+  return 0;
+}
+
+/** Whether a straight edge is the trimmed partner of an S-curve at junction `j` (`side`). */
+function trimmed(j: number, side: number): boolean {
+  return (j & side) !== 0 && (j & J_TRIM) !== 0;
 }
 
 /**
@@ -146,16 +162,19 @@ export function edgeShape(
   row: readonly Edge[],
   next: readonly Edge[] | undefined,
 ): EdgeShape {
+  const changes = edge.from !== edge.to;
   if (edge.half === "bottom") {
-    if (!joins(row, next, edge.to)) return SHAPE_HALF;
-    return edge.from !== edge.to ? SHAPE_S : SHAPE_SKIP;
+    const j = junction(row, next, edge.to);
+    if (changes) return j & J_DOWN ? SHAPE_S : SHAPE_HALF;
+    return trimmed(j, J_UP) ? SHAPE_SKIP : SHAPE_HALF;
   }
   if (edge.half === "top") {
-    if (!joins(prev, row, edge.from)) return SHAPE_HALF;
-    return edge.from !== edge.to ? SHAPE_S : SHAPE_SKIP;
+    const j = junction(prev, row, edge.from);
+    if (changes) return j & J_UP ? SHAPE_S : SHAPE_HALF;
+    return trimmed(j, J_DOWN) ? SHAPE_SKIP : SHAPE_HALF;
   }
-  const upperCovered = joins(prev, row, edge.from);
-  const lowerCovered = joins(row, next, edge.from);
+  const upperCovered = trimmed(junction(prev, row, edge.from), J_DOWN);
+  const lowerCovered = trimmed(junction(row, next, edge.from), J_UP);
   if (upperCovered && lowerCovered) return SHAPE_SKIP;
   if (upperCovered) return SHAPE_LOWER;
   if (lowerCovered) return SHAPE_UPPER;

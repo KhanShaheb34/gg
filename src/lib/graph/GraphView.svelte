@@ -18,21 +18,35 @@
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { CommitRow, RefLabel } from "../types";
-  import { displayedRows, graphWidth, laneX, NODE_R, ROW_H, rowWindow, traceEdge, type RowWindow } from "./geometry";
+  import {
+    alignedFirstRow,
+    canvasSize,
+    crispOffset,
+    deviceLineWidth,
+    displayedRows,
+    edgeShape,
+    GRAPH_PAD,
+    graphWidth,
+    HEADER_H,
+    LANE_COLORS,
+    laneX,
+    NODE_R,
+    OVERSCAN,
+    PREFETCH,
+    ROW_H,
+    rowWindow,
+    traceEdge,
+    traceShape,
+    type RowWindow,
+  } from "./geometry";
   import RefLabels from "./RefLabels.svelte";
   import { api } from "../ipc";
   import { runScrollProbe, type Probe } from "../perf/scrollProbe";
 
   let { view }: { view: RepoView } = $props();
 
-  const HEADER_H = 28;
-  /** Rows rendered above and below the viewport. */
-  const OVERSCAN = 10;
-  /** Rows loaded ahead in the direction of scrolling. */
-  const PREFETCH = 400;
-  const LANE_COLORS = 10;
-  /** Space left of lane 0 (and right of the last lane, by default), px. */
-  const GRAPH_PAD = 6;
+  /** Width of the graph's lines, px (rounded to whole device pixels when drawn). */
+  const LINE_W = 2;
   const NO_LABELS: RefLabel[] = [];
   const NO_PATHS: string[] = [];
   const DASH = [2, 3];
@@ -198,6 +212,12 @@
     if (rafId === 0) rafId = requestAnimationFrame(frame);
   }
 
+  // A new Graph column width needs the canvas resized to it and redrawn.
+  $effect(() => {
+    void widths.graph;
+    schedule();
+  });
+
   /** Brings slots, fetching and the canvas up to date with the scroll position. */
   function frame(now: number) {
     if (rafId !== 0) cancelAnimationFrame(rafId);
@@ -235,6 +255,8 @@
   let canvasH = 0;
   let canvasRatio = 0;
   let canvasTop = -1;
+  /** Rows the canvas may start above the first rendered row, to start on a whole device pixel. */
+  let alignSlack = 0;
 
   function draw(w: RowWindow) {
     if (!canvas) return;
@@ -242,18 +264,26 @@
     if (!ctx) return;
     const cache = view.cache;
     const width = widths.graph;
-    const height = Math.max(1, slots.length) * ROW_H;
     const ratio = window.devicePixelRatio || 1;
+    if (ratio !== canvasRatio) {
+      alignSlack = 0;
+      for (let f = 8; f < 16; f++) alignSlack = Math.max(alignSlack, f - alignedFirstRow(f, ROW_H, ratio));
+    }
+    const height = (Math.max(1, slots.length) + alignSlack) * ROW_H;
     if (width !== canvasW || height !== canvasH || ratio !== canvasRatio) {
-      canvas.width = Math.round(width * ratio);
-      canvas.height = Math.round(height * ratio);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
+      // Backing store in whole device pixels, mapped 1:1 (fractional ratios included).
+      const size = canvasSize(width, height, ratio);
+      canvas.width = size.width;
+      canvas.height = size.height;
+      canvas.style.width = `${size.cssWidth}px`;
+      canvas.style.height = `${size.cssHeight}px`;
       canvasW = width;
       canvasH = height;
       canvasRatio = ratio;
     }
-    const top = w.first * ROW_H;
+    // Starts on a row whose top is a whole device pixel, so the bitmap is never resampled.
+    const firstRow = alignedFirstRow(w.first, ROW_H, ratio);
+    const top = firstRow * ROW_H;
     if (top !== canvasTop) {
       canvas.style.transform = `translateY(${top}px)`;
       canvasTop = top;
@@ -261,12 +291,16 @@
 
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    ctx.translate(GRAPH_PAD, 0);
-    ctx.lineWidth = 2;
+    // Lanes are 16 px apart, a whole number of device pixels at the usual ratios, so one
+    // offset puts every vertical line on whole device pixels.
+    ctx.translate(GRAPH_PAD + crispOffset(GRAPH_PAD + laneX(0), ratio, LINE_W), 0);
+    const lineW = deviceLineWidth(LINE_W, ratio);
+    ctx.lineWidth = lineW;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    // Edges, one path per colour.
+    // Edges, one path per colour. A lane change split over two rows is drawn as one S-curve
+    // when both rows are drawn here (see edgeShape); otherwise as its half-row curve.
     let real = false;
     let uncommitted = -1;
     for (let c = 0; c < LANE_COLORS; c++) {
@@ -280,12 +314,21 @@
           uncommitted = i;
           continue;
         }
-        const y = (i - w.first) * ROW_H;
+        const y = (i - firstRow) * ROW_H;
+        let prev: CommitRow | undefined;
+        let next: CommitRow | undefined;
         for (const e of r.edges) {
-          if (e.color % LANE_COLORS === c) {
-            traceEdge(ctx, e, y, ROW_H);
-            any = true;
-          }
+          if (e.color % LANE_COLORS !== c) continue;
+          any = true;
+          if (prev === undefined && i > w.first) prev = cache.get(i - 1);
+          if (next === undefined && i + 1 < w.last) next = cache.get(i + 1);
+          const shape = edgeShape(
+            e,
+            prev?.kind === "commit" ? prev.edges : undefined,
+            r.edges,
+            next?.kind === "commit" ? next.edges : undefined,
+          );
+          traceShape(ctx, e, shape, y, ROW_H);
         }
       }
       if (any) {
@@ -295,7 +338,7 @@
     }
     if (uncommitted >= 0) {
       const r = cache.get(uncommitted)!;
-      const y = (uncommitted - w.first) * ROW_H;
+      const y = (uncommitted - firstRow) * ROW_H;
       ctx.beginPath();
       for (const e of r.edges) traceEdge(ctx, e, y, ROW_H);
       ctx.setLineDash(DASH);
@@ -312,7 +355,7 @@
       const r = cache.get(i);
       if (!r) continue;
       const x = laneX(r.lane);
-      const y = (i - w.first) * ROW_H + ROW_H / 2;
+      const y = (i - firstRow) * ROW_H + ROW_H / 2;
       const color = laneColors[r.color % LANE_COLORS];
       if (r.kind === "uncommitted" || r.isHead) {
         ctx.globalCompositeOperation = "destination-out";
@@ -322,10 +365,10 @@
         ctx.globalCompositeOperation = "source-over";
         ctx.beginPath();
         ctx.arc(x, y, r.kind === "uncommitted" ? NODE_R - 0.25 : NODE_R, 0, Math.PI * 2);
-        ctx.lineWidth = r.kind === "uncommitted" ? 1.5 : 2;
+        ctx.lineWidth = r.kind === "uncommitted" ? 1.5 : lineW;
         ctx.strokeStyle = r.kind === "uncommitted" ? faintColor : color;
         ctx.stroke();
-        ctx.lineWidth = 2;
+        ctx.lineWidth = lineW;
       } else {
         ctx.beginPath();
         ctx.arc(x, y, r.isMerge ? NODE_R - 1 : NODE_R, 0, Math.PI * 2);
@@ -338,7 +381,7 @@
 
   // --- Events -------------------------------------------------------------------------------
 
-  /** The subject element given a tooltip because it was cut off. */
+  /** The cell last given a tooltip; cleared when rows move under the pointer. */
   let titled: HTMLElement | null = null;
 
   function onScroll() {
@@ -398,16 +441,26 @@
     );
   }
 
-  /** Gives a cut-off subject its full text as a tooltip. */
+  /**
+   * Builds the tooltip of the cell under the pointer, only then: the full hash, date, or
+   * author and email; the subject's full text only when it is cut off.
+   */
   function onRowsPointerOver(e: PointerEvent) {
-    const el = (e.target as Element | null)?.closest?.<HTMLElement>(".subject");
-    if (!el) return;
-    if (el.scrollWidth > el.clientWidth) {
-      el.title = el.textContent ?? "";
-      titled = el;
-    } else {
-      el.removeAttribute("title");
-    }
+    const el = (e.target as Element | null)?.closest?.<HTMLElement>(".subject, .date, .author, .hash");
+    if (!el || el === titled) return;
+    if (titled) titled.removeAttribute("title");
+    titled = null;
+    const r = rowOf(el)?.row;
+    if (!r) return;
+    let text: string | null = null;
+    if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? r.subject : null;
+    else if (r.kind !== "commit") text = null;
+    else if (el.classList.contains("date")) text = formatDateLong(r.time);
+    else if (el.classList.contains("author")) text = `${r.author} <${r.email}>`;
+    else text = r.hash;
+    if (text === null) return;
+    el.title = text;
+    titled = el;
   }
 
   async function selectIndex(index: number) {
@@ -501,7 +554,7 @@
   });
 </script>
 
-<div class="graph" style:--cols={columns}>
+<div class="graph" style:--cols={columns} style:--row-h="{ROW_H}px" style:--header-h="{HEADER_H}px">
   <div
     class="scroller"
     role="grid"
@@ -539,10 +592,10 @@
         <div
           class="row"
           role="row"
-          id="gg-{view.repoId}-{slot.index}"
+          id={slot.index >= 0 ? `gg-${view.repoId}-${slot.index}` : undefined}
           hidden={slot.index < 0}
-          data-index={slot.index}
-          aria-rowindex={slot.index + 2}
+          data-index={slot.index >= 0 ? slot.index : undefined}
+          aria-rowindex={slot.index >= 0 ? slot.index + 2 : undefined}
           aria-selected={r !== undefined && r.hash === view.selectedHash}
           aria-busy={r === undefined}
           class:merge={r?.isMerge}
@@ -561,14 +614,14 @@
             />
             <span class="subject">{r?.subject ?? ""}</span>
           </div>
-          <div class="cell date" role="gridcell" title={r?.kind === "commit" ? formatDateLong(r.time) : undefined}>
+          <div class="cell date" role="gridcell">
             {r?.kind === "commit" ? formatDate(r.time) : ""}
           </div>
-          <div class="cell author" role="gridcell" title={r?.author ? `${r.author} <${r.email}>` : undefined}>
+          <div class="cell author" role="gridcell">
             {r?.author ?? ""}
           </div>
           <div class="cell hash-cell" role="gridcell">
-            <span class="hash" title={r?.kind === "commit" ? r.hash : undefined}
+            <span class="hash"
               >{r?.kind === "commit" ? shortHash(r.hash) : ""}</span
             >
           </div>
@@ -616,7 +669,7 @@
     z-index: 2;
     display: grid;
     grid-template-columns: var(--cols);
-    height: 28px;
+    height: var(--header-h);
     border-bottom: 1px solid var(--border);
     background: var(--bg);
     color: var(--text-muted);
@@ -793,7 +846,7 @@
 
   .empty {
     position: absolute;
-    inset: 28px 0 0;
+    inset: var(--header-h) 0 0;
     display: grid;
     place-items: center;
     color: var(--text-muted);

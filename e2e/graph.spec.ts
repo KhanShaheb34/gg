@@ -72,8 +72,37 @@ test("rows show subject, author, date and short hash as in git log", async ({ gg
     await expect(r.locator(".author")).toHaveText("Ada Lovelace");
     await expect(r.locator(".date")).toHaveText(utcDate(Number(at)));
     await expect(r.locator(".hash")).toHaveText(hash.slice(0, 8));
-    await expect(r.locator(".hash")).toHaveAttribute("title", hash);
   }
+});
+
+test("tooltips are built when hovered: full hash, date, author and a cut-off subject", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  const [hash, at] = gg.git("small", "log", "-1", "--format=%H%x09%at").trim().split("\t");
+  const r = row(page, 0);
+  await expect(subject(r)).not.toBeEmpty();
+  // Nothing is prepared for rows nobody points at.
+  for (const cell of [".hash", ".date", ".author", ".subject"]) {
+    await expect(r.locator(cell)).not.toHaveAttribute("title", /./);
+  }
+  await r.locator(".hash").hover();
+  await expect(r.locator(".hash")).toHaveAttribute("title", hash);
+  await r.locator(".date").hover();
+  await expect(r.locator(".date")).toHaveAttribute("title", new RegExp(`^\\w+day, ${utcDate(Number(at))}:00 `));
+  await r.locator(".author").hover();
+  await expect(r.locator(".author")).toHaveAttribute("title", "Ada Lovelace <ada@example.com>");
+  // A subject that fits gets no tooltip; one that is cut off gets its full text.
+  await subject(r).hover();
+  await expect(subject(r)).not.toHaveAttribute("title", /./);
+  const handle = page.getByRole("separator", { name: "Resize Author column" });
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + 4, box.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 900, box.y + 10, { steps: 4 });
+  await page.mouse.up();
+  await subject(r).hover();
+  await expect(subject(r)).toHaveAttribute("title", "Add part 19");
 });
 
 test("labels: main on its commit, local and remote at the same commit as one pill", async ({ gg }) => {
@@ -82,7 +111,8 @@ test("labels: main on its commit, local and remote at the same commit as one pil
   await open(page, gg.repoPath("small"));
 
   const mainHash = gg.git("small", "rev-parse", "main").trim();
-  const mainRow = grid(page).locator('[role="row"]', { has: page.locator(`.hash[title="${mainHash}"]`) });
+  const mainRow = row(page, 0);
+  await expect(mainRow.locator(".hash")).toHaveText(mainHash.slice(0, 8));
   await expect(mainRow.locator('[data-ref="main"]')).toBeVisible();
   await expect(mainRow.locator('[data-ref="main"]')).toHaveAttribute("data-current", "true");
 
@@ -295,4 +325,57 @@ test("the performance probe records scroll frames when enabled", async ({ gg }) 
   expect(probe.frames.length).toBeGreaterThan(10);
   expect(probe.frames.every((ms) => ms > 0)).toBe(true);
   expect(typeof probe.skeletonMaxMs).toBe("number");
+});
+
+test("the lane canvas follows the Graph column's width and never covers the description", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await expect(subject(row(page, 0))).not.toBeEmpty();
+  const canvas = page.getByTestId("graph-canvas");
+  const header = page.getByRole("columnheader", { name: "Graph" });
+  const handle = page.getByRole("separator", { name: "Resize Graph column" });
+
+  const check = async () => {
+    const column = (await header.boundingBox())!;
+    await expect.poll(async () => (await canvas.boundingBox())!.width).toBeCloseTo(column.width, 0);
+    const lanes = (await canvas.boundingBox())!;
+    const desc = (await row(page, 0).locator(".desc").boundingBox())!;
+    expect(lanes.x + lanes.width).toBeLessThanOrEqual(desc.x + 0.5);
+  };
+  const drag = async (dx: number) => {
+    const box = (await handle.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.up();
+  };
+
+  const start = (await header.boundingBox())!.width;
+  await drag(-30);
+  await expect.poll(async () => (await header.boundingBox())!.width).toBeCloseTo(start - 30, 0);
+  await check();
+  await drag(90);
+  await expect.poll(async () => (await header.boundingBox())!.width).toBeCloseTo(start + 60, 0);
+  await check();
+});
+
+test("each rendered row has its own id and its real row index", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small")); // fewer rows than the pool: some slots are unused
+  await expect(subject(row(page, 0))).not.toBeEmpty();
+  const audit = () =>
+    grid(page).evaluate((el) => {
+      const rows = [...el.querySelectorAll<HTMLElement>('[role="rowgroup"] > [role="row"]')];
+      const shown = rows.filter((r) => !r.hidden);
+      const ids = rows.map((r) => r.id).filter(Boolean);
+      return {
+        duplicateIds: ids.length - new Set(ids).size,
+        hiddenWithAttrs: rows.filter((r) => r.hidden && (r.id || r.hasAttribute("aria-rowindex"))).length,
+        wrongIndex: shown.filter((r) => Number(r.getAttribute("aria-rowindex")) !== Number(r.dataset.index) + 2).length,
+        shown: shown.length,
+      };
+    });
+  expect(await audit()).toEqual({ duplicateIds: 0, hiddenWithAttrs: 0, wrongIndex: 0, shown: 30 });
 });

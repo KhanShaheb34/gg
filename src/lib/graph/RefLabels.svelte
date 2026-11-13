@@ -3,11 +3,20 @@
   row). A branch at the same commit as its remote branches is one pill (`main | origin`); the
   branch checked out in the active worktree is bold with a ring, like HEAD's node; tags are
   outlined; stashes (`stash@{0}`) have a colour of their own, not the lane's, and a dotted
-  edge. Never wraps; the description cell clips what does not fit.
+  edge. Never wraps; the description cell clips what does not fit. The graph finds the label
+  a right-click is on by its `data-slot` (a slot's index, or "more" for the "+k" pill).
 -->
 <script lang="ts" module>
   /** Label slots per row: rows are recycled while scrolling, and so are their labels. */
   const SLOTS = [0, 1, 2] as const;
+
+  /**
+   * How many of `count` labels have a slot of their own: all of up to 3; else 2, and a "+k"
+   * pill stands for the rest.
+   */
+  export function ownLabels(count: number): number {
+    return count <= SLOTS.length ? count : SLOTS.length - 1;
+  }
 </script>
 
 <script lang="ts">
@@ -29,7 +38,7 @@
    * Labels with a slot of their own: all of up to 3; else 2, and "+k" for the rest, whose
    * tooltip describes each hidden label as a shown one's does.
    */
-  const own = $derived(labels.length <= SLOTS.length ? labels.length : SLOTS.length - 1);
+  const own = $derived(ownLabels(labels.length));
   const rest = $derived(labels.length - own);
 
   function title(label: RefLabel): string {
@@ -65,6 +74,7 @@
     class="ref {label?.kind ?? ''}"
     class:current={label?.current}
     hidden={!label}
+    data-slot={k}
     data-ref={label?.name}
     data-current={label?.current}
     title={label ? title(label) : undefined}
@@ -103,7 +113,7 @@
     </svg>
   </span>
 {/each}
-<span class="ref more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(title).join("\n")}
+<span class="ref more" data-slot="more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(title).join("\n")}
   >+{rest}</span
 >
 <span

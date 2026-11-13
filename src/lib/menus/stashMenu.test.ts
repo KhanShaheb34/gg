@@ -31,13 +31,20 @@ describe("uncommittedMenu", () => {
     expect(disabled(items)).toEqual([]);
   });
 
-  it("stays enabled while a merge is in progress, unless files are still conflicted", () => {
+  it("is disabled while a merge is in progress (R17: saving would end the merge)", () => {
     const resolved = snap({ ...inProgress("merge"), status: { changed: 1, untracked: 0, conflicted: 0 } });
-    expect(disabled(uncommittedMenu(resolved))).toEqual([]);
-    const conflicted = snap({ ...inProgress("merge"), status: { changed: 1, untracked: 0, conflicted: 1 } });
+    expect(find(uncommittedMenu(resolved), "stash.save").disabledReason).toBe("A merge is in progress");
+  });
+
+  it("is disabled while files are conflicted", () => {
+    const conflicted = snap({ status: { changed: 1, untracked: 0, conflicted: 1 } });
     expect(find(uncommittedMenu(conflicted), "stash.save").disabledReason).toBe(
       "Conflicted files cannot be stashed: resolve them first",
     );
+  });
+
+  it("stays enabled while an operation runs", () => {
+    expect(disabled(uncommittedMenu(snap(RUNNING)))).toEqual([]);
   });
 
   it("in a repository with no commit yet there is nothing to stash onto", () => {

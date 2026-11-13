@@ -1,13 +1,18 @@
 <!--
   The graph's toolbar, in the repository header: which branches the graph shows, whether it
-  shows remote branches, tags and stashes, then search, fetch and refresh. Every control changes at
-  once when used; the work it starts shows as it runs (spinning icons, a loading line along
-  the header's bottom edge).
+  shows remote branches, tags and stashes, then the running operation, search, fetch and
+  refresh. Every control changes at once when used; the work it starts shows as it runs
+  (spinning icons, a loading line along the header's bottom edge). An operation shows once
+  it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
+  behind it show as a count.
 -->
 <script lang="ts">
-  import { relativeTime } from "../format";
+  import { untrack } from "svelte";
+  import { relativeTime, visibleText } from "../format";
   import { isMac } from "../platform";
+  import { ops } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
+  import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
   import SearchBox from "./SearchBox.svelte";
 
@@ -39,6 +44,33 @@
     else if (fetchInfo.lastAtMs !== null) lines.push(`Last fetched ${relativeTime(fetchInfo.lastAtMs, now)}`);
     return lines.join("\n");
   });
+
+  const BUSY_DELAY_MS = 150;
+  const running = $derived(ops.busy(view.repoId));
+  /** The running operation, once it has run for BUSY_DELAY_MS; then until none runs. */
+  let busy = $state<RepoSnapshot["op"]>(null);
+  /** When an operation was first seen running, while it is not shown yet. */
+  let seenAt: number | null = null;
+  $effect(() => {
+    const op = running;
+    if (op === null) {
+      busy = null;
+      seenAt = null;
+      return;
+    }
+    if (untrack(() => busy) !== null) {
+      busy = op; // the next one in the queue, or a new count
+      return;
+    }
+    seenAt ??= performance.now();
+    const timer = setTimeout(() => (busy = op), Math.max(0, BUSY_DELAY_MS - (performance.now() - seenAt)));
+    return () => clearTimeout(timer);
+  });
+  const busyTitle = $derived(
+    busy === null
+      ? ""
+      : visibleText(busy.title) + (busy.queued > 0 ? `\n${busy.queued} more waiting to run after it` : ""),
+  );
 
   function fetch() {
     if (noRemotes) return;
@@ -82,6 +114,19 @@
   </label>
 
   <span class="spacer"></span>
+
+  {#if busy}
+    <div class="busy" role="status" data-testid="busy" title={busyTitle}>
+      <svg class="spinner" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.8" />
+        <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+      </svg>
+      <span class="busy-title">{visibleText(busy.title)}</span>
+      {#if busy.queued > 0}
+        <span class="queued" aria-label="{busy.queued} more queued">+{busy.queued}</span>
+      {/if}
+    </div>
+  {/if}
 
   <SearchBox {view} disabled={noCommits} />
 
@@ -198,6 +243,55 @@
   .tool {
     position: relative;
     flex: none;
+  }
+
+  /* The running operation: a quiet accent pill, its title cut short if it must be. */
+  .busy {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 280px;
+    height: 24px;
+    margin-right: 6px;
+    padding: 0 9px 0 8px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    color: var(--accent);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    white-space: nowrap;
+    animation: busy-in 140ms var(--ease);
+  }
+
+  .busy .spinner {
+    flex: none;
+  }
+
+  .busy-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text);
+  }
+
+  .queued {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    line-height: 16px;
+  }
+
+  @keyframes busy-in {
+    from {
+      opacity: 0;
+      transform: translateX(4px);
+    }
   }
 
   .tool[aria-disabled="true"] {

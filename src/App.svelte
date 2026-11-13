@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import CommitDetails from "./lib/components/CommitDetails.svelte";
+  import ContextMenu from "./lib/components/ContextMenu.svelte";
   import Mark from "./lib/components/Mark.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TabBar from "./lib/components/TabBar.svelte";
@@ -22,6 +23,7 @@
     toast,
     windowFocusChanged,
   } from "./lib/state/app.svelte";
+  import { overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
 
@@ -38,7 +40,8 @@
       dragging = event.kind === "enter";
       if (event.kind === "drop") for (const path of event.paths) await openPath(path);
     });
-    // The webview's own context menu (Reload, Inspect…) is not the app's; text fields keep theirs.
+    // The webview's own context menu (Reload, Inspect…) is not the app's; text fields keep
+    // theirs. The graph opens the app's own menus on its rows (GraphView), before this.
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target?.closest("input, textarea, [contenteditable]")) e.preventDefault();
@@ -58,6 +61,8 @@
     e.preventDefault();
     // Holding Cmd+W must not close one tab after another.
     if (e.repeat && !repeatable(shortcut)) return;
+    // A dialog is modal: nothing behind it changes while it is open.
+    if (overlays.dialog) return;
     if (app.gitMissing && shortcut.kind !== "close") return;
     const view = active ? repoView(active.repoId) : null;
     switch (shortcut.kind) {
@@ -132,6 +137,13 @@
   {/if}
 
   <Toast />
+  <ContextMenu />
+  {#if overlays.dialog}
+    {@const dialog = overlays.dialog}
+    {#key dialog.id}
+      <dialog.component {...dialog.props} />
+    {/key}
+  {/if}
 </div>
 
 <style>

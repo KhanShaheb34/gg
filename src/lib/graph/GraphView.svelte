@@ -20,6 +20,10 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { formatDate, formatDateLong, groupDigits, shortHash } from "../format";
+  import { shown as shownName } from "../menus/common";
+  import { itemsFor, pick } from "../menus/dispatch";
+  import type { MenuItem, MenuTarget } from "../menus/types";
+  import { openMenu } from "../state/overlays.svelte";
   import type { GraphProbe } from "../perf/graphProbe";
   import type { Probe } from "../perf/scrollProbe";
   import { hashMatch, needleOf, splitMatch } from "../search";
@@ -45,7 +49,7 @@
   import { GraphColumns } from "./graphColumns.svelte";
   import { gridKey } from "./gridKeys";
   import { LanesCanvas, type RowSource } from "./lanesCanvas";
-  import RefLabels from "./RefLabels.svelte";
+  import RefLabels, { ownLabels } from "./RefLabels.svelte";
 
   let { view }: { view: RepoView } = $props();
 
@@ -327,7 +331,122 @@
     titledRow = r;
   }
 
+  // --- Context menus ----------------------------------------------------------------------
+  // One listener for every row (delegation): the row and label are found from the event.
+
+  /** When a menu was last opened from the keyboard: the contextmenu event that may follow is not another. */
+  let keyboardMenuAt = -Infinity;
+
+  /** A remote branch's label, for the remote part of a combined label (`main | origin`). */
+  function remoteLabel(local: RefLabel, remote: string): RefLabel {
+    return {
+      kind: "remote",
+      name: `${remote}/${local.name}`,
+      remotes: [],
+      current: false,
+      worktreePath: null,
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+    };
+  }
+
+  const KINDS = { branch: "Branch", remote: "Remote branch", tag: "Tag", stash: "Stash" } as const;
+
+  /**
+   * A menu holding the menus of several targets as submenus, one per target; ids of their
+   * items are prefixed with the target's index ("1:checkout").
+   */
+  function menusOf(targets: MenuTarget[]): { items: MenuItem[]; targetOf: (id: string) => [MenuTarget, string] } {
+    const prefixed = (items: MenuItem[], k: number): MenuItem[] =>
+      items.map((it) =>
+        "separator" in it ? it : { ...it, id: `${k}:${it.id}`, submenu: it.submenu && prefixed(it.submenu, k) },
+      );
+    return {
+      items: targets.map((t, k) => ({
+        id: `${k}`,
+        label: `${KINDS[t.label!.kind]} ${shownName(t.label!.name)}`,
+        submenu: prefixed(itemsFor(t, view.snapshot), k),
+      })),
+      targetOf: (id) => {
+        const at = id.indexOf(":");
+        return [targets[Number(id.slice(0, at))], id.slice(at + 1)];
+      },
+    };
+  }
+
+  /**
+   * The menu for what element `on` is in `row`: a label's (the remote part of a combined label
+   * is the remote branch's; "+k" lists the hidden labels, each with its menu), else the row's.
+   */
+  function menuAt(on: Element, row: CommitRow): { items: MenuItem[]; onPick: (id: string) => void } {
+    const snap = view.snapshot;
+    const single = (target: MenuTarget) => ({
+      items: itemsFor(target, snap),
+      onPick: (id: string) => pick(id, target, view.snapshot),
+    });
+    const several = (targets: MenuTarget[]) => {
+      const { items, targetOf } = menusOf(targets);
+      return {
+        items,
+        onPick: (id: string) => {
+          const [target, inner] = targetOf(id);
+          pick(inner, target, view.snapshot);
+        },
+      };
+    };
+    const ref = on.closest<HTMLElement>(".ref[data-slot]");
+    const slot = ref?.dataset.slot;
+    if (slot === undefined) return single({ row, label: null });
+    if (slot === "more") {
+      return several(row.labels.slice(ownLabels(row.labels.length)).map((label) => ({ row, label })));
+    }
+    const label = row.labels[Number(slot)];
+    if (!label) return single({ row, label: null });
+    if (on.closest(".remotes") && label.remotes.length > 0) {
+      const remotes = label.remotes.map((r) => ({ row, label: remoteLabel(label, r) }));
+      return remotes.length === 1 ? single(remotes[0]) : several(remotes);
+    }
+    return single({ row, label });
+  }
+
+  /** Right-click on a row or a label: selects the row and opens the menu at the pointer. */
+  function onRowsContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    if (performance.now() - keyboardMenuAt < 500) return;
+    const hit = rowAt(e);
+    if (!hit) return;
+    view.select(hit.row.hash, hit.index);
+    scroller.focus({ preventScroll: true });
+    const { items, onPick } = menuAt(e.target as Element, hit.row);
+    openMenu({ x: e.clientX, y: e.clientY }, items, onPick);
+  }
+
+  /** The menu key or Shift+F10: the selected row's menu, below the start of its description. */
+  async function openMenuForSelection() {
+    keyboardMenuAt = performance.now();
+    const index = view.selectedHash === null ? null : view.selectedIndex;
+    const row = index === null ? undefined : view.cache.get(index);
+    if (index === null || !row) return;
+    view.scrollToRow(index);
+    await tick();
+    let el = scroller.querySelector<HTMLElement>(`[role="row"][data-index="${index}"] .desc`);
+    if (!el) {
+      await new Promise((r) => requestAnimationFrame(r));
+      el = scroller.querySelector<HTMLElement>(`[role="row"][data-index="${index}"] .desc`);
+    }
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const { items, onPick } = menuAt(el, row);
+    openMenu({ x: r.left + 4, y: r.bottom }, items, onPick, { keyboard: true });
+  }
+
   function onKeydown(e: KeyboardEvent) {
+    if (e.target === scroller && (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey))) {
+      e.preventDefault();
+      void openMenuForSelection();
+      return;
+    }
     // Only plain keys on the grid itself: the shell's shortcuts and the splitters keep theirs.
     if (e.target !== scroller || e.metaKey || e.ctrlKey || e.altKey) return;
     const move = gridKey(e.key, {
@@ -414,6 +533,7 @@
         style:height="{poolRows * ROW_H}px"
         style:transform="translateY({poolFirst * ROW_H}px)"
         onclick={onRowsClick}
+        oncontextmenu={onRowsContextMenu}
         onpointerover={onRowsPointerOver}
       >
         <canvas class="lanes" data-testid="graph-canvas" aria-hidden="true" bind:this={canvas}></canvas>

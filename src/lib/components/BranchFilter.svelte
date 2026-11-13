@@ -2,8 +2,10 @@
   Which branches the graph shows: a button naming the choice ("Show all", "3 branches") that
   opens a popover with a filter field and a checklist (Show all, local branches, then remote
   branches when they are shown). Each tick applies at once. Only the rows in view are
-  rendered, so thousands of branches cost nothing. Keys: arrows (and Page keys) move through
-  the list from the field, Enter ticks, Esc or a click outside closes.
+  rendered, so thousands of branches cost nothing. Keys: arrows, Page Up/Down, Home and End
+  move through the list from the field, Enter ticks, Esc or a click outside closes. Each
+  section is a labelled group; the field points (aria-activedescendant) only at a rendered
+  option.
 -->
 <script lang="ts">
   import { tick } from "svelte";
@@ -43,6 +45,24 @@
   const current = $derived(view.snapshot.head.branch);
 
   const isOption = (item: FilterItem | undefined) => item !== undefined && item.kind !== "heading";
+
+  type Row = { item: FilterItem; i: number };
+  /** The rendered rows by section: Show all, then the local and the remote branches. */
+  const sections = $derived.by(() => {
+    const all: Row[] = [];
+    const local: Row[] = [];
+    const remote: Row[] = [];
+    for (let i = first; i < last; i++) {
+      const item = items[i];
+      const isRemote = item.kind === "heading" ? item.label === "Remote branches" : item.kind === "branch" && item.remote;
+      (item.kind === "all" ? all : isRemote ? remote : local).push({ item, i });
+    }
+    return { all, local, remote };
+  });
+  /** The active option's id, while it is rendered (scrolled out of the rows, there is none). */
+  const activeId = $derived(active >= first && active < last && isOption(items[active]) ? `${id}-${active}` : undefined);
+  const keyOf = (item: FilterItem) =>
+    item.kind === "branch" ? `${item.remote ? "r" : "l"}:${item.name}` : item.kind === "heading" ? `h:${item.label}` : "all";
 
   function checked(item: FilterItem): boolean {
     if (item.kind === "all") return shown === null;
@@ -113,6 +133,12 @@
       case "PageUp":
         setActive(step(active, -1, PAGE));
         break;
+      case "Home":
+        setActive(0);
+        break;
+      case "End":
+        setActive(step(items.length, -1));
+        break;
       case "Enter":
         if (isOption(items[active])) toggle(items[active]);
         break;
@@ -148,6 +174,48 @@
     if (next && !root.contains(next)) hide(false);
   }
 </script>
+
+{#snippet entry({ item, i }: Row)}
+  {#if item.kind === "heading"}
+    <!-- The group's own label says this to assistive technology. -->
+    <div class="heading" aria-hidden="true" style:transform="translateY({i * ITEM_H}px)">{item.label}</div>
+  {:else}
+    {@const on = checked(item)}
+    <!-- The keys are the field's (aria-activedescendant); options take clicks only. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="option"
+      class:all={item.kind === "all"}
+      id="{id}-{i}"
+      role="option"
+      tabindex="-1"
+      aria-selected={on}
+      data-active={i === active}
+      style:transform="translateY({i * ITEM_H}px)"
+      onpointerdown={(e) => e.preventDefault()}
+      onpointermove={() => (active = i)}
+      onclick={() => {
+        active = i;
+        toggle(item);
+      }}
+    >
+      <span class="checkbox" data-checked={on} aria-hidden="true"></span>
+      {#if item.kind === "all"}
+        <span class="name">Show all</span>
+      {:else}
+        <span class="name" class:current={!item.remote && item.name === current}
+          >{#each matchParts(item.name, pattern) as part}{#if part.match}<mark>{part.text}</mark
+              >{:else}{part.text}{/if}{/each}</span
+        >
+        {#if !item.remote && item.name === current}
+          <svg class="head" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.6" />
+          </svg>
+        {/if}
+      {/if}
+    </div>
+  {/if}
+{/snippet}
 
 <div class="filter" bind:this={root} onfocusout={onFocusOut}>
   <button
@@ -190,7 +258,7 @@
           aria-expanded="true"
           aria-controls="{id}-list"
           aria-autocomplete="list"
-          aria-activedescendant={isOption(items[active]) ? `${id}-${active}` : undefined}
+          aria-activedescendant={activeId}
           placeholder="Filter branches"
           spellcheck="false"
           autocomplete="off"
@@ -211,47 +279,23 @@
         onscroll={() => (listTop = list!.scrollTop)}
       >
         <div class="space" style:height="{items.length * ITEM_H}px">
-          {#each items.slice(first, last) as item, k (item.kind === "branch" ? `${item.remote ? "r" : "l"}:${item.name}` : item.kind === "heading" ? `h:${item.label}` : "all")}
-            {@const i = first + k}
-            {#if item.kind === "heading"}
-              <div class="heading" role="presentation" style:transform="translateY({i * ITEM_H}px)">{item.label}</div>
-            {:else}
-              {@const on = checked(item)}
-              <!-- The keys are the field's (aria-activedescendant); options take clicks only. -->
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <div
-                class="option"
-                class:all={item.kind === "all"}
-                id="{id}-{i}"
-                role="option"
-                tabindex="-1"
-                aria-selected={on}
-                data-active={i === active}
-                style:transform="translateY({i * ITEM_H}px)"
-                onpointerdown={(e) => e.preventDefault()}
-                onpointermove={() => (active = i)}
-                onclick={() => {
-                  active = i;
-                  toggle(item);
-                }}
-              >
-                <span class="checkbox" data-checked={on} aria-hidden="true"></span>
-                {#if item.kind === "all"}
-                  <span class="name">Show all</span>
-                {:else}
-                  <span class="name" class:current={!item.remote && item.name === current}
-                    >{#each matchParts(item.name, pattern) as part}{#if part.match}<mark>{part.text}</mark
-                        >{:else}{part.text}{/if}{/each}</span
-                  >
-                  {#if !item.remote && item.name === current}
-                    <svg class="head" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-                      <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.6" />
-                    </svg>
-                  {/if}
-                {/if}
-              </div>
-            {/if}
+          {#each sections.all as row (row.i)}
+            {@render entry(row)}
           {/each}
+          {#if sections.local.length > 0}
+            <div class="group" role="group" aria-label="Branches">
+              {#each sections.local as row (keyOf(row.item))}
+                {@render entry(row)}
+              {/each}
+            </div>
+          {/if}
+          {#if sections.remote.length > 0}
+            <div class="group" role="group" aria-label="Remote branches">
+              {#each sections.remote as row (keyOf(row.item))}
+                {@render entry(row)}
+              {/each}
+            </div>
+          {/if}
         </div>
       </div>
       {#if items.length === 1 && text.trim() !== ""}
@@ -389,6 +433,15 @@
 
   .space {
     position: relative;
+  }
+
+  /* A section: its rows sit where the list puts them, as if it were not there. */
+  .group {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 0;
   }
 
   .heading,

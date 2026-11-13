@@ -81,6 +81,16 @@ test("the branch filter works from the keyboard", async ({ gg }) => {
   await page.keyboard.press("ArrowUp");
   await expect(option(page, "fix/typo")).toHaveAttribute("data-active", "true");
   await expect(input).toHaveAttribute("aria-activedescendant", /.+/);
+  // Sections are labelled groups; Home and End go to the first and last option.
+  await expect(filterDialog(page).getByRole("group", { name: "Branches", exact: true }).getByRole("option")).toHaveText(["fix/typo"]);
+  await expect(filterDialog(page).getByRole("group", { name: "Remote branches", exact: true }).getByRole("option")).toHaveText([
+    "origin/fix/typo",
+  ]);
+  await page.keyboard.press("End");
+  await expect(option(page, "origin/fix/typo")).toHaveAttribute("data-active", "true");
+  await page.keyboard.press("Home");
+  await expect(option(page, "Show all")).toHaveAttribute("data-active", "true");
+  await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect(option(page, "fix/typo")).toHaveAttribute("aria-selected", "true");
   await expect(filterButton(page)).toHaveText(/1 branch/);
@@ -113,12 +123,22 @@ test("the branch filter stays quick with thousands of branches", async ({ gg }) 
   await expect(options).toHaveText(["Show all", "topic/b-2499"]);
   await filterDialog(page).getByRole("combobox", { name: "Filter branches" }).fill("");
   // The last branch can be reached by scrolling the list.
+  const input = filterDialog(page).getByRole("combobox", { name: "Filter branches" });
+  await page.keyboard.press("ArrowDown");
+  await expect(input).toHaveAttribute("aria-activedescendant", /.+/);
   await filterDialog(page)
     .getByRole("listbox")
     .evaluate((el) => {
       el.scrollTop = el.scrollHeight;
     });
   await expect(option(page, "topic/b-2499")).toBeVisible();
+  // The active option scrolled out of the rendered rows: the field no longer points at it.
+  await expect(input).not.toHaveAttribute("aria-activedescendant", /.+/);
+  // End goes to the last one, and points at it.
+  await page.keyboard.press("End");
+  await expect(option(page, "topic/b-2499")).toHaveAttribute("data-active", "true");
+  const active = (await input.getAttribute("aria-activedescendant"))!;
+  await expect(page.locator(`[id="${active}"]`)).toHaveText("topic/b-2499");
 });
 
 test("unticking Remote branches removes origin from every label", async ({ gg }) => {

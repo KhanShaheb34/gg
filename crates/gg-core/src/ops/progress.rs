@@ -267,12 +267,13 @@ mod tests {
         );
         let why = refused(OpRequest::StashPop { stash: stash() }).unwrap();
         assert!(why.starts_with("A rebase is in progress"), "{why}");
+        // Saving would take the stopped operation's state with it (R17, revised).
         assert!(
             refused(OpRequest::StashSave {
                 message: None,
                 include_untracked: false
             })
-            .is_none()
+            .is_some()
         );
         assert!(refused(OpRequest::StashDrop { stash: stash() }).is_none());
         let pull = |branch: &str| OpRequest::Pull {

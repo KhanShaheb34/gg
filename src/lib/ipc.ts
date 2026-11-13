@@ -136,10 +136,10 @@ const httpTransport: Transport = {
   async invoke(cmd, args) {
     let body: { ok?: unknown; err?: unknown };
     try {
-      // No content-type header: a "simple" request needs no CORS preflight. The server reads
-      // the body as JSON regardless.
+      // The dev server takes only JSON, so browsers preflight (and it checks the origin).
       const response = await fetch(`${devUrl()}/invoke`, {
         method: "POST",
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ cmd, args }),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -148,7 +148,9 @@ const httpTransport: Transport = {
       throw unreachable("Could not reach the dev server", e);
     }
     if (body.err !== undefined) {
-      throw isCoreErrorDto(body.err) ? new CoreError(body.err) : unreachable("Malformed error", JSON.stringify(body.err));
+      throw isCoreErrorDto(body.err)
+        ? new CoreError(body.err)
+        : unreachable("Malformed error", JSON.stringify(body.err));
     }
     return body.ok;
   },

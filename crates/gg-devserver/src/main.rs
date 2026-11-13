@@ -1,7 +1,8 @@
-//! `gg-devserver --port 1421 --config-dir <dir> [--open <path>]`: serves gg-core on
-//! 127.0.0.1 for the browser build of the UI. Prints `listening on http://127.0.0.1:<port>`
-//! once ready (`--port 0` picks a free port). Env `GG_PERF_LOG` names a file perf marks are
-//! appended to.
+//! `gg-devserver --port 1421 --config-dir <dir> [--open <path>] [--allow-origin <origin>]...`:
+//! serves gg-core on 127.0.0.1 for the browser build of the UI. Browsers may call it from
+//! `http://127.0.0.1:1420` and `http://localhost:1420` (the vite dev server) and from each
+//! `--allow-origin`. Prints `listening on http://127.0.0.1:<port>` once ready (`--port 0`
+//! picks a free port). Env `GG_PERF_LOG` names a file perf marks are appended to.
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
@@ -9,10 +10,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use gg_core::Core;
-use gg_devserver::{Events, serve};
+use gg_devserver::{DEFAULT_ORIGINS, Events, serve};
 use tokio::net::TcpListener;
 
-const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>]";
+const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>] \
+                     [--allow-origin <origin>]...";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -20,6 +22,8 @@ struct Args {
     port: u16,
     config_dir: PathBuf,
     open: Option<PathBuf>,
+    /// Origins allowed besides [`DEFAULT_ORIGINS`].
+    allow_origins: Vec<String>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -27,6 +31,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut port = DEFAULT_PORT;
     let mut config_dir = None;
     let mut open = None;
+    let mut allow_origins = Vec::new();
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -46,6 +51,15 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
                 }
                 open = Some(path);
             }
+            "--allow-origin" => {
+                let origin = value()?.to_string_lossy().into_owned();
+                if !is_origin(&origin) {
+                    return Err(format!(
+                        "--allow-origin: not an origin (scheme://host[:port]): {origin}"
+                    ));
+                }
+                allow_origins.push(origin);
+            }
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -53,6 +67,19 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         port,
         config_dir: config_dir.ok_or("--config-dir is required")?,
         open,
+        allow_origins,
+    })
+}
+
+/// Whether `s` looks like a web origin: `http(s)://host[:port]`, with no path.
+fn is_origin(s: &str) -> bool {
+    let rest = s
+        .strip_prefix("http://")
+        .or_else(|| s.strip_prefix("https://"));
+    rest.is_some_and(|r| {
+        !r.is_empty()
+            && r.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
     })
 }
 
@@ -85,7 +112,12 @@ async fn main() -> ExitCode {
         Ok(addr) => println!("listening on http://{addr}"),
         Err(e) => eprintln!("gg-devserver: {e}"),
     }
-    if let Err(e) = serve(listener, core, events).await {
+    let origins = DEFAULT_ORIGINS
+        .iter()
+        .map(|o| (*o).to_owned())
+        .chain(args.allow_origins)
+        .collect();
+    if let Err(e) = serve(listener, core, events, origins).await {
         eprintln!("gg-devserver: {e}");
         return ExitCode::FAILURE;
     }
@@ -109,17 +141,42 @@ mod tests {
             Args {
                 port: 1421,
                 config_dir: "/c".into(),
-                open: None
+                open: None,
+                allow_origins: vec![],
             }
         );
         assert_eq!(
-            parse(&["--port", "0", "--config-dir", "/c", "--open", dir_s]).unwrap(),
+            parse(&[
+                "--port",
+                "0",
+                "--config-dir",
+                "/c",
+                "--open",
+                dir_s,
+                "--allow-origin",
+                "http://127.0.0.1:5173",
+                "--allow-origin",
+                "http://[::1]:5173",
+            ])
+            .unwrap(),
             Args {
                 port: 0,
                 config_dir: "/c".into(),
-                open: Some(dir.clone())
+                open: Some(dir.clone()),
+                allow_origins: vec!["http://127.0.0.1:5173".into(), "http://[::1]:5173".into()],
             }
         );
+        for bad in [
+            "*",
+            "null",
+            "127.0.0.1:5173",
+            "http://",
+            "http://x/path",
+            "http://a b",
+        ] {
+            let args = ["--config-dir", "/c", "--allow-origin", bad];
+            assert!(parse(&args).is_err(), "{bad} accepted");
+        }
         assert!(parse(&[]).unwrap_err().contains("--config-dir"));
         assert!(parse(&["--port", "x", "--config-dir", "/c"]).is_err());
         assert!(parse(&["--port"]).unwrap_err().contains("needs a value"));

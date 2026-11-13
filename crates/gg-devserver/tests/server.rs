@@ -6,20 +6,42 @@ use std::time::Duration;
 
 use gg_core::Core;
 use gg_core::testutil::TestRepo;
-use gg_devserver::{Events, serve};
+use gg_devserver::{DEFAULT_ORIGINS, Events, serve};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
+const JSON: (&str, &str) = ("Content-Type", "application/json");
+const EVIL: &str = "http://evil.example";
 
 struct Server {
     addr: SocketAddr,
     _config: TempDir,
 }
 
-async fn start() -> Server {
+/// A response: status line, headers (lowercased) and body.
+struct Reply {
+    status: String,
+    headers: String,
+    body: String,
+}
+
+impl Reply {
+    fn json(&self) -> Value {
+        serde_json::from_str(&self.body).expect("JSON body")
+    }
+
+    fn allow_origin(&self) -> Option<&str> {
+        self.headers
+            .lines()
+            .find_map(|l| l.strip_prefix("access-control-allow-origin: "))
+    }
+}
+
+/// Starts a server allowing the default origins and `extra`.
+async fn start_allowing(extra: &[&str]) -> Server {
     let config = tempfile::tempdir().unwrap();
     let events = Events::new();
     let core: Arc<Core> = Core::new(config.path().to_path_buf(), None, events.sink())
@@ -27,32 +49,34 @@ async fn start() -> Server {
         .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(serve(listener, core, events));
+    let origins = DEFAULT_ORIGINS
+        .iter()
+        .chain(extra)
+        .map(|o| (*o).to_owned())
+        .collect();
+    tokio::spawn(serve(listener, core, events, origins));
     Server {
         addr,
         _config: config,
     }
 }
 
-impl Server {
-    /// Sends one request and returns the status line, the headers and the body.
-    async fn request(&self, head: &str, body: &str) -> (String, String, String) {
-        self.request_with(head, "", body).await
-    }
+async fn start() -> Server {
+    start_allowing(&[]).await
+}
 
-    /// Like [`Server::request`], with `headers` (each ending in CRLF) added.
-    async fn request_with(
-        &self,
-        head: &str,
-        headers: &str,
-        body: &str,
-    ) -> (String, String, String) {
+impl Server {
+    /// Sends one request with `headers` (plus `Host: <addr>` unless they name a host).
+    async fn send(&self, head: &str, headers: &[(&str, &str)], body: &str) -> Reply {
         let mut stream = TcpStream::connect(self.addr).await.unwrap();
-        let request = format!(
-            "{head} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{headers}Content-Length: {}\r\n\r\n{body}",
-            self.addr,
-            body.len()
-        );
+        let mut request = format!("{head} HTTP/1.1\r\nConnection: close\r\n");
+        if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+            request.push_str(&format!("Host: {}\r\n", self.addr));
+        }
+        for (k, v) in headers {
+            request.push_str(&format!("{k}: {v}\r\n"));
+        }
+        request.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = String::new();
         tokio::time::timeout(TIMEOUT, stream.read_to_string(&mut response))
@@ -61,22 +85,27 @@ impl Server {
             .unwrap();
         let (head, body) = response.split_once("\r\n\r\n").expect("headers end");
         let (status, headers) = head.split_once("\r\n").unwrap_or((head, ""));
-        (status.to_owned(), headers.to_lowercase(), body.to_owned())
+        Reply {
+            status: status.to_owned(),
+            headers: headers.to_lowercase(),
+            body: body.to_owned(),
+        }
     }
 
+    /// `POST /invoke` as curl would send it (JSON, no `Origin`); expects 200.
     async fn invoke(&self, body: Value) -> Value {
-        let (status, _, body) = self.request("POST /invoke", &body.to_string()).await;
-        assert_eq!(status, "HTTP/1.1 200 OK");
-        serde_json::from_str(&body).expect("JSON body")
+        let reply = self.send("POST /invoke", &[JSON], &body.to_string()).await;
+        assert_eq!(reply.status, "HTTP/1.1 200 OK", "{}", reply.body);
+        reply.json()
     }
 }
 
 #[tokio::test]
 async fn health_is_ok() {
     let server = start().await;
-    let (status, _, body) = server.request("GET /health", "").await;
-    assert_eq!(status, "HTTP/1.1 200 OK");
-    assert_eq!(body, "ok");
+    let reply = server.send("GET /health", &[], "").await;
+    assert_eq!(reply.status, "HTTP/1.1 200 OK");
+    assert_eq!(reply.body, "ok");
 }
 
 #[tokio::test]
@@ -112,24 +141,132 @@ async fn invoke_error_shape() {
     assert_eq!(reply["err"]["code"], "not_a_repo");
 
     // A body that is not a request is a bad request too, in the same shape.
-    let (status, _, body) = server.request("POST /invoke", "{oops").await;
-    assert_eq!(status, "HTTP/1.1 200 OK");
-    let reply: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(reply["err"]["code"], "bad_request");
+    let reply = server.send("POST /invoke", &[JSON], "{oops").await;
+    assert_eq!(reply.status, "HTTP/1.1 200 OK");
+    assert_eq!(reply.json()["err"]["code"], "bad_request");
+}
+
+const GET_APP_STATE: &str = r#"{"cmd":"get_app_state","args":{}}"#;
+
+#[tokio::test]
+async fn invoke_requires_a_json_content_type() {
+    let server = start().await;
+    for headers in [
+        &[("Content-Type", "text/plain;charset=UTF-8")][..],
+        &[("Content-Type", "application/x-www-form-urlencoded")][..],
+        &[][..],
+    ] {
+        let reply = server.send("POST /invoke", headers, GET_APP_STATE).await;
+        assert!(
+            reply.status.starts_with("HTTP/1.1 415"),
+            "{headers:?}: {}",
+            reply.status
+        );
+    }
+    let charset = ("Content-Type", "application/json; charset=utf-8");
+    let reply = server.send("POST /invoke", &[charset], GET_APP_STATE).await;
+    assert_eq!(reply.status, "HTTP/1.1 200 OK");
 }
 
 #[tokio::test]
-async fn cors_is_permissive() {
+async fn allowed_origins_get_cors_headers() {
+    let server = start_allowing(&["http://127.0.0.1:5173"]).await;
+    for origin in [
+        "http://127.0.0.1:1420",
+        "http://localhost:1420",
+        "http://127.0.0.1:5173",
+    ] {
+        let preflight = [
+            ("Origin", origin),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "content-type"),
+        ];
+        let reply = server.send("OPTIONS /invoke", &preflight, "").await;
+        assert!(
+            reply.status.starts_with("HTTP/1.1 200"),
+            "{origin}: {}",
+            reply.status
+        );
+        assert_eq!(reply.allow_origin(), Some(origin));
+
+        let reply = server
+            .send("POST /invoke", &[("Origin", origin), JSON], GET_APP_STATE)
+            .await;
+        assert_eq!(reply.status, "HTTP/1.1 200 OK");
+        assert_eq!(reply.allow_origin(), Some(origin));
+        assert!(reply.json()["ok"].is_object());
+    }
+}
+
+#[tokio::test]
+async fn other_origins_are_refused() {
     let server = start().await;
-    let preflight = "Origin: http://127.0.0.1:1420\r\n\
-                     Access-Control-Request-Method: POST\r\n\
-                     Access-Control-Request-Headers: content-type\r\n";
-    let (status, headers, _) = server.request_with("OPTIONS /invoke", preflight, "").await;
-    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-    assert!(
-        headers.contains("access-control-allow-origin: *"),
-        "{headers}"
-    );
+    let preflight = [
+        ("Origin", EVIL),
+        ("Access-Control-Request-Method", "POST"),
+        ("Access-Control-Request-Headers", "content-type"),
+    ];
+    let reply = server.send("OPTIONS /invoke", &preflight, "").await;
+    assert!(reply.status.starts_with("HTTP/1.1 403"), "{}", reply.status);
+    assert_eq!(reply.allow_origin(), None);
+
+    for origin in [EVIL, "null", "http://127.0.0.1:1421.evil.example"] {
+        let reply = server
+            .send("POST /invoke", &[("Origin", origin), JSON], GET_APP_STATE)
+            .await;
+        assert!(
+            reply.status.starts_with("HTTP/1.1 403"),
+            "{origin}: {}",
+            reply.status
+        );
+        assert_eq!(reply.allow_origin(), None);
+        assert!(!reply.body.contains("recents"), "no data leaked");
+        let reply = server.send("GET /events", &[("Origin", origin)], "").await;
+        assert!(
+            reply.status.starts_with("HTTP/1.1 403"),
+            "{origin}: {}",
+            reply.status
+        );
+    }
+}
+
+#[tokio::test]
+async fn only_loopback_host_names_are_served() {
+    let server = start().await;
+    let port = server.addr.port();
+    for host in [
+        "evil.example",
+        "evil.example:1421",
+        "127.0.0.2",
+        "localhost.evil.example",
+    ] {
+        let reply = server
+            .send("POST /invoke", &[("Host", host), JSON], GET_APP_STATE)
+            .await;
+        assert!(
+            reply.status.starts_with("HTTP/1.1 403"),
+            "{host}: {}",
+            reply.status
+        );
+        let reply = server.send("GET /events", &[("Host", host)], "").await;
+        assert!(
+            reply.status.starts_with("HTTP/1.1 403"),
+            "{host}: {}",
+            reply.status
+        );
+    }
+    for host in [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        "LocalHost".to_owned(),
+        format!("[::1]:{port}"),
+        "127.0.0.1".to_owned(),
+    ] {
+        let reply = server
+            .send("POST /invoke", &[("Host", &host), JSON], GET_APP_STATE)
+            .await;
+        assert_eq!(reply.status, "HTTP/1.1 200 OK", "{host}");
+    }
 }
 
 #[tokio::test]
@@ -139,7 +276,11 @@ async fn events_stream_repo_changed_after_open() {
     let server = start().await;
 
     let mut events = TcpStream::connect(server.addr).await.unwrap();
-    let get = format!("GET /events HTTP/1.1\r\nHost: {}\r\n\r\n", server.addr);
+    // As the browser build's EventSource sends it.
+    let get = format!(
+        "GET /events HTTP/1.1\r\nHost: {}\r\nOrigin: http://127.0.0.1:1420\r\n\r\n",
+        server.addr
+    );
     events.write_all(get.as_bytes()).await.unwrap();
     // Read until the headers are in: the server has subscribed by then.
     let mut received = Vec::new();

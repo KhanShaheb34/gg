@@ -23,6 +23,7 @@ describe("HTTP transport", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`${DEV_URL}/invoke`);
     expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "content-type": "application/json" });
     expect(JSON.parse(init.body as string)).toEqual({
       cmd: "get_rows",
       args: { repoId: 7, generation: 3, start: 10, count: 50 },

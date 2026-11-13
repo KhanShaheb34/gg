@@ -67,6 +67,13 @@ describe("HTTP transport", () => {
     ]);
   });
 
+  it("passes on the note open_in_editor returns", async () => {
+    vi.stubGlobal("fetch", respond({ ok: "No editor command is set, so the worktree folder was opened" }));
+    await expect(api.openInEditor(1, "a.txt")).resolves.toBe("No editor command is set, so the worktree folder was opened");
+    vi.stubGlobal("fetch", respond({ ok: null }));
+    await expect(api.openInEditor(1, null)).resolves.toBeNull();
+  });
+
   it("names every command's arguments as the core expects", async () => {
     const fetchMock = respond({ ok: null });
     vi.stubGlobal("fetch", fetchMock);

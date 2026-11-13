@@ -428,11 +428,14 @@ async fn open_in_editor_rejects_paths_outside_the_worktree() {
     assert!(h.m.editor_launches().is_empty(), "nothing was opened");
 
     let root = dunce::canonicalize(repo.path()).unwrap();
-    h.m.open_in_editor(id, Some("a b.txt"), None).await.unwrap();
-    h.m.open_in_editor(id, Some("dir/./inner.txt"), None)
+    let editor = Some("my-editor");
+    h.m.open_in_editor(id, Some("a b.txt"), editor)
         .await
         .unwrap();
-    h.m.open_in_editor(id, None, None).await.unwrap();
+    h.m.open_in_editor(id, Some("dir/./inner.txt"), editor)
+        .await
+        .unwrap();
+    h.m.open_in_editor(id, None, editor).await.unwrap();
     let opened: Vec<String> =
         h.m.editor_launches()
             .into_iter()
@@ -466,17 +469,26 @@ async fn editor_command_is_split_without_a_shell() {
     h.m.open_in_editor(id, Some("a.txt"), Some(command))
         .await
         .unwrap();
-    // The platform's opener when no command is set.
-    h.m.open_in_editor(id, Some("a.txt"), None).await.unwrap();
-    let opener: Vec<&str> = if cfg!(target_os = "macos") {
-        vec!["open"]
-    } else if cfg!(windows) {
-        vec!["cmd", "/C", "start", ""]
+    // Without a command: as text on macOS; elsewhere the worktree folder, with a note
+    // (the file itself could be a program the default application runs).
+    let note = h.m.open_in_editor(id, Some("a.txt"), None).await.unwrap();
+    let root = dunce::canonicalize(repo.path()).unwrap();
+    let root = root.to_string_lossy().into_owned();
+    let expected_opener: Vec<String> = if cfg!(target_os = "macos") {
+        assert_eq!(note, None);
+        vec!["open".into(), "-t".into(), file.clone()]
     } else {
-        vec!["xdg-open"]
+        assert!(
+            note.as_deref().unwrap_or("").contains("Settings"),
+            "{note:?}"
+        );
+        let opener = if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        vec![opener.into(), root]
     };
-    let mut expected_opener: Vec<String> = opener.into_iter().map(str::to_owned).collect();
-    expected_opener.push(file.clone());
     assert_eq!(
         h.m.editor_launches(),
         [

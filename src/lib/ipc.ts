@@ -306,10 +306,12 @@ export const api = {
     call<OpOutcome>("run_op", { repoId, request, confirmed }),
   getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
   setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
-  /** Opens `path` (relative to the worktree), or the worktree folder when null, in the editor. */
-  async openInEditor(repoId: number, path: string | null): Promise<void> {
-    await call("open_in_editor", { repoId, path });
-  },
+  /**
+   * Opens `path` (relative to the worktree), or the worktree folder when null, in the editor.
+   * Resolves to a note to show when something else was opened (no editor command is set:
+   * the worktree folder instead of the file), else null.
+   */
+  openInEditor: (repoId: number, path: string | null) => call<string | null>("open_in_editor", { repoId, path }),
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */

@@ -276,10 +276,11 @@ impl Core {
             "open_in_editor" => {
                 let a: OpenInEditorArgs = parse(cmd, args)?;
                 let command = self.store.settings().editor_command;
-                self.repos()?
+                let note = self
+                    .repos()?
                     .open_in_editor(a.repo_id, a.path.as_deref(), command.as_deref())
                     .await?;
-                Ok(Value::Null)
+                to_json(note)
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;

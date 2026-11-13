@@ -184,8 +184,10 @@ impl RepoManager {
     /// Opens `path` (relative to the active worktree; the worktree folder itself when
     /// `None`) with `command` (the editor command from the settings: a program and its
     /// arguments, split on whitespace with simple quotes, the path added as the last
-    /// argument), or with the platform's opener when `command` is `None`. The program is
-    /// started directly, never through a shell, and not waited for.
+    /// argument). Without a command, a folder opens with the platform's opener, and a file
+    /// opens as text on macOS; elsewhere the worktree folder opens instead and the returned
+    /// note says so (see [`launch_plan`]). The program is started directly, never through
+    /// a shell, and not waited for. Returns a note for the user, if any.
     ///
     /// `bad_request` for a path that does not stay inside the worktree (`..`, an absolute
     /// path, a symlink that leads out) or a command with an unclosed quote; `path_missing`
@@ -195,10 +197,11 @@ impl RepoManager {
         repo_id: u32,
         path: Option<&str>,
         command: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let worktree = self.get(repo_id)?.worktree.clone();
-        let target = inside_worktree(&worktree, path)?;
-        let argv = editor_argv(command, &target)?;
+        let root = dunce::canonicalize(&worktree).unwrap_or_else(|_| worktree.clone());
+        let file = path.map(|p| inside_worktree(&root, p)).transpose()?;
+        let (argv, note) = launch_plan(std::env::consts::OS, command, &root, file.as_deref())?;
         #[cfg(any(test, feature = "testutil"))]
         if let Some(launches) = crate::lock_ignoring_poison(&self.editor_launches).as_mut() {
             launches.push(
@@ -206,9 +209,10 @@ impl RepoManager {
                     .map(|a| a.to_string_lossy().into_owned())
                     .collect(),
             );
-            return Ok(());
+            return Ok(note);
         }
-        launch(&argv, &worktree, self.login_path())
+        launch(&argv, &worktree, self.login_path())?;
+        Ok(note)
     }
 
     /// From now on, editor launches are recorded instead of run (tests only; see
@@ -227,13 +231,9 @@ impl RepoManager {
     }
 }
 
-/// `rel` (a path relative to `worktree`; `None` for the worktree itself), resolved, if it
-/// stays inside `worktree`: no `..`, no absolute path, and no symlink leading out.
-fn inside_worktree(worktree: &Path, rel: Option<&str>) -> Result<PathBuf> {
-    let root = dunce::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
-    let Some(rel) = rel else {
-        return Ok(root);
-    };
+/// `rel` (a path relative to the worktree `root`, canonical), resolved, if it stays inside
+/// it: no `..`, no absolute path, and no symlink leading out.
+fn inside_worktree(root: &Path, rel: &str) -> Result<PathBuf> {
     let outside = || {
         CoreError::new(
             ErrorCode::BadRequest,
@@ -249,36 +249,60 @@ fn inside_worktree(worktree: &Path, rel: Option<&str>) -> Result<PathBuf> {
     }
     let resolved = dunce::canonicalize(root.join(path))
         .map_err(|_| CoreError::new(ErrorCode::PathMissing, format!("File not found: {rel}")))?;
-    if !resolved.starts_with(&root) {
+    if !resolved.starts_with(root) {
         return Err(outside());
     }
     Ok(resolved)
 }
 
-/// The program and arguments that open `target`: `command` split into words, then the
-/// path; or, without a command, the platform's opener.
-fn editor_argv(command: Option<&str>, target: &Path) -> Result<Vec<OsString>> {
-    let words = match command.map(split_command).transpose()? {
-        Some(words) if !words.is_empty() => words.into_iter().map(OsString::from).collect(),
-        _ => platform_opener(),
-    };
-    let mut argv: Vec<OsString> = words;
-    argv.push(target.as_os_str().to_owned());
-    Ok(argv)
-}
+/// Said when a file was asked for, no editor command is set, and the worktree folder was
+/// opened instead.
+const FOLDER_INSTEAD: &str = "No editor command is set, so the worktree folder was opened \
+                              instead of the file: the system's default application for a \
+                              file from a repository could run it. Set an editor command in \
+                              Settings to open files.";
 
-/// The program (and leading arguments) that opens a file or folder with the system's
-/// default application.
-fn platform_opener() -> Vec<OsString> {
-    let words: &[&str] = if cfg!(target_os = "macos") {
-        &["open"]
-    } else if cfg!(windows) {
-        // `start`'s first quoted argument is a window title: an empty one.
-        &["cmd", "/C", "start", ""]
-    } else {
-        &["xdg-open"]
+/// The program and arguments that open `file` (`None`: the worktree folder `root`) on
+/// operating system `os` (`std::env::consts::OS`), and a note for the user if something
+/// else than asked was opened.
+///
+/// With `command` (its words, then the path) the editor gets the file. Without one, no
+/// file of the repository ever goes to the system's default application, which picks a
+/// program by file type and could run it (a `.command`, `.sh`, `.exe`, `.desktop`): on
+/// macOS it opens as text (`open -t`); elsewhere the worktree folder opens instead, with
+/// the note. Folders open with `open`, `xdg-open` or `explorer`, each given the path as a
+/// plain argument; no shell (`cmd.exe`) is ever involved.
+fn launch_plan(
+    os: &str,
+    command: Option<&str>,
+    root: &Path,
+    file: Option<&Path>,
+) -> Result<(Vec<OsString>, Option<String>)> {
+    let words = command.map(split_command).transpose()?.unwrap_or_default();
+    if !words.is_empty() {
+        let mut argv: Vec<OsString> = words.into_iter().map(OsString::from).collect();
+        argv.push(file.unwrap_or(root).as_os_str().to_owned());
+        return Ok((argv, None));
+    }
+    let folder_opener = match os {
+        "macos" => "open",
+        "windows" => "explorer",
+        _ => "xdg-open",
     };
-    words.iter().map(OsString::from).collect()
+    Ok(match file {
+        Some(file) if os == "macos" => (
+            vec!["open".into(), "-t".into(), file.as_os_str().to_owned()],
+            None,
+        ),
+        Some(_) => (
+            vec![folder_opener.into(), root.as_os_str().to_owned()],
+            Some(FOLDER_INSTEAD.to_owned()),
+        ),
+        None => (
+            vec![folder_opener.into(), root.as_os_str().to_owned()],
+            None,
+        ),
+    })
 }
 
 /// `command` split into words on whitespace; text in single or double quotes is one word
@@ -387,11 +411,67 @@ mod tests {
         );
     }
 
+    /// The argv (as strings) and whether there is a note.
+    fn plan_on(os: &str, command: Option<&str>, file: Option<&str>) -> (Vec<String>, bool) {
+        let (argv, note) = launch_plan(os, command, Path::new("/r"), file.map(Path::new)).unwrap();
+        let argv = argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        (argv, note.is_some())
+    }
+
+    fn words(w: &[&str]) -> Vec<String> {
+        w.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Without an editor command no file of the repository goes to the system's default
+    /// application, which could run it (a `.command`, `.sh`, `.exe`, `.desktop`): macOS
+    /// opens it as text, elsewhere the worktree folder is opened instead, with a note. No
+    /// shell (`cmd.exe`) anywhere.
     #[test]
-    fn a_blank_command_uses_the_platform_opener() {
-        let argv = editor_argv(Some("   "), Path::new("/r/a.txt")).unwrap();
-        let mut expected = platform_opener();
-        expected.push("/r/a.txt".into());
-        assert_eq!(argv, expected);
+    fn without_an_editor_command_files_never_go_to_the_default_application() {
+        let file = Some("/r/x.command");
+        assert_eq!(
+            plan_on("macos", None, file),
+            (words(&["open", "-t", "/r/x.command"]), false)
+        );
+        assert_eq!(
+            plan_on("linux", None, file),
+            (words(&["xdg-open", "/r"]), true)
+        );
+        assert_eq!(
+            plan_on("windows", None, file),
+            (words(&["explorer", "/r"]), true)
+        );
+        // A blank command is no command.
+        assert_eq!(
+            plan_on("linux", Some("  "), file),
+            (words(&["xdg-open", "/r"]), true)
+        );
+        // The worktree folder itself opens as before.
+        assert_eq!(
+            plan_on("macos", None, None),
+            (words(&["open", "/r"]), false)
+        );
+        assert_eq!(
+            plan_on("linux", None, None),
+            (words(&["xdg-open", "/r"]), false)
+        );
+        assert_eq!(
+            plan_on("windows", None, None),
+            (words(&["explorer", "/r"]), false)
+        );
+        // With a command, the file goes to it, on every platform.
+        for os in ["macos", "linux", "windows"] {
+            assert_eq!(
+                plan_on(os, Some("code -w"), file),
+                (words(&["code", "-w", "/r/x.command"]), false)
+            );
+            assert_eq!(
+                plan_on(os, Some("code"), None),
+                (words(&["code", "/r"]), false)
+            );
+        }
     }
 }

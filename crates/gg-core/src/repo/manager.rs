@@ -92,6 +92,10 @@ pub struct RepoManager {
     /// Tests only: the next fetch the user asks for panics once it has its turn.
     #[cfg(any(test, feature = "testutil"))]
     pub(super) fetch_panic: AtomicBool,
+    /// Tests only: how long a scheduled fetch pauses once it shows as running, before it
+    /// goes on, in milliseconds.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) scheduled_fetch_gap_ms: AtomicU64,
     /// Tests only: when set, editor launches are recorded here instead of run.
     #[cfg(any(test, feature = "testutil"))]
     pub(crate) editor_launches: Mutex<Option<Vec<Vec<String>>>>,
@@ -155,8 +159,9 @@ pub(crate) struct Repo {
     pub(super) user_fetch: AtomicBool,
     /// Stops the scheduled fetch running now, if any (R13).
     pub(super) scheduled_cancel: Mutex<Option<Arc<Notify>>>,
-    /// Held by a scheduled fetch while it runs; cancelling one waits for it.
-    pub(super) scheduled_running: tokio::sync::Mutex<()>,
+    /// Held by a scheduled fetch from before it shows as running until it ends;
+    /// cancelling one waits for it.
+    pub(super) scheduled_running: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -406,6 +411,8 @@ impl RepoManager {
             #[cfg(any(test, feature = "testutil"))]
             fetch_panic: AtomicBool::new(false),
             #[cfg(any(test, feature = "testutil"))]
+            scheduled_fetch_gap_ms: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testutil"))]
             editor_launches: Mutex::new(None),
         })
     }
@@ -534,7 +541,7 @@ impl RepoManager {
             op_waiting: AtomicU32::new(0),
             user_fetch: AtomicBool::new(false),
             scheduled_cancel: Mutex::new(None),
-            scheduled_running: tokio::sync::Mutex::new(()),
+            scheduled_running: Arc::new(tokio::sync::Mutex::new(())),
         });
 
         // Nobody else can hold this lock yet; holding it while registering the repository

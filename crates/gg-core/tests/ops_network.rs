@@ -1300,6 +1300,39 @@ async fn user_fetch_waits_for_the_running_operation() {
     assert!(!h.m.snapshot(id).await.unwrap().fetch.running);
 }
 
+/// A fetch the user asks for just as a scheduled one has shown itself running, but before
+/// git has started, is not taken as covered by it: when it returns, it has fetched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_fetch_just_after_a_scheduled_one_starts_still_fetches() {
+    let (repo, _origin, other) = with_remote();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let pushed = other.commit("new on origin");
+    other.git(&["push", "-q", "origin", "main"]);
+
+    h.m.set_scheduled_fetch_gap(Duration::from_millis(1500));
+    h.m.set_fetch_interval(1);
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["fetch"]["running"] == true
+        })
+        .await
+        .expect("a scheduled fetch shows as running");
+    h.m.set_fetch_interval(0);
+    tokio::time::timeout(TIMEOUT, h.m.fetch(id))
+        .await
+        .expect("the fetch ends")
+        .expect("fetch");
+    assert_eq!(
+        rev(&repo, "refs/remotes/origin/main"),
+        pushed,
+        "fetched by now"
+    );
+    let snap = h.m.snapshot(id).await.unwrap();
+    assert!(!snap.fetch.running);
+    assert!(snap.fetch.last_error.is_none());
+}
+
 /// R13: a scheduled fetch that is running when an operation or a fetch the user asked for
 /// takes its turn is cancelled: its git and what git started are stopped, no error is
 /// shown, and the operation does not wait for it.

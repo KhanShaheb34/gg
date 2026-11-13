@@ -2,7 +2,8 @@
 //! serves gg-core on 127.0.0.1 for the browser build of the UI. Browsers may call it from
 //! `http://127.0.0.1:1420` and `http://localhost:1420` (the vite dev server) and from each
 //! `--allow-origin`. Prints `listening on http://127.0.0.1:<port>` once ready (`--port 0`
-//! picks a free port). Env `GG_PERF_LOG` names a file perf marks are appended to.
+//! picks a free port). Env `GG_PERF_LOG` names a file perf marks are appended to. With
+//! `--exit-on-stdin-eof` it quits when its stdin closes (a test runner that started it died).
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
@@ -14,7 +15,7 @@ use gg_devserver::{DEFAULT_ORIGINS, Events, serve};
 use tokio::net::TcpListener;
 
 const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>] \
-                     [--allow-origin <origin>]...";
+                     [--allow-origin <origin>]... [--exit-on-stdin-eof]";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -24,6 +25,8 @@ struct Args {
     open: Option<PathBuf>,
     /// Origins allowed besides [`DEFAULT_ORIGINS`].
     allow_origins: Vec<String>,
+    /// Quit when stdin reaches its end.
+    exit_on_stdin_eof: bool,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -32,6 +35,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut config_dir = None;
     let mut open = None;
     let mut allow_origins = Vec::new();
+    let mut exit_on_stdin_eof = false;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -60,6 +64,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
                 }
                 allow_origins.push(origin);
             }
+            "--exit-on-stdin-eof" => exit_on_stdin_eof = true,
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -68,6 +73,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         config_dir: config_dir.ok_or("--config-dir is required")?,
         open,
         allow_origins,
+        exit_on_stdin_eof,
     })
 }
 
@@ -120,6 +126,13 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if args.exit_on_stdin_eof {
+        // Whoever started it holds its stdin open; when that end closes, it is gone.
+        std::thread::spawn(|| {
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            std::process::exit(0);
+        });
+    }
     let events = Events::new();
     let core = match Core::new(args.config_dir, args.open, events.sink()).await {
         Ok(core) => core,
@@ -171,6 +184,7 @@ mod tests {
                 config_dir: "/c".into(),
                 open: None,
                 allow_origins: vec![],
+                exit_on_stdin_eof: false,
             }
         );
         assert_eq!(
@@ -192,6 +206,7 @@ mod tests {
                 config_dir: "/c".into(),
                 open: Some(dir.clone()),
                 allow_origins: vec!["http://127.0.0.1:5173".into(), "http://[::1]:5173".into()],
+                exit_on_stdin_eof: false,
             }
         );
         for bad in [

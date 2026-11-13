@@ -310,9 +310,11 @@ function killGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): voi
 export function startDevserver(configDir: string, home: string, binary = DEVSERVER): Promise<Devserver> {
   const child = spawn(
     binary,
-    ["--port", "0", "--config-dir", configDir, "--allow-origin", VITE_ORIGIN],
-    // Its own process group, so stopping it also stops whatever it started.
-    { stdio: ["ignore", "pipe", "pipe"], env: { ...isolatedEnv(), HOME: home, USERPROFILE: home }, detached: true },
+    ["--port", "0", "--config-dir", configDir, "--allow-origin", VITE_ORIGIN, "--exit-on-stdin-eof"],
+    // Its own process group, so stopping it also stops whatever it started. Its stdin stays
+    // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
+    // server quits, though it is detached.
+    { stdio: ["pipe", "pipe", "pipe"], env: { ...isolatedEnv(), HOME: home, USERPROFILE: home }, detached: true },
   );
   return new Promise((resolve, reject) => {
     let out = "";

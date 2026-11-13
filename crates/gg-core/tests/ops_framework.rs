@@ -586,9 +586,13 @@ async fn a_refresh_asked_for_during_an_operation_is_folded() {
         .await
         .expect("running");
     // The body has made the branch: a refresh that ran now would show it.
-    while !repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/x"]) {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    tokio::time::timeout(TIMEOUT, async {
+        while !repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/x"]) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the body makes the branch");
     let folded = h.m.folded_refreshes();
     let asked = std::time::Instant::now();
     let snap = h.m.refresh(id).await.expect("refresh");

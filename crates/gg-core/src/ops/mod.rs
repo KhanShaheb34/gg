@@ -235,7 +235,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             )
         }
         OpRequest::CheckoutCommit { hash } => {
-            check_commit(&hash)?;
+            check_full_hash(&hash)?;
             (
                 format!("Check out {}", local::short(&hash)),
                 body(move |ctx, _| {
@@ -245,7 +245,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         }
         OpRequest::CreateBranch { name, at, checkout } => {
             check_branch_name(&name)?;
-            check_commit(&at)?;
+            check_full_hash(&at)?;
             let title = if checkout {
                 format!("Create and check out branch {name}")
             } else {
@@ -284,7 +284,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             no_commit,
         } => {
             match target.kind {
-                MergeTargetKind::Commit => check_commit(&target.name)?,
+                MergeTargetKind::Commit => check_full_hash(&target.name)?,
                 _ => check_arg(&target.name, "branch")?,
             }
             let shown = match target.kind {
@@ -312,7 +312,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             mainline,
             no_commit,
         } => {
-            check_commit(&hash)?;
+            check_full_hash(&hash)?;
             check_mainline(mainline)?;
             (
                 format!("Cherry-pick {}", local::short(&hash)),
@@ -324,7 +324,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             )
         }
         OpRequest::Revert { hash, mainline } => {
-            check_commit(&hash)?;
+            check_full_hash(&hash)?;
             check_mainline(mainline)?;
             (
                 format!("Revert {}", local::short(&hash)),
@@ -334,7 +334,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             )
         }
         OpRequest::Reset { hash, mode } => {
-            check_commit(&hash)?;
+            check_full_hash(&hash)?;
             let how = match mode {
                 ResetMode::Soft => "soft",
                 ResetMode::Mixed => "mixed",
@@ -355,7 +355,7 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
             message,
         } => {
             check_tag_name(&name)?;
-            check_commit(&hash)?;
+            check_full_hash(&hash)?;
             if message.as_ref().is_some_and(|m| m.trim().is_empty()) {
                 return Err(CoreError::new(
                     ErrorCode::BadRequest,
@@ -404,9 +404,19 @@ fn head_name(head: &HeadInfo) -> &str {
     head.branch.as_deref().unwrap_or("detached HEAD")
 }
 
-/// `Ok` if `at` can be given to git as a commit: not empty and not option-like.
-fn check_commit(at: &str) -> Result<()> {
-    check_arg(at, "commit")
+/// `Ok` if `hash` is a full commit hash: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
+/// Anything else (a range, a ref name, a short hash) is refused, so it never reaches git.
+fn check_full_hash(hash: &str) -> Result<()> {
+    let hex = hash
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if hex && (hash.len() == 40 || hash.len() == 64) {
+        return Ok(());
+    }
+    Err(CoreError::new(
+        ErrorCode::BadRequest,
+        format!("\u{201c}{hash}\u{201d} is not a full commit hash."),
+    ))
 }
 
 /// `Ok` if `value`, naming an existing `what` (a branch, a commit), can be given to git:
@@ -677,7 +687,7 @@ mod tests {
         assert_eq!(refused(&option_like), ErrorCode::BadRequest);
         let ok = OpRequest::CreateBranch {
             name: "x".into(),
-            at: "abc".into(),
+            at: "0123456789abcdef0123456789abcdef01234567".into(),
             checkout: false,
         };
         assert_eq!(

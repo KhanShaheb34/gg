@@ -390,7 +390,7 @@ pub enum OpRequest {
     },
     CreateBranch {
         name: String,
-        /// The commit the branch starts at.
+        /// The commit the branch starts at (a full hash, like every commit field here).
         at: String,
         checkout: bool,
     },

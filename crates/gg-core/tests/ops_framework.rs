@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gg_core::Core;
-use gg_core::dto::{OpOutcome, OpStatus, ResetMode};
+use gg_core::dto::{MergeTargetKind, OpOutcome, OpRequest, OpStatus, ResetMode};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::{CmdKind, CommandLog, GitRunner};
 use gg_core::ops::{Step, explain};
@@ -248,6 +248,66 @@ async fn bad_names_are_rejected_before_git_runs() {
         repo.git(&["rev-parse", &format!("refs/heads/{name}")]),
         head
     );
+}
+
+/// Every field that names a commit takes a full hash (40 or 64 lowercase hex digits) and
+/// nothing else: a range, a ref name, a short or uppercase hash is refused before any git
+/// runs, so it can never reach cherry-pick, reset or the others.
+#[tokio::test]
+async fn commit_fields_take_only_full_hashes() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    repo.git(&["tag", "t"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let sha256 = "a".repeat(64);
+    let bad = [
+        "main..t".to_owned(),
+        "HEAD".to_owned(),
+        "t".to_owned(),
+        head[..7].to_owned(),
+        head.to_uppercase(),
+        format!("{head}^"),
+        format!("{head}0"),
+        "g".repeat(40),
+        String::new(),
+    ];
+    for hash in &bad {
+        let requests = [
+            OpRequest::CheckoutCommit { hash: hash.clone() },
+            create_branch("x", hash),
+            merge(MergeTargetKind::Commit, hash, true, false, false),
+            OpRequest::CherryPick {
+                hash: hash.clone(),
+                mainline: None,
+                no_commit: false,
+            },
+            OpRequest::Revert {
+                hash: hash.clone(),
+                mainline: None,
+            },
+            reset(hash, ResetMode::Soft),
+            OpRequest::CreateTag {
+                name: "v1".into(),
+                hash: hash.clone(),
+                message: None,
+            },
+        ];
+        for request in requests {
+            let mark = h.last_log_id();
+            let shown = format!("{request:?}");
+            let err = h.m.run_op(id, request, &[]).await.expect_err(&shown);
+            assert_eq!(err.code, ErrorCode::BadRequest, "{shown}: {err:?}");
+            assert!(h.log.since(mark).is_empty(), "{shown} ran git");
+        }
+    }
+    // A full SHA-256 hash passes the check (git then says it does not exist).
+    let out = h.run(id, OpRequest::CheckoutCommit { hash: sha256 }).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    // And a full SHA-1 hash runs.
+    let out = h.run(id, create_branch("x", &head)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
 }
 
 /// Through the boundary: `run_op` and `command_log` with JSON, as the UI calls them.

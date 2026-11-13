@@ -282,7 +282,8 @@ async fn unambiguous<'n>(ctx: &OpCtx<'_>, name: &'n str, full: &'n str) -> Resul
 }
 
 /// `merge --no-edit [--no-ff | --ff] [--squash] [--no-commit] <target>`. `--squash` goes
-/// with `--ff`: git refuses it with `--no-ff`, which `merge.ff` may set. After a merge that
+/// with `--ff`: git refuses it with `--no-ff`, which `merge.ff` may set. `--no-commit` goes
+/// with `--no-ff`, else a fast-forward would commit after all. After a merge that
 /// committed on a branch, push is offered (see [`push_hint`]).
 pub(crate) async fn merge(
     ctx: &OpCtx<'_>,
@@ -305,7 +306,12 @@ pub(crate) async fn merge(
         _ => target.name.as_str(),
     };
     let mut args = vec!["merge", "--no-edit"];
-    args.push(if no_ff && !squash { "--no-ff" } else { "--ff" });
+    // Without committing, a fast-forward would still move the branch: always a merge then.
+    args.push(if (no_ff || no_commit) && !squash {
+        "--no-ff"
+    } else {
+        "--ff"
+    });
     if squash {
         args.push("--squash");
     }

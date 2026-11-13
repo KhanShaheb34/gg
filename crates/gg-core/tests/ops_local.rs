@@ -557,6 +557,41 @@ async fn merge_no_commit_leaves_merge_in_progress_without_conflicts() {
     assert!(out.message.contains("commit"), "{}", out.message);
 }
 
+/// Without committing, even a merge that could fast-forward stays a merge in progress:
+/// `--no-ff` is sent, so nothing is committed and no push is offered.
+#[tokio::test]
+async fn merge_no_commit_never_fast_forwards() {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.commit("ahead");
+    repo.checkout("main");
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let _origin = repo.clone_as_remote();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            merge(MergeTargetKind::Branch, "feature", false, false, true),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
+    assert!(out.hints.is_empty(), "{:?}", out.hints);
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args.first().is_some_and(|a| a == "merge")
+                && r.args.iter().any(|a| a == "--no-ff")),
+        "{:?}",
+        op_records(&h.log, &out)
+    );
+}
+
 #[tokio::test]
 async fn merge_with_conflicts_stops() {
     let repo = TestRepo::new();

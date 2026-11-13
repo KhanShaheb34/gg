@@ -49,7 +49,17 @@ const LEADING_ARGS: [&str; 8] = [
 
 /// Variables an enclosing git process (for example a hook) exports. Inherited, they would
 /// point our commands at that process's repository instead of `cwd`.
-const INHERITED_REPO_VARS: [&str; 3] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+const INHERITED_REPO_VARS: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+];
+
+/// Brackets the `PATH` the login shell prints, so profile output around it cannot be taken
+/// for part of it.
+const PATH_MARKER: &[u8] = b"__GG_PATH__";
 
 /// Whether a command only reads the repository or may change it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -185,17 +195,41 @@ pub struct GitRunner {
 }
 
 impl GitRunner {
-    /// Finds git (using the login shell's `PATH` when available) and checks that it runs.
-    /// Fails with `GitNotFound` otherwise. The check itself is not logged.
+    /// Finds git and checks that it runs: with the login shell's `PATH` when it can be read
+    /// and git runs with it, else with the inherited `PATH`. Fails with `GitNotFound` if
+    /// neither works. The check itself is not logged.
     pub async fn detect(log: Arc<CommandLog>) -> Result<Self> {
         let path = tokio::task::spawn_blocking(|| cached_login_path().clone())
             .await
             .unwrap_or(None);
-        let runner = Self { log, path };
-        let mut cmd = runner.command(None, &["--version"]);
+        Self::detect_with_login_path(log, path).await
+    }
+
+    /// [`GitRunner::detect`] with `login_path` as the login shell's `PATH`.
+    async fn detect_with_login_path(
+        log: Arc<CommandLog>,
+        login_path: Option<OsString>,
+    ) -> Result<Self> {
+        if let Some(path) = login_path {
+            let runner = Self {
+                log: log.clone(),
+                path: Some(path),
+            };
+            if runner.check().await.is_ok() {
+                return Ok(runner);
+            }
+        }
+        let runner = Self { log, path: None };
+        runner.check().await?;
+        Ok(runner)
+    }
+
+    /// Runs `git --version`; `GitNotFound` unless it succeeds.
+    async fn check(&self) -> Result<()> {
+        let mut cmd = self.command(None, &["--version"]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         match cmd.output().await {
-            Ok(out) if out.status.success() => Ok(runner),
+            Ok(out) if out.status.success() => Ok(()),
             Ok(out) => Err(
                 CoreError::new(ErrorCode::GitNotFound, "git --version failed")
                     .with_detail(String::from_utf8_lossy(&out.stderr)),
@@ -276,6 +310,14 @@ impl GitRunner {
             .push(CmdKind::Read, cwd, args, started, exit_code, b"", stderr);
     }
 
+    /// Records a command started at `started` with [`GitRunner::run_unchecked`] that was
+    /// killed for taking too long (its future dropped), as exit code -1 with stderr
+    /// "timed out".
+    pub(crate) fn log_timed_out(&self, cwd: &Path, args: &[&str], kind: CmdKind, started: Instant) {
+        self.log
+            .push(kind, cwd, args, started, -1, b"", "timed out");
+    }
+
     pub fn log(&self) -> &Arc<CommandLog> {
         &self.log
     }
@@ -339,9 +381,10 @@ fn cached_login_path() -> &'static Option<OsString> {
     LOGIN_PATH.get_or_init(resolve_login_path)
 }
 
-/// The `PATH` of the user's login shell (`$SHELL -ilc 'printf %s "$PATH"'`), so git and its
-/// helpers are found when the app is launched from a desktop that did not load the shell
-/// profile. `None` if `SHELL` is unset, the shell fails or takes over 3 s, or not on unix.
+/// The `PATH` of the user's login shell (`$SHELL -ilc`, printing `PATH` between markers), so
+/// git and its helpers are found when the app is launched from a desktop that did not load
+/// the shell profile. `None` if `SHELL` is unset, the shell fails, takes over 3 s or prints
+/// no marked `PATH`, or not on unix.
 pub fn resolve_login_path() -> Option<OsString> {
     #[cfg(unix)]
     {
@@ -362,7 +405,7 @@ fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
 
     let deadline = Instant::now() + timeout;
     let mut child = std::process::Command::new(shell)
-        .args(["-ilc", r#"printf %s "$PATH""#])
+        .args(["-ilc", r#"printf '\n__GG_PATH__%s__GG_PATH__' "$PATH""#])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -396,12 +439,20 @@ fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
     let out = rx
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         .ok()?;
-    // Profile scripts may print banners first; the PATH is the last non-empty line.
-    let line = out
-        .split(|b| *b == b'\n')
-        .map(<[u8]>::trim_ascii)
-        .rfind(|l| !l.is_empty())?;
-    Some(OsString::from_vec(line.to_vec()))
+    let path = between_markers(&out)?;
+    (!path.is_empty()).then(|| OsString::from_vec(path.to_vec()))
+}
+
+/// The bytes between the first two [`PATH_MARKER`]s in `out`.
+#[cfg(unix)]
+fn between_markers(out: &[u8]) -> Option<&[u8]> {
+    let find = |hay: &[u8]| {
+        hay.windows(PATH_MARKER.len())
+            .position(|w| w == PATH_MARKER)
+    };
+    let start = find(out)? + PATH_MARKER.len();
+    let len = find(&out[start..])?;
+    Some(&out[start..start + len])
 }
 
 #[cfg(test)]
@@ -410,11 +461,82 @@ mod tests {
 
     #[test]
     fn truncate_keeps_char_boundaries() {
-        let s = "é".repeat(MAX_LOG_TEXT); // 2 bytes per char
-        let t = truncate_text(s);
-        assert!(t.len() <= MAX_LOG_TEXT);
-        assert!(t.len() >= MAX_LOG_TEXT - 1);
+        // 3 bytes per char: MAX_LOG_TEXT (16384 = 3 * 5461 + 1) falls inside a char, so the
+        // cut has to step back to the boundary before it.
+        assert_eq!(MAX_LOG_TEXT % 3, 1);
+        let t = truncate_text("€".repeat(MAX_LOG_TEXT));
+        assert_eq!(t.len(), MAX_LOG_TEXT - 1);
+        assert!(t.chars().all(|c| c == '€'));
         assert_eq!(truncate_text("short".to_string()), "short");
+    }
+
+    #[test]
+    fn inherited_repo_vars_are_removed() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+        };
+        let cmd = runner.command(None, &["status"]);
+        let removed: Vec<_> = cmd
+            .as_std()
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+        ] {
+            assert!(removed.iter().any(|r| r == var), "{var} not removed");
+        }
+    }
+
+    /// A login-shell PATH without a working git falls back to the inherited PATH.
+    #[tokio::test]
+    async fn detect_falls_back_to_the_inherited_path() {
+        let runner = GitRunner::detect_with_login_path(
+            CommandLog::new(),
+            Some(OsString::from("/no/such/dir")),
+        )
+        .await
+        .expect("git found on the inherited PATH");
+        assert_eq!(runner.path, None);
+        let out = runner
+            .run(&std::env::temp_dir(), &["--version"], CmdKind::Read)
+            .await
+            .unwrap();
+        assert!(out.text().starts_with("git version"));
+
+        // A login PATH with git is kept.
+        let inherited = std::env::var_os("PATH");
+        let runner = GitRunner::detect_with_login_path(CommandLog::new(), inherited.clone())
+            .await
+            .unwrap();
+        assert_eq!(runner.path, inherited);
+    }
+
+    #[tokio::test]
+    async fn timed_out_commands_are_logged() {
+        let log = CommandLog::new();
+        let runner = GitRunner {
+            log: log.clone(),
+            path: None,
+        };
+        runner.log_timed_out(
+            Path::new("/r"),
+            &["fetch", "--all"],
+            CmdKind::Write,
+            Instant::now(),
+        );
+        let records = log.since(0);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].args, ["fetch", "--all"]);
+        assert_eq!(records[0].exit_code, -1);
+        assert_eq!(records[0].stderr, "timed out");
+        assert_eq!(records[0].kind, CmdKind::Write);
     }
 
     #[test]
@@ -467,10 +589,13 @@ mod tests {
             path
         }
 
+        // The fake shells set PATH and run the command they are given (`-ilc <command>`),
+        // as a login shell would.
+
         #[test]
         fn login_path_is_used() {
             let dir = tempfile::tempdir().unwrap();
-            let shell = script(&dir, "shell", "printf %s /custom/bin:/usr/bin:/bin");
+            let shell = script(&dir, "shell", "PATH=/custom/bin:/usr/bin:/bin\neval \"$2\"");
             assert_eq!(
                 login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT),
                 Some(OsString::from("/custom/bin:/usr/bin:/bin"))
@@ -478,13 +603,38 @@ mod tests {
         }
 
         #[test]
-        fn login_path_ignores_rc_noise_before_the_path() {
+        fn login_path_ignores_rc_noise_around_the_path() {
             let dir = tempfile::tempdir().unwrap();
-            let shell = script(&dir, "shell", "echo 'welcome!'\nprintf %s /custom/bin:/bin");
+            let shell = script(
+                &dir,
+                "shell",
+                "PATH=/custom/bin:/bin\necho 'welcome!'\neval \"$2\"\necho 'bye'",
+            );
             assert_eq!(
                 login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT),
                 Some(OsString::from("/custom/bin:/bin"))
             );
+        }
+
+        #[test]
+        fn login_path_survives_a_banner_without_newline() {
+            let dir = tempfile::tempdir().unwrap();
+            let shell = script(
+                &dir,
+                "shell",
+                "PATH='/with space/bin:/bin'\nprintf 'banner'\neval \"$2\"\nprintf 'tail'",
+            );
+            assert_eq!(
+                login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT),
+                Some(OsString::from("/with space/bin:/bin"))
+            );
+        }
+
+        #[test]
+        fn login_path_without_markers_is_none() {
+            let dir = tempfile::tempdir().unwrap();
+            let shell = script(&dir, "shell", "printf %s /custom/bin:/bin");
+            assert_eq!(login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT), None);
         }
 
         #[test]

@@ -586,6 +586,16 @@ async fn hung_fetch_times_out() {
     assert_eq!(now.fetch.last_error.as_deref(), Some("Fetch timed out"));
     assert!(!now.fetch.running);
     assert!(now.fetch.last_at_ms.is_some());
+    // The killed git still shows in the command log.
+    let fetches: Vec<_> = h
+        .log
+        .since(0)
+        .into_iter()
+        .filter(|r| subcommand(&r.args) == Some("fetch"))
+        .collect();
+    assert_eq!(fetches.len(), 1);
+    assert_eq!(fetches[0].exit_code, -1);
+    assert_eq!(fetches[0].stderr, "timed out");
 }
 
 #[cfg(unix)]

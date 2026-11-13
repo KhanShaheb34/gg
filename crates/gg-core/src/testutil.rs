@@ -212,7 +212,9 @@ impl TestRepo {
     }
 
     /// Creates a bare repository, adds it as remote `origin`, pushes all branches and tags
-    /// to it and fetches. Returns the bare repository, which owns its own temp directory.
+    /// to it and fetches. Returns the bare repository, which owns its own temp directory:
+    /// keep it alive for as long as the remote is used.
+    #[must_use]
     pub fn clone_as_remote(&self) -> TestRepo {
         let origin = Self::in_new_tempdir("origin.git");
         origin.git(&["init", "-q", "--bare", "-b", "main"]);

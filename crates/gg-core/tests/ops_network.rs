@@ -569,6 +569,89 @@ async fn pull_diverged_asks_for_a_mode() {
     assert_eq!(rev(&repo, "HEAD~1"), theirs);
 }
 
+/// `main` here and on `origin` both change `clash.txt` after a shared `base`: the other
+/// clone pushed its change, this one committed its own. HEAD on `main`.
+fn clashing_with_remote() -> (TestRepo, TestRepo) {
+    let (repo, origin, other) = with_remote();
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.git(&["push", "-q", "origin", "main"]);
+    other.git(&["pull", "-q", "--ff-only", "origin", "main"]);
+    other.write("clash.txt", "theirs\n");
+    other.commit_all("their change");
+    other.git(&["push", "-q", "origin", "main"]);
+    repo.write("clash.txt", "mine\n");
+    repo.commit_all("my change");
+    (repo, origin)
+}
+
+#[tokio::test]
+async fn pull_that_conflicts_stops() {
+    for mode in [PullMode::Merge, PullMode::Rebase] {
+        let (repo, _origin) = clashing_with_remote();
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+        let out = h.run(id, pull("main", mode)).await;
+        assert_eq!(out.status, OpStatus::Stopped, "{mode:?}: {out:?}");
+        assert!(out.message.contains("conflicts"), "{}", out.message);
+        let progress = out.snapshot.in_progress.expect("in progress");
+        assert_eq!(progress.conflicted, ["clash.txt"], "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn pull_with_changes_in_the_way_fails_and_keeps_them() {
+    let (repo, _origin) = clashing_with_remote();
+    repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    repo.write("clash.txt", "uncommitted\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, pull("main", PullMode::Merge)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(out.message.contains("clash.txt"), "{}", out.message);
+    assert!(out.message.contains("Commit or stash"), "{}", out.message);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("clash.txt")).unwrap(),
+        "uncommitted\n"
+    );
+    assert_eq!(out.snapshot.in_progress, None);
+}
+
+/// With auto-stash, a pull whose stashed changes conflict as git puts them back exits 0:
+/// done, saying they are kept in the stash, with git's text as the detail.
+#[tokio::test]
+async fn pull_whose_autostash_conflicts_says_so() {
+    for (config, mode) in [
+        ("rebase.autoStash", PullMode::Rebase),
+        ("merge.autoStash", PullMode::Merge),
+    ] {
+        let (repo, _origin) = clashing_with_remote();
+        // Resolve the clash in history so the pull itself is clean; then a dirty
+        // `clash.txt` conflicts only with the auto-stash.
+        repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+        repo.commit("unrelated");
+        repo.write("clash.txt", "dirty\n");
+        repo.git(&["config", config, "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+        let out = h.run(id, pull("main", mode)).await;
+        assert_eq!(out.status, OpStatus::Done, "{config}: {out:?}");
+        assert!(
+            out.message.contains("kept in the stash"),
+            "{config}: {}",
+            out.message
+        );
+        assert!(
+            out.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Applying autostash resulted in conflicts"),
+            "{config}: {out:?}"
+        );
+        assert!(repo.git(&["stash", "list"]).contains("autostash"));
+    }
+}
+
 #[tokio::test]
 async fn pull_other_branch_updates_it_without_checkout() {
     let (repo, origin, other) = with_remote();
@@ -804,6 +887,23 @@ async fn push_and_delete_tag_on_remote() {
     assert!(ran(&h, &out, &["tag", "-d", "--", "v1"]));
     assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v1"]));
     assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v1"]));
+}
+
+#[tokio::test]
+async fn delete_tag_on_a_remote_that_lacks_it_deletes_it_here() {
+    let (repo, origin, _other) = with_remote();
+    repo.git(&["tag", "v2"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let request = OpRequest::DeleteTag {
+        name: "v2".into(),
+        remote: Some("origin".into()),
+    };
+    let out = h.run(id, request).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(out.message.contains("did not have it"), "{}", out.message);
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v2"]));
+    assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v2"]));
 }
 
 // ---- checkout with fast-forward ----

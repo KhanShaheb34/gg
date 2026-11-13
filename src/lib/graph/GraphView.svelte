@@ -228,9 +228,10 @@
   // A perf run (window.__GG_PERF_SCROLL__) scrolls the fully loaded graph once (top to bottom
   // in jumps, or smoothly; see ScrollMode) and reports the result as perf marks (scroll-p50, scroll-p95, ...). With
   // window.__GG_PERF_SEARCH__ set to a query, that search is active while it scrolls.
-  const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: boolean | "still" | "smooth" }).__GG_PERF_SCROLL__;
+  const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: boolean | "still" | "smooth" | "pages" }).__GG_PERF_SCROLL__;
   const perfSearch = probe && (window as { __GG_PERF_SEARCH__?: string }).__GG_PERF_SEARCH__;
-  const perfScroll = perfScrollMode === true || perfScrollMode === "still" || perfScrollMode === "smooth";
+  const perfScroll =
+    perfScrollMode === true || perfScrollMode === "still" || perfScrollMode === "smooth" || perfScrollMode === "pages";
   let perfScrollStarted = false;
   $effect(() => {
     if (!perfScroll || perfScrollStarted || view.snapshot.loading || view.snapshot.totalRows === 0) return;
@@ -240,6 +241,14 @@
       if (perfSearch) {
         view.search.show();
         await view.search.run(perfSearch);
+      }
+      // "pages": every page of rows is loaded once, as a scroll to the bottom would, but
+      // nothing is drawn; then the still control's 6 s of frames.
+      if (perfScrollMode === "pages") {
+        const s = view.snapshot;
+        for (let start = 0; start < s.totalRows; start += 200) {
+          await api.getRows(view.repoId, s.generation, start, 200).catch(() => {});
+        }
       }
       const mode = perfScrollMode === true ? "jump" : perfScrollMode === "smooth" ? "smooth" : "still";
       const s = await runScrollProbe(scroller, probe!, { mode });

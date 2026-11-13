@@ -30,7 +30,9 @@
 # - Smooth (--smooth): GG_PERF_SCROLL=smooth scrolls for the same 6 s the way a trackpad does,
 #   a few px every frame at a steady speed (most frames move the rows by less than a row).
 # - Mixed (--mixed): N still and N scroll launches, alternating, so both see the same load.
-#   --modes "still 1 smooth" interleaves any of: 0 (idle), 1 (scroll), still, smooth.
+#   --modes "still 1 smooth" interleaves any of: 0 (idle), 1 (scroll), still, smooth, pages
+#   (pages: GG_PERF_SCROLL=pages loads every page of rows once without drawing them, then
+#   runs the still control; it tells the memory of loading rows from that of drawing them).
 #
 # WebKit helpers: WKWebView runs its page in XPC services (com.apple.WebKit.WebContent,
 # .Networking, .GPU) whose parent is launchd, not the app. They are matched by "responsible

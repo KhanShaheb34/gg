@@ -1566,3 +1566,55 @@ async fn deleting_the_remotes_default_branch_says_so() {
         "{out:?}"
     );
 }
+
+/// Pulling the branch that a rebase stopped on, in this same worktree: git counts it as
+/// checked out here and refuses; the message says what is in progress here, not to switch
+/// to another worktree.
+#[tokio::test]
+async fn pulling_the_branch_being_rebased_here_says_a_rebase_is_in_progress() {
+    let (repo, _origin, other) = with_remote();
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+    other.git(&["pull", "-q"]);
+    other.commit("new on origin");
+    other.git(&["push", "-q", "origin", "main"]);
+    assert!(!repo.git_succeeds(&["rebase", "feature"]));
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            OpRequest::Pull {
+                branch: "main".into(),
+                mode: PullMode::Default,
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("rebase is in progress"),
+        "{}",
+        out.message
+    );
+    assert!(out.message.contains("this worktree"), "{}", out.message);
+    assert!(
+        !out.message.contains("Switch to that worktree"),
+        "{}",
+        out.message
+    );
+    assert!(
+        !out.message.contains("switch to that worktree"),
+        "{}",
+        out.message
+    );
+}

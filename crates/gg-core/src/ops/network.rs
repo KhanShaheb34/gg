@@ -12,7 +12,9 @@ use crate::dto::{OpHint, PullMode};
 use crate::error::Result;
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{Rejected, needs_pull_mode, nothing_to_do, push_rejected};
-use crate::ops::local::{autostash_note, current_branch, git_may_stop, head_commit, short};
+use crate::ops::local::{
+    autostash_note, current_branch, git_may_stop, head_commit, kind_name, short, stopped_kind,
+};
 use crate::ops::{OpCtx, Step, explain};
 
 /// A local branch's upstream, as configured.
@@ -285,7 +287,7 @@ async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
     let before = ref_commit(ctx, &into).await?;
     let out = ctx.git_net(&args).await?;
     if out.code != 0 {
-        return Ok(explain(&args, &out));
+        return fetch_into_failed(ctx, &args, &out).await;
     }
     let after = ref_commit(ctx, &into).await?;
     Ok(Step::Done(if before == after {
@@ -330,6 +332,49 @@ async fn split_remote_branch(
         .max_by_key(|(remote, _)| remote.len()))
 }
 
+/// The step for a fetch into a local branch (`args`) that failed with `out`, as [`explain`]
+/// says, except when git refused because the branch is checked out in this very worktree:
+/// that is the branch something stopped here (a rebase) is working on, so the message says
+/// what is in progress here rather than to switch to another worktree.
+async fn fetch_into_failed(ctx: &OpCtx<'_>, args: &[&str], out: &GitOutput) -> Result<Step> {
+    let step = explain(args, out);
+    let refused = out.stderr.lines().find_map(|l| {
+        let rest = l
+            .trim()
+            .strip_prefix("fatal: refusing to fetch into branch 'refs/heads/")?;
+        let (branch, path) = rest.split_once("' checked out at '")?;
+        Some((
+            branch.to_owned(),
+            path.strip_suffix('\'').unwrap_or(path).to_owned(),
+        ))
+    });
+    let Some((branch, path)) = refused else {
+        return Ok(step);
+    };
+    if dunce::canonicalize(&path).ok() != dunce::canonicalize(&ctx.cwd).ok() {
+        return Ok(step);
+    }
+    let Step::Failed { detail, hints, .. } = step else {
+        return Ok(step);
+    };
+    let (what, it) = match stopped_kind(ctx).await {
+        Some(kind) => (
+            format!("A {}", kind_name(kind)),
+            format!("the {}", kind_name(kind)),
+        ),
+        None => ("An operation".to_owned(), "it".to_owned()),
+    };
+    Ok(Step::Failed {
+        message: format!(
+            "{what} is in progress in this worktree, on branch \u{201c}{branch}\u{201d}: \
+             until it ends, git counts the branch as checked out here and does not move it by \
+             fetching. Continue or abort {it} first, then pull."
+        ),
+        detail,
+        hints,
+    })
+}
+
 /// `fetch --progress <remote> refs/heads/<branch>:refs/heads/<local>` for `remote_branch`
 /// (`<remote>/<branch>`): creates `local` there, or fast-forwards it; never moves it
 /// otherwise, and git refuses for a checked-out branch.
@@ -355,7 +400,7 @@ pub(crate) async fn fetch_into_local(
     let before = ref_commit(ctx, &into).await?;
     let out = ctx.git_net(&args).await?;
     if out.code != 0 {
-        return Ok(explain(&args, &out));
+        return fetch_into_failed(ctx, &args, &out).await;
     }
     let after = ref_commit(ctx, &into).await?;
     let at = after.as_deref().map_or("", short);

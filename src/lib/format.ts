@@ -84,3 +84,31 @@ export function colorIndex(key: string): number {
   }
   return (hash >>> 0) % LANE_COLORS;
 }
+
+/** C0 controls and DEL; the bidirectional embeddings, overrides and isolates. */
+const INVISIBLE = /[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g;
+
+/**
+ * `text` (a path from git, say) with characters that would hide or rearrange it made
+ * visible: controls as their Unicode pictures (a newline as ␊), bidirectional overrides and
+ * isolates by name (‹U+202E›). For display only; copies and tooltips keep the exact text.
+ */
+export function visibleText(text: string): string {
+  return text.replace(INVISIBLE, (c) => {
+    const code = c.charCodeAt(0);
+    if (code < 0x20) return String.fromCharCode(0x2400 + code);
+    if (code === 0x7f) return "\u2421";
+    return `\u2039U+${code.toString(16).toUpperCase()}\u203A`;
+  });
+}
+
+/**
+ * A whole number with its thousands grouped ("10,000"), as `toLocaleString("en-US")` gives
+ * but without starting the locale machinery, which costs tens of ms on a slow machine.
+ */
+export function groupDigits(n: number): string {
+  const digits = String(Math.trunc(Math.abs(n)));
+  let out = "";
+  for (let i = digits.length; i > 0; i -= 3) out = digits.slice(Math.max(0, i - 3), i) + (out ? `,${out}` : "");
+  return (n < 0 ? "-" : "") + out;
+}

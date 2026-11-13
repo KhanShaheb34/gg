@@ -23,6 +23,7 @@ pub use explain::explain;
 use crate::EventSink;
 use crate::dto::{
     Danger, DangerKind, HeadInfo, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus,
+    ResetMode,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::check_branch_name;
@@ -305,6 +306,48 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
                 body(move |ctx, _| Box::pin(async move { local::rebase(ctx, &onto).await })),
             )
         }
+        OpRequest::CherryPick {
+            hash,
+            mainline,
+            no_commit,
+        } => {
+            check_commit(&hash)?;
+            check_mainline(mainline)?;
+            (
+                format!("Cherry-pick {}", local::short(&hash)),
+                body(move |ctx, _| {
+                    Box::pin(
+                        async move { local::cherry_pick(ctx, &hash, mainline, no_commit).await },
+                    )
+                }),
+            )
+        }
+        OpRequest::Revert { hash, mainline } => {
+            check_commit(&hash)?;
+            check_mainline(mainline)?;
+            (
+                format!("Revert {}", local::short(&hash)),
+                body(move |ctx, _| {
+                    Box::pin(async move { local::revert(ctx, &hash, mainline).await })
+                }),
+            )
+        }
+        OpRequest::Reset { hash, mode } => {
+            check_commit(&hash)?;
+            let how = match mode {
+                ResetMode::Soft => "soft",
+                ResetMode::Mixed => "mixed",
+                ResetMode::Hard => "hard",
+            };
+            (
+                format!(
+                    "Reset {} to {} ({how})",
+                    head_name(head),
+                    local::short(&hash)
+                ),
+                body(move |ctx, _| Box::pin(async move { local::reset(ctx, &hash, mode).await })),
+            )
+        }
         _ => {
             return Err(CoreError::new(
                 ErrorCode::BadRequest,
@@ -313,6 +356,17 @@ fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
         }
     };
     Ok(Prepared { title, body })
+}
+
+/// `Ok` unless `mainline` is 0: git numbers a merge's parents from 1.
+fn check_mainline(mainline: Option<u32>) -> Result<()> {
+    if mainline == Some(0) {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            "A merge's parents are numbered from 1.",
+        ));
+    }
+    Ok(())
 }
 
 /// HEAD's branch for a title, or "detached HEAD".

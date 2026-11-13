@@ -138,6 +138,31 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
             return Some(NO_BRANCH.to_owned());
         }
     }
+    let conflicts: Vec<&str> = all
+        .lines()
+        .filter(|l| l.starts_with("CONFLICT ("))
+        .map(|l| {
+            l.split_once("Merge conflict in ")
+                .map_or("", |(_, f)| f.trim())
+        })
+        .collect();
+    if !conflicts.is_empty() {
+        let named: Vec<&str> = conflicts
+            .iter()
+            .copied()
+            .filter(|f| !f.is_empty())
+            .collect();
+        let files = if named.len() == conflicts.len() {
+            file_list(&named)
+        } else {
+            format!("{} files", conflicts.len())
+        };
+        return Some(format!(
+            "The changes were applied with conflicts in {files}, left in the working tree. \
+             No commit was made, so there is nothing to continue: resolve the conflicts and \
+             commit, or discard the changes."
+        ));
+    }
     None
 }
 

@@ -4,7 +4,9 @@
 
 use std::path::PathBuf;
 
-use crate::dto::{Danger, DangerKind, InProgressKind, MergeTarget, MergeTargetKind, OpHint};
+use crate::dto::{
+    Danger, DangerKind, InProgressKind, MergeTarget, MergeTargetKind, OpHint, ResetMode,
+};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{NO_BRANCH, nothing_to_do};
@@ -382,4 +384,73 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
     Ok(Step::Done(nothing_to_do(&args, &out).unwrap_or_else(
         || format!("Rebased {branch} onto {onto}."),
     )))
+}
+
+/// `cherry-pick [-m N] [--no-commit] <hash>`.
+pub(crate) async fn cherry_pick(
+    ctx: &OpCtx<'_>,
+    hash: &str,
+    mainline: Option<u32>,
+    no_commit: bool,
+) -> Result<Step> {
+    let parent = mainline.map(|n| n.to_string());
+    let mut args = vec!["cherry-pick"];
+    if let Some(n) = &parent {
+        args.extend(["-m", n]);
+    }
+    if no_commit {
+        args.push("--no-commit");
+    }
+    args.push(hash);
+    let into = current_branch(ctx).await?;
+    let into = into.as_deref().unwrap_or("detached HEAD");
+    if let Err(step) = git_may_stop(ctx, &args).await? {
+        return Ok(step);
+    }
+    Ok(Step::Done(if no_commit {
+        format!(
+            "Applied the changes of {} to {into} without committing: they are staged.",
+            short(hash)
+        )
+    } else {
+        format!("Cherry-picked {} onto {into}.", short(hash))
+    }))
+}
+
+/// `revert --no-edit [-m N] <hash>`.
+pub(crate) async fn revert(ctx: &OpCtx<'_>, hash: &str, mainline: Option<u32>) -> Result<Step> {
+    let parent = mainline.map(|n| n.to_string());
+    let mut args = vec!["revert", "--no-edit"];
+    if let Some(n) = &parent {
+        args.extend(["-m", n]);
+    }
+    args.push(hash);
+    if let Err(step) = git_may_stop(ctx, &args).await? {
+        return Ok(step);
+    }
+    Ok(Step::Done(format!(
+        "Reverted {}: a new commit undoes its changes.",
+        short(hash)
+    )))
+}
+
+/// `reset --soft|--mixed|--hard <hash>` (a hard one only once confirmed; see the
+/// `hard_reset` danger).
+pub(crate) async fn reset(ctx: &OpCtx<'_>, hash: &str, mode: ResetMode) -> Result<Step> {
+    let (flag, kept) = match mode {
+        ResetMode::Soft => ("--soft", "the changes since are staged"),
+        ResetMode::Mixed => (
+            "--mixed",
+            "the changes since are in the working tree, unstaged",
+        ),
+        ResetMode::Hard => ("--hard", "uncommitted changes were discarded"),
+    };
+    let branch = current_branch(ctx).await?;
+    let what = branch.as_deref().unwrap_or("HEAD");
+    run(
+        ctx,
+        &["reset", flag, hash],
+        format!("Reset {what} to {}: {kept}.", short(hash)),
+    )
+    .await
 }

@@ -10,6 +10,7 @@ use std::time::Duration;
 use gg_core::Core;
 use gg_core::dto::{
     DangerKind, MergeTarget, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus, RepoSnapshot,
+    ResetMode,
 };
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::{CmdKind, CommandLog, CommandRecord, GitRunner};
@@ -1351,4 +1352,340 @@ async fn no_current_branch_explains() {
             other => panic!("not a failure: {other:?}"),
         }
     }
+}
+
+// ---- Local operations: cherry-pick, revert and reset ----
+
+fn cherry_pick(hash: &str, mainline: Option<u32>, no_commit: bool) -> OpRequest {
+    OpRequest::CherryPick {
+        hash: hash.to_owned(),
+        mainline,
+        no_commit,
+    }
+}
+
+fn revert(hash: &str, mainline: Option<u32>) -> OpRequest {
+    OpRequest::Revert {
+        hash: hash.to_owned(),
+        mainline,
+    }
+}
+
+fn reset(hash: &str, mode: ResetMode) -> OpRequest {
+    OpRequest::Reset {
+        hash: hash.to_owned(),
+        mode,
+    }
+}
+
+/// `main` with a merge of `side` on top; returns the merge commit.
+fn with_merge(repo: &TestRepo) -> String {
+    repo.commit("base");
+    repo.branch("side");
+    repo.checkout("side");
+    repo.commit("on side");
+    repo.checkout("main");
+    repo.commit("on main");
+    repo.merge("side")
+}
+
+#[tokio::test]
+async fn cherry_pick_applies_the_commit() {
+    let repo = TestRepo::new();
+    let picked = diverged(&repo);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, cherry_pick(&picked, None, false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, format!("Cherry-pick {}", &picked[..7]));
+    assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), before);
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "on feature");
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["cherry-pick", picked.as_str()])
+    );
+}
+
+#[tokio::test]
+async fn cherry_pick_without_committing_stages_the_changes() {
+    let repo = TestRepo::new();
+    let picked = diverged(&repo);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, cherry_pick(&picked, None, true)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(!repo.git(&["diff", "--cached", "--name-only"]).is_empty());
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["cherry-pick", "--no-commit", picked.as_str()])
+    );
+}
+
+#[tokio::test]
+async fn cherry_pick_with_conflicts_stops() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    let picked = repo.git(&["rev-parse", "feature"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let started = std::time::Instant::now();
+    let out = h.run(id, cherry_pick(&picked, None, false)).await;
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+    assert!(in_git_dir(&repo, "CHERRY_PICK_HEAD"));
+}
+
+/// With `--no-commit` git leaves no cherry-pick to continue: the conflicts are explained
+/// as a failure.
+#[tokio::test]
+async fn cherry_pick_without_committing_with_conflicts_explains() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    let picked = repo.git(&["rev-parse", "feature"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, cherry_pick(&picked, None, true)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(out.message.contains("clash.txt"), "{}", out.message);
+    assert!(out.message.contains("conflicts"), "{}", out.message);
+    assert!(!in_git_dir(&repo, "CHERRY_PICK_HEAD"));
+}
+
+#[tokio::test]
+async fn cherry_pick_merge_commit_without_mainline_explains() {
+    let repo = TestRepo::new();
+    let merge_commit = with_merge(&repo);
+    repo.git(&["checkout", "-q", "-b", "elsewhere", "HEAD~1"]);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, cherry_pick(&merge_commit, None, false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("is a merge") && out.message.contains("mainline"),
+        "{}",
+        out.message
+    );
+    assert!(out.detail.unwrap().contains("no -m option was given"));
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+
+    let out = h.run(id, cherry_pick(&merge_commit, Some(1), false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(parents(&repo, "HEAD"), 1);
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["cherry-pick", "-m", "1", merge_commit.as_str()])
+    );
+
+    let err =
+        h.m.run_op(id, cherry_pick(&merge_commit, Some(0), false), &[])
+            .await
+            .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
+/// Changes already there: nothing to commit, which is done, and no cherry-pick is left in
+/// progress.
+#[tokio::test]
+async fn cherry_pick_of_changes_already_here_is_done() {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    let picked = repo.commit("on feature");
+    repo.checkout("main");
+    repo.git(&["merge", "-q", "--ff-only", "feature"]);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, cherry_pick(&picked, None, false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        out.message.starts_with("Nothing to commit"),
+        "{}",
+        out.message
+    );
+    assert!(!in_git_dir(&repo, "CHERRY_PICK_HEAD"));
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+}
+
+#[tokio::test]
+async fn revert_undoes_the_commit() {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    let undone = repo.commit("mistake");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, revert(&undone, None)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), undone);
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "Revert \"mistake\""
+    );
+    assert!(repo.git(&["diff", "HEAD~2", "HEAD"]).is_empty());
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["revert", "--no-edit", undone.as_str()])
+    );
+}
+
+#[tokio::test]
+async fn revert_with_conflicts_stops() {
+    let repo = TestRepo::new();
+    repo.write("clash.txt", "one\n");
+    repo.commit_all("one");
+    repo.write("clash.txt", "two\n");
+    let undone = repo.commit_all("two");
+    repo.write("clash.txt", "three\n");
+    repo.commit_all("three");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let started = std::time::Instant::now();
+    let out = h.run(id, revert(&undone, None)).await;
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+    assert!(in_git_dir(&repo, "REVERT_HEAD"));
+}
+
+#[tokio::test]
+async fn revert_merge_commit_needs_a_mainline() {
+    let repo = TestRepo::new();
+    let merge_commit = with_merge(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, revert(&merge_commit, None)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("to revert it") && out.message.contains("mainline"),
+        "{}",
+        out.message
+    );
+
+    let out = h.run(id, revert(&merge_commit, Some(1))).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), merge_commit);
+}
+
+#[tokio::test]
+async fn revert_of_changes_already_undone_is_done() {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    let undone = repo.commit("mistake");
+    repo.git(&["revert", "--no-edit", &undone]);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, revert(&undone, None)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        out.message.starts_with("Nothing to commit"),
+        "{}",
+        out.message
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(!in_git_dir(&repo, "REVERT_HEAD"));
+}
+
+#[tokio::test]
+async fn soft_and_mixed_reset_run_without_confirmation() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    let second = repo.commit("two");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, reset(&first, ResetMode::Soft)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
+    assert!(
+        !repo.git(&["diff", "--cached", "--name-only"]).is_empty(),
+        "staged"
+    );
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["reset", "--soft", first.as_str()])
+    );
+
+    repo.git(&["reset", "-q", "--hard", &second]);
+    let out = h.run(id, reset(&first, ResetMode::Mixed)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
+    assert!(
+        repo.git(&["diff", "--cached", "--name-only"]).is_empty(),
+        "not staged"
+    );
+    assert!(
+        !repo.git(&["status", "--porcelain"]).is_empty(),
+        "kept in the working tree"
+    );
+}
+
+#[tokio::test]
+async fn hard_reset_needs_confirmation() {
+    let repo = TestRepo::new();
+    repo.write("a.txt", "a\n");
+    repo.write("b.txt", "b\n");
+    let first = repo.commit_all("one");
+    repo.commit("two");
+    repo.write("a.txt", "changed\n");
+    repo.write("b.txt", "changed\n");
+    repo.write("new.txt", "untracked\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let mark = h.last_log_id();
+    let out = h.run(id, reset(&first, ResetMode::Hard)).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert_eq!(out.dangers.len(), 1);
+    let danger = &out.dangers[0];
+    assert_eq!(danger.kind, DangerKind::HardReset);
+    assert!(danger.message.contains("2 files"), "{}", danger.message);
+    assert!(
+        danger.message.contains("1 untracked file is kept"),
+        "{}",
+        danger.message
+    );
+    assert!(h.writes_since(mark).is_empty());
+    assert_eq!(
+        fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+        "changed\n"
+    );
+
+    let out = h
+        .run_confirmed(id, reset(&first, ResetMode::Hard), &[DangerKind::HardReset])
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
+    assert_eq!(
+        fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+        "a\n"
+    );
+    assert!(
+        repo.path().join("new.txt").exists(),
+        "untracked files are kept"
+    );
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["reset", "--hard", first.as_str()])
+    );
 }

@@ -1,6 +1,7 @@
 // The UI's only way to the core. Inside the Tauri app it uses Tauri's IPC; in a plain
 // browser it talks HTTP to gg-devserver. Every failure becomes a CoreError.
 
+import { isTauri } from "./platform";
 import type {
   AppState,
   CommandRecord,
@@ -14,6 +15,9 @@ import type {
 } from "./types";
 
 export type EventName = "repo-changed" | "repo-error";
+
+/** Files or folders dragged onto the window (Tauri only). `drop` carries their paths. */
+export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "drop"; paths: string[] };
 
 /** An error from the core (or from reaching it, as code "io"). */
 export class CoreError extends Error {
@@ -34,6 +38,7 @@ interface Transport {
   invoke(cmd: string, args: Record<string, unknown>): Promise<unknown>;
   listen(name: EventName, handler: Handler): () => void;
   pickFolder(): Promise<string | null>;
+  onFolderDrag(handler: (event: FolderDragEvent) => void): () => void;
 }
 
 function isCoreErrorDto(value: unknown): value is CoreErrorDto {
@@ -83,6 +88,28 @@ const tauriTransport: Transport = {
     const picked = await open({ directory: true, multiple: false });
     return typeof picked === "string" ? picked : null;
   },
+
+  onFolderDrag(handler) {
+    let unlisten: (() => void) | null = null;
+    let stopped = false;
+    import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) =>
+        getCurrentWebview().onDragDropEvent(({ payload }) => {
+          if (payload.type === "enter") handler({ kind: "enter" });
+          else if (payload.type === "leave") handler({ kind: "leave" });
+          else if (payload.type === "drop") handler({ kind: "drop", paths: payload.paths });
+        }),
+      )
+      .then((off) => {
+        if (stopped) off();
+        else unlisten = off;
+      })
+      .catch((e: unknown) => console.error("could not listen for dropped folders", e));
+    return () => {
+      stopped = true;
+      unlisten?.();
+    };
+  },
 };
 
 // --- Browser (gg-devserver) -------------------------------------------------------------
@@ -90,8 +117,16 @@ const tauriTransport: Transport = {
 /** Delay before reopening an event stream the browser gave up on. */
 const RECONNECT_MS = 1000;
 
+declare global {
+  interface Window {
+    /** Overrides the dev server URL at run time (the e2e tests start one per test). */
+    __GG_DEV_URL__?: string;
+  }
+}
+
 function devUrl(): string {
-  return import.meta.env.VITE_GG_DEV_URL ?? "http://127.0.0.1:1421";
+  const override = typeof window !== "undefined" ? window.__GG_DEV_URL__ : undefined;
+  return override ?? import.meta.env.VITE_GG_DEV_URL ?? "http://127.0.0.1:1421";
 }
 
 /** Handlers by event name, all fed by one shared EventSource. */
@@ -172,16 +207,26 @@ const httpTransport: Transport = {
     const path = window.prompt("Repository path")?.trim();
     return path ? path : null;
   },
+
+  // A browser page never learns the real path of a dropped folder.
+  onFolderDrag() {
+    return () => {};
+  },
 };
 
 // --- API --------------------------------------------------------------------------------
 
 function transport(): Transport {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriTransport : httpTransport;
+  return isTauri() ? tauriTransport : httpTransport;
 }
 
 function call<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   return transport().invoke(cmd, args) as Promise<T>;
+}
+
+/** Calls `handler` as files are dragged onto the window; inert in a browser. Returns a stop function. */
+export function onFolderDrop(handler: (event: FolderDragEvent) => void): () => void {
+  return transport().onFolderDrag(handler);
 }
 
 /** Calls `handler` with each event `name`; returns a function that stops it. */

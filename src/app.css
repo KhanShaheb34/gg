@@ -1,25 +1,199 @@
-:root {
-  --bg: #ffffff;
-  --fg: #1f2328;
-  --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+/* Design tokens and base styles. Two hand-tuned themes on :root[data-theme]; public/theme-init.js
+   sets data-theme before first paint. Lane colours mark graph lanes and branch labels, and
+   give each repository its identity dot; each holds at least 4.5:1 against --bg. */
 
-  color-scheme: light dark;
+:root {
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu,
+    "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --fs: 13px;
+  --fs-sm: 12px;
+  --fs-xs: 11px;
+  --row-h: 26px;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --titlebar-h: 40px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
+/* Light: graphite on cool paper. */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #fbfbfc;
+  --bg-chrome: #eeeff2;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(22, 26, 40, 0.055);
+  --bg-pressed: rgba(22, 26, 40, 0.1);
+  --bg-selected: rgba(10, 124, 108, 0.11);
+  --border: #e0e1e7;
+  --border-strong: #c9cbd4;
+  --text: #1b1d24;
+  --text-muted: #5b5f6e;
+  --text-faint: #8a8e9c;
+
+  --accent: #0a7c6c;
+  --accent-hover: #086b5d;
+  --accent-contrast: #ffffff;
+  --focus-ring: rgba(10, 124, 108, 0.55);
+  --danger: #c4312f;
+  --warning: #a35f00;
+  --success: #2a7d3c;
+
+  --shadow-pop: 0 1px 2px rgba(16, 18, 27, 0.06), 0 10px 28px rgba(16, 18, 27, 0.12);
+  --shadow-tab: 0 1px 1px rgba(16, 18, 27, 0.06);
+  --tab-border: #dcdde3;
+
+  --lane-0: #2563eb;
+  --lane-1: #c2410c;
+  --lane-2: #15803d;
+  --lane-3: #be185d;
+  --lane-4: #0e7490;
+  --lane-5: #a16207;
+  --lane-6: #7c3aed;
+  --lane-7: #4d7c0f;
+  --lane-8: #dc2626;
+  --lane-9: #475569;
+}
+
+/* Dark: warm-neutral graphite, not black; lanes lifted so lines read on it. */
 :root[data-theme="dark"] {
-  --bg: #0d1117;
-  --fg: #e6edf3;
+  color-scheme: dark;
+
+  --bg: #17181c;
+  --bg-chrome: #111215;
+  --bg-elevated: #202228;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-pressed: rgba(255, 255, 255, 0.1);
+  --bg-selected: rgba(60, 203, 180, 0.15);
+  --border: #2a2c33;
+  --border-strong: #3a3d47;
+  --text: #e7e8ec;
+  --text-muted: #a3a7b4;
+  --text-faint: #6f7383;
+
+  --accent: #3ccbb4;
+  --accent-hover: #5ad8c3;
+  --accent-contrast: #062521;
+  --focus-ring: rgba(60, 203, 180, 0.6);
+  --danger: #ff6b66;
+  --warning: #f0b232;
+  --success: #5cc97a;
+
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-tab: 0 1px 1px rgba(0, 0, 0, 0.3);
+  --tab-border: #34363e;
+
+  --lane-0: #6b9bff;
+  --lane-1: #fb8a4e;
+  --lane-2: #5bd08a;
+  --lane-3: #f472b6;
+  --lane-4: #22c3dd;
+  --lane-5: #e8b23a;
+  --lane-6: #a98bfa;
+  --lane-7: #a3cc4e;
+  --lane-8: #f87171;
+  --lane-9: #9aa8bc;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 html,
 body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   font-family: var(--font-ui);
+  font-size: var(--fs);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* The window's chrome is not text to select; content opts back in with .selectable. */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
 }
 
 #app {
   height: 100%;
+}
+
+.selectable,
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+/* Square icon button used in chrome. */
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  transition: background-color 80ms linear, color 80ms linear;
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.icon-btn:active {
+  background: var(--bg-pressed);
+}
+
+.icon-btn svg {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
 }

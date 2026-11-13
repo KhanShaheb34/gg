@@ -6,6 +6,8 @@ export default defineConfig({
   testDir: "e2e",
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
+  // Each test runs its own gg-devserver and git; keep the load on the machine modest.
+  workers: 2,
   reporter: process.env.CI ? "github" : "list",
   use: { baseURL },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

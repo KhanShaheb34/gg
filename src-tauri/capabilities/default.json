@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window: core defaults (including event listen/unlisten) and the folder picker",
+  "description": "Capability for the main window: core defaults (including event listen/unlisten), the folder picker, and dragging the window by its tab bar",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "core:window:allow-start-dragging", "dialog:allow-open"]
 }

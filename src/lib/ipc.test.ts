@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, CoreError, onEvent } from "./ipc";
+import { api, CoreError, onEvent, onFolderDrop } from "./ipc";
 
 const DEV_URL = "http://127.0.0.1:1421";
 
@@ -192,5 +192,37 @@ describe("pickFolder in the browser", () => {
     await expect(api.pickFolder()).resolves.toBeNull();
     vi.stubGlobal("window", { prompt: vi.fn(() => "   ") });
     await expect(api.pickFolder()).resolves.toBeNull();
+  });
+});
+
+describe("dev server URL", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("takes window.__GG_DEV_URL__ over the build-time default", async () => {
+    const fetchMock = respond({ ok: null });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", { __GG_DEV_URL__: "http://127.0.0.1:5555" });
+    await api.setWindowFocused(false);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe("http://127.0.0.1:5555/invoke");
+  });
+
+  it("falls back to the default without an override", async () => {
+    const fetchMock = respond({ ok: null });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", {});
+    await api.setWindowFocused(false);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(`${DEV_URL}/invoke`);
+  });
+});
+
+describe("onFolderDrop in the browser", () => {
+  it("is inert: never calls the handler and returns a stop function", () => {
+    const handler = vi.fn();
+    const stop = onFolderDrop(handler);
+    expect(typeof stop).toBe("function");
+    stop();
+    expect(handler).not.toHaveBeenCalled();
   });
 });

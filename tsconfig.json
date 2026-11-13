@@ -2,9 +2,10 @@
   "extends": "@tsconfig/svelte/tsconfig.json",
   "compilerOptions": {
     "target": "es2023",
+    "lib": ["es2023", "dom", "dom.iterable"],
     "module": "esnext",
     "moduleResolution": "bundler",
-    "types": ["svelte", "vite/client", "node"],
+    "types": ["svelte", "vite/client"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
@@ -15,13 +16,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.js",
-    "src/**/*.svelte",
-    "e2e/**/*.ts",
-    "vite.config.ts",
-    "playwright.config.ts",
-    "svelte.config.js"
-  ]
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
 }

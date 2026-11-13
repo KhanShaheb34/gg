@@ -217,11 +217,103 @@ pub struct RowsPage {
     pub rows: Vec<CommitRow>,
 }
 
+/// Color theme. Serialized lowercase (`"system"`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the operating system.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// User settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub theme: Theme,
+    /// Seconds between background fetches; 0 turns them off, otherwise 30..=86400.
+    pub fetch_interval_secs: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::System,
+            fetch_interval_secs: 300,
+        }
+    }
+}
+
+/// A recently opened repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Recent {
+    /// The main worktree.
+    pub path: String,
+    /// File name of `path`.
+    pub name: String,
+    /// Unix milliseconds.
+    pub last_opened_ms: i64,
+}
+
+/// The open tabs, to restore on the next start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    /// Root paths of the open repositories, in tab order.
+    pub tabs: Vec<String>,
+    /// Root path of the active tab.
+    pub active: Option<String>,
+}
+
+/// Everything the UI needs at start, apart from repositories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppState {
+    /// Most recent first.
+    pub recents: Vec<Recent>,
+    pub session: Session,
+    pub settings: Settings,
+    /// A folder the app was asked to open at launch (command line or `GG_OPEN`).
+    pub launch_path: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::graph::EdgeHalf;
     use serde_json::json;
+
+    #[test]
+    fn app_state_shape() {
+        let state = AppState {
+            recents: vec![Recent {
+                path: "/r".into(),
+                name: "r".into(),
+                last_opened_ms: 5,
+            }],
+            session: Session {
+                tabs: vec!["/r".into()],
+                active: None,
+            },
+            settings: Settings::default(),
+            launch_path: Some("/l".into()),
+        };
+        let v = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "recents": [{"path": "/r", "name": "r", "lastOpenedMs": 5}],
+                "session": {"tabs": ["/r"], "active": null},
+                "settings": {"theme": "system", "fetchIntervalSecs": 300},
+                "launchPath": "/l"
+            })
+        );
+        assert_eq!(serde_json::from_value::<AppState>(v).unwrap(), state);
+        assert_eq!(serde_json::to_value(Theme::Dark).unwrap(), "dark");
+    }
 
     #[test]
     fn view_options_round_trip_camel_case() {

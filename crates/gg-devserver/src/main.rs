@@ -1,3 +1,129 @@
-fn main() {
-    println!("gg-devserver (gg-core {})", gg_core::version());
+//! `gg-devserver --port 1421 --config-dir <dir> [--open <path>]`: serves gg-core on
+//! 127.0.0.1 for the browser build of the UI. Prints `listening on http://127.0.0.1:<port>`
+//! once ready (`--port 0` picks a free port). Env `GG_PERF_LOG` names a file perf marks are
+//! appended to.
+
+use std::ffi::OsString;
+use std::net::Ipv4Addr;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use gg_core::Core;
+use gg_devserver::{Events, serve};
+use tokio::net::TcpListener;
+
+const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>]";
+const DEFAULT_PORT: u16 = 1421;
+
+#[derive(Debug, PartialEq)]
+struct Args {
+    port: u16,
+    config_dir: PathBuf,
+    open: Option<PathBuf>,
+}
+
+fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
+    let mut args = args.into_iter();
+    let mut port = DEFAULT_PORT;
+    let mut config_dir = None;
+    let mut open = None;
+    while let Some(flag) = args.next() {
+        let flag = flag.to_string_lossy().into_owned();
+        let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
+        match flag.as_str() {
+            "--port" => {
+                let v = value()?;
+                port = v
+                    .to_str()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| format!("bad port: {}", v.to_string_lossy()))?;
+            }
+            "--config-dir" => config_dir = Some(PathBuf::from(value()?)),
+            "--open" => {
+                let path = PathBuf::from(value()?);
+                if !path.is_dir() {
+                    return Err(format!("--open: not a folder: {}", path.display()));
+                }
+                open = Some(path);
+            }
+            _ => return Err(format!("unknown argument: {flag}")),
+        }
+    }
+    Ok(Args {
+        port,
+        config_dir: config_dir.ok_or("--config-dir is required")?,
+        open,
+    })
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let args = match parse_args(std::env::args_os().skip(1)) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("{message}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let events = Events::new();
+    let core = match Core::new(args.config_dir, args.open, events.sink()).await {
+        Ok(core) => core,
+        Err(e) => {
+            eprintln!("gg-devserver: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
+    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, args.port)).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("gg-devserver: cannot listen on port {}: {e}", args.port);
+            return ExitCode::FAILURE;
+        }
+    };
+    match listener.local_addr() {
+        Ok(addr) => println!("listening on http://{addr}"),
+        Err(e) => eprintln!("gg-devserver: {e}"),
+    }
+    if let Err(e) = serve(listener, core, events).await {
+        eprintln!("gg-devserver: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        parse_args(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn flags() {
+        let dir = std::env::temp_dir();
+        let dir_s = dir.to_str().unwrap();
+        assert_eq!(
+            parse(&["--config-dir", "/c"]).unwrap(),
+            Args {
+                port: 1421,
+                config_dir: "/c".into(),
+                open: None
+            }
+        );
+        assert_eq!(
+            parse(&["--port", "0", "--config-dir", "/c", "--open", dir_s]).unwrap(),
+            Args {
+                port: 0,
+                config_dir: "/c".into(),
+                open: Some(dir.clone())
+            }
+        );
+        assert!(parse(&[]).unwrap_err().contains("--config-dir"));
+        assert!(parse(&["--port", "x", "--config-dir", "/c"]).is_err());
+        assert!(parse(&["--port"]).unwrap_err().contains("needs a value"));
+        assert!(parse(&["--config-dir", "/c", "--open", "/no/such/dir"]).is_err());
+        assert!(parse(&["--verbose"]).unwrap_err().contains("unknown"));
+    }
 }

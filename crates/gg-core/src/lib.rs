@@ -1,15 +1,29 @@
 //! Git graph core: everything that talks to git and shapes data for the UI.
+//!
+//! [`Core`] is the one entry point the transports (the Tauri app and the dev server) use:
+//! [`Core::dispatch`] takes a command name and JSON arguments and returns JSON.
 
+mod dispatch;
 pub mod dto;
 pub mod error;
 pub mod git;
 pub mod graph;
 pub mod repo;
+pub mod store;
 #[cfg(any(test, feature = "testutil"))]
 pub mod testutil;
 pub mod watcher;
 
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
+
 pub use error::{CoreError, ErrorCode, Result};
+
+use git::runner::{CommandLog, GitRunner};
+use repo::RepoManager;
+use store::Store;
 
 /// Receives events for the UI (`repo-changed`, `repo-error`). Called from background tasks
 /// and request handlers, never while repository state is locked. Must return quickly and
@@ -17,6 +31,112 @@ pub use error::{CoreError, ErrorCode, Result};
 /// time, in order.
 pub trait EventSink: Send + Sync + 'static {
     fn emit(&self, name: &str, payload: serde_json::Value);
+}
+
+/// The app's core: open repositories, the persistent store, the git command log and perf
+/// marks, behind [`Core::dispatch`]. One per app.
+pub struct Core {
+    /// The repository manager, or why there is none (git was not found).
+    repos: std::result::Result<Arc<RepoManager>, CoreError>,
+    log: Arc<CommandLog>,
+    store: Store,
+    launch_path: Option<String>,
+    perf: Mutex<Perf>,
+}
+
+/// Perf marks reported by the UI.
+#[derive(Default)]
+struct Perf {
+    /// File each mark is appended to, if any.
+    log: Option<PathBuf>,
+    marks: Vec<(String, f64)>,
+}
+
+impl Core {
+    /// Finds git, loads the store from `<config_dir>/state.json` and applies the stored
+    /// fetch interval. `launch_path` is reported to the UI as `launchPath`. Must be called
+    /// inside a Tokio runtime.
+    ///
+    /// Succeeds even when git is not found, so the UI can say so: the store commands work,
+    /// and every repository command fails with `git_not_found`. The `Result` leaves room for
+    /// start-up failures; there are none at present.
+    pub async fn new(
+        config_dir: PathBuf,
+        launch_path: Option<PathBuf>,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<Arc<Self>> {
+        let log = CommandLog::new();
+        let runner = GitRunner::detect(log.clone()).await;
+        Ok(Self::assemble(config_dir, launch_path, sink, log, runner))
+    }
+
+    fn assemble(
+        config_dir: PathBuf,
+        launch_path: Option<PathBuf>,
+        sink: Arc<dyn EventSink>,
+        log: Arc<CommandLog>,
+        runner: Result<GitRunner>,
+    ) -> Arc<Self> {
+        let store = Store::load(&config_dir);
+        let repos = runner.map(|runner| {
+            let repos = RepoManager::new(runner, sink);
+            repos.set_fetch_interval(store.settings().fetch_interval_secs);
+            repos
+        });
+        Arc::new(Self {
+            repos,
+            log,
+            store,
+            launch_path: launch_path.map(|p| p.to_string_lossy().into_owned()),
+            perf: Mutex::new(Perf::default()),
+        })
+    }
+
+    /// Sets the file `perf_mark` appends `name<TAB>ms` lines to; `None` keeps marks in
+    /// memory only.
+    pub fn set_perf_log(&self, path: Option<PathBuf>) {
+        self.perf().log = path;
+    }
+
+    /// Every perf mark so far, oldest first.
+    pub fn perf_marks(&self) -> Vec<(String, f64)> {
+        self.perf().marks.clone()
+    }
+
+    /// Records a perf mark and appends it to the perf log, if there is one.
+    fn perf_mark(&self, name: &str, ms: f64) -> Result<()> {
+        // One line per mark, whatever the name holds.
+        let name: String = name
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let mut perf = self.perf();
+        perf.marks.push((name.clone(), ms));
+        let Some(path) = &perf.log else {
+            return Ok(());
+        };
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| f.write_all(format!("{name}\t{ms}\n").as_bytes()))
+            .map_err(|e| {
+                CoreError::new(
+                    ErrorCode::Io,
+                    format!("Could not write the perf log {}", path.display()),
+                )
+                .with_detail(e.to_string())
+            })
+    }
+
+    /// The repository manager, or `git_not_found`.
+    fn repos(&self) -> Result<&Arc<RepoManager>> {
+        self.repos.as_ref().map_err(Clone::clone)
+    }
+
+    fn perf(&self) -> MutexGuard<'_, Perf> {
+        self.perf.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 /// The gg-core crate version (`MAJOR.MINOR.PATCH`).
@@ -38,5 +158,47 @@ mod tests {
             parts.iter().all(|p| p.parse::<u32>().is_ok()),
             "non-numeric part in {v:?}"
         );
+    }
+
+    /// Without git the core still starts: store commands work, repository commands say
+    /// `git_not_found`.
+    #[tokio::test]
+    async fn without_git_store_commands_work() {
+        use serde_json::json;
+
+        let config = tempfile::tempdir().unwrap();
+        let missing = CoreError::new(ErrorCode::GitNotFound, "git was not found on PATH");
+        let core = Core::assemble(
+            config.path().to_path_buf(),
+            None,
+            Arc::new(testutil::RecordingSink::default()),
+            CommandLog::new(),
+            Err(missing),
+        );
+        let state = core.dispatch("get_app_state", json!({})).await.unwrap();
+        assert_eq!(state["settings"]["fetchIntervalSecs"], 300);
+        let settings = json!({"patch": {"fetchIntervalSecs": 0}});
+        core.dispatch("update_settings", settings).await.unwrap();
+        core.dispatch("save_session", json!({"tabs": [], "active": null}))
+            .await
+            .unwrap();
+        core.dispatch("set_window_focused", json!({"focused": true}))
+            .await
+            .unwrap();
+        assert_eq!(
+            core.dispatch("command_log", json!({"sinceId": 0}))
+                .await
+                .unwrap(),
+            json!([])
+        );
+        for (cmd, args) in [
+            ("open_repo", json!({"path": config.path()})),
+            ("get_snapshot", json!({"repoId": 1})),
+            ("fetch", json!({"repoId": 1})),
+            ("refresh", json!({"repoId": 1})),
+        ] {
+            let err = core.dispatch(cmd, args).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::GitNotFound, "{cmd}");
+        }
     }
 }

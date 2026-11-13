@@ -401,6 +401,10 @@ async fn watcher_ignores_objects_logs_and_lock_files() {
     }
     let (fired, on_change) = counter();
     let _watcher = watch_git_dir(git_dir, on_change).unwrap();
+    // The OS may still report the set-up above (FSEvents delivers with latency): let that
+    // pass, and count only what follows.
+    tokio::time::sleep(QUIET_WINDOW).await;
+    fired.store(0, Ordering::SeqCst);
 
     std::fs::write(git_dir.join("objects/ab/cdef"), "blob").unwrap();
     std::fs::create_dir_all(git_dir.join("objects/pack")).unwrap();

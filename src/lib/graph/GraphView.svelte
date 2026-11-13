@@ -3,14 +3,17 @@
   ref labels, date, author, short hash) with the lanes drawn on one canvas.
 
   Speed rules this follows:
-  - A fixed pool of row elements, one per slot; row i lives in slot i % pool size, so
-    scrolling by a row rewrites one slot, and nothing is created or destroyed while scrolling.
+  - A fixed pool of row elements, one per slot; row i lives in slot i % pool size, and
+    nothing is created or destroyed while scrolling.
   - Rows and canvas sit in one container inside the scrolled content, so the compositor moves
     them together: lines never lag behind text. The container covers only the rendered rows
-    (visible ± overscan) and is moved with a transform on its own layer, so the tall content
-    it scrolls in paints nothing: jumping through the history does not make WebKit paint (and
-    keep) new tiles for every position. The canvas is redrawn in requestAnimationFrame, at
-    most once per frame.
+    (visible ± overscan, plus POOL_STEP rows) and is moved with a transform on its own layer,
+    so the tall content it scrolls in paints nothing: jumping through the history does not
+    make WebKit paint (and keep) new tiles for every position.
+  - Rows are placed relative to the container, which moves only once every POOL_STEP rows
+    (poolStart): scrolling by a row changes one slot's row and position, not every slot's.
+  - The canvas is redrawn in requestAnimationFrame, at most once per frame; the shapes of
+    the edges are worked out in one pass (EdgeShapes).
   - Scrolling reads only `scrollTop`; sizes come from a ResizeObserver; colours are read once
     per theme.
 -->
@@ -28,7 +31,7 @@
     crispOffset,
     deviceLineWidth,
     displayedRows,
-    edgeShape,
+    EdgeShapes,
     autoGraphWidth,
     GRAPH_MIN_AUTO_W,
     GRAPH_PAD,
@@ -37,6 +40,8 @@
     laneX,
     NODE_R,
     OVERSCAN,
+    POOL_STEP,
+    poolStart,
     PREFETCH,
     ROW_H,
     rowWindow,
@@ -142,7 +147,9 @@
   let ctx: CanvasRenderingContext2D | null = null;
 
   /** Height of the row area (below the header), px. */
-  let viewportH = 0;
+  let viewportH = $state(0);
+  /** Rows the canvas may start above the first rendered row, to start on a whole device pixel. */
+  let alignSlack = $state(0);
   let scrollTop = 0;
   let lastTop = 0;
   let rafId = 0;
@@ -152,18 +159,36 @@
   const empty = $derived(!view.snapshot.loading && total === 0);
   /** Loading, nothing to show yet: a screenful of skeleton rows. */
   const waiting = $derived(view.snapshot.loading && total === 0);
-  const rowsHeight = $derived((waiting ? slots.length : shown) * ROW_H);
+  const rowsHeight = $derived((waiting ? skeletonRows(viewportH) : shown) * ROW_H);
+  /** Rows the viewport needs rendered: what fits, a partly shown one, and the overscan. */
+  const neededRows = $derived(neededSlots(viewportH));
+  /** Height of the rendered rows' container: the rows needed, and room to stay put a step. */
+  const poolRows = $derived(neededRows + POOL_STEP + alignSlack);
   const detachedHead = $derived(view.snapshot.head.branch === null);
   /** Rows matching the search, and how to find the match in their subjects. */
   // The set stays the same object while only load progress changes, so rows do not re-render.
   const hits = $derived(view.search.liveHitSet);
+  /** The selected row, while it is rendered (an id that names no element must not be given). */
+  const activeRow = $derived.by(() => {
+    const index = view.selectedHash === null ? null : view.selectedIndex;
+    return index !== null && slots.some((slot) => slot.index === index) ? index : undefined;
+  });
   /** The search query as matched (lowercased), while there are hits to mark. */
   const needle = $derived(hits.size > 0 ? needleOf(view.search.query) : null);
+
+  /** Skeleton rows shown while the first rows load: as many as fit, so nothing scrolls. */
+  function skeletonRows(height: number): number {
+    return Math.floor(height / ROW_H);
+  }
+
+  function neededSlots(height: number): number {
+    return Math.ceil(height / ROW_H) + 1 + 2 * OVERSCAN;
+  }
 
   /** Rows the grid has right now (skeletons included while waiting). */
   function rowCount(): number {
     const s = view.snapshot;
-    return s.totalRows === 0 && s.loading ? slots.length : displayedRows(s.totalRows, ROW_H);
+    return s.totalRows === 0 && s.loading ? skeletonRows(viewportH) : displayedRows(s.totalRows, ROW_H);
   }
 
   // --- Dev probe for performance measurement (window.__GG_PROBE__, set before load) -------
@@ -265,14 +290,18 @@
       if (i >= w.last) i = -1;
       const row = i >= 0 ? cache.get(i) : undefined;
       if (slot.index !== i) slot.index = i;
-      if (slot.row !== row) slot.row = row;
+      if (slot.row !== row) {
+        // A tooltip built for the commit this slot showed would now name another one.
+        if (titled !== null && slot.row === titledRow) clearTitle();
+        slot.row = row;
+      }
     }
     if (view.snapshot.totalRows > 0 && w.last > w.first) {
       const down = scrollTop >= lastTop;
       void cache.ensure(down ? w.first : w.first - PREFETCH, down ? w.last + PREFETCH : w.last);
     }
     lastTop = scrollTop;
-    const first = alignedFirstRow(w.first, ROW_H, window.devicePixelRatio || 1);
+    const first = poolStart(poolFirst, w.first, POOL_STEP, ROW_H, window.devicePixelRatio || 1);
     if (first !== poolFirst) poolFirst = first;
     draw(w);
     recordProbe(now, w);
@@ -290,8 +319,13 @@
   let canvasW = 0;
   let canvasH = 0;
   let canvasRatio = 0;
-  /** Rows the canvas may start above the first rendered row, to start on a whole device pixel. */
-  let alignSlack = 0;
+  /** The shapes of the drawn rows' edges, worked out once per frame. */
+  const shapes = new EdgeShapes();
+  /** Row i's edges, for EdgeShapes; undefined when it is not loaded or not a commit. */
+  const edgesOf = (i: number) => {
+    const r = view.cache.get(i);
+    return r?.kind === "commit" ? r.edges : undefined;
+  };
 
   function draw(w: RowWindow) {
     if (!canvas) return;
@@ -301,10 +335,12 @@
     const width = widths.graph;
     const ratio = window.devicePixelRatio || 1;
     if (ratio !== canvasRatio) {
-      alignSlack = 0;
-      for (let f = 8; f < 16; f++) alignSlack = Math.max(alignSlack, f - alignedFirstRow(f, ROW_H, ratio));
+      let slack = 0;
+      for (let f = 8; f < 16; f++) slack = Math.max(slack, f - alignedFirstRow(f, ROW_H, ratio));
+      if (slack !== alignSlack) alignSlack = slack;
     }
-    const height = (Math.max(1, slots.length) + alignSlack) * ROW_H;
+    // Sized for the rows the viewport needs, not the pool, which only grows.
+    const height = Math.max(1, poolRows) * ROW_H;
     if (width !== canvasW || height !== canvasH || ratio !== canvasRatio) {
       // Backing store in whole device pixels, mapped 1:1 (fractional ratios included).
       const size = canvasSize(width, height, ratio);
@@ -319,8 +355,10 @@
     // The canvas sits at the top of the row container, at row `poolFirst`.
     const firstRow = poolFirst;
 
+    // Cleared in device pixels, the whole backing store.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.clearRect(0, 0, width, height);
     // Lanes are 16 px apart, a whole number of device pixels at the usual ratios, so one
     // offset puts every vertical line on whole device pixels.
     ctx.translate(GRAPH_PAD + crispOffset(GRAPH_PAD + laneX(0), ratio, LINE_W), 0);
@@ -331,6 +369,7 @@
 
     // Edges, one path per colour. A lane change split over two rows is drawn as one S-curve
     // when both rows are drawn here (see edgeShape); otherwise as its half-row curve.
+    shapes.compute(w.first, w.last, edgesOf);
     let real = false;
     let uncommitted = -1;
     for (let c = 0; c < LANE_COLORS; c++) {
@@ -345,20 +384,12 @@
           continue;
         }
         const y = (i - firstRow) * ROW_H;
-        let prev: CommitRow | undefined;
-        let next: CommitRow | undefined;
-        for (const e of r.edges) {
+        const edges = r.edges;
+        for (let k = 0; k < edges.length; k++) {
+          const e = edges[k];
           if (e.color % LANE_COLORS !== c) continue;
           any = true;
-          if (prev === undefined && i > w.first) prev = cache.get(i - 1);
-          if (next === undefined && i + 1 < w.last) next = cache.get(i + 1);
-          const shape = edgeShape(
-            e,
-            prev?.kind === "commit" ? prev.edges : undefined,
-            r.edges,
-            next?.kind === "commit" ? next.edges : undefined,
-          );
-          traceShape(ctx, e, shape, y, ROW_H);
+          traceShape(ctx, e, shapes.shape(i, k), y, ROW_H);
         }
       }
       if (any) {
@@ -411,17 +442,21 @@
 
   // --- Events -------------------------------------------------------------------------------
 
-  /** The cell last given a tooltip; cleared when rows move under the pointer. */
+  /** The cell last given a tooltip, and the row it was built for; cleared when rows move. */
   let titled: HTMLElement | null = null;
+  let titledRow: CommitRow | undefined;
+
+  function clearTitle() {
+    titled?.removeAttribute("title");
+    titled = null;
+    titledRow = undefined;
+  }
 
   function onScroll() {
     scrollTop = scroller.scrollTop;
     view.scrollTop = scrollTop;
     scrolledSinceFrame = true;
-    if (titled) {
-      titled.removeAttribute("title");
-      titled = null;
-    }
+    if (titled) clearTitle();
     schedule();
   }
 
@@ -447,7 +482,8 @@
     view.viewportH = viewportH;
     // The pool grows as needed and is kept when the viewport shrinks (the details panel
     // being dragged), so no row element is made again; only a much smaller viewport trims it.
-    const n = Math.ceil(viewportH / ROW_H) + 1 + 2 * OVERSCAN;
+    // Everything else (the canvas, the container, skeletons) is sized for what is needed.
+    const n = neededSlots(viewportH);
     if (n > slots.length) slots = [...slots, ...Array.from({ length: n - slots.length }, () => new Slot())];
     else if (2 * n < slots.length) slots = slots.slice(0, n);
     keepSelectionInView(before);
@@ -499,8 +535,7 @@
   function onRowsPointerOver(e: PointerEvent) {
     const el = (e.target as Element | null)?.closest?.<HTMLElement>(".subject, .date, .author, .hash");
     if (!el || el === titled) return;
-    if (titled) titled.removeAttribute("title");
-    titled = null;
+    clearTitle();
     const r = rowOf(el)?.row;
     if (!r) return;
     let text: string | null = null;
@@ -512,6 +547,7 @@
     if (text === null) return;
     el.title = text;
     titled = el;
+    titledRow = r;
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -603,9 +639,7 @@
     aria-label="Commits"
     aria-rowcount={total + 1}
     aria-colcount={5}
-    aria-activedescendant={view.selectedHash !== null && view.selectedIndex !== null
-      ? `gg-${view.repoId}-${view.selectedIndex}`
-      : undefined}
+    aria-activedescendant={activeRow === undefined ? undefined : `gg-${view.repoId}-${activeRow}`}
     tabindex="0"
     bind:this={scroller}
     onscroll={onScroll}
@@ -631,7 +665,7 @@
       <div
         class="pool"
         role="rowgroup"
-        style:height="{slots.length * ROW_H}px"
+        style:height="{poolRows * ROW_H}px"
         style:transform="translateY({poolFirst * ROW_H}px)"
         onclick={onRowsClick}
         onpointerover={onRowsPointerOver}

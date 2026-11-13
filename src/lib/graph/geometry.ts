@@ -228,6 +228,143 @@ export function traceShape(path: PathSink, edge: Edge, shape: EdgeShape, rowTop:
   }
 }
 
+// Counts kept per lane at a row boundary (see `junction`), four to a lane.
+const UP = 0;
+const UP_CHANGES = 1;
+const DOWN = 2;
+const DOWN_CHANGES = 3;
+
+/** The edges meeting at one row boundary, counted per lane as `junction` counts them. */
+class Boundary {
+  private counts = new Int32Array(4 * 64);
+  /** Lanes with a count set, to clear them again without touching the rest. */
+  private touched: number[] = [];
+
+  /** Counts the edges of `above` and `below` (either undefined: no junctions) at each lane. */
+  fill(above: readonly Edge[] | undefined, below: readonly Edge[] | undefined): void {
+    if (!above || !below) return;
+    for (const e of above) {
+      if (e.half === "full") this.add(e.from, UP);
+      else if (e.half === "bottom") {
+        this.add(e.to, UP);
+        if (e.from !== e.to) this.add(e.to, UP_CHANGES);
+      }
+    }
+    for (const e of below) {
+      if (e.half === "full") this.add(e.from, DOWN);
+      else if (e.half === "top") {
+        this.add(e.from, DOWN);
+        if (e.to !== e.from) this.add(e.from, DOWN_CHANGES);
+      }
+    }
+  }
+
+  /** `junction(above, below, lane)`, from the counts. */
+  at(lane: number): number {
+    const c = this.counts;
+    const k = 4 * lane;
+    if (k >= c.length) return 0;
+    if (c[k + UP_CHANGES] === 1 && c[k + DOWN_CHANGES] === 0 && c[k + DOWN] === 1) {
+      return J_DOWN | (c[k + UP] === 1 ? J_TRIM : 0);
+    }
+    if (c[k + DOWN_CHANGES] === 1 && c[k + UP_CHANGES] === 0 && c[k + UP] === 1) {
+      return J_UP | (c[k + DOWN] === 1 ? J_TRIM : 0);
+    }
+    return 0;
+  }
+
+  clear(): void {
+    for (const lane of this.touched) this.counts.fill(0, 4 * lane, 4 * lane + 4);
+    this.touched.length = 0;
+  }
+
+  private add(lane: number, kind: number): void {
+    const k = 4 * lane;
+    if (k >= this.counts.length) {
+      const bigger = new Int32Array(Math.max(k + 4, 2 * this.counts.length));
+      bigger.set(this.counts);
+      this.counts = bigger;
+    }
+    const c = this.counts;
+    if (c[k] === 0 && c[k + 1] === 0 && c[k + 2] === 0 && c[k + 3] === 0) this.touched.push(lane);
+    c[k + kind]++;
+  }
+}
+
+/**
+ * The shapes (see `edgeShape`) of every edge of a range of rows, worked out in one pass over
+ * their edges, however many lanes the graph has: `edgeShape` looks at all the edges of the
+ * neighbouring rows for each edge, which on a very wide graph is quadratic per row and frame.
+ * Reused from frame to frame; it allocates only to grow.
+ */
+export class EdgeShapes {
+  private shapes = new Uint8Array(256);
+  private offsets = new Int32Array(64);
+  private first = 0;
+  private top = new Boundary();
+  private bottom = new Boundary();
+
+  /**
+   * Works out the shapes of the edges of rows `first`..`last` - 1, where `edgesOf(i)` gives
+   * row i's edges, or undefined for a row that is not loaded or is not a commit.
+   */
+  compute(first: number, last: number, edgesOf: (i: number) => readonly Edge[] | undefined): void {
+    this.first = first;
+    const count = Math.max(0, last - first);
+    if (this.offsets.length < count + 1) this.offsets = new Int32Array(2 * (count + 1));
+    let total = 0;
+    for (let i = first; i < last; i++) total += edgesOf(i)?.length ?? 0;
+    if (this.shapes.length < total) this.shapes = new Uint8Array(2 * total);
+
+    this.top.clear();
+    this.bottom.clear();
+    let at = 0;
+    let row = count > 0 ? edgesOf(first) : undefined;
+    for (let i = first; i < last; i++) {
+      this.offsets[i - first] = at;
+      const next = i + 1 < last ? edgesOf(i + 1) : undefined;
+      this.bottom.fill(row, next);
+      if (row) {
+        for (const e of row) this.shapes[at++] = this.shapeOf(e);
+      }
+      // This row's bottom boundary is the next row's top.
+      const used = this.top;
+      used.clear();
+      this.top = this.bottom;
+      this.bottom = used;
+      row = next;
+    }
+    this.offsets[count] = at;
+    this.top.clear();
+  }
+
+  /** The shape of edge `k` of row `i` (a row of the last `compute`). */
+  shape(i: number, k: number): EdgeShape {
+    return this.shapes[this.offsets[i - this.first] + k] as EdgeShape;
+  }
+
+  /** `edgeShape` with the junctions read from the boundary tables. */
+  private shapeOf(edge: Edge): EdgeShape {
+    const changes = edge.from !== edge.to;
+    if (edge.half === "bottom") {
+      const j = this.bottom.at(edge.to);
+      if (changes) return j & J_DOWN ? SHAPE_S : SHAPE_HALF;
+      return trimmed(j, J_UP) ? SHAPE_SKIP : SHAPE_HALF;
+    }
+    if (edge.half === "top") {
+      const j = this.top.at(edge.from);
+      if (changes) return j & J_UP ? SHAPE_S : SHAPE_HALF;
+      return trimmed(j, J_DOWN) ? SHAPE_SKIP : SHAPE_HALF;
+    }
+    const upperCovered = trimmed(this.top.at(edge.from), J_DOWN);
+    const lowerCovered = trimmed(this.bottom.at(edge.from), J_UP);
+    if (upperCovered && lowerCovered) return SHAPE_SKIP;
+    if (upperCovered) return SHAPE_LOWER;
+    if (lowerCovered) return SHAPE_UPPER;
+    return SHAPE_HALF;
+  }
+}
+
 /** The line or curve `traceShape` draws, or null for nothing. */
 export function shapePath(edge: Edge, shape: EdgeShape, rowTop: number, rowH: number): Line | Curve | null {
   return record((path) => traceShape(path, edge, shape, rowTop, rowH));
@@ -245,7 +382,8 @@ export function canvasSize(
   cssH: number,
   dpr: number,
 ): { width: number; height: number; cssWidth: number; cssHeight: number } {
-  const width = Math.max(1, Math.round(cssW * dpr));
+  // Rounded down, so the canvas never reaches past its column.
+  const width = Math.max(1, Math.floor(cssW * dpr + 1e-6));
   const height = Math.max(1, Math.round(cssH * dpr));
   return { width, height, cssWidth: width / dpr, cssHeight: height / dpr };
 }
@@ -276,6 +414,25 @@ export function alignedFirstRow(first: number, rowH: number, dpr: number): numbe
     if (Math.abs(device - Math.round(device)) < 1e-6) return row;
   }
   return first;
+}
+
+/**
+ * Rows the rendered rows' container moves by at most once in so many rows of scrolling: rows
+ * are placed relative to it, so while it stays put, a row of scrolling restyles only the row
+ * that comes into view, not all of them.
+ */
+export const POOL_STEP = 8;
+
+/**
+ * Where the rendered rows' container starts (a row index), given where it started (`prev`)
+ * and the first row to render now (`first`): unchanged while `first` is at most `step` rows
+ * below it; otherwise at `first` (scrolling down) or `step` rows above it (scrolling up), on a
+ * row whose top is a whole device pixel (see alignedFirstRow). It is never below `first` and
+ * at most `step` + 8 rows above it.
+ */
+export function poolStart(prev: number, first: number, step: number, rowH: number, dpr: number): number {
+  if (first >= prev && first <= prev + step) return prev;
+  return alignedFirstRow(first < prev ? Math.max(0, first - step) : first, rowH, dpr);
 }
 
 /** How many of `totalRows` rows the view shows: all, unless that passes MAX_SCROLL_PX. */

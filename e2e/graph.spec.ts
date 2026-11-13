@@ -402,3 +402,112 @@ test("rows and lanes move as one layer the size of the rendered rows, not of the
   expect(layout.canvasInGroup).toBe(true);
   expect(layout.willChange).toContain("transform");
 });
+
+test("while the first rows load, one viewport of skeletons shows and the grid does not scroll", async ({ gg }) => {
+  const { page } = gg;
+  // The repository stays "loading, no rows yet": no events, and snapshots say so.
+  await page.route("**/events", (route) => route.abort());
+  await page.route("**/invoke", async (route) => {
+    const body = route.request().postDataJSON() as { cmd?: string } | null;
+    if (body?.cmd !== "open_repo" && body?.cmd !== "get_snapshot") return route.continue();
+    const response = await route.fetch();
+    const json = (await response.json()) as { ok?: { totalRows: number; loading: boolean } };
+    if (json.ok) Object.assign(json.ok, { totalRows: 0, loading: true });
+    await route.fulfill({ response, json });
+  });
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  const g = grid(page);
+  await expect(g.locator('[role="row"][aria-busy="true"]:not([hidden])').first()).toBeVisible();
+  const state = await g.evaluate((el) => ({
+    skeletons: el.querySelectorAll('[role="row"][aria-busy="true"]:not([hidden])').length,
+    rowArea: el.clientHeight - el.querySelector<HTMLElement>("[data-header]")!.offsetHeight,
+    scrollable: el.scrollHeight - el.clientHeight,
+  }));
+  expect(state.skeletons).toBeGreaterThan(0);
+  expect(state.skeletons).toBeLessThanOrEqual(Math.floor(state.rowArea / 26));
+  expect(state.scrollable).toBeLessThanOrEqual(0);
+});
+
+test("the lane canvas is as tall as the rows the viewport needs, and shrinks with it", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await expect(subject(row(page, 0))).not.toBeEmpty();
+  const canvas = page.getByTestId("graph-canvas");
+  const tall = (await canvas.boundingBox())!.height;
+  await row(page, 2).click(); // the details panel opens below the graph
+  await expect(page.getByRole("region", { name: "Commit details" })).toBeVisible();
+  await expect.poll(async () => (await canvas.boundingBox())!.height).toBeLessThan(tall);
+});
+
+test("aria-activedescendant names only a row that is rendered", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
+  await row(page, 2).click();
+  const target = () =>
+    grid(page).evaluate((el) => {
+      const id = el.getAttribute("aria-activedescendant");
+      if (id === null) return "none";
+      const r = document.getElementById(id);
+      return r && !r.hidden ? "rendered" : "missing";
+    });
+  await expect.poll(target).toBe("rendered");
+  await scrollTo(page, 1500 * 26);
+  await expect(subject(row(page, 1500))).not.toBeEmpty();
+  await expect.poll(target).toBe("none");
+  await scrollTo(page, 0);
+  await expect.poll(target).toBe("rendered");
+});
+
+test("lanes stay level with their rows after scrolling: each commit's dot is at its row's centre", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big")); // linear: every commit is a dot on lane 0
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
+  for (const top of [1500 * 26 + 7, 333 * 26 + 19, 41]) {
+    await scrollTo(page, top);
+    await page.waitForTimeout(200);
+    expect(await visibleSkeletons(page)).toBe(0);
+    const misses = await grid(page).evaluate((el) => {
+      const c = el.querySelector<HTMLCanvasElement>('[data-testid="graph-canvas"]')!;
+      const ratio = c.width / c.getBoundingClientRect().width;
+      const data = c.getContext("2d")!.getImageData(0, 0, c.width, c.height);
+      const alpha = (x: number, y: number) => {
+        const px = Math.round(x * ratio);
+        const py = Math.round(y * ratio);
+        return py < 0 || py >= c.height ? -1 : data.data[(py * c.width + px) * 4 + 3];
+      };
+      const box = c.getBoundingClientRect();
+      const header = el.querySelector<HTMLElement>("[data-header]")!.getBoundingClientRect().bottom;
+      const out: string[] = [];
+      for (const r of el.querySelectorAll<HTMLElement>('[role="row"][data-index]:not([hidden])')) {
+        const b = r.getBoundingClientRect();
+        if (b.top < header || b.bottom > el.getBoundingClientRect().bottom) continue;
+        const mid = b.top + b.height / 2 - box.top;
+        // Lane 0's dot: 3 px right of the line, inside the dot (radius 4) but off the line.
+        const x = 6 + 8 + 3;
+        if (alpha(x, mid) === 0 || alpha(x, mid - 9) > 0 || alpha(x, mid + 9) > 0) out.push(r.dataset.index!);
+      }
+      return out;
+    });
+    expect(misses).toEqual([]);
+  }
+});
+
+test("a row's tooltip goes when its commit changes under a still pointer", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const dir = gg.repoPath("small");
+  await open(page, dir);
+  const hash = gg.git("small", "rev-parse", "HEAD").trim();
+  const cell = row(page, 0).locator(".hash");
+  await cell.hover();
+  await expect(cell).toHaveAttribute("title", hash);
+  gg.git("small", "commit", "-q", "--allow-empty", "-m", "Commit under the pointer");
+  await page.keyboard.press("ControlOrMeta+r");
+  await expect(subject(row(page, 0))).toHaveText("Commit under the pointer");
+  await expect(cell).not.toHaveAttribute("title", hash);
+});

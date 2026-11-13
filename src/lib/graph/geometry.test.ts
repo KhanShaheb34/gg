@@ -9,10 +9,13 @@ import {
   crispOffset,
   deviceLineWidth,
   edgeShape,
+  EdgeShapes,
   GRAPH_PAD,
   HEADER_H,
   LANE_COLORS,
   OVERSCAN,
+  POOL_STEP,
+  poolStart,
   PREFETCH,
   ROW_H,
   SHAPE_HALF,
@@ -214,8 +217,18 @@ describe("canvas sizing for the device pixel ratio", () => {
     expect(canvasSize(60, 806, 2)).toEqual({ width: 120, height: 1612, cssWidth: 60, cssHeight: 806 });
     expect(canvasSize(60, 806, 1.5)).toEqual({ width: 90, height: 1209, cssWidth: 60, cssHeight: 806 });
     const odd = canvasSize(61, 806, 1.5);
-    expect(odd.width).toBe(92);
-    expect(odd.cssWidth * 1.5).toBeCloseTo(92);
+    expect(odd.width).toBe(91);
+    expect(odd.cssWidth * 1.5).toBeCloseTo(91);
+  });
+
+  it("is never wider than its column, at any pixel ratio", () => {
+    for (const ratio of [1, 1.25, 1.5, 1.75, 2, 2.5, 3]) {
+      for (let w = 16; w <= 240; w++) {
+        const size = canvasSize(w, 806, ratio);
+        expect(size.cssWidth, `${w} px at ${ratio}`).toBeLessThanOrEqual(w);
+        expect(size.cssWidth).toBeGreaterThan(w - 1);
+      }
+    }
   });
 
   it("gives lines a whole number of device pixels, centred on pixel boundaries or centres", () => {
@@ -251,5 +264,86 @@ describe("autoGraphWidth", () => {
   });
   it("leaves room for the Graph header's label", () => {
     expect(GRAPH_MIN_AUTO_W).toBeGreaterThanOrEqual(52);
+  });
+});
+
+describe("EdgeShapes", () => {
+  const HALVES: Edge["half"][] = ["full", "top", "bottom"];
+  /** A pseudo-random generator, so failures repeat. */
+  function rng(seed: number) {
+    return () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+  }
+
+  it("gives every edge the shape edgeShape gives it, for any rows", () => {
+    const shapes = new EdgeShapes();
+    for (let seed = 1; seed <= 300; seed++) {
+      const r = rng(seed);
+      const lanes = 1 + Math.floor(r() * 8);
+      const count = 1 + Math.floor(r() * 12);
+      const rows: (Edge[] | undefined)[] = Array.from({ length: count + 4 }, () => {
+        if (r() < 0.1) return undefined; // not loaded, or the uncommitted row
+        return Array.from({ length: Math.floor(r() * 6) }, () => {
+          const from = Math.floor(r() * lanes);
+          const half = HALVES[Math.floor(r() * 3)];
+          const to = half === "full" || r() < 0.4 ? from : Math.floor(r() * lanes);
+          return { from, to, color: 0, half };
+        });
+      });
+      const first = 2;
+      const last = 2 + count;
+      shapes.compute(first, last, (i) => rows[i]);
+      for (let i = first; i < last; i++) {
+        const row = rows[i];
+        if (!row) continue;
+        const prev = i > first ? rows[i - 1] : undefined;
+        const next = i + 1 < last ? rows[i + 1] : undefined;
+        row.forEach((e, k) => expect(shapes.shape(i, k), `seed ${seed} row ${i} edge ${k}`).toBe(edgeShape(e, prev, row, next)));
+      }
+    }
+  });
+
+  it("handles lanes far apart, and is reused without carrying anything over", () => {
+    const shapes = new EdgeShapes();
+    const wide: Edge[][] = [
+      [{ from: 900, to: 3, color: 0, half: "bottom" }, { from: 3, to: 3, color: 0, half: "full" }],
+      [{ from: 3, to: 3, color: 0, half: "full" }],
+    ];
+    shapes.compute(0, 2, (i) => wide[i]);
+    expect(shapes.shape(0, 0)).toBe(edgeShape(wide[0][0], undefined, wide[0], wide[1]));
+    expect(shapes.shape(1, 0)).toBe(edgeShape(wide[1][0], wide[0], wide[1], undefined));
+    const plain: Edge[][] = [[{ from: 3, to: 3, color: 0, half: "full" }], [{ from: 3, to: 3, color: 0, half: "full" }]];
+    shapes.compute(0, 2, (i) => plain[i]);
+    expect(shapes.shape(0, 0)).toBe(SHAPE_HALF);
+    expect(shapes.shape(1, 0)).toBe(SHAPE_HALF);
+  });
+});
+
+describe("poolStart", () => {
+  it("keeps the rendered rows where they are while the window moves less than a step", () => {
+    expect(poolStart(100, 100, 8, 26, 2)).toBe(100);
+    expect(poolStart(100, 105, 8, 26, 2)).toBe(100);
+    expect(poolStart(100, 108, 8, 26, 2)).toBe(100);
+  });
+
+  it("moves a whole step ahead when the window leaves it, either way", () => {
+    expect(poolStart(100, 109, 8, 26, 2)).toBe(109);
+    expect(poolStart(100, 99, 8, 26, 2)).toBe(91); // room to scroll up a step
+    expect(poolStart(100, 3, 8, 26, 2)).toBe(0);
+    expect(poolStart(100, 5000, 8, 26, 2)).toBe(5000);
+  });
+
+  it("starts on a whole device pixel, never below the window's first row", () => {
+    for (const dpr of [1, 1.25, 1.5, 2]) {
+      let start = 0;
+      for (const first of [0, 7, 9, 30, 29, 13, 12, 400, 391, 2]) {
+        start = poolStart(start, first, POOL_STEP, 26, dpr);
+        expect(start).toBeLessThanOrEqual(first);
+        expect(first - start).toBeLessThanOrEqual(POOL_STEP + 8);
+        expect(alignedFirstRow(start, 26, dpr)).toBe(start);
+      }
+    }
   });
 });

@@ -43,8 +43,11 @@
   /** Room the graph keeps above the panel, px (matches the graph area's min-height). */
   const MIN_GRAPH_H = 160;
 
-  function readStored(): { height: number; files: FileView; split: number } {
-    const out = { height: DEFAULT_H, files: "tree" as FileView, split: DEFAULT_SPLIT };
+  /** Share of the repository view the panel takes at most until the user sizes it. */
+  const DEFAULT_SHARE = 0.45;
+
+  function readStored(): { height: number | null; files: FileView; split: number } {
+    const out = { height: null as number | null, files: "tree" as FileView, split: DEFAULT_SPLIT };
     try {
       const raw: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
       if (raw && typeof raw === "object") {
@@ -76,8 +79,15 @@
   let panel: HTMLElement | undefined = $state();
   /** The tallest the panel may be now: the repository view's height less the graph's minimum. */
   let room = $state(Infinity);
-  /** The height shown: the chosen one, as far as the window allows. */
-  const height = $derived(Math.max(MIN_H, Math.min(prefs.height, room)));
+  /** The repository view's height, px. */
+  let hostH = $state(Infinity);
+  /**
+   * The height shown: the chosen one, as far as the window allows; until the user chooses
+   * one, 280 px or 45 % of the repository view, whichever is less.
+   */
+  const height = $derived(
+    Math.max(MIN_H, Math.min(prefs.height ?? Math.min(DEFAULT_H, Math.round(hostH * DEFAULT_SHARE)), room)),
+  );
 
   /** The panel's width, px. */
   let panelW = $state(0);
@@ -88,6 +98,7 @@
     const host = panel?.parentElement;
     if (!host) return;
     const measure = () => {
+      hostH = host.clientHeight;
       room = host.clientHeight - MIN_GRAPH_H;
       panelW = host.clientWidth;
     };
@@ -103,7 +114,7 @@
     onmove: (dy: number) => (prefs.height = Math.max(MIN_H, Math.min(room, Math.round(resizeFrom - dy)))),
     onend: save,
     onreset: () => {
-      prefs.height = DEFAULT_H;
+      prefs.height = null;
       save();
     },
   };

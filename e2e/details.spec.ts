@@ -529,6 +529,23 @@ test("when the selected commit goes away with the focus in the panel, the focus 
   await expect(grid(page)).toBeFocused();
 });
 
+test("in a small window the panel opens at most 45 % of the repository view tall, leaving the graph room", async ({ gg }) => {
+  const { page } = gg;
+  await page.setViewportSize({ width: 900, height: 560 });
+  await page.goto("/");
+  await open(page, gg.repoPath("details"));
+  await rowWith(page, "Main work").click();
+  const sizes = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('[aria-label="Commit details"]')!;
+    return {
+      panel: panel.getBoundingClientRect().height,
+      body: panel.parentElement!.getBoundingClientRect().height,
+    };
+  });
+  expect(sizes.panel).toBeLessThanOrEqual(Math.round(sizes.body * 0.45) + 1);
+  expect(sizes.panel).toBeGreaterThanOrEqual(120);
+});
+
 test("the panel's height fits the window: a stored height too tall, and a smaller window", async ({ gg }) => {
   const { page } = gg;
   await page.addInitScript(() => localStorage.setItem("gg.details.v1", JSON.stringify({ height: 5000, files: "tree" })));

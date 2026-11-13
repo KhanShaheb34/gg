@@ -9,6 +9,9 @@ const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");
 test.skip(!process.env.GG_SCREENS, "set GG_SCREENS=1 to take screenshots");
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
 
+/** Somewhere nothing reacts to the pointer: the empty middle of the tab bar. */
+const park = (page: Page) => page.mouse.move(1000, 20);
+
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
@@ -53,7 +56,7 @@ for (const theme of ["light", "dark"] as const) {
 
     await open(page, gg.repoPath("branchy"));
     await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
-    await page.mouse.move(900, 790);
+    await park(page);
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `graph-branchy-${theme}.png`) });
   });
@@ -153,6 +156,7 @@ for (const theme of ["light", "dark"] as const) {
     page.once("dialog", (dialog) => dialog.accept(gg.folder("plain")));
     await page.getByRole("button", { name: "Open repository" }).first().click();
     await expect(page.getByRole("alert")).toBeVisible();
+    await park(page);
     await page.waitForTimeout(250); // the toast's entrance
     await page.screenshot({ path: path.join(OUT, `toast-${theme}.png`) });
     await page.getByRole("button", { name: "Dismiss notification" }).click();
@@ -170,5 +174,71 @@ for (const theme of ["light", "dark"] as const) {
     await page.mouse.move(640, 790);
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `loading-${theme}.png`) });
+  });
+}
+
+// The smallest window (900×560) and keyboard focus / hover, both themes.
+for (const theme of ["light", "dark"] as const) {
+  test(`small window, focus and hover, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.setViewportSize({ width: 900, height: 560 });
+    await page.emulateMedia({ colorScheme: theme });
+    const parent = path.dirname(gg.repoPath("small"));
+    makeRepo("payments-api", (git) => git("init", "-q", "-b", "main"), parent);
+    await page.goto("/");
+    await open(page, gg.repoPath("small"));
+    await page.keyboard.press("ControlOrMeta+w");
+    await expect(page.getByTestId("welcome")).toBeVisible();
+    await park(page);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `small-welcome-${theme}.png`) });
+
+    await open(page, gg.repoPath("branchy"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await park(page);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `small-graph-${theme}.png`) });
+
+    await page.getByRole("button", { name: /^Branches:/ }).click();
+    await page.keyboard.type("feat");
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `small-filter-${theme}.png`) });
+    await page.keyboard.press("Escape");
+
+    await page.keyboard.press("ControlOrMeta+f");
+    await page.keyboard.type("plugin");
+    await expect(page.getByTestId("search-count")).toHaveText(/^1 of \d+$/);
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `small-search-${theme}.png`) });
+    await page.keyboard.press("Escape");
+
+    await grid.locator('[role="row"]', { hasText: "Sandbox file access" }).click();
+    await expect(page.getByRole("region", { name: "Commit details" }).getByTestId("details-files-count")).toBeVisible();
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `small-details-${theme}.png`) });
+
+    // Keyboard focus: the grid's selected row, then a toolbar button.
+    await grid.focus();
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `focus-row-${theme}.png`) });
+    await page.getByRole("button", { name: "Refresh" }).focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `focus-button-${theme}.png`) });
+
+    // Hover: a row and a tab.
+    const hovered = grid.locator('[role="row"]', { hasText: "Plugin sandboxing" });
+    await hovered.hover();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `hover-row-${theme}.png`) });
+    await page.getByRole("tab", { name: "branchy" }).hover();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `hover-tab-${theme}.png`) });
   });
 }

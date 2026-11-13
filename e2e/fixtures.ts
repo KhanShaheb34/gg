@@ -148,6 +148,60 @@ const REPOS: Record<string, RepoScript> = {
     git("push", "-q", "-u", "origin", "main", "fix/typo");
     for (let i = 18; i <= 19; i++) commit(`src/part${i}.txt`, `part ${i}`, `Add part ${i}`);
   },
+  /**
+   * For the details panel, oldest first: "Initial import"; "Rework peaches routes", which adds
+   * (a text and a binary file), modifies and renames files and has a message body; "Side
+   * feature" on `side` and "Main work" on `main`, merged by "Merge branch 'side'"; then
+   * "Generate the module scaffolding", 64 new files and a long message.
+   */
+  details(git, write) {
+    git("init", "-q", "-b", "main");
+    write("app/peaches/a.py", "def a():\n    return 1\n");
+    write("app/routes/r.py", "ROUTES = []\n");
+    write("docs/A.md", "# A\n");
+    write("notes/old-name.txt", Array.from({ length: 20 }, (_, i) => `note ${i + 1}\n`).join(""));
+    git("add", "-A");
+    git("commit", "-q", "-m", "Initial import");
+
+    write("app/peaches/b.py", "def b():\n    return 2\n");
+    write("app/routes/r.py", "ROUTES = ['/peaches']\nPREFIX = '/api'\n");
+    write("assets/logo.bin", "\u0000\u0001\u0002binary\u0000data\u0000");
+    git("mv", "notes/old-name.txt", "docs/new-name.txt");
+    git("add", "-A");
+    git(
+      "commit",
+      "-q",
+      "-m",
+      "Rework peaches routes\n\nMove the old notes into docs and add b.py.\n    Indented line keeps   its spacing.",
+    );
+
+    git("switch", "-q", "-c", "side");
+    write("side/feature.txt", "feature\n");
+    write("side/more.txt", "more\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Side feature");
+    git("switch", "-q", "main");
+    write("main.txt", "main\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Main work");
+    git("merge", "-q", "--no-ff", "-m", "Merge branch 'side'", "side");
+
+    for (let i = 1; i <= 64; i++) {
+      const lines = Array.from({ length: (i % 7) + 1 }, (_, k) => `export const v${k} = ${i * k};\n`).join("");
+      write(`packages/module-${String((i % 8) + 1).padStart(2, "0")}/src/file-${i}.ts`, lines);
+    }
+    const body = Array.from(
+      { length: 24 },
+      (_, i) => `- Step ${i + 1}: wire module ${(i % 8) + 1} into the build and check its exports.`,
+    ).join("\n");
+    git("add", "-A");
+    git(
+      "commit",
+      "-q",
+      "-m",
+      `Generate the module scaffolding\n\nEvery package gets a src folder with typed exports, so the\nbuild can check them before bundling.\n\n${body}\n\nSee https://example.com/docs/modules for the layout.`,
+    );
+  },
   /** A repository without commits. */
   empty(git) {
     git("init", "-q", "-b", "main");
@@ -282,7 +336,7 @@ export async function stopDevserver(server: Devserver): Promise<void> {
 
 export type GG = {
   page: Page;
-  /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`), created on first use. */
+  /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`, `details`), created on first use. */
   repoPath(name: string): string;
   /** Path of a plain (non-repository) folder `name`, created on first use. */
   folder(name: string): string;

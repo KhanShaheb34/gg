@@ -8,6 +8,7 @@ import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
 import { hitPosition, stepHit } from "../search";
 import type { RepoSnapshot, RowsPage, ViewOptions } from "../types";
+import { CommitDetailsLoader } from "./details.svelte";
 
 /** Rows fetched around the restored position before a new generation is shown. */
 const SWAP_PREFETCH_ROWS = 80;
@@ -102,6 +103,8 @@ export class RepoView {
   selectedHash: string | null = $state(null);
   /** Row index of the selection in the current generation. */
   selectedIndex: number | null = $state(null);
+  /** The selected commit's details, for the details panel; remembers recent ones. */
+  readonly details: CommitDetailsLoader;
 
   /** The view options asked for last: what the toolbar shows, ahead of the core's answer. */
   viewOptions: ViewOptions = $state.raw(DEFAULT_OPTIONS);
@@ -169,6 +172,7 @@ export class RepoView {
 
   constructor(repoId: number, initial?: RepoSnapshot) {
     this.repoId = repoId;
+    this.details = new CommitDetailsLoader(repoId);
     this.snapshot = placeholder(repoId);
     this.cache = this.newCache(-1, 0);
     this.stopEvents = onEvent<RepoSnapshot>("repo-changed", (s) => {
@@ -560,6 +564,7 @@ export class RepoView {
     if (this.hold) clearTimeout(this.hold.timer);
     this.hold = null;
     this.stopEvents();
+    this.details.dispose();
     this.onChange = null;
     this.cache = this.newCache(-1, 0);
   }

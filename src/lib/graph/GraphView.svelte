@@ -427,11 +427,29 @@
   }
 
   function onResize(height: number) {
+    const before = viewportH;
     viewportH = Math.max(0, height - HEADER_H);
     view.viewportH = viewportH;
     const n = Math.ceil(viewportH / ROW_H) + 1 + 2 * OVERSCAN;
     if (n !== slots.length) slots = Array.from({ length: n }, () => new Slot());
+    keepSelectionInView(before);
     frame(performance.now());
+  }
+
+  /**
+   * The viewport shrank from `before` px (the details panel opened or grew): a selected row
+   * that was in view and now is under the bottom edge is scrolled up just enough to stay in
+   * view, in the same frame. Nothing else moves.
+   */
+  function keepSelectionInView(before: number) {
+    const index = view.selectedHash === null ? null : view.selectedIndex;
+    if (index === null || viewportH >= before || viewportH < ROW_H || view.pendingScroll !== null) return;
+    const bottom = (index + 1) * ROW_H;
+    const wasInView = index * ROW_H >= scrollTop && bottom <= scrollTop + before;
+    if (!wasInView || bottom <= scrollTop + viewportH) return;
+    scroller.scrollTop = bottom - viewportH;
+    scrollTop = scroller.scrollTop;
+    view.scrollTop = scrollTop;
   }
 
   function rowOf(target: EventTarget | null): { index: number; row: CommitRow } | null {

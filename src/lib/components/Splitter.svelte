@@ -1,19 +1,20 @@
 <!--
-  A vertical drag handle on a column edge. Reports the distance dragged since the drag began
-  (so the owner can clamp without drift); arrow keys nudge by 8 px; double-click resets.
+  A drag handle on a column's left or right edge, or a panel's top edge. Reports the distance
+  dragged since the drag began (so the owner can clamp without drift); arrow keys nudge by
+  8 px; double-click resets.
 -->
 <script lang="ts">
   type Props = {
     /** Accessible name, e.g. "Resize Author column". */
     label: string;
     /** Which edge of its (relatively positioned) parent it sits on. */
-    edge: "left" | "right";
-    /** The current width, announced to assistive technology. */
+    edge: "left" | "right" | "top";
+    /** The current width (height, on the top edge), announced to assistive technology. */
     value: number;
     /** A drag (or key nudge) begins. */
     onstart: () => void;
-    /** Moved `dx` px (right is positive) since `onstart`. */
-    onmove: (dx: number) => void;
+    /** Moved `d` px since `onstart`: right (down, on the top edge) is positive. */
+    onmove: (d: number) => void;
     /** The drag ended; time to save. */
     onend: () => void;
     onreset: () => void;
@@ -21,20 +22,23 @@
 
   let { label, edge, value, onstart, onmove, onend, onreset }: Props = $props();
 
-  let startX = 0;
+  /** On the top edge it moves up and down. */
+  const across = $derived(edge === "top");
+
+  let start = 0;
   let dragging = $state(false);
 
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    startX = e.clientX;
+    start = across ? e.clientY : e.clientX;
     dragging = true;
     onstart();
   }
 
   function onPointerMove(e: PointerEvent) {
-    if (dragging) onmove(e.clientX - startX);
+    if (dragging) onmove((across ? e.clientY : e.clientX) - start);
   }
 
   function onPointerUp(e: PointerEvent) {
@@ -45,7 +49,8 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
-    const step = e.key === "ArrowLeft" ? -8 : e.key === "ArrowRight" ? 8 : 0;
+    const [back, forward] = across ? ["ArrowUp", "ArrowDown"] : ["ArrowLeft", "ArrowRight"];
+    const step = e.key === back ? -8 : e.key === forward ? 8 : 0;
     if (step === 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -61,7 +66,7 @@
   class="splitter {edge}"
   class:dragging
   role="separator"
-  aria-orientation="vertical"
+  aria-orientation={across ? "horizontal" : "vertical"}
   aria-label={label}
   aria-valuenow={Math.round(value)}
   tabindex="0"
@@ -92,6 +97,16 @@
     right: -5px;
   }
 
+  .top {
+    top: -5px;
+    bottom: auto;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 9px;
+    cursor: row-resize;
+  }
+
   /* The visible rule: a hairline that firms up on hover and while dragging. */
   .splitter::after {
     content: "";
@@ -110,6 +125,23 @@
     top: 3px;
     bottom: 3px;
     background: var(--accent);
+  }
+
+  /* Along a panel's top edge the panel draws its own border; the rule shows only when used. */
+  .top::after,
+  .top:hover::after,
+  .top.dragging::after,
+  .top:focus-visible::after {
+    top: 4px;
+    bottom: auto;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 1px;
+  }
+
+  .top::after {
+    background: transparent;
   }
 
   .splitter:focus-visible {

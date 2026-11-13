@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import CommitDetails from "./lib/components/CommitDetails.svelte";
   import Mark from "./lib/components/Mark.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TabBar from "./lib/components/TabBar.svelte";
@@ -102,7 +103,10 @@
             <Toolbar view={repoView(active.repoId)} />
           </header>
           <div class="repo-body">
-            <GraphView view={repoView(active.repoId)} />
+            <div class="graph-area">
+              <GraphView view={repoView(active.repoId)} />
+            </div>
+            <CommitDetails view={repoView(active.repoId)} />
           </div>
         {/key}
       </div>
@@ -196,9 +200,18 @@
     font-size: var(--fs-sm);
   }
 
+  /* The graph above, the details panel docked below it (when a commit is selected). */
   .repo-body {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-height: 0;
+  }
+
+  .graph-area {
+    flex: 1 1 0;
+    /* The panel never takes the graph below this (CommitDetails' MIN_GRAPH_H). */
+    min-height: 160px;
   }
 
   .drop {

@@ -1,8 +1,9 @@
 //! The persistent store: recent repositories, the open tabs and settings, kept in
 //! `<config_dir>/state.json`.
 //!
-//! The file is read once, when the store is created; a missing file gives defaults and one
-//! that cannot be parsed is renamed to `state.json.bad-<ms>` first. A file that exists but
+//! The file is read once, when the store is created; a missing file gives defaults. It is read
+//! field by field, so a value this version does not know gives that field's default; a file
+//! that is not a JSON object at all is renamed to `state.json.bad-<ms>` first. A file that exists but
 //! cannot be read (permissions, say), or a corrupt one that cannot be moved aside, also gives
 //! defaults but is never written over: changes then apply for the running session only, and
 //! [`Store::problem`] says why, until [`Store::reset`] moves the file aside. Otherwise every
@@ -37,10 +38,10 @@ pub struct SettingsPatch {
     pub fetch_interval_secs: Option<u32>,
 }
 
-/// The contents of `state.json`. A missing field takes its default, so a file written by an
-/// older version still loads.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+/// The contents of `state.json`. Read with [`StoreData::from_json`]: a missing or unreadable
+/// field takes its default, so a file written by an older (or newer) version still loads.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StoreData {
     recents: Vec<Recent>,
     session: Session,
@@ -57,15 +58,19 @@ pub struct Store {
 }
 
 impl Store {
-    /// Loads `<config_dir>/state.json`. Never fails: a missing file gives defaults, and a
-    /// file that cannot be parsed is renamed to `state.json.bad-<ms>` and gives defaults. A
+    /// Loads `<config_dir>/state.json`. Never fails: a missing file gives defaults, a value
+    /// that cannot be read gives that field's default, and a file that is not a JSON object
+    /// is renamed to `state.json.bad-<ms>` and gives defaults. A
     /// file that cannot be read gives defaults too, and is never written over: changes apply
     /// in memory (see [`Store::problem`]). The directory is created on the first write.
     pub fn load(config_dir: &Path) -> Self {
         let path = config_dir.join(FILE_NAME);
         let mut unreadable = None;
         let data = match fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<StoreData>(&bytes) {
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(StoreData::from_json)
+            {
                 Ok(data) => data.sanitized(),
                 Err(parse) => {
                     // Kept for the user to look at. If it cannot be moved aside, it is not
@@ -272,6 +277,57 @@ impl Store {
 }
 
 impl StoreData {
+    /// The data in `value`, field by field: a field (or a recent, or a tab) this version
+    /// cannot read takes its default or is left out, so one unknown value (a theme added by
+    /// a newer version, a hand edit) loses only itself. `Err` only when `value` is not an
+    /// object.
+    fn from_json(value: serde_json::Value) -> std::result::Result<Self, String> {
+        use serde::de::DeserializeOwned;
+        use serde_json::Value;
+
+        fn field<T: DeserializeOwned>(
+            object: &serde_json::Map<String, Value>,
+            key: &str,
+        ) -> Option<T> {
+            object
+                .get(key)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+        }
+        /// The elements of the array at `key` that read as `T`.
+        fn list<T: DeserializeOwned>(object: &serde_json::Map<String, Value>, key: &str) -> Vec<T> {
+            match object.get(key) {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+
+        let Value::Object(top) = value else {
+            return Err("the file does not hold a JSON object".to_owned());
+        };
+        let empty = serde_json::Map::new();
+        let object = |key: &str| match top.get(key) {
+            Some(Value::Object(o)) => o,
+            _ => &empty,
+        };
+        let (session, settings) = (object("session"), object("settings"));
+        let defaults = Settings::default();
+        Ok(Self {
+            recents: list(&top, "recents"),
+            session: Session {
+                tabs: list(session, "tabs"),
+                active: field(session, "active"),
+            },
+            settings: Settings {
+                theme: field(settings, "theme").unwrap_or(defaults.theme),
+                fetch_interval_secs: field(settings, "fetchIntervalSecs")
+                    .unwrap_or(defaults.fetch_interval_secs),
+            },
+        })
+    }
+
     /// Replaces values a hand-edited file may hold but the app never writes.
     fn sanitized(mut self) -> Self {
         self.recents.truncate(MAX_RECENTS);
@@ -362,6 +418,65 @@ mod tests {
             fs::read_to_string(dir.path().join(&aside[0])).unwrap(),
             "{ not json"
         );
+    }
+
+    /// A value this version does not know (a theme from a newer version, a hand edit) loses
+    /// only itself: everything else in the file is kept, and the file is not set aside.
+    #[test]
+    fn unknown_values_fall_back_one_field_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = r#"{
+            "recents": [
+                {"path": "/a", "name": "a", "lastOpenedMs": 5},
+                {"path": "/b", "name": 7, "lastOpenedMs": 6},
+                "junk",
+                {"path": "/c", "name": "c", "lastOpenedMs": 8}
+            ],
+            "session": {"tabs": ["/a", 3, "/c"], "active": "/c"},
+            "settings": {"theme": "neon", "fetchIntervalSecs": 600},
+            "future": {"anything": true}
+        }"#;
+        fs::write(dir.path().join("state.json"), file).unwrap();
+        let store = Store::load(dir.path());
+        assert_eq!(store.problem(), None);
+        let paths: Vec<_> = store.recents().into_iter().map(|r| r.path).collect();
+        assert_eq!(paths, ["/a", "/c"]);
+        assert_eq!(
+            store.session(),
+            Session {
+                tabs: vec!["/a".into(), "/c".into()],
+                active: Some("/c".into()),
+            }
+        );
+        assert_eq!(store.settings().theme, Theme::System);
+        assert_eq!(store.settings().fetch_interval_secs, 600);
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("state.json")]);
+
+        // A field of the wrong type entirely gives that field's default.
+        fs::write(
+            dir.path().join("state.json"),
+            r#"{"recents": {}, "session": [], "settings": {"theme": "dark", "fetchIntervalSecs": "x"}}"#,
+        )
+        .unwrap();
+        let store = Store::load(dir.path());
+        assert!(store.recents().is_empty());
+        assert_eq!(store.session(), Session::default());
+        assert_eq!(store.settings().theme, Theme::Dark);
+        assert_eq!(store.settings().fetch_interval_secs, 300);
+    }
+
+    /// JSON that is not an object holds nothing this version could use: set aside too.
+    #[test]
+    fn json_that_is_not_an_object_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("state.json"), "[1, 2]").unwrap();
+        let store = Store::load(dir.path());
+        assert!(store.recents().is_empty());
+        assert!(!dir.path().join("state.json").exists());
     }
 
     /// A reset that moves the file aside but cannot save keeps the session's changes in

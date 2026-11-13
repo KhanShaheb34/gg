@@ -226,9 +226,11 @@
   }
 
   // A perf run (window.__GG_PERF_SCROLL__) scrolls the fully loaded graph once (top to bottom
-  // in jumps, or smoothly; see ScrollMode) and reports the result as perf marks (scroll-p50, scroll-p95, ...). With
-  // window.__GG_PERF_SEARCH__ set to a query, that search is active while it scrolls.
-  const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: boolean | "still" | "smooth" | "pages" }).__GG_PERF_SCROLL__;
+  // in jumps, or smoothly; see ScrollMode) and reports the result as perf marks (scroll-p50,
+  // scroll-p95, ...). With window.__GG_PERF_SEARCH__ set to a query, that search is active
+  // while it scrolls.
+  type PerfScroll = boolean | "still" | "smooth" | "pages";
+  const perfScrollMode = probe && (window as { __GG_PERF_SCROLL__?: PerfScroll }).__GG_PERF_SCROLL__;
   const perfSearch = probe && (window as { __GG_PERF_SEARCH__?: string }).__GG_PERF_SEARCH__;
   const perfScroll =
     perfScrollMode === true || perfScrollMode === "still" || perfScrollMode === "smooth" || perfScrollMode === "pages";

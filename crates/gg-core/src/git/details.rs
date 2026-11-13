@@ -12,8 +12,10 @@ use crate::git::runner::{CmdKind, GitRunner};
 const META_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%cn%x00%ce%x00%ct%x00%B";
 const META_FIELDS: usize = 9;
 
-/// Metadata, message and changed files of commit `hash` (4 to 64 hex digits). Files are
-/// compared with the first parent (a root commit with the empty tree), with renames found.
+/// Metadata, message and changed files of commit `hash` (a full 40 or 64 hex digit name;
+/// anything else is `BadRequest`). Files are compared with the first parent (a root commit
+/// with the empty tree), with renames found. External diff and textconv programs configured
+/// in the repository are never run.
 pub async fn read_details(r: &GitRunner, cwd: &Path, hash: &str) -> Result<CommitDetails> {
     if !is_commit_hash(hash) {
         return Err(CoreError::new(
@@ -25,7 +27,16 @@ pub async fn read_details(r: &GitRunner, cwd: &Path, hash: &str) -> Result<Commi
     let out = r
         .run(
             cwd,
-            &["show", "-s", "--no-show-signature", META_FORMAT, &rev, "--"],
+            &[
+                "show",
+                "-s",
+                "--no-show-signature",
+                "--no-ext-diff",
+                "--no-textconv",
+                META_FORMAT,
+                &rev,
+                "--",
+            ],
             CmdKind::Read,
         )
         .await?;
@@ -42,6 +53,8 @@ pub async fn read_details(r: &GitRunner, cwd: &Path, hash: &str) -> Result<Commi
         "--raw",
         "--numstat",
         "--no-commit-id",
+        "--no-ext-diff",
+        "--no-textconv",
     ];
     match details.parents.first() {
         Some(parent) => args.push(parent),
@@ -53,10 +66,10 @@ pub async fn read_details(r: &GitRunner, cwd: &Path, hash: &str) -> Result<Commi
     Ok(details)
 }
 
-/// 4 to 64 hex digits: an abbreviated or full SHA-1 / SHA-256 object name. Rejects
-/// anything git could read as an option or a ref name.
+/// A full object name: 40 (SHA-1) or 64 (SHA-256) hex digits. Rejects abbreviations,
+/// which can be ambiguous, and anything git could read as an option or a ref name.
 fn is_commit_hash(s: &str) -> bool {
-    (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Parses [`META_FORMAT`] output; `files` is left empty. `None` if fields are missing or
@@ -353,12 +366,16 @@ mod tests {
     #[test]
     fn hash_validation() {
         assert!(is_commit_hash(B1));
-        assert!(is_commit_hash("abcd"));
         assert!(is_commit_hash(&"a".repeat(64)));
-        assert!(is_commit_hash("ABCDEF12"));
+        assert!(is_commit_hash(&"ABCDEF12".repeat(5)));
         for bad in [
             "",
             "abc",
+            "abcd",
+            "ABCDEF12",
+            &B1[..39],
+            &format!("{B1}0"),
+            &"a".repeat(63),
             "HEAD",
             "-p",
             "--output=x",

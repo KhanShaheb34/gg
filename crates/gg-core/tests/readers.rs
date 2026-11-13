@@ -10,7 +10,7 @@ use gg_core::error::ErrorCode;
 use gg_core::git::details::read_details;
 use gg_core::git::log::{Commit, LogParser, log_args, read_log};
 use gg_core::git::refs::{RefKind, read_head, read_refs, read_remotes};
-use gg_core::git::runner::{CommandLog, GitRunner};
+use gg_core::git::runner::{CmdKind, CommandLog, GitRunner};
 use gg_core::git::status::read_status;
 use gg_core::git::worktrees::read_worktrees;
 use gg_core::testutil::TestRepo;
@@ -177,6 +177,53 @@ async fn read_log_with_unborn_head_shows_other_branches() {
         .await
         .concat();
     assert_eq!(hashes(&commits), [&c1]);
+}
+
+#[tokio::test]
+async fn read_log_with_files_named_like_revisions() {
+    // Without a final `--`, git cannot tell the revision `HEAD` from the file `HEAD`.
+    let repo = TestRepo::new();
+    repo.write("HEAD", "a file, not a revision\n");
+    repo.write("main", "also a file\n");
+    let c1 = repo.commit_all("files named HEAD and main");
+    let c2 = repo.commit("two");
+    let git = runner().await;
+    let commits = log_batches(&git, repo.path(), &log_args(&all_refs(), &[]))
+        .await
+        .concat();
+    assert_eq!(hashes(&commits), [&c2, &c1]);
+
+    let opts = ViewOptions {
+        branches: Some(vec!["main".into()]),
+        show_remotes: false,
+        show_tags: false,
+    };
+    let commits = log_batches(&git, repo.path(), &log_args(&opts, &[]))
+        .await
+        .concat();
+    assert_eq!(hashes(&commits), [&c2, &c1]);
+}
+
+#[tokio::test]
+async fn read_log_ignores_show_signature_config() {
+    let repo = TestRepo::new();
+    let c1 = repo.commit("one");
+    let c2 = repo.commit("two");
+    repo.git(&["config", "log.showSignature", "true"]);
+    let git = runner().await;
+    let effective = git
+        .run(
+            repo.path(),
+            &["config", "--get", "log.showSignature"],
+            CmdKind::Read,
+        )
+        .await
+        .unwrap();
+    assert_eq!(effective.text().trim(), "false");
+    let commits = log_batches(&git, repo.path(), &log_args(&all_refs(), &[]))
+        .await
+        .concat();
+    assert_eq!(hashes(&commits), [&c2, &c1]);
 }
 
 #[tokio::test]
@@ -625,6 +672,8 @@ async fn details_rejects_non_hash_arguments() {
     let repo = TestRepo::new();
     repo.commit("one");
     let git = runner().await;
+    let full = repo.git(&["rev-parse", "HEAD"]);
+    let short = &full[..12];
     for bad in [
         "",
         "--output=/tmp/x",
@@ -632,12 +681,68 @@ async fn details_rejects_non_hash_arguments() {
         "abc",
         "zzzzzzzz",
         "abcd ef01",
+        short,
     ] {
         let err = read_details(&git, repo.path(), bad).await.unwrap_err();
         assert_eq!(err.code, ErrorCode::BadRequest, "{bad:?}");
     }
+    assert_eq!(
+        read_details(&git, repo.path(), &full).await.unwrap().hash,
+        full
+    );
     let err = read_details(&git, repo.path(), &"0".repeat(40))
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::GitFailed);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn details_never_runs_external_diff_or_textconv() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TestRepo::new();
+    let tools = tempfile::tempdir().unwrap();
+    let marker = tools.path().join("ran");
+    let script = tools.path().join("tool.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\ncat \"$1\"\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let script = script.to_str().unwrap();
+    repo.git(&["config", "diff.external", script]);
+    repo.git(&["config", "diff.conv.textconv", script]);
+    repo.write(".gitattributes", "*.txt diff=conv\n");
+    repo.write("a.txt", "one\n");
+    repo.commit_all("base");
+    repo.write("a.txt", "one\ntwo\nthree\n");
+    let hash = repo.commit_all("grow a.txt");
+
+    let log = CommandLog::new();
+    let git = GitRunner::detect(log.clone()).await.unwrap();
+    let d = read_details(&git, repo.path(), &hash).await.unwrap();
+    assert!(!marker.exists(), "an external diff or textconv program ran");
+    assert_eq!(
+        d.files,
+        [FileChange {
+            path: "a.txt".into(),
+            old_path: None,
+            status: FileStatus::M,
+            additions: Some(2),
+            deletions: Some(0),
+        }]
+    );
+    // Both commands opt out explicitly instead of relying on plumbing defaults.
+    let records = log.since(0);
+    assert_eq!(records.len(), 2);
+    for rec in &records {
+        assert!(
+            rec.args.iter().any(|a| a == "--no-ext-diff")
+                && rec.args.iter().any(|a| a == "--no-textconv"),
+            "{:?}",
+            rec.args
+        );
+    }
 }

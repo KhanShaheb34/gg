@@ -31,8 +31,16 @@ const GIT_ENV: [(&str, &str); 5] = [
     ("LC_ALL", "C"),
 ];
 
-/// Options placed before the subcommand of every git invocation.
-const LEADING_ARGS: [&str; 4] = ["-c", "core.quotePath=false", "-c", "color.ui=false"];
+/// Options placed before the subcommand of every git invocation. `log.showSignature=false`
+/// keeps GPG output out of machine-readable log output whatever the user's config says.
+const LEADING_ARGS: [&str; 6] = [
+    "-c",
+    "core.quotePath=false",
+    "-c",
+    "color.ui=false",
+    "-c",
+    "log.showSignature=false",
+];
 
 /// Variables an enclosing git process (for example a hook) exports. Inherited, they would
 /// point our commands at that process's repository instead of `cwd`.
@@ -239,6 +247,11 @@ impl GitRunner {
     /// Starts a read-only git command with stdout and stderr piped, for output too large to
     /// buffer. Must be called inside a Tokio runtime. Not logged until the caller reports
     /// completion with [`GitRunner::log_stream_done`].
+    ///
+    /// The caller must read stdout and drain stderr concurrently: git blocks once either pipe
+    /// is full, so reading one to the end before the other can deadlock. If reading stdout
+    /// fails, kill the child so the stderr drain can finish. For `git log`, use
+    /// [`crate::git::log::read_log`], which does all of this.
     pub fn spawn_stream(&self, cwd: &Path, args: &[&str]) -> Result<Child> {
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());

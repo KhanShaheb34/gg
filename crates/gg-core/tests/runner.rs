@@ -85,6 +85,15 @@ async fn env_is_applied() {
         .await
         .unwrap();
     assert_eq!(color.text().trim(), "false");
+    let signature = git
+        .run(
+            repo.path(),
+            &["config", "--get", "log.showSignature"],
+            CmdKind::Read,
+        )
+        .await
+        .unwrap();
+    assert_eq!(signature.text().trim(), "false");
 }
 
 #[tokio::test]

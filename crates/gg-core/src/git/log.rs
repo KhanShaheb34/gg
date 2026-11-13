@@ -4,7 +4,7 @@ use std::io;
 use std::path::Path;
 use std::time::Instant;
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::dto::ViewOptions;
 use crate::error::{CoreError, ErrorCode, Result};
@@ -102,6 +102,7 @@ fn lossy(b: &[u8]) -> String {
 /// With `branches: None`: all local branches, plus remote-tracking branches and tags when
 /// shown, plus `HEAD`. With a selection: exactly those branches, each resolved as
 /// `refs/remotes/<name>` when it is in `remote_branches`, else as `refs/heads/<name>`.
+/// Always ends with `--`, so no revision can be taken for a file name.
 pub fn log_args(opts: &ViewOptions, remote_branches: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec!["log".into(), LOG_FORMAT.into(), "--date-order".into()];
     match &opts.branches {
@@ -125,6 +126,8 @@ pub fn log_args(opts: &ViewOptions, remote_branches: &[String]) -> Vec<String> {
             }));
         }
     }
+    // Everything before `--` is a revision, even where a file has the same name.
+    args.push("--".into());
     args
 }
 
@@ -151,8 +154,15 @@ pub async fn read_log(
     if first.emitted || head_is_unborn(r, cwd).await? != Some(true) {
         return Err(failed);
     }
-    if argv.contains(&"HEAD") {
-        let without_head: Vec<&str> = argv.iter().copied().filter(|a| *a != "HEAD").collect();
+    // Only revisions (before any `--`) are candidates; a path named HEAD stays.
+    let revs_end = argv.iter().position(|a| *a == "--").unwrap_or(argv.len());
+    if argv[..revs_end].contains(&"HEAD") {
+        let without_head: Vec<&str> = argv
+            .iter()
+            .enumerate()
+            .filter(|&(i, a)| i >= revs_end || *a != "HEAD")
+            .map(|(_, a)| *a)
+            .collect();
         let retry = stream_log(r, cwd, &without_head, &mut on_batch).await?;
         if retry.code == 0 {
             return Ok(());
@@ -184,17 +194,75 @@ async fn stream_log<F: FnMut(Vec<Commit>)>(
 ) -> Result<StreamEnd> {
     let started = Instant::now();
     let mut child = r.spawn_stream(cwd, args)?;
-    let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(CoreError::new(ErrorCode::Io, "git output was not piped"));
     };
+    let pumped = pump(stdout, stderr, on_batch, || {
+        let _ = child.start_kill();
+    })
+    .await;
+    if pumped.stderr.is_err() {
+        // stdout may be unread from here on; make sure git does not linger.
+        let _ = child.start_kill();
+    }
+    let status = child.wait().await;
+    let code = status.as_ref().ok().and_then(|s| s.code()).unwrap_or(-1);
+    let stderr_text = pumped
+        .stderr
+        .as_deref()
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default()
+        .into_owned();
+    r.log_stream_done(cwd, args, started, code, &stderr_text);
 
-    let mut emitted = false;
+    let io_err = |e: io::Error| {
+        CoreError::new(ErrorCode::Io, "could not read git output").with_detail(e.to_string())
+    };
+    let emitted = pumped.stdout.map_err(io_err)?;
+    pumped.stderr.map_err(io_err)?;
+    status.map_err(io_err)?;
+    Ok(StreamEnd {
+        code,
+        stderr: stderr_text,
+        emitted,
+    })
+}
+
+/// What [`pump`] read.
+struct Pumped {
+    /// Whether at least one batch was delivered, or the stdout read error.
+    stdout: io::Result<bool>,
+    /// All of stderr, or the read error.
+    stderr: io::Result<Vec<u8>>,
+}
+
+/// Reads log output from `stdout`, delivering batches to `on_batch`, while draining
+/// `stderr` concurrently. If reading stdout fails, `on_stdout_error` must stop the process:
+/// otherwise a git blocked writing to the unread stdout pipe never closes stderr.
+async fn pump<O, E, F>(
+    mut stdout: O,
+    mut stderr: E,
+    on_batch: &mut F,
+    on_stdout_error: impl FnOnce(),
+) -> Pumped
+where
+    O: AsyncRead + Unpin,
+    E: AsyncRead + Unpin,
+    F: FnMut(Vec<Commit>),
+{
     let read_stdout = async {
         let mut parser = LogParser::new();
         let mut buf = vec![0u8; READ_CHUNK];
         let mut batch = Vec::new();
+        let mut emitted = false;
         loop {
-            let n = stdout.read(&mut buf).await?;
+            let n = match stdout.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    on_stdout_error();
+                    return Err(e);
+                }
+            };
             if n == 0 {
                 break;
             }
@@ -209,38 +277,14 @@ async fn stream_log<F: FnMut(Vec<Commit>)>(
             emitted = true;
             on_batch(batch);
         }
-        Ok::<(), io::Error>(())
+        Ok(emitted)
     };
     let read_stderr = async {
         let mut err = Vec::new();
         stderr.read_to_end(&mut err).await.map(|_| err)
     };
-    let (out_result, err_result) = tokio::join!(read_stdout, read_stderr);
-
-    if out_result.is_err() || err_result.is_err() {
-        // Reading failed; make sure git does not linger.
-        let _ = child.start_kill();
-    }
-    let status = child.wait().await;
-    let code = status.as_ref().ok().and_then(|s| s.code()).unwrap_or(-1);
-    let stderr_text = err_result
-        .as_deref()
-        .map(String::from_utf8_lossy)
-        .unwrap_or_default()
-        .into_owned();
-    r.log_stream_done(cwd, args, started, code, &stderr_text);
-
-    let io_err = |e: io::Error| {
-        CoreError::new(ErrorCode::Io, "could not read git output").with_detail(e.to_string())
-    };
-    out_result.map_err(io_err)?;
-    err_result.map_err(io_err)?;
-    status.map_err(io_err)?;
-    Ok(StreamEnd {
-        code,
-        stderr: stderr_text,
-        emitted,
-    })
+    let (stdout, stderr) = tokio::join!(read_stdout, read_stderr);
+    Pumped { stdout, stderr }
 }
 
 /// `Some(true)` when HEAD does not resolve to a commit (no commits on the current branch),
@@ -421,6 +465,54 @@ mod tests {
         assert!(parse_chunks([unterminated.as_bytes()]).is_empty());
     }
 
+    /// A reader whose every read fails.
+    struct FailingReader;
+
+    impl tokio::io::AsyncRead for FailingReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Err(io::Error::other("broken pipe")))
+        }
+    }
+
+    #[tokio::test]
+    async fn pump_stops_the_process_when_stdout_fails() {
+        // stderr stays open until the process is stopped, as with a git blocked on a full
+        // stdout pipe. Unless the stdout error triggers the stop, the drain never ends.
+        let (stderr_writer, stderr) = tokio::io::duplex(64);
+        let mut batches = 0;
+        let pumped = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pump(FailingReader, stderr, &mut |_| batches += 1, move || {
+                drop(stderr_writer)
+            }),
+        )
+        .await
+        .expect("a stdout error must stop the process, not hang on stderr");
+        assert!(pumped.stdout.is_err());
+        assert!(pumped.stderr.is_ok());
+        assert_eq!(batches, 0);
+    }
+
+    #[tokio::test]
+    async fn pump_batches_stdout_and_collects_stderr() {
+        let bytes = [record(H1, "", b"one"), record(H2, H1, b"two")].concat();
+        let mut got = Vec::new();
+        let pumped = pump(
+            bytes.as_slice(),
+            b"warning: x\n".as_slice(),
+            &mut |b| got.extend(b),
+            || panic!("no error, nothing to stop"),
+        )
+        .await;
+        assert!(pumped.stdout.unwrap(), "emitted");
+        assert_eq!(pumped.stderr.unwrap(), b"warning: x\n");
+        assert_eq!(got, [commit(H1, &[], "one"), commit(H2, &[H1], "two")]);
+    }
+
     fn strings(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()
     }
@@ -441,7 +533,8 @@ mod tests {
                 "--branches",
                 "--remotes",
                 "--tags",
-                "HEAD"
+                "HEAD",
+                "--"
             ])
         );
     }
@@ -455,7 +548,14 @@ mod tests {
         };
         assert_eq!(
             log_args(&opts, &strings(&["origin/main"])),
-            strings(&["log", LOG_FORMAT, "--date-order", "--branches", "HEAD"])
+            strings(&[
+                "log",
+                LOG_FORMAT,
+                "--date-order",
+                "--branches",
+                "HEAD",
+                "--"
+            ])
         );
     }
 
@@ -473,7 +573,8 @@ mod tests {
                 LOG_FORMAT,
                 "--date-order",
                 "refs/heads/main",
-                "refs/remotes/origin/dev"
+                "refs/remotes/origin/dev",
+                "--"
             ])
         );
     }

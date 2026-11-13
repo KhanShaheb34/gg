@@ -233,8 +233,10 @@ for (const theme of ["light", "dark"] as const) {
     await page.screenshot({ path: path.join(OUT, `focus-button-${theme}.png`) });
 
     // Hover: a row and a tab.
-    const hovered = grid.locator('[role="row"]', { hasText: "Plugin sandboxing" });
+    // A row that is not the selected one, so the hover tint is what shows.
+    const hovered = grid.locator('[role="row"][aria-selected="false"]', { hasText: "Resizable columns" });
     await hovered.hover();
+    await expect(hovered).toHaveAttribute("aria-selected", "false");
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `hover-row-${theme}.png`) });
     await page.getByRole("tab", { name: "branchy" }).hover();

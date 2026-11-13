@@ -33,6 +33,16 @@ pub struct RepoInfo {
     pub in_progress: Option<InProgress>,
 }
 
+/// What [`RepoState::update`] changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Update {
+    Nothing,
+    /// Only what git is stopped in: the rows are as they were.
+    InProgressOnly,
+    /// Something the rows show (labels, the uncommitted row) may have changed.
+    Rows,
+}
+
 /// The fixed facts about an open repository that a snapshot repeats.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoIdentity {
@@ -125,21 +135,31 @@ impl RepoState {
         false
     }
 
-    /// Replaces refs, worktrees, status and view options (normalized against the new refs),
-    /// keeping the commits. Returns whether anything changed; the caller decides whether that
-    /// needs a new generation.
-    pub fn update(&mut self, info: RepoInfo, view: ViewOptions) -> bool {
+    /// Replaces refs, worktrees, status, in-progress state and view options (normalized
+    /// against the new refs), keeping the commits. Returns what changed; only
+    /// [`Update::Rows`] can change the rows (the caller decides whether that needs a new
+    /// generation).
+    pub fn update(&mut self, info: RepoInfo, view: ViewOptions) -> Update {
         let view = normalize_view(view, &info);
         if info == self.info && view == self.view {
-            return false;
+            return Update::Nothing;
         }
+        let rows_same = view == self.view
+            && info.head == self.info.head
+            && info.refs == self.info.refs
+            && info.remotes == self.info.remotes
+            && info.worktrees == self.info.worktrees
+            && info.status == self.info.status;
         self.info = info;
         self.view = view;
+        if rows_same {
+            return Update::InProgressOnly;
+        }
         if self.wanted_uncommitted() != self.uncommitted {
             self.relayout();
         }
         self.rebuild_labels();
-        true
+        Update::Rows
     }
 
     /// Whether moving to `info` and `view` needs the log read again, because the set of
@@ -718,22 +738,39 @@ mod tests {
     }
 
     #[test]
+    fn a_change_of_in_progress_state_alone_leaves_the_rows() {
+        let mut s = loaded(info());
+        let mut stopped = info();
+        stopped.in_progress = Some(crate::dto::InProgress {
+            kind: crate::dto::InProgressKind::Merge,
+            conflicted: Vec::new(),
+            step: None,
+            total: None,
+            subject: None,
+        });
+        assert_eq!(s.update(stopped.clone(), all()), Update::InProgressOnly);
+        assert_eq!(s.info().in_progress, stopped.in_progress);
+        assert_eq!(s.update(stopped, all()), Update::Nothing);
+        assert_eq!(s.update(dirty(info(), 1, 0), all()), Update::Rows);
+    }
+
+    #[test]
     fn update_toggles_the_uncommitted_row_and_relayouts() {
         let mut s = loaded(info());
         let clean_rows = s.rows(0, 10);
-        assert!(s.update(dirty(info(), 1, 0), all()));
+        assert_eq!(s.update(dirty(info(), 1, 0), all()), Update::Rows);
         assert_eq!(s.total_rows(), 5);
         assert_eq!(s.rows(0, 1)[0].kind, RowKind::Uncommitted);
         assert_eq!(s.rows(0, 10)[1..].len(), 4);
         // Only the subject changes when the count does.
         let before = s.rows(0, 10);
-        assert!(s.update(dirty(info(), 4, 0), all()));
+        assert_eq!(s.update(dirty(info(), 4, 0), all()), Update::Rows);
         let after = s.rows(0, 10);
         assert_eq!(after[0].subject, "Uncommitted changes (4)");
         assert_eq!(after[1..], before[1..]);
-        assert!(s.update(info(), all()));
+        assert_eq!(s.update(info(), all()), Update::Rows);
         assert_eq!(s.rows(0, 10), clean_rows);
-        assert!(!s.update(info(), all()), "nothing changed");
+        assert_eq!(s.update(info(), all()), Update::Nothing, "nothing changed");
     }
 
     #[test]
@@ -822,7 +859,7 @@ mod tests {
             show_remotes: false,
             ..all()
         };
-        assert!(s.update(i.clone(), no_remotes));
+        assert_eq!(s.update(i.clone(), no_remotes), Update::Rows);
         assert!(s.rows(0, 1)[0].labels[0].remotes.is_empty());
         assert_eq!(label_names(&s, 3), [(RefKind::Tag, "v1".into())]);
         let no_tags = ViewOptions {
@@ -830,7 +867,7 @@ mod tests {
             show_stashes: true,
             ..all()
         };
-        assert!(s.update(i, no_tags));
+        assert_eq!(s.update(i, no_tags), Update::Rows);
         assert_eq!(label_names(&s, 3), [(RefKind::Remote, "origin/old".into())]);
     }
 
@@ -1051,8 +1088,8 @@ mod tests {
         let fetch = FetchState::default();
         assert_eq!(s.snapshot(&identity(), false, &fetch).max_lane, 0);
         // Going clean and dirty again changes nothing either.
-        assert!(s.update(info(), feature_view()));
-        assert!(s.update(dirty(info(), 2, 0), feature_view()));
+        assert_eq!(s.update(info(), feature_view()), Update::Rows);
+        assert_eq!(s.update(dirty(info(), 2, 0), feature_view()), Update::Rows);
         assert_eq!(s.rows(0, 10), clean.rows(0, 10));
     }
 

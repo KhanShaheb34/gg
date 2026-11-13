@@ -40,7 +40,7 @@ use crate::git::status::{STATUS_ARGS, read_status_and_conflicts};
 use crate::git::worktrees::read_worktrees;
 use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule, unix_ms};
 use crate::repo::loader::start_load;
-use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, normalize_view};
+use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, Update, normalize_view};
 use crate::watcher::{RepoWatcher, watch_git_dir_reporting};
 
 /// How long an operation's final refresh waits for the working tree's status.
@@ -1220,11 +1220,11 @@ impl RepoManager {
                 pending.update(info, view);
                 pending.info().in_progress != before
             } else {
-                let changed = slot.current.update(info, view);
-                if changed {
+                let update = slot.current.update(info, view);
+                if update == Update::Rows {
                     slot.current.generation += 1;
                 }
-                changed
+                update != Update::Nothing
             };
             let op_cleared =
                 op_done.is_some_and(|id| slot.op.as_ref().is_some_and(|op| op.id == id));

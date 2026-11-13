@@ -286,7 +286,8 @@ async fn in_progress_changes_arrive_by_the_watcher() {
 }
 
 /// A merge stopped before committing that changes nothing in the working tree (`-s ours`):
-/// the status stays the same, and the change of state is still published.
+/// the status and the rows stay the same, and the change of state is still published,
+/// under the same generation.
 #[tokio::test]
 async fn in_progress_change_alone_is_published() {
     let repo = TestRepo::new();
@@ -302,6 +303,14 @@ async fn in_progress_change_alone_is_published() {
         .expect("published");
     assert_eq!(changed.status, snap.status, "the status did not change");
     assert!(changed.in_progress.unwrap().conflicted.is_empty());
+    // The rows did not change: no new generation (the UI would refetch them all).
+    assert_eq!(changed.generation, snap.generation);
+    assert!(changed.seq > snap.seq);
+    let rows =
+        h.m.rows(id, snap.generation, 0, 10)
+            .await
+            .expect("same rows");
+    assert_eq!(rows.rows.len() as u32, snap.total_rows);
 }
 
 #[tokio::test]

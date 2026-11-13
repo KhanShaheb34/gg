@@ -134,6 +134,8 @@ struct Timing {
 
 impl Opened {
     fn timing(&self) -> Timing {
+        // A repository of fewer than 500 commits never has 500 rows: its first screen is the
+        // finished load.
         let first = self
             .sink
             .first(|rows, _| rows >= 500)

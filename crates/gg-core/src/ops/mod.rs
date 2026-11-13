@@ -9,6 +9,7 @@
 
 mod danger;
 mod explain;
+mod local;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -200,35 +201,99 @@ struct Prepared {
 /// yet. Every operation is matched here, once.
 fn prepare(request: &OpRequest, head: &HeadInfo) -> Result<Prepared> {
     let _ = head;
-    match request {
-        OpRequest::CreateBranch {
-            name,
-            at,
-            checkout: false,
+    let (title, body) = match request.clone() {
+        OpRequest::CheckoutBranch {
+            branch,
+            fast_forward: false,
         } => {
-            check_branch_name(name)?;
-            check_commit(at)?;
-            let (name, at) = (name.clone(), at.clone());
-            Ok(Prepared {
-                title: format!("Create branch {name}"),
-                body: body(move |ctx, _| {
-                    Box::pin(async move { create_branch(ctx, &name, &at).await })
+            check_arg(&branch, "branch")?;
+            (
+                format!("Check out {branch}"),
+                body(move |ctx, _| {
+                    Box::pin(async move { local::checkout_branch(ctx, &branch).await })
                 }),
-            })
+            )
         }
-        _ => Err(CoreError::new(
-            ErrorCode::BadRequest,
-            "This operation is not implemented yet.",
-        )),
-    }
+        OpRequest::CheckoutRemote {
+            remote_branch,
+            local_name,
+        } => {
+            check_arg(&remote_branch, "remote branch")?;
+            check_branch_name(&local_name)?;
+            (
+                format!("Check out {remote_branch} as {local_name}"),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        local::checkout_remote(ctx, &remote_branch, &local_name).await
+                    })
+                }),
+            )
+        }
+        OpRequest::CheckoutCommit { hash } => {
+            check_commit(&hash)?;
+            (
+                format!("Check out {}", local::short(&hash)),
+                body(move |ctx, _| {
+                    Box::pin(async move { local::checkout_commit(ctx, &hash).await })
+                }),
+            )
+        }
+        OpRequest::CreateBranch { name, at, checkout } => {
+            check_branch_name(&name)?;
+            check_commit(&at)?;
+            let title = if checkout {
+                format!("Create and check out branch {name}")
+            } else {
+                format!("Create branch {name}")
+            };
+            (
+                title,
+                body(move |ctx, _| {
+                    Box::pin(async move { local::create_branch(ctx, &name, &at, checkout).await })
+                }),
+            )
+        }
+        OpRequest::RenameBranch { branch, new_name } => {
+            check_arg(&branch, "branch")?;
+            check_branch_name(&new_name)?;
+            (
+                format!("Rename branch {branch} to {new_name}"),
+                body(move |ctx, _| {
+                    Box::pin(async move { local::rename_branch(ctx, &branch, &new_name).await })
+                }),
+            )
+        }
+        OpRequest::DeleteBranch { branch } => {
+            check_arg(&branch, "branch")?;
+            (
+                format!("Delete branch {branch}"),
+                body(move |ctx, dangers| {
+                    Box::pin(async move { local::delete_branch(ctx, dangers, &branch).await })
+                }),
+            )
+        }
+        _ => {
+            return Err(CoreError::new(
+                ErrorCode::BadRequest,
+                "This operation is not implemented yet.",
+            ));
+        }
+    };
+    Ok(Prepared { title, body })
 }
 
 /// `Ok` if `at` can be given to git as a commit: not empty and not option-like.
 fn check_commit(at: &str) -> Result<()> {
-    if at.is_empty() || at.starts_with('-') {
+    check_arg(at, "commit")
+}
+
+/// `Ok` if `value`, naming an existing `what` (a branch, a commit), can be given to git:
+/// not empty and not option-like.
+fn check_arg(value: &str, what: &str) -> Result<()> {
+    if value.is_empty() || value.starts_with('-') {
         return Err(CoreError::new(
             ErrorCode::BadRequest,
-            format!("\u{201c}{at}\u{201d} is not a commit."),
+            format!("\u{201c}{value}\u{201d} is not a {what}."),
         ));
     }
     Ok(())
@@ -386,27 +451,6 @@ impl RepoManager {
 /// Whether every kind in `dangers` is in `confirmed`.
 fn all_confirmed(dangers: &[Danger], confirmed: &[DangerKind]) -> bool {
     dangers.iter().all(|d| confirmed.contains(&d.kind))
-}
-
-/// `branch -- <name> <at>`: a new branch at `at`, not checked out. `bad_name` if a branch
-/// of that name exists (git is not asked to make it).
-async fn create_branch(ctx: &OpCtx<'_>, name: &str, at: &str) -> Result<Step> {
-    let full = format!("refs/heads/{name}");
-    let exists = ctx
-        .read(&["rev-parse", "--verify", "--quiet", &full])
-        .await?;
-    if exists.code == 0 {
-        return Err(CoreError::new(
-            ErrorCode::BadName,
-            format!("A branch named \u{201c}{name}\u{201d} already exists."),
-        ));
-    }
-    let args = ["branch", "--", name, at];
-    let out = ctx.git(&args).await?;
-    if out.code != 0 {
-        return Ok(explain(&args, &out));
-    }
-    Ok(Step::Done(format!("Created branch {name}.")))
 }
 
 #[cfg(test)]

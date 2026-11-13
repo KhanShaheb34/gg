@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gg_core::Core;
-use gg_core::dto::{OpOutcome, OpRequest, OpStatus, RepoSnapshot};
+use gg_core::dto::{DangerKind, OpOutcome, OpRequest, OpStatus, RepoSnapshot};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::{CmdKind, CommandLog, CommandRecord, GitRunner};
 use gg_core::ops::{Step, explain};
@@ -57,6 +57,33 @@ impl Harness {
             .into_iter()
             .filter(|(n, v)| n == "repo-changed" && v["repoId"] == id)
             .map(|(_, v)| v)
+            .collect()
+    }
+
+    /// Runs `request` with the dangers `confirmed`; panics if it errs or takes too long.
+    async fn run_confirmed(
+        &self,
+        id: u32,
+        request: OpRequest,
+        confirmed: &[DangerKind],
+    ) -> OpOutcome {
+        tokio::time::timeout(TIMEOUT, self.m.run_op(id, request, confirmed))
+            .await
+            .expect("the operation ends")
+            .expect("run_op")
+    }
+
+    /// Runs `request` with nothing confirmed.
+    async fn run(&self, id: u32, request: OpRequest) -> OpOutcome {
+        self.run_confirmed(id, request, &[]).await
+    }
+
+    /// The write commands logged after record `mark`.
+    fn writes_since(&self, mark: u64) -> Vec<CommandRecord> {
+        self.log
+            .since(mark)
+            .into_iter()
+            .filter(|r| r.kind == CmdKind::Write)
             .collect()
     }
 
@@ -604,4 +631,342 @@ async fn a_refresh_asked_for_during_an_operation_is_folded() {
     let out = op.await.unwrap().expect("run_op");
     assert!(out.snapshot.branches.contains(&"x".to_owned()));
     assert_eq!(out.snapshot.op, None);
+}
+
+// ---- Local operations: checkout and branches ----
+
+fn checkout_branch(branch: &str) -> OpRequest {
+    OpRequest::CheckoutBranch {
+        branch: branch.to_owned(),
+        fast_forward: false,
+    }
+}
+
+fn delete_branch(branch: &str) -> OpRequest {
+    OpRequest::DeleteBranch {
+        branch: branch.to_owned(),
+    }
+}
+
+/// The branch HEAD is on, or `None` when detached.
+fn current_branch(repo: &TestRepo) -> Option<String> {
+    repo.git_succeeds(&["symbolic-ref", "-q", "HEAD"])
+        .then(|| repo.git(&["symbolic-ref", "--short", "HEAD"]))
+}
+
+#[tokio::test]
+async fn checkout_branch_switches_to_it() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("feature/x");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, checkout_branch("feature/x")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Check out feature/x");
+    assert_eq!(current_branch(&repo).as_deref(), Some("feature/x"));
+    assert_eq!(out.snapshot.head.branch.as_deref(), Some("feature/x"));
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["checkout", "feature/x", "--"]),
+    );
+}
+
+#[tokio::test]
+async fn checkout_branch_with_fast_forward_is_not_built_yet() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("x");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let request = OpRequest::CheckoutBranch {
+        branch: "x".into(),
+        fast_forward: true,
+    };
+    let err = h.m.run_op(id, request, &[]).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
+#[tokio::test]
+async fn checkout_remote_makes_a_tracking_branch() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("topic");
+    repo.checkout("topic");
+    let tip = repo.commit("on topic");
+    repo.checkout("main");
+    let _origin = repo.clone_as_remote();
+    repo.git(&["branch", "-D", "topic"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let request = OpRequest::CheckoutRemote {
+        remote_branch: "origin/topic".into(),
+        local_name: "mine".into(),
+    };
+    let out = h.run(id, request).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(current_branch(&repo).as_deref(), Some("mine"));
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), tip);
+    assert_eq!(
+        repo.git(&["rev-parse", "--abbrev-ref", "mine@{upstream}"]),
+        "origin/topic"
+    );
+    assert!(out.snapshot.branches.contains(&"mine".to_owned()));
+}
+
+#[tokio::test]
+async fn checkout_commit_detaches_head() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    repo.commit("two");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            OpRequest::CheckoutCommit {
+                hash: first.clone(),
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(current_branch(&repo), None);
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
+    assert_eq!(out.snapshot.head.branch, None);
+    assert_eq!(out.snapshot.head.hash.as_deref(), Some(first.as_str()));
+}
+
+#[tokio::test]
+async fn create_branch_with_checkout_switches_to_it() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    repo.commit("two");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let request = OpRequest::CreateBranch {
+        name: "fix".into(),
+        at: first.clone(),
+        checkout: true,
+    };
+    let out = h.run(id, request).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(current_branch(&repo).as_deref(), Some("fix"));
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["checkout", "-b", "fix", first.as_str()]),
+    );
+}
+
+#[tokio::test]
+async fn rename_branch_renames_it_and_keeps_head_on_it() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    repo.branch("old");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let rename = |branch: &str, new_name: &str| OpRequest::RenameBranch {
+        branch: branch.into(),
+        new_name: new_name.into(),
+    };
+    let out = h.run(id, rename("old", "new")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/old"]));
+    assert_eq!(repo.git(&["rev-parse", "refs/heads/new"]), head);
+    assert_eq!(out.snapshot.branches, ["main", "new"]);
+
+    let out = h.run(id, rename("main", "trunk")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(current_branch(&repo).as_deref(), Some("trunk"));
+
+    let err = h.m.run_op(id, rename("new", "-x"), &[]).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadName);
+}
+
+/// "a branch named 'x' already exists", from rename and from a remote checkout.
+#[tokio::test]
+async fn an_existing_branch_name_explains() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("a");
+    repo.branch("b");
+    let _origin = repo.clone_as_remote();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let rename = OpRequest::RenameBranch {
+        branch: "a".into(),
+        new_name: "b".into(),
+    };
+    let remote = OpRequest::CheckoutRemote {
+        remote_branch: "origin/a".into(),
+        local_name: "b".into(),
+    };
+    for request in [rename, remote] {
+        let out = h.run(id, request).await;
+        assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+        assert_eq!(
+            out.message,
+            "A branch named \u{201c}b\u{201d} already exists."
+        );
+        assert!(out.detail.unwrap().contains("already exists"));
+    }
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/a"]));
+    assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn checkout_with_changes_in_the_way_fails_and_keeps_them() {
+    let repo = TestRepo::new();
+    repo.write("shared.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("other");
+    repo.checkout("other");
+    repo.write("shared.txt", "other\n");
+    repo.commit_all("other");
+    repo.checkout("main");
+    repo.write("shared.txt", "my work\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, checkout_branch("other")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(out.message.contains("shared.txt"), "{}", out.message);
+    assert!(
+        out.message.to_lowercase().contains("uncommitted changes"),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.detail
+            .unwrap()
+            .contains("would be overwritten by checkout")
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
+        "my work\n"
+    );
+    assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn checkout_branch_held_by_another_worktree_explains() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let wt = repo.add_worktree("held");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, checkout_branch("held")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    let wt = dunce::canonicalize(&wt).unwrap();
+    assert!(
+        out.message.contains("\u{201c}held\u{201d}")
+            && out.message.contains(wt.to_string_lossy().as_ref())
+            && out.message.contains("another worktree"),
+        "{}",
+        out.message
+    );
+    assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn delete_merged_branch_runs_without_confirmation() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("done");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, delete_branch("done")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(out.dangers.is_empty());
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/done"]));
+    assert_eq!(out.snapshot.branches, ["main"]);
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["branch", "-d", "--", "done"])
+    );
+}
+
+#[tokio::test]
+async fn delete_unmerged_branch_needs_confirmation() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("wip");
+    repo.checkout("wip");
+    repo.commit("two");
+    repo.commit("three");
+    repo.checkout("main");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let mark = h.last_log_id();
+    let out = h.run(id, delete_branch("wip")).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert_eq!(out.dangers.len(), 1);
+    assert_eq!(out.dangers[0].kind, DangerKind::DeleteUnmergedBranch);
+    assert!(
+        out.dangers[0].message.contains("2 commits"),
+        "{:?}",
+        out.dangers
+    );
+    assert!(out.message.contains("2 commits"));
+    assert_eq!((out.log_from, out.log_to), (0, 0));
+    assert!(
+        h.writes_since(mark).is_empty(),
+        "{:?}",
+        h.writes_since(mark)
+    );
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/wip"]));
+
+    let out = h
+        .run_confirmed(
+            id,
+            delete_branch("wip"),
+            &[DangerKind::DeleteUnmergedBranch],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/wip"]));
+    assert!(
+        op_records(&h.log, &out)
+            .iter()
+            .any(|r| r.args == ["branch", "-D", "--", "wip"])
+    );
+}
+
+/// Merged into HEAD (so no danger), but not into its own upstream: git refuses with "not
+/// fully merged".
+#[tokio::test]
+async fn branch_not_merged_into_its_upstream_explains() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("topic");
+    let _origin = repo.clone_as_remote();
+    repo.git(&["branch", "-u", "origin/topic", "topic"]);
+    repo.checkout("topic");
+    repo.commit("local only");
+    repo.checkout("main");
+    repo.git(&["merge", "-q", "--ff-only", "topic"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, delete_branch("topic")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("\u{201c}topic\u{201d}") && out.message.contains("not fully merged"),
+        "{}",
+        out.message
+    );
+    assert!(out.detail.unwrap().contains("not fully merged"));
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
 }

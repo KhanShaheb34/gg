@@ -20,6 +20,9 @@ const LOG_CAPACITY: usize = 500;
 const MAX_LOG_TEXT: usize = 16 * 1024;
 /// How long the login shell gets to report its `PATH`.
 const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the login shell's output may take to arrive once the shell has exited.
+#[cfg(unix)]
+const READ_GRACE: Duration = Duration::from_millis(500);
 
 /// Environment for every git child: never prompt, never open an editor or pager, never
 /// take optional locks, and keep messages in a stable (C) locale.
@@ -680,8 +683,15 @@ fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
     if !status.success() {
         return None;
     }
+    // The shell has exited: its output is complete once the reader has it, unless something
+    // it started holds stdout open. The reader gets a moment of its own for that, so a shell
+    // that ends just before the deadline is not taken for one that printed nothing.
     let out = rx
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .recv_timeout(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .max(READ_GRACE),
+        )
         .ok()?;
     let path = between_markers(&out)?;
     (!path.is_empty()).then(|| OsString::from_vec(path.to_vec()))
@@ -888,14 +898,17 @@ mod tests {
         }
 
         // The fake shells set PATH and run the command they are given (`-ilc <command>`),
-        // as a login shell would.
+        // as a login shell would. They answer at once, so they get a generous timeout: on a
+        // loaded machine (the whole suite runs in parallel) starting a shell can take
+        // seconds, and the 3 s of the app made `login_path_is_used` fail once.
+        const FAKE_TIMEOUT: Duration = Duration::from_secs(20);
 
         #[test]
         fn login_path_is_used() {
             let dir = tempfile::tempdir().unwrap();
             let shell = script(&dir, "shell", "PATH=/custom/bin:/usr/bin:/bin\neval \"$2\"");
             assert_eq!(
-                login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT),
+                login_path_from_shell(&shell, FAKE_TIMEOUT),
                 Some(OsString::from("/custom/bin:/usr/bin:/bin"))
             );
         }
@@ -909,7 +922,7 @@ mod tests {
                 "PATH=/custom/bin:/bin\necho 'welcome!'\neval \"$2\"\necho 'bye'",
             );
             assert_eq!(
-                login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT),
+                login_path_from_shell(&shell, FAKE_TIMEOUT),
                 Some(OsString::from("/custom/bin:/bin"))
             );
         }
@@ -923,7 +936,7 @@ mod tests {
                 "PATH='/with space/bin:/bin'\nprintf 'banner'\neval \"$2\"\nprintf 'tail'",
             );
             assert_eq!(
-                login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT),
+                login_path_from_shell(&shell, FAKE_TIMEOUT),
                 Some(OsString::from("/with space/bin:/bin"))
             );
         }
@@ -932,7 +945,7 @@ mod tests {
         fn login_path_without_markers_is_none() {
             let dir = tempfile::tempdir().unwrap();
             let shell = script(&dir, "shell", "printf %s /custom/bin:/bin");
-            assert_eq!(login_path_from_shell(&shell, LOGIN_SHELL_TIMEOUT), None);
+            assert_eq!(login_path_from_shell(&shell, FAKE_TIMEOUT), None);
         }
 
         #[test]
@@ -952,11 +965,11 @@ mod tests {
         fn login_path_failure_is_none() {
             let dir = tempfile::tempdir().unwrap();
             let failing = script(&dir, "shell", "printf %s /x; exit 1");
-            assert_eq!(login_path_from_shell(&failing, LOGIN_SHELL_TIMEOUT), None);
+            assert_eq!(login_path_from_shell(&failing, FAKE_TIMEOUT), None);
             let empty = script(&dir, "empty", "true");
-            assert_eq!(login_path_from_shell(&empty, LOGIN_SHELL_TIMEOUT), None);
+            assert_eq!(login_path_from_shell(&empty, FAKE_TIMEOUT), None);
             assert_eq!(
-                login_path_from_shell(&dir.path().join("missing"), LOGIN_SHELL_TIMEOUT),
+                login_path_from_shell(&dir.path().join("missing"), FAKE_TIMEOUT),
                 None
             );
         }

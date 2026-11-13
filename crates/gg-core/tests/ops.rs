@@ -1845,3 +1845,32 @@ async fn empty_repository() {
     assert!(!repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "HEAD"]));
     assert_eq!(h.m.snapshot(id).await.unwrap().op, None);
 }
+
+/// A request that needs confirmation runs nothing, and shows nothing either: no busy
+/// state is published and no refresh runs.
+#[tokio::test]
+async fn needs_confirmation_publishes_and_refreshes_nothing() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    let second = repo.commit("two");
+    let h = harness().await;
+    let before = h.open(repo.path()).await;
+    let id = before.repo_id;
+    let seen = h.changes(id).len();
+    let mark = h.last_log_id();
+
+    let out = h.run(id, reset(&first, ResetMode::Hard)).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert_eq!(out.snapshot.op, None);
+    assert_eq!(out.snapshot.generation, before.generation);
+    assert_eq!(out.snapshot.head.hash.as_deref(), Some(second.as_str()));
+    assert_eq!(h.changes(id).len(), seen, "{:#?}", &h.changes(id)[seen..]);
+    // Only the danger check's reads ran: no refresh, no status read.
+    let ran = h.log.since(mark);
+    assert!(!ran.is_empty());
+    assert!(
+        ran.iter()
+            .all(|r| r.kind == CmdKind::Read && r.op_id == Some(out.op_id)),
+        "{ran:#?}"
+    );
+}

@@ -2,10 +2,10 @@
 //!
 //! A request is checked first (names, what is implemented), without git. Then it waits for
 //! its turn in the repository's queue: one operation at a time per repository, in the order
-//! they were asked for. With its turn it is published as `snapshot.op`, checked for dangers
-//! (anything not confirmed means nothing runs), run in the active worktree, and ended with
-//! one refresh that also clears `snapshot.op`. Every git command it runs is logged with the
-//! repository's and the operation's id.
+//! they were asked for. With its turn it is checked for dangers: if any is not confirmed,
+//! nothing runs and nothing is published. Otherwise it is published as `snapshot.op`, run in
+//! the active worktree, and ended with one refresh that also clears `snapshot.op`. Every git
+//! command it runs is logged with the repository's and the operation's id.
 
 mod danger;
 mod explain;
@@ -14,6 +14,7 @@ mod local;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -28,7 +29,7 @@ use crate::dto::{
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
 use crate::git::runner::{CmdKind, GitOutput, GitRunner, TimeLimit};
-use crate::repo::{Repo, RepoManager};
+use crate::repo::{Repo, RepoManager, unknown_repo};
 
 /// What an operation's body ended with; `run_op` turns it into the outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,22 +474,41 @@ impl RepoManager {
         confirmed: Vec<DangerKind>,
         body: Body,
     ) -> Result<OpOutcome> {
-        repo.op_waiting
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        repo.op_waiting.fetch_add(1, Ordering::SeqCst);
         self.op_queue_changed(&repo).await;
         let _turn = repo.op_queue.lock().await;
-        repo.op_waiting
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        self.start_op(&repo, op_id, &title).await?;
+        repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
+        if repo.is_closed().await {
+            return Err(unknown_repo(repo.identity.repo_id));
+        }
 
+        // Set once the operation is published as running; only then is it ended with a
+        // refresh. A request that needs confirmation shows nothing.
+        let started = Arc::new(AtomicBool::new(false));
         let inner = tokio::spawn({
-            let (m, repo) = (self.clone(), repo.clone());
-            async move { m.run_body(&repo, op_id, &request, &confirmed, body).await }
+            let (m, repo, started) = (self.clone(), repo.clone(), started.clone());
+            let title_owned = title.clone();
+            async move {
+                m.run_body(
+                    &repo,
+                    op_id,
+                    &title_owned,
+                    &request,
+                    &confirmed,
+                    body,
+                    &started,
+                )
+                .await
+            }
         });
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
         });
-        let snapshot = self.finish_op(&repo, op_id).await;
+        let snapshot = if started.load(Ordering::SeqCst) {
+            self.finish_op(&repo, op_id).await
+        } else {
+            self.snapshot(repo.identity.repo_id).await
+        };
         let ran = ran?;
         let snapshot = snapshot?;
 
@@ -538,15 +558,18 @@ impl RepoManager {
         Ok(outcome)
     }
 
-    /// Checks `request` for dangers and, if every one is confirmed, runs its `body` in the
-    /// active worktree.
+    /// Checks `request` for dangers and, if every one is confirmed, publishes the operation
+    /// as running (setting `started`) and runs its `body` in the active worktree.
+    #[allow(clippy::too_many_arguments)]
     async fn run_body(
         &self,
         repo: &Arc<Repo>,
         op_id: u64,
+        title: &str,
         request: &OpRequest,
         confirmed: &[DangerKind],
         body: Body,
+        started: &AtomicBool,
     ) -> Result<Ran> {
         let ctx = OpCtx {
             repo,
@@ -560,6 +583,8 @@ impl RepoManager {
         if !all_confirmed(&dangers, confirmed) {
             return Ok(Ran::Unconfirmed(dangers));
         }
+        self.start_op(repo, op_id, title).await?;
+        started.store(true, Ordering::SeqCst);
         let step = body(&ctx, &dangers).await;
         let delay = self.op_delay();
         if !delay.is_zero() {

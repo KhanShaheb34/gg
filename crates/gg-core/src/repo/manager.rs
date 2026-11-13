@@ -283,6 +283,11 @@ impl Repo {
         }
     }
 
+    /// Whether the repository has been closed.
+    pub(crate) async fn is_closed(&self) -> bool {
+        self.slot.read().await.closed
+    }
+
     pub(super) fn is_loading(&self) -> bool {
         self.loading.borrow().is_some()
     }
@@ -1335,7 +1340,7 @@ fn busy_with_op() -> CoreError {
     )
 }
 
-pub(super) fn unknown_repo(repo_id: u32) -> CoreError {
+pub(crate) fn unknown_repo(repo_id: u32) -> CoreError {
     CoreError::new(
         ErrorCode::UnknownRepo,
         format!("No open repository has id {repo_id}."),

@@ -6,22 +6,19 @@ use crate::dto::WorktreeStatus;
 use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner};
 
+/// Arguments of the status command.
+pub(crate) const STATUS_ARGS: [&str; 5] = [
+    "status",
+    "--porcelain=v2",
+    "-z",
+    "--untracked-files=all",
+    "--ignore-submodules=all",
+];
+
 /// Change counts for the worktree at `worktree` (untracked files counted one by one).
 /// Submodules are ignored entirely, so git never looks inside them or reads their config.
 pub async fn read_status(r: &GitRunner, worktree: &Path) -> Result<WorktreeStatus> {
-    let out = r
-        .run(
-            worktree,
-            &[
-                "status",
-                "--porcelain=v2",
-                "-z",
-                "--untracked-files=all",
-                "--ignore-submodules=all",
-            ],
-            CmdKind::Read,
-        )
-        .await?;
+    let out = r.run(worktree, &STATUS_ARGS, CmdKind::Read).await?;
     Ok(parse_status(&out.stdout))
 }
 

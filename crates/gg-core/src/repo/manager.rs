@@ -21,12 +21,14 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::EventSink;
-use crate::dto::{BodyHits, CommitDetails, FetchState, RepoSnapshot, RowsPage, ViewOptions};
+use crate::dto::{
+    BodyHits, CommitDetails, FetchState, RepoSnapshot, RowsPage, ViewOptions, WorktreeStatus,
+};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::details::read_details;
 use crate::git::refs::{read_head, read_refs, read_remotes};
 use crate::git::runner::{CmdKind, GitRunner};
-use crate::git::status::read_status;
+use crate::git::status::{STATUS_ARGS, read_status};
 use crate::git::worktrees::read_worktrees;
 use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule};
 use crate::repo::loader::start_load;
@@ -50,6 +52,11 @@ pub struct RepoManager {
     pub(super) fetch_timeout_ms: AtomicU64,
     /// How long a fetch the user asked for may run in any case, in milliseconds.
     pub(super) fetch_cap_ms: AtomicU64,
+    /// How long `git status` may take before it is given up on, in milliseconds.
+    status_timeout_ms: AtomicU64,
+    /// Tests only: how long every status read waits before it starts, in milliseconds.
+    #[cfg(any(test, feature = "testutil"))]
+    status_delay_ms: AtomicU64,
     /// Repositories (by common git dir) being opened right now. Another `open` of the same
     /// repository waits for that one instead of reading and watching it a second time; the
     /// receiver's sender is dropped when that open ends.
@@ -94,6 +101,10 @@ pub(super) struct Repo {
     pub(super) fetched_at: Mutex<Instant>,
     /// Errors held for the UI; see [`Repo::report_error`].
     errors: Mutex<HeldErrors>,
+    /// The last status read failed (said once, until one succeeds again).
+    status_failed: AtomicBool,
+    /// Whether the first status read has ended (see [`RepoManager::wait_status`]).
+    status_read: watch::Sender<bool>,
 }
 
 /// `repo-error` payloads of a repository nobody has asked for yet (opened in the background
@@ -104,6 +115,7 @@ struct HeldErrors {
     adopted: bool,
     load: Option<serde_json::Value>,
     live_updates: Option<serde_json::Value>,
+    status: Option<serde_json::Value>,
 }
 
 /// What a held `repo-error` is about.
@@ -113,6 +125,8 @@ pub(super) enum ErrorKind {
     Load,
     /// The git dir cannot be watched.
     LiveUpdates,
+    /// `git status` failed or took too long.
+    Status,
 }
 
 /// The state lock's contents.
@@ -192,6 +206,7 @@ impl Repo {
         match kind {
             ErrorKind::Load => held.load = Some(payload),
             ErrorKind::LiveUpdates => held.live_updates = Some(payload),
+            ErrorKind::Status => held.status = Some(payload),
         }
     }
 
@@ -201,6 +216,7 @@ impl Repo {
         match kind {
             ErrorKind::Load => held.load = None,
             ErrorKind::LiveUpdates => held.live_updates = None,
+            ErrorKind::Status => held.status = None,
         }
     }
 
@@ -212,7 +228,11 @@ impl Repo {
                 return;
             }
             held.adopted = true;
-            [held.live_updates.take(), held.load.take()]
+            [
+                held.live_updates.take(),
+                held.load.take(),
+                held.status.take(),
+            ]
         };
         for payload in held.into_iter().flatten() {
             sink.emit("repo-error", payload);
@@ -240,9 +260,10 @@ impl Repo {
         }
     }
 
-    /// Reads everything but the log.
-    async fn read_info(&self) -> Result<RepoInfo> {
-        read_info(&self.runner, &self.worktree).await
+    /// Reads what the rows need (HEAD, refs, remotes, worktrees), with `status` as the
+    /// status.
+    async fn read_info(&self, status: WorktreeStatus) -> Result<RepoInfo> {
+        read_info(&self.runner, &self.worktree, status).await
     }
 }
 
@@ -258,12 +279,17 @@ impl RepoManager {
             schedule_task: Mutex::new(None),
             fetch_timeout_ms: AtomicU64::new(duration_ms(FETCH_TIMEOUT)),
             fetch_cap_ms: AtomicU64::new(duration_ms(FETCH_CAP)),
+            status_timeout_ms: AtomicU64::new(duration_ms(STATUS_TIMEOUT)),
+            #[cfg(any(test, feature = "testutil"))]
+            status_delay_ms: AtomicU64::new(0),
             opening: Mutex::new(HashMap::new()),
         })
     }
 
     /// Opens the repository containing `path`, starts loading its log in the background and
-    /// starts watching its git dir. Returns once refs, HEAD, worktrees and status are read.
+    /// starts watching its git dir. Returns once refs, HEAD and worktrees are read; the
+    /// working tree's status (slow on a big one) is read beside the log, and the uncommitted
+    /// row comes in when it is known (see [`RepoManager::wait_status`]).
     /// Opening any path of an already open repository returns that repository's snapshot.
     pub async fn open(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
         self.open_as(path, true).await
@@ -317,7 +343,7 @@ impl RepoManager {
         };
 
         let runner = self.runner.clone();
-        let info = read_info(&runner, &location.worktree).await?;
+        let info = read_info(&runner, &location.worktree, WorktreeStatus::default()).await?;
         let root = info
             .worktrees
             .iter()
@@ -372,6 +398,8 @@ impl RepoManager {
                 adopted: adopt,
                 ..HeldErrors::default()
             }),
+            status_failed: AtomicBool::new(false),
+            status_read: watch::channel(false).0,
         });
 
         // Nobody else can hold this lock yet; holding it while registering the repository
@@ -408,7 +436,94 @@ impl RepoManager {
             }
         }
         self.start_schedule();
+        // Status beside the log; it waits its turn with refreshes.
+        let m = self.clone();
+        let status_repo = repo.clone();
+        tokio::spawn(async move {
+            let _serial = status_repo.refresh_lock.lock().await;
+            let _ = m.update_status(&status_repo).await;
+            status_repo.status_read.send_replace(true);
+        });
         Ok(snapshot)
+    }
+
+    /// Sets how long `git status` may take (tests only; normally 60 s).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_status_timeout(&self, timeout: Duration) {
+        self.status_timeout_ms
+            .store(duration_ms(timeout), Ordering::Relaxed);
+    }
+
+    /// Makes every status read wait this long first, as on a big working tree (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_status_delay(&self, delay: Duration) {
+        self.status_delay_ms
+            .store(duration_ms(delay), Ordering::Relaxed);
+    }
+
+    /// Resolves once the first status read of the repository has ended, however it ended
+    /// (immediately for an unknown id).
+    pub async fn wait_status(&self, repo_id: u32) {
+        let Ok(repo) = self.get(repo_id) else {
+            return;
+        };
+        let mut read = repo.status_read.subscribe();
+        let _ = read.wait_for(|read| *read).await;
+    }
+
+    /// Reads the working tree's status (giving up after the status timeout) and applies it:
+    /// the uncommitted row appears, changes or goes, in a new generation. A failure is said
+    /// once, as `repo-error`, until a read succeeds again; the rows stay as they are. Callers
+    /// hold `refresh_lock`.
+    async fn update_status(&self, repo: &Arc<Repo>) -> Result<()> {
+        let timeout = Duration::from_millis(self.status_timeout_ms.load(Ordering::Relaxed));
+        let started = std::time::Instant::now();
+        let read = tokio::time::timeout(timeout, async {
+            #[cfg(any(test, feature = "testutil"))]
+            {
+                let delay = self.status_delay_ms.load(Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            read_status(&repo.runner, &repo.worktree).await
+        })
+        .await;
+        let status = match read {
+            Ok(Ok(status)) => status,
+            failed => {
+                let reason = match failed {
+                    Ok(Err(e)) => e,
+                    _ => {
+                        // Dropping the command's future killed git.
+                        repo.runner.log_timed_out(
+                            &repo.worktree,
+                            &STATUS_ARGS,
+                            CmdKind::Read,
+                            started,
+                        );
+                        CoreError::new(
+                            ErrorCode::GitFailed,
+                            format!("git status took longer than {}", seconds(timeout)),
+                        )
+                    }
+                };
+                if !repo.status_failed.swap(true, Ordering::SeqCst) {
+                    repo.report_error(
+                        self.sink.as_ref(),
+                        ErrorKind::Status,
+                        status_unavailable(repo.identity.repo_id, reason),
+                    );
+                }
+                return Ok(());
+            }
+        };
+        repo.status_failed.store(false, Ordering::SeqCst);
+        repo.clear_held_error(ErrorKind::Status);
+        let mut info = repo.slot.read().await.target().info().clone();
+        if info.status == status {
+            return Ok(());
+        }
+        info.status = status;
+        self.apply(repo, info, None).await.map(|_| ())
     }
 
     /// Closes a repository and stops its background load and its watcher.
@@ -529,7 +644,9 @@ impl RepoManager {
         self.apply(&repo, info, Some(o)).await
     }
 
-    /// Re-reads HEAD, refs, worktrees and status. Reloads the log only if the commits to
+    /// Re-reads HEAD, refs and worktrees and applies them (emitting at once), then the
+    /// working tree's status (see `update_status`), so new commits never wait for a slow
+    /// status. Reloads the log only if the commits to
     /// show may have changed (a selected tip went away, or a new tip is not a loaded commit),
     /// or the last load did not finish; otherwise only labels and the uncommitted row change.
     /// During a reload the old rows stay served until the new load has caught up with them,
@@ -544,8 +661,11 @@ impl RepoManager {
             // A refresh that started after this call was made has already run.
             return Ok(repo.snapshot().await);
         }
-        let info = repo.read_info().await?;
-        self.apply(&repo, info, None).await
+        let status = repo.slot.read().await.target().info().status;
+        let info = repo.read_info(status).await?;
+        self.apply(&repo, info, None).await?;
+        self.update_status(&repo).await?;
+        Ok(repo.snapshot().await)
     }
 
     /// Resolves once the repository's log is fully loaded (immediately for an unknown id).
@@ -577,10 +697,6 @@ impl RepoManager {
     /// The runner used for this repository's commands.
     pub fn runner(&self, repo_id: u32) -> Option<GitRunner> {
         self.get(repo_id).ok().map(|r| r.runner.clone())
-    }
-
-    pub(super) fn open_ids(&self) -> Vec<u32> {
-        lock(&self.repos).keys().copied().collect()
     }
 
     /// Refreshes `repo_id` in the background (if there is a runtime to do it on). Errors have
@@ -789,6 +905,19 @@ impl Drop for Opening<'_> {
     }
 }
 
+/// `d` as "<n> s", or in ms below a second.
+fn seconds(d: Duration) -> String {
+    if d >= Duration::from_secs(1) {
+        format!("{} s", d.as_secs())
+    } else {
+        format!("{} ms", d.as_millis())
+    }
+}
+
+/// How long `git status` may take before it is given up on: long, since a big working tree
+/// can take a while, but not forever.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub(super) fn duration_ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -799,14 +928,18 @@ struct Location {
     common_dir: PathBuf,
 }
 
-/// Head, refs, remotes, worktrees and status, read concurrently in `worktree`.
-async fn read_info(runner: &GitRunner, worktree: &Path) -> Result<RepoInfo> {
-    let (head, refs, remotes, worktrees, status) = tokio::join!(
+/// Head, refs, remotes and worktrees, read concurrently in `worktree`, with `status` as the
+/// status.
+async fn read_info(
+    runner: &GitRunner,
+    worktree: &Path,
+    status: WorktreeStatus,
+) -> Result<RepoInfo> {
+    let (head, refs, remotes, worktrees) = tokio::join!(
         read_head(runner, worktree),
         read_refs(runner, worktree),
         read_remotes(runner, worktree),
         read_worktrees(runner, worktree),
-        read_status(runner, worktree),
     );
     let mut worktrees = worktrees?;
     for wt in &mut worktrees {
@@ -817,8 +950,21 @@ async fn read_info(runner: &GitRunner, worktree: &Path) -> Result<RepoInfo> {
         refs: refs?,
         remotes: remotes?,
         worktrees,
-        status: status?,
+        status,
     })
+}
+
+/// The `repo-error` payload saying that the working tree's changes could not be read.
+fn status_unavailable(repo_id: u32, reason: CoreError) -> serde_json::Value {
+    let mut error = CoreError::new(
+        reason.code,
+        format!(
+            "Could not read the working tree, so uncommitted changes are not shown: {}",
+            reason.message
+        ),
+    );
+    error.detail = reason.detail;
+    serde_json::json!({ "repoId": repo_id, "error": error })
 }
 
 /// `path` with symlinks resolved, so paths from different sources compare equal (on macOS

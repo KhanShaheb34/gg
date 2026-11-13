@@ -239,6 +239,23 @@ test("uncommitted changes show as a row after the window regains focus", async (
   await expect(subject(row(page, 1))).toHaveText("Add part 19");
 });
 
+test("a tab in the background picks up working-tree changes when it is shown after the window comes back", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await expect(subject(row(page, 0))).toHaveText("Add part 19");
+  await open(page, gg.repoPath("details"));
+  await expect(page.getByRole("tab", { name: /details/ })).toHaveAttribute("aria-selected", "true");
+
+  writeFileSync(path.join(gg.repoPath("small"), "src", "part1.txt"), "changed\n");
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await page.getByRole("tab", { name: /small/ }).click();
+  await expect(subject(row(page, 0))).toHaveText(/^Uncommitted changes/);
+});
+
 test("an empty repository says so, and the controls that need commits are off", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

@@ -188,19 +188,15 @@ impl RepoManager {
         self.schedule_changed.notify_one();
     }
 
-    /// Records the window's focus. Gaining focus refreshes every open repository, which is
-    /// how working-tree changes show up (only the git dir is watched).
+    /// Records the window's focus, which scheduled fetches depend on. It refreshes nothing:
+    /// the UI refreshes the repository it shows when the window comes back, and the others
+    /// when they are shown, rather than every open repository at every activation.
     pub fn set_window_focused(self: &Arc<Self>, focused: bool) {
         lock(&self.schedule).focus = Focus {
             focused,
             since: Instant::now(),
         };
         self.schedule_changed.notify_one();
-        if focused {
-            for id in self.open_ids() {
-                self.spawn_refresh(id);
-            }
-        }
     }
 
     /// Starts the schedule task if it is not running, and has it recompute.

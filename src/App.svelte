@@ -11,7 +11,17 @@
   import { api, onFolderDrop } from "./lib/ipc";
   import { isMac } from "./lib/platform";
   import { repeatable, shortcutFor } from "./lib/shortcuts";
-  import { activateIndex, app, closeTab, cycleTab, init, openPath, openViaPicker, toast } from "./lib/state/app.svelte";
+  import {
+    activateIndex,
+    app,
+    closeTab,
+    cycleTab,
+    init,
+    openPath,
+    openViaPicker,
+    toast,
+    windowFocusChanged,
+  } from "./lib/state/app.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
 
@@ -23,11 +33,7 @@
 
   onMount(() => {
     void init();
-    const stopFocus = trackWindowFocus(window, document, (focused) => {
-      api.setWindowFocused(focused).catch(() => {
-        // Focus only tunes background work; a missed report is harmless.
-      });
-    });
+    const stopFocus = trackWindowFocus(window, document, windowFocusChanged);
     const stopDrop = onFolderDrop(async (event) => {
       dragging = event.kind === "enter";
       if (event.kind === "drop") for (const path of event.paths) await openPath(path);
@@ -114,7 +120,7 @@
           </div>
         {/key}
       </div>
-    {:else if app.ready}
+    {:else if app.ready && !app.restoring}
       <Welcome />
     {/if}
   </main>

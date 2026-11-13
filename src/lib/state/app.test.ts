@@ -19,6 +19,8 @@ vi.mock("../ipc", async (importOriginal) => {
       pickFolder: vi.fn(),
       // Each tab's graph view asks for its snapshot; never answered here.
       getSnapshot: vi.fn(() => new Promise(() => {})),
+      refresh: vi.fn(() => new Promise(() => {})),
+      setWindowFocused: vi.fn(async () => {}),
       perfMark: vi.fn(async () => {}),
     },
   };
@@ -209,6 +211,54 @@ describe("init", () => {
     expect(s.app.ready).toBe(true);
   });
 
+  it("is ready, and shows each tab in the saved order, as its repository opens", async () => {
+    const answers = new Map<string, (s: RepoSnapshot) => void>();
+    vi.mocked(ipc.api.openRepo).mockImplementation((path) => new Promise((r) => answers.set(path, r)));
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(
+      appState({ session: { tabs: ["/r/a", "/r/b", "/r/c"], active: "/r/b" } }),
+    );
+    const done = s.init();
+    await vi.waitFor(() => expect(answers.size).toBe(3));
+    expect(s.app.ready).toBe(true);
+    expect(s.app.restoring).toBe(true);
+    answers.get("/r/c")!(snapshot(3, "/r/c"));
+    await vi.waitFor(() => expect(s.app.tabs.map((t) => t.repoId)).toEqual([3]));
+    // The saved active tab is not there yet: nothing else is put in front meanwhile.
+    expect(s.app.activeRepoId).toBeNull();
+    answers.get("/r/a")!(snapshot(1, "/r/a"));
+    await vi.waitFor(() => expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 3]));
+    answers.get("/r/b")!(snapshot(2, "/r/b"));
+    await done;
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2, 3]);
+    expect(s.app.activeRepoId).toBe(2);
+    expect(s.app.restoring).toBe(false);
+  });
+
+  it("shows the first tab when the saved active one cannot be reopened", async () => {
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(
+      appState({ session: { tabs: ["/r/a", "/gone", "/r/b"], active: "/gone" } }),
+    );
+    await s.init();
+    expect(s.app.activeRepoId).toBe(1);
+    expect(s.app.restoring).toBe(false);
+  });
+
+  it("a tab the user picks while others are still opening stays active", async () => {
+    let answerB: (s: RepoSnapshot) => void = () => {};
+    vi.mocked(ipc.api.openRepo).mockImplementation((path) =>
+      path === "/r/b" ? new Promise((r) => (answerB = r)) : fakeOpenRepo(path),
+    );
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(
+      appState({ session: { tabs: ["/r/a", "/r/b"], active: "/r/b" } }),
+    );
+    const done = s.init();
+    await vi.waitFor(() => expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]));
+    s.activate(1);
+    answerB(snapshot(2, "/r/b"));
+    await done;
+    expect(s.app.activeRepoId).toBe(1);
+  });
+
   it("finds out at start that git is missing, before anything is opened", async () => {
     vi.mocked(ipc.api.getSnapshot).mockImplementation((repoId: number) =>
       repoId === 0 ? Promise.reject(coreError("git_not_found", "git was not found")) : new Promise(() => {}),
@@ -262,6 +312,31 @@ describe("init", () => {
     const handler = call![1] as (p: { repoId: number; error: CoreErrorDto }) => void;
     handler({ repoId: 2, error: { code: "git_failed", message: "fetch failed", detail: "boom" } });
     expect(s.app.toasts).toMatchObject([{ kind: "error", message: "b: fetch failed", detail: "boom" }]);
+  });
+});
+
+describe("window focus", () => {
+  it("refreshes only the active repository; the others when they are shown", async () => {
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(
+      appState({ session: { tabs: ["/r/a", "/r/b", "/r/c"], active: "/r/a" } }),
+    );
+    await s.init();
+    // Each refresh ends at once (its outcome is not what this is about).
+    vi.mocked(ipc.api.refresh).mockClear().mockRejectedValue(coreError("io", "x"));
+    s.windowFocusChanged(true);
+    expect(ipc.api.setWindowFocused).toHaveBeenCalledWith(true);
+    expect(vi.mocked(ipc.api.refresh).mock.calls).toEqual([[1]]);
+    await vi.waitFor(() => expect(ipc.api.refresh).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 0));
+    s.windowFocusChanged(false);
+    s.windowFocusChanged(true);
+    s.activate(2);
+    expect(vi.mocked(ipc.api.refresh).mock.calls.map((c) => c[0])).toEqual([1, 1, 2]);
+    // Shown once since the focus came back: not refreshed again.
+    s.activate(1);
+    s.activate(2);
+    expect(vi.mocked(ipc.api.refresh).mock.calls.map((c) => c[0])).toEqual([1, 1, 2]);
+    expect(ipc.api.setWindowFocused).toHaveBeenLastCalledWith(true);
   });
 });
 

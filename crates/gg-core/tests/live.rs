@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use gg_core::dto::{RefLabel, RepoSnapshot, RowKind};
+use gg_core::dto::{RefLabel, RepoSnapshot};
 use gg_core::git::refs::RefKind;
 use gg_core::git::runner::{CommandLog, GitRunner};
 use gg_core::repo::RepoManager;
@@ -47,10 +47,14 @@ impl Harness {
             .expect("load finishes");
     }
 
-    /// Opens `path`, waits for the log to load and returns the snapshot.
+    /// Opens `path`, waits for the log to load and the status to be read, and returns the
+    /// snapshot.
     async fn open(&self, path: &Path) -> RepoSnapshot {
         let snap = self.m.open(path).await.expect("open");
         self.wait(snap.repo_id).await;
+        tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
+            .await
+            .expect("status read");
         self.m.snapshot(snap.repo_id).await.unwrap()
     }
 
@@ -891,27 +895,23 @@ async fn scheduled_fetch_never_runs_hooks() {
 // ---------------------------------------------------------------------------------------
 // window focus
 
+/// Focus only tunes scheduled fetches: the UI refreshes the repository it shows when the
+/// window comes back (and the others when shown), so gaining focus runs no git here.
 #[tokio::test]
-async fn focus_triggers_refresh() {
+async fn focus_runs_no_git() {
     let repo = TestRepo::new();
     repo.commit("one");
     let h = harness().await;
     let snap = h.open(repo.path()).await;
-    assert_eq!(snap.status.untracked, 0);
-
-    // A working-tree change: nothing in the git dir changes.
-    repo.write("new.txt", "untracked\n");
+    let before = h.last_command_id();
     h.m.set_window_focused(false);
     h.m.set_window_focused(true);
-    let changed = h
-        .changed(snap.repo_id, CHANGE_TIMEOUT, |s| s.status.untracked == 1)
-        .await
-        .expect("focus picked up the working-tree change");
-    let page =
-        h.m.rows(snap.repo_id, changed.generation, 0, 1)
-            .await
-            .unwrap();
-    assert_eq!(page.rows[0].kind, RowKind::Uncommitted);
+    tokio::time::sleep(QUIET_WINDOW).await;
+    assert_eq!(h.last_command_id(), before, "git ran on focus");
+    assert_eq!(
+        h.m.snapshot(snap.repo_id).await.unwrap().status.untracked,
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------------------

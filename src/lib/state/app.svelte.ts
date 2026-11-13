@@ -26,6 +26,11 @@ export const app = $state({
   toasts: [] as Toast[],
   /** The stored state has been loaded (or failed to load); until then nothing is drawn. */
   ready: false,
+  /**
+   * The saved session's tabs are being reopened and the one to show is not open yet: the
+   * window shows the tabs that are, and no welcome screen.
+   */
+  restoring: false,
   /** The core could not find git: nothing can be opened. */
   gitMissing: false,
   /** The user's home folder, for showing paths as `~/…`. */
@@ -107,14 +112,28 @@ async function openTab(path: string): Promise<boolean> {
     return false;
   }
   addTab(snapshot);
-  app.activeRepoId = snapshot.repoId;
+  show(snapshot.repoId);
   return true;
 }
 
-/** Adds a tab (and its graph's view) for `snapshot`'s repository, unless it has one. */
-function addTab(snapshot: RepoSnapshot): void {
+/** Where each tab reopened from the session goes: its place in the saved order. */
+const sessionRank = new Map<number, number>();
+
+/**
+ * Adds a tab (and its graph's view) for `snapshot`'s repository, unless it has one. A tab
+ * reopened from the session (`rank`: its place there) goes before the tabs ranked after it,
+ * whatever order the repositories finish opening in; others go last.
+ */
+function addTab(snapshot: RepoSnapshot, rank?: number): void {
   if (app.tabs.some((t) => t.repoId === snapshot.repoId)) return;
-  app.tabs.push({ repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name });
+  const tab = { repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name };
+  if (rank === undefined) {
+    app.tabs.push(tab);
+  } else {
+    sessionRank.set(snapshot.repoId, rank);
+    const at = app.tabs.findIndex((t) => (sessionRank.get(t.repoId) ?? Infinity) > rank);
+    app.tabs.splice(at < 0 ? app.tabs.length : at, 0, tab);
+  }
   repoView(snapshot.repoId, snapshot).onNotice = (message, detail) => toast("error", message, detail);
   const held = heldErrors.get(snapshot.repoId);
   heldErrors.delete(snapshot.repoId);
@@ -160,10 +179,36 @@ export async function openViaPicker(): Promise<void> {
   if (path) await openPath(path);
 }
 
+/** Makes `repoId` the active tab, refreshing it first if the window was away meanwhile. */
+function show(repoId: number): void {
+  app.activeRepoId = repoId;
+  // A choice made while the session is reopened stands.
+  restoreTarget = null;
+  const view = repoView(repoId);
+  if (view.stale) void view.sync();
+}
+
 export function activate(repoId: number): void {
   if (app.activeRepoId === repoId || !app.tabs.some((t) => t.repoId === repoId)) return;
-  app.activeRepoId = repoId;
+  show(repoId);
   saveSession();
+}
+
+/**
+ * The window gained or lost focus. Coming back, only the active repository is re-read (its
+ * working tree may have changed; only git dirs are watched); the others are re-read when
+ * they are next shown. The core is told too: it runs scheduled fetches only around focus.
+ */
+export function windowFocusChanged(focused: boolean): void {
+  api.setWindowFocused(focused).catch(() => {
+    // Focus only tunes background work; a missed report is harmless.
+  });
+  if (!focused) return;
+  for (const tab of app.tabs) {
+    const view = repoView(tab.repoId);
+    if (tab.repoId === app.activeRepoId) void view.sync();
+    else view.stale = true;
+  }
 }
 
 /** Activates the tab `delta` places from the active one, wrapping around. */
@@ -227,6 +272,8 @@ export function cycleTheme(): Promise<void> {
 }
 
 let started = false;
+/** The session tab (or launch path) to show once it is open, while the session is reopened. */
+let restoreTarget: string | null = null;
 
 /**
  * Loads the stored state, applies the theme, reopens the session's tabs (each failure a
@@ -259,21 +306,41 @@ export async function init(): Promise<void> {
   app.homeDir = state.homeDir;
   applyTheme(state.settings.theme);
 
-  // Reopened together, added in the session's order.
+  // Reopened together; each tab shows as soon as its repository is open, in the session's
+  // order. The tab to show (the launch path, else the saved active one) is shown when it is
+  // open; until then nothing else is put in front, unless the user picks a tab.
   const { tabs, active } = state.session;
-  const reopened = await Promise.allSettled(tabs.map((path) => api.openRepo(path)));
-  reopened.forEach((result, i) => {
-    if (result.status === "rejected") {
-      reportError(result.reason, `Could not reopen ${tabs[i]}`);
-      return;
-    }
-    addTab(result.value);
-  });
-  app.activeRepoId = app.tabs.find((t) => t.path === active)?.repoId ?? app.tabs[0]?.repoId ?? null;
+  const launch = state.launchPath;
+  restoreTarget = launch ?? (active !== null && tabs.includes(active) ? active : null);
+  app.restoring = restoreTarget !== null;
   app.ready = true;
-
-  if (state.launchPath) await openTab(state.launchPath);
-  if (tabs.length > 0 || state.launchPath) {
+  const opened = (path: string, snapshot: RepoSnapshot, rank?: number) => {
+    addTab(snapshot, rank);
+    if (restoreTarget === path) {
+      show(snapshot.repoId);
+      app.restoring = false;
+    }
+  };
+  const reopen = tabs.map(async (path, rank) => {
+    try {
+      opened(path, await api.openRepo(path), rank);
+    } catch (e) {
+      reportError(e, `Could not reopen ${path}`);
+    }
+  });
+  const openLaunch = async (path: string) => {
+    try {
+      opened(path, await api.openRepo(path));
+    } catch (e) {
+      reportError(e);
+    }
+  };
+  await Promise.all(launch ? [...reopen, openLaunch(launch)] : reopen);
+  // The tab to show could not be opened (or there was none): the first one.
+  if (app.activeRepoId === null && app.tabs.length > 0) show(app.tabs[0].repoId);
+  restoreTarget = null;
+  app.restoring = false;
+  if (tabs.length > 0 || launch) {
     saveSession();
     await refreshRecents();
   }

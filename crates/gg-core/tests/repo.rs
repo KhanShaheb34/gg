@@ -40,10 +40,14 @@ impl Harness {
             .expect("load finishes");
     }
 
-    /// Opens `path`, waits for the log to load and returns the snapshot.
+    /// Opens `path`, waits for the log to load and the status to be read, and returns the
+    /// snapshot.
     async fn open(&self, path: &Path) -> RepoSnapshot {
         let snap = self.m.open(path).await.expect("open");
         self.wait(snap.repo_id).await;
+        tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
+            .await
+            .expect("status read");
         self.m.snapshot(snap.repo_id).await.unwrap()
     }
 
@@ -992,6 +996,111 @@ async fn reload_to_a_smaller_view_completes() {
             &["log", "--date-order", "refs/heads/small", "--format=%H"]
         )
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// status, read beside the rows
+
+/// Rows do not wait for `git status` (slow on a big working tree): open returns, and the log
+/// loads, before status is known; the uncommitted row comes in later, in a new generation.
+#[tokio::test]
+async fn open_and_rows_do_not_wait_for_status() {
+    let repo = TestRepo::new();
+    for i in 0..5 {
+        repo.commit(&format!("c{i}"));
+    }
+    repo.write("untracked.txt", "x");
+    let h = harness().await;
+    h.m.set_status_delay(Duration::from_millis(1500));
+    let started = std::time::Instant::now();
+    let snap = h.m.open(repo.path()).await.unwrap();
+    let id = snap.repo_id;
+    h.wait(id).await;
+    let loaded = h.m.snapshot(id).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "open and load waited for status ({:?})",
+        started.elapsed()
+    );
+    assert_eq!(
+        loaded.total_rows, 5,
+        "no uncommitted row before status is known"
+    );
+    assert_eq!(loaded.status.untracked, 0);
+
+    let with_status = h
+        .sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["status"]["untracked"] == 1
+        })
+        .await
+        .map(|(_, v)| snapshot_from_json(v))
+        .expect("status arrives");
+    assert_eq!(with_status.total_rows, 6);
+    assert!(with_status.generation > loaded.generation);
+    let rows = h.rows(id).await;
+    assert_eq!(rows[0].kind, RowKind::Uncommitted);
+    assert_eq!(rows[1].subject, "c4");
+}
+
+/// A status that takes too long (or fails) is a notice, once; the rows stay.
+#[tokio::test]
+async fn a_status_that_times_out_is_a_notice_and_rows_stay() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.write("untracked.txt", "x");
+    let h = harness().await;
+    h.m.set_status_delay(Duration::from_millis(800));
+    h.m.set_status_timeout(Duration::from_millis(300));
+    let snap = h.open(repo.path()).await;
+    let error = h
+        .sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-error" && v["repoId"] == snap.repo_id
+        })
+        .await
+        .expect("a notice")
+        .1;
+    let message = error["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("uncommitted changes"), "{message}");
+    assert_eq!(h.m.snapshot(snap.repo_id).await.unwrap().total_rows, 1);
+    // Said once, not on every refresh that fails the same way.
+    h.m.refresh(snap.repo_id).await.unwrap();
+    let errors = h
+        .sink
+        .events()
+        .iter()
+        .filter(|(n, _)| n == "repo-error")
+        .count();
+    assert_eq!(errors, 1);
+}
+
+/// A refresh shows a new commit without waiting for status.
+#[tokio::test]
+async fn refresh_shows_new_commits_before_status() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    h.m.set_status_delay(Duration::from_millis(1500));
+    repo.commit("two");
+    let m = h.m.clone();
+    let started = std::time::Instant::now();
+    let refresh = tokio::spawn(async move { m.refresh(id).await });
+    let shown = h
+        .sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["totalRows"] == 2
+        })
+        .await;
+    assert!(shown.is_some());
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "the new commit waited for status ({:?})",
+        started.elapsed()
+    );
+    refresh.await.unwrap().unwrap();
 }
 
 // ---------------------------------------------------------------------------------------

@@ -366,6 +366,39 @@ export class RepoView {
     if (state.lastError) this.onNotice?.(`Fetch failed: ${state.lastError}`, state.lastErrorDetail ?? undefined);
   }
 
+  /** The repository may have changed on disk since this view was last refreshed (the window was away). */
+  stale = false;
+  /** A quiet refresh is underway; another is wanted after it. */
+  private syncing = false;
+  private syncAgain = false;
+
+  /**
+   * Re-reads the repository without showing progress, as when the window comes back: the
+   * working tree may have changed meanwhile, and only the git dir is watched. Errors are
+   * not shown; the next refresh the user asks for says. Overlapping calls coalesce.
+   */
+  async sync(): Promise<void> {
+    this.stale = false;
+    if (this.syncing) {
+      this.syncAgain = true;
+      return;
+    }
+    this.syncing = true;
+    try {
+      do {
+        this.syncAgain = false;
+        const seen = this.events;
+        try {
+          this.applyAnswer(await api.refresh(this.repoId), seen);
+        } catch {
+          // Shown by the next refresh the user asks for, or the next event.
+        }
+      } while (this.syncAgain && !this.disposed);
+    } finally {
+      this.syncing = false;
+    }
+  }
+
   /** Re-reads the repository now; progress shows for at least MIN_REFRESH_MS. */
   async refresh(): Promise<void> {
     if (this.refreshing) return;

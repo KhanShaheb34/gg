@@ -484,6 +484,37 @@ async fn fetch_failure_sets_last_error() {
     );
 }
 
+/// With several remotes, git prints a "From <url>" line for each one that fetched before the
+/// one that failed. The message names the failure, and the full stderr is kept as detail.
+#[tokio::test]
+async fn fetch_error_with_several_remotes_names_the_failure() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let origin = repo.clone_as_remote();
+    let other = second_clone(&origin);
+    other.commit("pushed by someone else");
+    other.git(&["push", "-q", "origin", "main"]);
+    let missing = repo.dir.path().join("no such remote");
+    repo.git(&["remote", "add", "zbroken", missing.to_str().unwrap()]);
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+
+    h.m.fetch(snap.repo_id).await.unwrap();
+    let now = h.m.snapshot(snap.repo_id).await.unwrap();
+    let error = now.fetch.last_error.expect("lastError is set");
+    let detail = now
+        .fetch
+        .last_error_detail
+        .expect("the full stderr is kept");
+    assert!(detail.contains("From "), "origin fetched first: {detail:?}");
+    assert!(
+        error.starts_with("fatal:") || error.starts_with("error:"),
+        "{error:?} (stderr {detail:?})"
+    );
+    assert!(!error.contains('\n'));
+    assert!(detail.contains(&error));
+}
+
 #[tokio::test]
 async fn second_fetch_while_running_returns_at_once() {
     let repo = TestRepo::new();

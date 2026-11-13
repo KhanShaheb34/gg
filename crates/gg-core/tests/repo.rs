@@ -323,6 +323,7 @@ async fn snapshot_lists_refs_sorted_with_idle_fetch_state() {
         FetchState {
             running: false,
             last_error: None,
+            last_error_detail: None,
             last_at_ms: None,
         }
     );
@@ -331,7 +332,7 @@ async fn snapshot_lists_refs_sorted_with_idle_fetch_state() {
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(
         v["fetch"],
-        serde_json::json!({"running": false, "lastError": null, "lastAtMs": null})
+        serde_json::json!({"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null})
     );
     assert_eq!(v["head"]["branch"], "main");
 }

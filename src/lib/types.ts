@@ -26,7 +26,13 @@ export type WorktreeInfo = {
   prunable: boolean;
 };
 export type WorktreeStatus = { changed: number; untracked: number; conflicted: number };
-export type FetchState = { running: boolean; lastError: string | null; lastAtMs: number | null };
+/** `lastError`: why the last fetch failed, in one line; `lastErrorDetail`: git's whole stderr of it. */
+export type FetchState = {
+  running: boolean;
+  lastError: string | null;
+  lastErrorDetail: string | null;
+  lastAtMs: number | null;
+};
 
 export type RepoSnapshot = {
   repoId: number;

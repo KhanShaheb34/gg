@@ -61,7 +61,7 @@ function placeholder(repoId: number): RepoSnapshot {
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0 },
     viewOptions: { branches: null, showRemotes: true, showTags: true },
-    fetch: { running: false, lastError: null, lastAtMs: null },
+    fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
   };
 }
 
@@ -363,7 +363,7 @@ export class RepoView {
     if (state.lastAtMs === null || state.lastAtMs < this.fetchAskedAt) return;
     this.fetchStarting = false;
     this.fetchWatched = false;
-    if (state.lastError) this.onNotice?.("Fetch failed", state.lastError);
+    if (state.lastError) this.onNotice?.(`Fetch failed: ${state.lastError}`, state.lastErrorDetail ?? undefined);
   }
 
   /** Re-reads the repository now; progress shows for at least MIN_REFRESH_MS. */

@@ -1058,6 +1058,7 @@ mod tests {
         let fetch = FetchState {
             running: true,
             last_error: Some("e".into()),
+            last_error_detail: Some("fatal: e\n".into()),
             last_at_ms: Some(5),
         };
         let snap = s.snapshot(&identity(), true, &fetch);

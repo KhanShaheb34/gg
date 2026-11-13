@@ -13,7 +13,7 @@ use tokio::time::Instant;
 
 use crate::dto::FetchState;
 use crate::error::{ErrorCode, Result};
-use crate::git::runner::{CmdKind, git_failed};
+use crate::git::runner::CmdKind;
 use crate::repo::manager::{Repo, RepoManager, lock, unknown_repo};
 
 /// Scheduled fetches keep running for this long after the window loses focus.
@@ -65,10 +65,11 @@ impl Schedule {
 
 impl RepoManager {
     /// Runs `git fetch --all --prune`, then refreshes. `fetch.running` is set (and
-    /// `repo-changed` emitted) before git starts; when it ends, `lastAtMs` and `lastError`
-    /// (git's first stderr line, "Fetch timed out" after 120 s, or `None`) are set and
-    /// emitted. Only an unknown (or meanwhile closed) repository is an `Err`; a failed fetch,
-    /// or a failed refresh after it, is `Ok`. Does nothing for a repository without remotes
+    /// `repo-changed` emitted) before git starts; when it ends, `lastAtMs`, `lastError`
+    /// (see [`fetch_error`]; "Fetch timed out" after 120 s; `None` after a success) and
+    /// `lastErrorDetail` (git's whole stderr) are set and emitted. Only an unknown (or
+    /// meanwhile closed) repository is an `Err`; a failed fetch, or a failed refresh after
+    /// it, is `Ok`. Does nothing for a repository without remotes
     /// or while a fetch is running. The fetch runs on its own task, so dropping the returned
     /// future does not stop it and `running` is always cleared.
     pub async fn fetch(self: &Arc<Self>, repo_id: u32) -> Result<()> {
@@ -119,17 +120,21 @@ impl RepoManager {
             .runner
             .run_with_timeout(&repo.worktree, &args, CmdKind::Write, timeout)
             .await;
-        let error = match run {
-            Ok(None) => Some(TIMED_OUT.to_owned()),
-            Ok(Some(out)) if out.code == 0 => None,
-            Ok(Some(out)) => Some(git_failed(&FETCH_ARGS, out.code, &out.stderr).message),
-            Err(e) => Some(e.message),
+        let (error, detail) = match run {
+            Ok(None) => (Some(TIMED_OUT.to_owned()), None),
+            Ok(Some(out)) if out.code == 0 => (None, None),
+            Ok(Some(out)) => (
+                Some(fetch_error(&out.stderr, out.code)),
+                Some(out.stderr).filter(|s| !s.trim().is_empty()),
+            ),
+            Err(e) => (Some(e.message), e.detail),
         };
         let finished = {
             let mut slot = repo.slot.write().await;
             slot.fetch = FetchState {
                 running: false,
                 last_error: error,
+                last_error_detail: detail,
                 last_at_ms: Some(unix_ms()),
             };
             if slot.closed {
@@ -276,6 +281,20 @@ fn fetch_due(now: Instant, interval: Duration, last: Instant, focus: Focus) -> D
     if at <= now { Due::Now } else { Due::At(at) }
 }
 
+/// The one line that says why a fetch that exited with `code` failed: git's first line
+/// starting `fatal:` or `error:` (with `--all`, the progress lines of remotes that fetched
+/// come before it), else its last non-empty line, else the exit code.
+fn fetch_error(stderr: &str, code: i32) -> String {
+    let lines = || stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+    lines()
+        .find(|l| l.starts_with("fatal:") || l.starts_with("error:"))
+        .or_else(|| lines().last())
+        .map_or_else(
+            || format!("git fetch exited with code {code}"),
+            str::to_owned,
+        )
+}
+
 /// Current time in unix milliseconds.
 fn unix_ms() -> i64 {
     SystemTime::now()
@@ -365,6 +384,24 @@ mod tests {
         tokio::time::sleep(5 * MIN).await;
         assert_eq!(counts(), (4, 3));
         task.abort();
+    }
+
+    #[test]
+    fn fetch_error_is_the_first_fatal_or_error_line_else_the_last() {
+        let several = "From /tmp/origin\n   1a2b..3c4d  main -> origin/main\n\
+                       fatal: '/tmp/gone' does not appear to be a git repository\n\
+                       fatal: Could not read from remote repository.\n\
+                       error: could not fetch zbroken\n";
+        assert_eq!(
+            fetch_error(several, 1),
+            "fatal: '/tmp/gone' does not appear to be a git repository"
+        );
+        assert_eq!(
+            fetch_error("From x\n  error: some refs failed\n", 1),
+            "error: some refs failed"
+        );
+        assert_eq!(fetch_error("From x\nsomething odd\n\n", 1), "something odd");
+        assert_eq!(fetch_error("  \n", 128), "git fetch exited with code 128");
     }
 
     #[test]

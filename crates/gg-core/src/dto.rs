@@ -119,8 +119,13 @@ pub struct HeadInfo {
 #[serde(rename_all = "camelCase")]
 pub struct FetchState {
     pub running: bool,
-    /// First stderr line of the last failed fetch; `None` after a success.
+    /// Why the last fetch failed, in one line: git's first `fatal:` or `error:` line (with
+    /// several remotes, the lines of those that fetched come first), else its last line;
+    /// `None` after a success.
     pub last_error: Option<String>,
+    /// git's whole stderr of the last failed fetch; `None` after a success or when there is
+    /// nothing more to say (a timeout).
+    pub last_error_detail: Option<String>,
     /// When the last fetch finished, unix milliseconds.
     pub last_at_ms: Option<i64>,
 }
@@ -462,7 +467,7 @@ mod tests {
                 "branches": ["main"], "remoteBranches": ["origin/main"], "remotes": ["origin"],
                 "worktrees": [], "status": {"changed": 0, "untracked": 0, "conflicted": 0},
                 "viewOptions": {"branches": null, "showRemotes": true, "showTags": true},
-                "fetch": {"running": false, "lastError": null, "lastAtMs": null}
+                "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null}
             })
         );
         assert_eq!(serde_json::from_value::<RepoSnapshot>(v).unwrap(), snap);

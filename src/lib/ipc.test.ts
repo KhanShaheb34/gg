@@ -94,6 +94,11 @@ describe("HTTP transport", () => {
     await api.commandLog(0, { repoId: 2, writesOnly: true });
     await api.runOp(2, { op: "create_branch", name: "x", at: "abc", checkout: false });
     await api.runOp(2, { op: "reset", hash: "abc", mode: "hard" }, ["hard_reset"]);
+    await api.runOp(
+      2,
+      { op: "push", branch: "b", remote: "origin", setUpstream: false, force: true, lease: "abc" },
+      ["force_push"],
+    );
     await api.runOp(2, { op: "continue" });
     await api.getRepoPrefs(2);
     await api.setRepoPrefs(2, { mergeNoFf: false });
@@ -120,6 +125,14 @@ describe("HTTP transport", () => {
         args: { repoId: 2, request: { op: "create_branch", name: "x", at: "abc", checkout: false }, confirmed: [] },
       },
       { cmd: "run_op", args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard" }, confirmed: ["hard_reset"] } },
+      {
+        cmd: "run_op",
+        args: {
+          repoId: 2,
+          request: { op: "push", branch: "b", remote: "origin", setUpstream: false, force: true, lease: "abc" },
+          confirmed: ["force_push"],
+        },
+      },
       { cmd: "run_op", args: { repoId: 2, request: { op: "continue" }, confirmed: [] } },
       { cmd: "get_repo_prefs", args: { repoId: 2 } },
       { cmd: "set_repo_prefs", args: { repoId: 2, patch: { mergeNoFf: false } } },

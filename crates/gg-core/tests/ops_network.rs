@@ -1349,6 +1349,64 @@ async fn a_user_fetch_just_after_a_scheduled_one_starts_still_fetches() {
     assert!(snap.fetch.last_error.is_none());
 }
 
+/// Task 5 review, item 2: a scheduled fetch passes its "nothing waits" check, then a user's
+/// fetch takes its turn and finds no scheduled fetch to cancel yet; the scheduled one then
+/// shows as running. The user's fetch must not take that `running` as covering it: it
+/// cancels the scheduled fetch, waits for it and fetches. The interleaving is forced with
+/// pause points.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_fetch_is_not_covered_by_a_scheduled_one_that_started_behind_its_back() {
+    let (repo, _origin, other) = with_remote();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let pushed = other.commit("new on origin");
+    other.git(&["push", "-q", "origin", "main"]);
+
+    // The scheduled fetch stops just after its check; it shows as running for a while
+    // before it would start git.
+    let scheduled = h.m.pause_at("scheduled-fetch-checked");
+    h.m.set_scheduled_fetch_gap(Duration::from_millis(800));
+    h.m.set_fetch_interval(1);
+    tokio::time::timeout(TIMEOUT, scheduled.reached.notified())
+        .await
+        .expect("a scheduled fetch is due");
+    h.m.set_fetch_interval(0);
+
+    // The user's fetch takes its turn and cancels (nothing yet), then stops.
+    let user = h.m.pause_at("user-fetch-cancelled");
+    let fetch = tokio::spawn({
+        let m = h.m.clone();
+        async move { m.fetch(id).await }
+    });
+    tokio::time::timeout(TIMEOUT, user.reached.notified())
+        .await
+        .expect("the user's fetch has its turn");
+
+    // Now the scheduled fetch shows itself running.
+    scheduled.release.notify_one();
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["fetch"]["running"] == true
+        })
+        .await
+        .expect("the scheduled fetch shows as running");
+    user.release.notify_one();
+
+    tokio::time::timeout(TIMEOUT, fetch)
+        .await
+        .expect("the fetch ends")
+        .unwrap()
+        .expect("fetch");
+    assert_eq!(
+        rev(&repo, "refs/remotes/origin/main"),
+        pushed,
+        "the user's fetch fetched"
+    );
+    let snap = h.m.snapshot(id).await.unwrap();
+    assert!(!snap.fetch.running);
+    assert!(snap.fetch.last_error.is_none());
+}
+
 /// R13: a scheduled fetch that is running when an operation or a fetch the user asked for
 /// takes its turn is cancelled: its git and what git started are stopped, no error is
 /// shown, and the operation does not wait for it.

@@ -33,12 +33,31 @@ const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
 /// What a scheduled fetch holds from before it shows as running until it ends: the lock
 /// that tells others it runs, and its cancel signal, already stored in `scheduled_cancel`.
-/// Both are in place before `running` is set, so an operation or a user's fetch that takes
-/// its turn meanwhile always finds the fetch to cancel and wait for, never a `running` that
-/// seems to cover it.
+/// Both are in place before `running` is set. A scheduled fetch can still pass its check
+/// (nothing waits for the turn) just before an operation or a user's fetch takes the turn,
+/// and store its signal just after that one has cancelled: the operation then finds the
+/// fetch skipping itself (it checks again before git starts), and a user's fetch that finds
+/// it `running` cancels it and waits again rather than taking it as covering itself.
 struct Scheduled {
     _running: OwnedMutexGuard<()>,
     cancel: Arc<Notify>,
+}
+
+/// Whether [`RepoManager::start_fetch`] ran a fetch, with its result.
+enum Started {
+    Ran(Result<()>),
+    No(Busy),
+}
+
+/// Why no fetch was started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Busy {
+    /// Another fetch is running.
+    Running,
+    /// The repository has no remotes.
+    Nothing,
+    /// The repository was closed.
+    Closed,
 }
 
 /// Clears `user_fetch` when dropped: when the task of a fetch the user asked for ends,
@@ -118,6 +137,31 @@ impl RepoManager {
             .store(crate::repo::manager::duration_ms(gap), Ordering::Relaxed);
     }
 
+    /// Makes the next task that passes `point` stop there until released (tests only).
+    /// Points: "scheduled-fetch-checked" (a scheduled fetch has found nothing waiting, before
+    /// it stores its cancel signal) and "user-fetch-cancelled" (a user's fetch has its turn
+    /// and has cancelled any scheduled fetch, before it starts).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn pause_at(&self, point: &'static str) -> crate::repo::manager::PausePoint {
+        let pause = crate::repo::manager::PausePoint::default();
+        lock(&self.pauses).insert(point, pause.clone());
+        pause
+    }
+
+    /// Stops at `point` if a test asked to (see [`RepoManager::pause_at`]).
+    async fn pass(&self, point: &'static str) {
+        #[cfg(any(test, feature = "testutil"))]
+        {
+            let pause = lock(&self.pauses).remove(point);
+            if let Some(pause) = pause {
+                pause.reached.notify_one();
+                pause.release.notified().await;
+            }
+        }
+        #[cfg(not(any(test, feature = "testutil")))]
+        let _ = point;
+    }
+
     /// Sets how long a fetch the user asked for may run in any case (tests only; normally
     /// 2 h).
     #[cfg(any(test, feature = "testutil"))]
@@ -155,12 +199,25 @@ impl RepoManager {
                     m.op_queue_changed(&repo).await;
                     let turn = repo.op_queue.lock().await;
                     repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
-                    m.cancel_scheduled_fetch(&repo).await;
-                    #[cfg(any(test, feature = "testutil"))]
-                    if m.fetch_panic.swap(false, Ordering::SeqCst) {
-                        panic!("test: the fetch panicked");
-                    }
-                    let done = m.start_fetch(repo.clone(), None).await;
+                    let done = loop {
+                        m.cancel_scheduled_fetch(&repo).await;
+                        m.pass("user-fetch-cancelled").await;
+                        #[cfg(any(test, feature = "testutil"))]
+                        if m.fetch_panic.swap(false, Ordering::SeqCst) {
+                            panic!("test: the fetch panicked");
+                        }
+                        // With the turn held, only a scheduled fetch can be running: one that
+                        // passed its check before this took the turn, and stored its cancel
+                        // signal after the cancel above. It covers nothing: cancel it too.
+                        match m.start_fetch(repo.clone(), None).await {
+                            Started::No(Busy::Running) => continue,
+                            Started::No(Busy::Nothing) => break Ok(()),
+                            Started::No(Busy::Closed) => {
+                                break Err(unknown_repo(repo.identity.repo_id));
+                            }
+                            Started::Ran(done) => break done,
+                        }
+                    };
                     drop(turn);
                     done
                 });
@@ -173,6 +230,7 @@ impl RepoManager {
                 if repo.op_waiting.load(Ordering::SeqCst) > 0 || repo.op_queue.try_lock().is_err() {
                     return Ok(());
                 }
+                self.pass("scheduled-fetch-checked").await;
                 let running = repo.scheduled_running.clone().lock_owned().await;
                 let cancel = Arc::new(Notify::new());
                 *lock(&repo.scheduled_cancel) = Some(cancel.clone());
@@ -180,28 +238,35 @@ impl RepoManager {
                     _running: running,
                     cancel: cancel.clone(),
                 };
-                let done = self.start_fetch(repo.clone(), Some(scheduled)).await;
+                let started = self.start_fetch(repo.clone(), Some(scheduled)).await;
                 forget_cancel(&repo, &cancel);
-                done
+                match started {
+                    Started::Ran(done) => done,
+                    Started::No(Busy::Closed) => Err(unknown_repo(repo.identity.repo_id)),
+                    Started::No(_) => Ok(()),
+                }
             }
         }
     }
 
     /// Marks a fetch of `repo` as running and runs it (see [`RepoManager::fetch`]): a
-    /// scheduled one with what it holds, else one the user asked for.
+    /// scheduled one with what it holds, else one the user asked for. Runs nothing when
+    /// another fetch is running, the repository has no remotes, or it is closed.
     async fn start_fetch(
         self: &Arc<Self>,
         repo: Arc<Repo>,
         scheduled: Option<Scheduled>,
-    ) -> Result<()> {
-        let repo_id = repo.identity.repo_id;
+    ) -> Started {
         let started = {
             let mut slot = repo.slot.write().await;
             if slot.closed {
-                return Err(unknown_repo(repo_id));
+                return Started::No(Busy::Closed);
             }
-            if slot.fetch.running || slot.target().info().remotes.is_empty() {
-                return Ok(());
+            if slot.fetch.running {
+                return Started::No(Busy::Running);
+            }
+            if slot.target().info().remotes.is_empty() {
+                return Started::No(Busy::Nothing);
             }
             slot.fetch.running = true;
             slot.snapshot_to_emit(&repo.identity, repo.is_loading())
@@ -210,7 +275,7 @@ impl RepoManager {
         repo.publish(self.sink.as_ref(), started);
         // No await between setting `running` and spawning: once set, the task clears it.
         let task = tokio::spawn(self.clone().run_fetch(repo, scheduled));
-        task.await.unwrap_or(Ok(()))
+        Started::Ran(task.await.unwrap_or(Ok(())))
     }
 
     /// Stops the scheduled fetch of `repo` running now, if any, and waits for it to end (git

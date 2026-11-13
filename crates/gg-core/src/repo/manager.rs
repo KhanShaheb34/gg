@@ -99,6 +99,18 @@ pub struct RepoManager {
     /// Tests only: when set, editor launches are recorded here instead of run.
     #[cfg(any(test, feature = "testutil"))]
     pub(crate) editor_launches: Mutex<Option<Vec<Vec<String>>>>,
+    /// Tests only: points where the next task to pass waits (see `pause_at`).
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) pauses: Mutex<HashMap<&'static str, PausePoint>>,
+}
+
+/// Tests only: a point in the core where the next task to pass stops. `reached` is
+/// signalled when one arrives; it goes on once `release` is.
+#[cfg(any(test, feature = "testutil"))]
+#[derive(Clone, Default)]
+pub struct PausePoint {
+    pub reached: Arc<Notify>,
+    pub release: Arc<Notify>,
 }
 
 impl Drop for RepoManager {
@@ -414,6 +426,8 @@ impl RepoManager {
             scheduled_fetch_gap_ms: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             editor_launches: Mutex::new(None),
+            #[cfg(any(test, feature = "testutil"))]
+            pauses: Mutex::new(HashMap::new()),
         })
     }
 

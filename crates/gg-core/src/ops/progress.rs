@@ -173,6 +173,18 @@ pub(crate) async fn abort(ctx: &OpCtx<'_>) -> Result<Step> {
     if out.code != 0 {
         return Ok(explain(&args, &out));
     }
+    let all = format!("{}\n{}", out.stderr, out.text());
+    if all.contains("You seem to have moved HEAD") {
+        // A sequence whose commit was made by hand: git ends it without rewinding.
+        return Ok(Step::DoneWith {
+            message: format!(
+                "Stopped the {what}, without going back: commits were made since it started \
+                 (HEAD moved), so git leaves them as they are."
+            ),
+            detail: Some(all.trim().to_owned()),
+            hints: Vec::new(),
+        });
+    }
     let branch = current_branch(ctx).await?;
     let back = branch.as_deref().unwrap_or("HEAD");
     Ok(Step::Done(format!(

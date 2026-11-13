@@ -1139,3 +1139,74 @@ async fn stash_list_parses_subjects_with_odd_bytes() {
     let stored = repo.git(&["log", "-1", "--format=%s", &plain]);
     assert_eq!(older.subject, stored);
 }
+
+/// `main` and `feature` change `clash.txt`; `feature` then adds `other.txt` in a second
+/// commit. A cherry-pick of both stops on the first; the user resolves it and commits by
+/// hand, which ends the pick of that commit (no `CHERRY_PICK_HEAD`) but not the sequence.
+fn sequence_committed_by_hand(repo: &TestRepo, verb: &str) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.commit_all("feat clash");
+    repo.write("other.txt", "other\n");
+    repo.commit_all("feat other");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+    if verb == "cherry-pick" {
+        assert!(!repo.git_succeeds(&["cherry-pick", "feature~1", "feature"]));
+    } else {
+        // Reverting feature's commits on feature: the older one clashes with the newer.
+        repo.checkout("feature");
+        repo.write("clash.txt", "feature again\n");
+        repo.commit_all("feat again");
+        assert!(!repo.git_succeeds(&["revert", "--no-edit", "HEAD~2", "HEAD~1"]));
+    }
+    repo.write("clash.txt", "resolved\n");
+    repo.git(&["add", "clash.txt"]);
+    repo.git(&["commit", "-q", "--no-edit"]);
+    assert!(!in_git_dir_has(repo, "CHERRY_PICK_HEAD") && !in_git_dir_has(repo, "REVERT_HEAD"));
+    assert!(in_git_dir_has(repo, "sequencer"));
+}
+
+fn in_git_dir_has(repo: &TestRepo, name: &str) -> bool {
+    repo.path().join(".git").join(name).exists()
+}
+
+/// A cherry-pick or revert sequence whose current commit was committed by hand is still
+/// in progress (git status says so): its kind comes from the sequencer's next command.
+#[tokio::test]
+async fn sequence_committed_by_hand_is_still_in_progress() {
+    for (verb, kind) in [
+        ("cherry-pick", InProgressKind::CherryPick),
+        ("revert", InProgressKind::Revert),
+    ] {
+        let repo = TestRepo::new();
+        sequence_committed_by_hand(&repo, verb);
+        let state = in_progress(&repo).await.expect(verb);
+        assert_eq!(state.kind, kind);
+        assert!(state.conflicted.is_empty());
+        assert!(state.subject.is_some(), "{state:?}");
+    }
+}
+
+/// `git am` stopped on a patch is not something the app continues or aborts: not reported.
+#[tokio::test]
+async fn am_in_progress_is_not_reported() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let patches = repo.dir.path().join("patches");
+    let patches = patches.to_str().unwrap();
+    repo.git(&["format-patch", "-q", "-1", "feature~2", "-o", patches]);
+    let patch = fs::read_dir(patches)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(!repo.git_succeeds(&["am", patch.to_str().unwrap()]));
+    assert!(in_git_dir_has(&repo, "rebase-apply"));
+    assert_eq!(in_progress(&repo).await, None);
+}

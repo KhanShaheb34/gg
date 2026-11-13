@@ -1,8 +1,10 @@
 //! Reads what git is stopped in: a merge, rebase, cherry-pick or revert, started by the app
 //! or outside it. The kind comes from the files git keeps in the worktree's git dir while
 //! it is stopped (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`,
-//! `rebase-apply/`), found with `rev-parse --git-path` so that a linked worktree's own
-//! files are the ones read.
+//! `rebase-apply/`, and `sequencer/` for a cherry-pick or revert of several commits whose
+//! current one was committed by hand), found with `rev-parse --git-path` so that a linked
+//! worktree's own files are the ones read. `git am` is not reported: the app cannot continue
+//! or abort it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,13 +15,14 @@ use crate::git::runner::{CmdKind, GitRunner};
 use crate::git::status::read_conflicted;
 
 /// The state files asked for, in the order `rev-parse` prints their paths.
-const STATE_FILES: [&str; 6] = [
+const STATE_FILES: [&str; 7] = [
     "MERGE_HEAD",
     "CHERRY_PICK_HEAD",
     "REVERT_HEAD",
     "rebase-merge",
     "rebase-apply",
     "MERGE_MSG",
+    "sequencer",
 ];
 
 /// Where git keeps its state files for one worktree.
@@ -30,6 +33,7 @@ pub(crate) struct StateFiles {
     rebase_merge: PathBuf,
     rebase_apply: PathBuf,
     merge_msg: PathBuf,
+    sequencer: PathBuf,
 }
 
 impl StateFiles {
@@ -47,8 +51,28 @@ impl StateFiles {
         } else if self.revert_head.exists() {
             Some(InProgressKind::Revert)
         } else {
-            None
+            self.sequence_next().map(|(kind, _)| kind)
         }
+    }
+
+    /// The kind and subject of the sequencer's current command, for a cherry-pick or revert
+    /// of several commits: its `todo` lists `pick <commit> <subject>` (or `revert …`) lines,
+    /// the current one first. `None` without a sequence (or a command of another kind).
+    fn sequence_next(&self) -> Option<(InProgressKind, String)> {
+        let bytes = fs::read(self.sequencer.join("todo")).ok()?;
+        let text = String::from_utf8_lossy(&bytes);
+        let line = text
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with('#'))?;
+        let mut words = line.splitn(3, ' ');
+        let kind = match words.next()? {
+            "pick" | "p" => InProgressKind::CherryPick,
+            "revert" => InProgressKind::Revert,
+            _ => return None,
+        };
+        let _commit = words.next();
+        Some((kind, words.next().unwrap_or("").trim().to_owned()))
     }
 
     /// The rebase's step and number of steps, from `rebase-merge/msgnum` and `end`, or
@@ -105,8 +129,9 @@ pub(crate) async fn state_files(runner: &GitRunner, worktree: &Path) -> Result<O
             rebase_merge,
             rebase_apply,
             merge_msg,
+            sequencer,
         ],
-    ) = <[PathBuf; 6]>::try_from(paths)
+    ) = <[PathBuf; 7]>::try_from(paths)
     else {
         return Ok(None);
     };
@@ -117,6 +142,7 @@ pub(crate) async fn state_files(runner: &GitRunner, worktree: &Path) -> Result<O
         rebase_merge,
         rebase_apply,
         merge_msg,
+        sequencer,
     }))
 }
 
@@ -172,7 +198,14 @@ async fn describe(
         InProgressKind::Rebase => files.rebase_step(),
         _ => (None, None),
     };
+    let picking = files.cherry_pick_head.exists() || files.revert_head.exists();
+    let sequence_only =
+        matches!(kind, InProgressKind::CherryPick | InProgressKind::Revert) && !picking;
     let subject = match files.merge_msg_subject() {
+        _ if sequence_only => files
+            .sequence_next()
+            .map(|(_, subject)| subject)
+            .filter(|s| !s.is_empty()),
         Some(subject) => Some(subject),
         None => {
             let head = match kind {

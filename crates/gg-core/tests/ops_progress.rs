@@ -568,3 +568,59 @@ async fn editor_runs_detached_without_a_shell() {
     assert!(err.message.contains("gg-no-such-editor"), "{err:?}");
     assert!(err.message.contains("Settings"), "{err:?}");
 }
+
+/// A cherry-pick sequence whose current commit the user committed by hand: continue goes
+/// on with the rest; abort ends it, and says that git keeps the commit made by hand.
+#[tokio::test]
+async fn a_sequence_committed_by_hand_continues_and_aborts() {
+    for abort in [false, true] {
+        let repo = TestRepo::new();
+        repo.write("clash.txt", "base\n");
+        repo.commit_all("base");
+        repo.branch("feature");
+        repo.checkout("feature");
+        repo.write("clash.txt", "feature\n");
+        repo.commit_all("feat clash");
+        repo.write("other.txt", "other\n");
+        repo.commit_all("feat other");
+        repo.checkout("main");
+        repo.write("clash.txt", "main\n");
+        let before = repo.commit_all("main side");
+        assert!(!repo.git_succeeds(&["cherry-pick", "feature~1", "feature"]));
+        repo.write("clash.txt", "resolved\n");
+        repo.git(&["add", "clash.txt"]);
+        repo.git(&["commit", "-q", "--no-edit"]);
+        let h = harness().await;
+        let snap = h.open(repo.path()).await;
+        let id = snap.repo_id;
+        assert_eq!(
+            snap.in_progress.map(|p| p.kind),
+            Some(InProgressKind::CherryPick)
+        );
+        let out = h
+            .run(
+                id,
+                if abort {
+                    OpRequest::Abort
+                } else {
+                    OpRequest::Continue
+                },
+            )
+            .await;
+        assert_eq!(out.status, OpStatus::Done, "{out:?}");
+        assert!(out.snapshot.in_progress.is_none());
+        assert!(!in_git_dir(&repo, "sequencer"));
+        if abort {
+            // git does not rewind over a commit made by hand, and the message says so.
+            assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), before);
+            assert!(
+                out.message.contains("without going back"),
+                "{}",
+                out.message
+            );
+        } else {
+            assert_eq!(read(&repo, "other.txt"), "other\n");
+            assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "feat other");
+        }
+    }
+}

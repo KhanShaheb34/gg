@@ -166,19 +166,16 @@ async fn push_sets_upstream_when_missing() {
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(out.message.contains("up to date"), "{}", out.message);
 
-    // A remote that does not exist is explained.
+    // A remote that does not exist is refused before git runs.
     let out = h.run(id, push("topic", "nope", false, false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
-        !out.message.starts_with("fatal:") && out.message.contains("\u{201c}nope\u{201d}"),
+        out.message
+            .contains("\u{201c}nope\u{201d} is not a remote of this repository"),
         "{}",
         out.message
     );
-    assert!(
-        out.detail
-            .unwrap()
-            .contains("does not appear to be a git repository")
-    );
+    assert_eq!((out.log_from, out.log_to), (0, 0));
 }
 
 #[tokio::test]
@@ -1446,4 +1443,56 @@ async fn close_during_a_user_fetch_says_a_fetch_runs() {
     assert!(!err.message.contains("operation"), "{}", err.message);
     let _ = tokio::time::timeout(TIMEOUT, fetch).await.expect("ends");
     h.m.close(id).await.expect("closes once the fetch is done");
+}
+
+/// A remote is named by one of the repository's remotes: a URL, a path or `x:y` in its
+/// place is refused with a plain line, before git runs.
+#[tokio::test]
+async fn only_the_repositorys_remotes_are_pushed_to() {
+    let (repo, origin, _other) = with_remote();
+    repo.git(&["tag", "v1"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+    let path = origin.path().to_str().unwrap().to_owned();
+    for remote in [
+        path.as_str(),
+        "https://example.invalid/r.git",
+        "origin:main",
+        "nope",
+    ] {
+        for request in [
+            push("main", remote, false, false),
+            OpRequest::PushTag {
+                name: "v1".into(),
+                remote: remote.into(),
+            },
+            OpRequest::DeleteTag {
+                name: "v1".into(),
+                remote: Some(remote.into()),
+            },
+            delete_remote_branch(remote, "main"),
+        ] {
+            let out = h
+                .run_confirmed(id, request.clone(), &[DangerKind::DeleteRemoteBranch])
+                .await;
+            assert_eq!(out.status, OpStatus::Failed, "{request:?}: {out:?}");
+            assert!(
+                out.message.contains("is not a remote of this repository"),
+                "{}",
+                out.message
+            );
+            assert!(
+                out.message.contains("origin"),
+                "names the remotes: {}",
+                out.message
+            );
+        }
+    }
+    assert!(
+        h.writes_since(mark).is_empty(),
+        "{:?}",
+        h.writes_since(mark)
+    );
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v1"]));
 }

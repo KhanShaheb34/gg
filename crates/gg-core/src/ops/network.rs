@@ -86,6 +86,35 @@ pub(crate) async fn upstream(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Ups
     }))
 }
 
+/// The repository's remotes, by name.
+async fn remotes(ctx: &OpCtx<'_>) -> Result<Vec<String>> {
+    let out = ctx.read(&["remote"]).await?;
+    Ok(out
+        .text()
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Why `remote` cannot be used, if it is not one of the repository's remotes (a URL, a
+/// path or `x:y` in its place): a plain line naming the remotes there are.
+pub(crate) async fn unknown_remote(ctx: &OpCtx<'_>, remote: &str) -> Result<Option<String>> {
+    let known = remotes(ctx).await?;
+    if known.iter().any(|r| r == remote) {
+        return Ok(None);
+    }
+    let there = if known.is_empty() {
+        "it has none".to_owned()
+    } else {
+        format!("its remotes: {}", known.join(", "))
+    };
+    Ok(Some(format!(
+        "\u{201c}{remote}\u{201d} is not a remote of this repository ({there})."
+    )))
+}
+
 /// The commit `full` (a full ref) points at, if it exists.
 pub(crate) async fn ref_commit(ctx: &OpCtx<'_>, full: &str) -> Result<Option<String>> {
     let out = ctx
@@ -291,11 +320,9 @@ async fn split_remote_branch(
     ctx: &OpCtx<'_>,
     remote_branch: &str,
 ) -> Result<Option<(String, String)>> {
-    let out = ctx.read(&["remote"]).await?;
-    Ok(out
-        .text()
-        .lines()
-        .map(str::trim)
+    Ok(remotes(ctx)
+        .await?
+        .iter()
         .filter_map(|remote| {
             let rest = remote_branch.strip_prefix(remote)?.strip_prefix('/')?;
             (!remote.is_empty() && !rest.is_empty()).then(|| (remote.to_owned(), rest.to_owned()))

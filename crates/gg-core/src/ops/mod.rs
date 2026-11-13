@@ -734,6 +734,11 @@ impl RepoManager {
             }
             _ => {}
         }
+        if let Some(remote) = remote_of(&request)
+            && let Some(why) = network::unknown_remote(&ctx, remote).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
         let dangers = dangers(&ctx, &request).await?;
         if !all_confirmed(&dangers, &confirmed, lease_of(&request)) {
             return Ok((title, Ran::Unconfirmed(dangers)));
@@ -761,6 +766,20 @@ fn all_confirmed(dangers: &[Danger], confirmed: &[DangerKind], lease: Option<&st
         confirmed.contains(&d.kind)
             && (d.kind != DangerKind::ForcePush || d.token.as_deref() == lease)
     })
+}
+
+/// The remote a request names, if any: it must be one of the repository's remotes.
+fn remote_of(request: &OpRequest) -> Option<&str> {
+    match request {
+        OpRequest::Push { remote, .. }
+        | OpRequest::PushTag { remote, .. }
+        | OpRequest::DeleteRemoteBranch { remote, .. }
+        | OpRequest::DeleteTag {
+            remote: Some(remote),
+            ..
+        } => Some(remote),
+        _ => None,
+    }
 }
 
 /// The lease a request carries (a push's).

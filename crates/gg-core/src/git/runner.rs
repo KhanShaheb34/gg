@@ -504,14 +504,15 @@ impl GitRunner {
     /// are kept (the pipes are still read to the end), and it gives up when `limit` is
     /// reached. Then git and everything it started (a remote helper, ssh) are killed, the
     /// command is logged as timed out, and the result is `Ok(Err(limit hit))`. On Unix git
-    /// runs in its own process group for this; elsewhere only git itself is killed.
+    /// runs in a session (and so a process group) of its own for this, without a
+    /// controlling terminal; elsewhere only git itself is killed.
     ///
     /// The group's id is git's pid, taken at spawn. On timeout the group is killed even when
     /// git has already exited (a helper it started still holding its output open): a group
-    /// id is not reused while the group has members. Then git is waited for. Its own group
-    /// also means that, under a terminal, a helper that tries to read the terminal (an ssh
-    /// passphrase prompt; git's own prompts are off) is stopped rather than prompting, until
-    /// the timeout kills it. In the app there is no terminal and such a prompt fails at once.
+    /// id is not reused while the group has members. Then git is waited for. Without a
+    /// controlling terminal, a helper that wants to ask on the terminal (an ssh passphrase
+    /// or host-key prompt; git's own prompts are off) cannot open it and fails at once,
+    /// whether or not the app was started from a terminal. Askpass helpers still work.
     pub async fn run_with_timeout(
         &self,
         cwd: &Path,
@@ -567,8 +568,23 @@ impl GitRunner {
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // A session of its own (R15): no controlling terminal, so nothing git starts (ssh)
+        // can open `/dev/tty` and wait there when the app was started from a terminal. The
+        // session leader also leads a new process group whose id is its pid, which the
+        // limits kill.
         #[cfg(unix)]
-        cmd.process_group(0);
+        {
+            // SAFETY: the closure runs in the forked child before exec and only calls
+            // setsid, which is async-signal-safe and touches no memory of the parent.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let fail = |e: io::Error| {
             let err = spawn_error(cwd, e);
             self.log
@@ -976,6 +992,51 @@ mod tests {
         let first = text[DROPPED_MARK.len()..].lines().next().unwrap();
         assert!(first.starts_with("line "), "starts mid-line: {first:?}");
         assert!(text.ends_with("line 19999\n"));
+    }
+
+    /// R15: a command run with a time limit (every network command) runs in a session of
+    /// its own, so it has no controlling terminal: ssh cannot open `/dev/tty` and wait there
+    /// when the app was started from a terminal. Seen from a shell git starts (an alias),
+    /// which shares git's session.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn limited_commands_run_in_a_session_of_their_own() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let alias = format!("alias.probe=!echo $$ > '{}'; sleep 3", pidfile.display());
+        let cwd = dir.path().to_path_buf();
+        let run = tokio::spawn(async move {
+            runner
+                .run_with_timeout(
+                    &cwd,
+                    &["-c", &alias, "probe"],
+                    CmdKind::Read,
+                    TimeLimit::total(Duration::from_secs(20)),
+                )
+                .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the alias ran");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        // SAFETY: getsid only reads a process's session id.
+        let (theirs, ours) = unsafe { (libc::getsid(pid), libc::getsid(0)) };
+        assert!(theirs > 0, "the shell is running");
+        assert_ne!(theirs, ours, "git runs in a session of its own");
+        let out = run.await.unwrap().unwrap().expect("finished");
+        assert_eq!(out.code, 0);
     }
 
     /// Output past the tail is read (so git is never blocked on a full pipe) and dropped.

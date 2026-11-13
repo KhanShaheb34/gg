@@ -5,12 +5,14 @@
 //! ```text
 //! scripts/gen-synthetic-repo.sh ~/.cache/gitgraph-perf/r20k 20000 200
 //! scripts/gen-synthetic-repo.sh ~/.cache/gitgraph-perf/r100k 100000 400
-//! GG_PERF_R20K=~/.cache/gitgraph-perf/r20k GG_PERF_R100K=~/.cache/gitgraph-perf/r100k \
+//! GG_PERF_R20K="$HOME/.cache/gitgraph-perf/r20k" GG_PERF_R100K="$HOME/.cache/gitgraph-perf/r100k" \
 //!   cargo test -p gg-core --release --test perf -- --ignored --nocapture
 //! ```
 //!
 //! A repository whose variable is unset is skipped with a printed notice, as is everything
-//! in a debug build.
+//! in a debug build. The two tests run one at a time (they would disturb each other's
+//! timings). Each opens its repository once untimed (printed as "first", the file cache may
+//! be cold), then three times timed; the targets apply to the median of the three.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,6 +24,9 @@ use gg_core::repo::RepoManager;
 use serde_json::Value;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Held by each test for its whole run, so the tests never overlap.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Records when each `repo-changed` event arrived and its row count and loading flag.
 #[derive(Default)]
@@ -116,6 +121,70 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
+/// Times of one open, ms from just before `open`.
+#[derive(Clone, Copy)]
+struct Timing {
+    /// `open` returned (refs, HEAD, worktrees and status read).
+    opened: f64,
+    /// First `repo-changed` with at least 500 rows.
+    first_rows: f64,
+    /// Final `repo-changed` (`loading: false`).
+    loaded: f64,
+}
+
+impl Opened {
+    fn timing(&self) -> Timing {
+        let first = self
+            .sink
+            .first(|rows, _| rows >= 500)
+            .unwrap_or(self.loaded);
+        Timing {
+            opened: ms(self.opened - self.started),
+            first_rows: ms(first - self.started),
+            loaded: ms(self.loaded - self.started),
+        }
+    }
+}
+
+/// Opens `path` once untimed and three times timed, each in a fresh manager. Prints every
+/// timing; returns the median of the timed ones (per measure) and the last open.
+async fn measure(name: &str, path: &Path) -> (Timing, Opened) {
+    let first = open_loaded(path).await.timing();
+    println!(
+        "perf {name}: first open (not asserted): open {:.1} ms, first >=500 rows {:.1} ms, \
+         fully loaded {:.1} ms",
+        first.opened, first.first_rows, first.loaded
+    );
+    let mut timings = Vec::new();
+    let mut last = None;
+    for run in 1..=3 {
+        let o = open_loaded(path).await;
+        let t = o.timing();
+        println!(
+            "perf {name}: timed open {run}: open {:.1} ms, first >=500 rows {:.1} ms, \
+             fully loaded {:.1} ms, {} rows",
+            t.opened, t.first_rows, t.loaded, o.total
+        );
+        timings.push(t);
+        last = Some(o);
+    }
+    let median = |f: fn(&Timing) -> f64| {
+        let mut v: Vec<f64> = timings.iter().map(f).collect();
+        v.sort_by(f64::total_cmp);
+        v[1]
+    };
+    let m = Timing {
+        opened: median(|t| t.opened),
+        first_rows: median(|t| t.first_rows),
+        loaded: median(|t| t.loaded),
+    };
+    println!(
+        "perf {name}: median of 3: open {:.1} ms, first >=500 rows {:.1} ms, fully loaded {:.1} ms",
+        m.opened, m.first_rows, m.loaded
+    );
+    (m, last.expect("three opens"))
+}
+
 /// Deterministic pseudo-random numbers (no extra crate for one test).
 struct Lcg(u64);
 
@@ -132,41 +201,29 @@ impl Lcg {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "release-only perf test; needs GG_PERF_R20K / GG_PERF_R100K"]
 async fn r20k_first_rows_and_full_load() {
+    let _serial = SERIAL.lock().await;
     let Some(path) = repo_path("GG_PERF_R20K") else {
         return;
     };
-    let o = open_loaded(&path).await;
-    let first = o
-        .sink
-        .first(|rows, _| rows >= 500)
-        .expect("a repo-changed event with 500 rows");
-    let first_ms = ms(first - o.started);
-    let loaded_ms = ms(o.loaded - o.started);
-    let events = o.sink.events.lock().unwrap().len();
-    println!(
-        "perf r20k: {} rows, open returned {:.1} ms, first >=500 rows {first_ms:.1} ms, \
-         fully loaded {loaded_ms:.1} ms, {events} repo-changed events",
-        o.total,
-        ms(o.opened - o.started)
-    );
+    let (m, o) = measure("r20k", &path).await;
     assert!(o.total >= 20_000);
-    assert!(first_ms < 300.0, "first 500 rows took {first_ms:.1} ms");
-    assert!(loaded_ms < 1_500.0, "full load took {loaded_ms:.1} ms");
+    assert!(
+        m.first_rows < 300.0,
+        "first 500 rows took {:.1} ms",
+        m.first_rows
+    );
+    assert!(m.loaded < 1_500.0, "full load took {:.1} ms", m.loaded);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "release-only perf test; needs GG_PERF_R20K / GG_PERF_R100K"]
 async fn r100k_full_load_rows_and_search() {
+    let _serial = SERIAL.lock().await;
     let Some(path) = repo_path("GG_PERF_R100K") else {
         return;
     };
-    let o = open_loaded(&path).await;
-    let loaded_ms = ms(o.loaded - o.started);
-    println!(
-        "perf r100k: {} rows, open returned {:.1} ms, fully loaded {loaded_ms:.1} ms",
-        o.total,
-        ms(o.opened - o.started)
-    );
+    let (m, o) = measure("r100k", &path).await;
+    let loaded_ms = m.loaded;
     assert!(o.total >= 100_000);
 
     let mut rng = Lcg(0x5eed);

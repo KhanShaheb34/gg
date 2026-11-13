@@ -631,7 +631,10 @@ async fn a_helper_that_outlives_git_is_killed_on_timeout() {
         .await
         .expect("the fetch was not given up")
         .unwrap();
-    let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_owned();
     let alive = || {
         std::process::Command::new("kill")
             .args(["-0", &pid])
@@ -642,7 +645,9 @@ async fn a_helper_that_outlives_git_is_killed_on_timeout() {
     };
     let gone = eventually(Duration::from_secs(5), || !alive()).await;
     if !gone {
-        let _ = std::process::Command::new("kill").args(["-9", &pid]).status();
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid])
+            .status();
     }
     assert!(gone, "the helper ({pid}) outlived the timed-out fetch");
 }

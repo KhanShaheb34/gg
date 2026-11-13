@@ -2,7 +2,7 @@
 //! `<config_dir>/state.json`.
 //!
 //! The file is read once, when the store is created; a missing file gives defaults and one
-//! that cannot be parsed is renamed to `state.json.bad` first. A file that exists but cannot
+//! that cannot be parsed is renamed to `state.json.bad-<ms>` first. A file that exists but cannot
 //! be read (permissions, say), or a corrupt one that cannot be moved aside, also gives
 //! defaults but is never written over: changes then apply for the running session only, and
 //! [`Store::problem`] says why, until [`Store::reset`] moves the file aside. Otherwise every
@@ -21,8 +21,9 @@ use crate::dto::{Recent, Session, Settings, Theme};
 use crate::error::{CoreError, ErrorCode, Result};
 
 const FILE_NAME: &str = "state.json";
-/// Where a file that could not be parsed is moved.
-const BAD_FILE_NAME: &str = "state.json.bad";
+/// Where a file that could not be parsed is moved: `state.json.bad-<unix ms>`, so an earlier
+/// one is kept.
+const BAD_FILE_PREFIX: &str = "state.json.bad-";
 /// Number of recents kept.
 const MAX_RECENTS: usize = 20;
 /// Allowed nonzero background fetch intervals, in seconds.
@@ -57,7 +58,7 @@ pub struct Store {
 
 impl Store {
     /// Loads `<config_dir>/state.json`. Never fails: a missing file gives defaults, and a
-    /// file that cannot be parsed is renamed to `state.json.bad` and gives defaults. A file
+    /// file that cannot be parsed is renamed to `state.json.bad-<ms>` and gives defaults. A file
     /// that cannot be read gives defaults too, and makes every change fail rather than
     /// replace it. The directory is created on the first write.
     pub fn load(config_dir: &Path) -> Self {
@@ -69,7 +70,8 @@ impl Store {
                 Err(parse) => {
                     // Kept for the user to look at. If it cannot be moved aside, it is not
                     // written over either.
-                    if let Err(e) = fs::rename(&path, config_dir.join(BAD_FILE_NAME)) {
+                    let aside = config_dir.join(format!("{BAD_FILE_PREFIX}{}", unix_ms()));
+                    if let Err(e) = fs::rename(&path, aside) {
                         unreadable = Some(format!(
                             "{} could not be parsed ({parse}) and could not be moved aside ({e})",
                             path.display()
@@ -124,16 +126,26 @@ impl Store {
             )
             .with_detail(e.to_string())
         })?;
-        *unreadable = None;
-        drop(unreadable);
+        // Saving resumes only once a save works; until then changes stay in memory.
         let data = self.lock();
-        self.write(&data).map_err(|e| {
-            CoreError::new(
-                ErrorCode::Io,
-                format!("Could not save settings to {}", self.dir.display()),
-            )
-            .with_detail(e.to_string())
-        })
+        match self.write(&data) {
+            Ok(()) => {
+                *unreadable = None;
+                Ok(())
+            }
+            Err(e) => {
+                *unreadable = Some(format!(
+                    "{} was moved aside to {}, but settings could not be saved ({e})",
+                    path.display(),
+                    aside.display()
+                ));
+                Err(CoreError::new(
+                    ErrorCode::Io,
+                    format!("Could not save settings to {}", self.dir.display()),
+                )
+                .with_detail(e.to_string()))
+            }
+        }
     }
 
     /// Most recent first.
@@ -329,6 +341,8 @@ mod tests {
     #[test]
     fn corrupt_file_is_set_aside() {
         let dir = tempfile::tempdir().unwrap();
+        // One set aside before must survive the next.
+        fs::write(dir.path().join("state.json.bad"), "older").unwrap();
         fs::write(dir.path().join("state.json"), "{ not json").unwrap();
         let store = Store::load(dir.path());
         assert!(store.recents().is_empty());
@@ -336,8 +350,47 @@ mod tests {
         assert!(!dir.path().join("state.json").exists());
         assert_eq!(
             fs::read_to_string(dir.path().join("state.json.bad")).unwrap(),
+            "older"
+        );
+        let aside: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("state.json.bad-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(&aside[0])).unwrap(),
             "{ not json"
         );
+    }
+
+    /// A reset that moves the file aside but cannot save keeps the session's changes in
+    /// memory and keeps saying why they are not saved, instead of failing every later save.
+    #[cfg(unix)]
+    #[test]
+    fn reset_that_cannot_save_keeps_saving_off() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(&path, "{}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let store = Store::load(dir.path());
+        // The temp file the write would create is taken by a folder.
+        fs::create_dir(
+            dir.path()
+                .join(format!("state.json.{}.tmp", std::process::id())),
+        )
+        .unwrap();
+        let err = store.reset().unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io);
+        let problem = store.problem().expect("still not saving");
+        assert!(problem.contains("could not be saved"), "{problem}");
+        store
+            .save_session(Session::default())
+            .expect("changes still apply in memory");
+        for entry in fs::read_dir(dir.path()).unwrap() {
+            let _ = fs::set_permissions(entry.unwrap().path(), fs::Permissions::from_mode(0o755));
+        }
     }
 
     #[test]

@@ -243,6 +243,27 @@ impl TestRepo {
         origin
     }
 
+    /// A clone of `remote` (a repository made by [`TestRepo::clone_as_remote`]), as another
+    /// user's: its own temp directory, the same identity, and commit dates and file names
+    /// that do not collide with the original's.
+    pub fn clone_of(remote: &TestRepo) -> TestRepo {
+        let repo = Self::in_new_tempdir("clone");
+        repo.commits.store(1000, Ordering::SeqCst);
+        repo.git_with(
+            &[
+                OsStr::new("clone"),
+                OsStr::new("-q"),
+                remote.path().as_os_str(),
+                OsStr::new("."),
+            ],
+            &[],
+        );
+        repo.git(&["config", "user.name", "Test"]);
+        repo.git(&["config", "user.email", "test@example.com"]);
+        repo.git(&["config", "commit.gpgsign", "false"]);
+        repo
+    }
+
     fn commit_with(&self, msg: &str, env: &[(&str, &str)]) -> String {
         let n = self.commits.load(Ordering::SeqCst);
         let file = format!("file-{n}.txt");

@@ -68,15 +68,18 @@ impl Schedule {
 }
 
 impl RepoManager {
-    /// Runs `git fetch --all --prune`, then refreshes. `fetch.running` is set (and
+    /// Runs `git fetch --all --prune`, then refreshes. It takes its turn in the repository's
+    /// operation queue: it waits for the operations asked for before it (counted in their
+    /// `op.queued`), and the ones asked for after it wait for it. `fetch.running` is set (and
     /// `repo-changed` emitted) before git starts; when it ends, `lastAtMs`, `lastError`
     /// (see [`fetch_error`]; "Fetch timed out" once git has written nothing for 120 s; `None`
     /// after a success) and `lastErrorDetail` (git's whole stderr) are set and emitted. git
     /// runs with `--progress`, so a long fetch that is getting somewhere keeps running. Only
     /// an unknown (or meanwhile closed) repository is an `Err`; a failed fetch, or a failed
     /// refresh after it, is `Ok`. Does nothing for a repository without remotes or while a
-    /// fetch is running. The fetch runs on its own task, so dropping the returned future does
-    /// not stop it and `running` is always cleared.
+    /// fetch is running or waiting for its turn. The fetch runs on its own task, so dropping
+    /// the returned future does not stop it and `running` is always cleared. While it waits
+    /// or runs, closing the repository is refused as `busy`, as during an operation.
     pub async fn fetch(self: &Arc<Self>, repo_id: u32) -> Result<()> {
         self.fetch_by(repo_id, Initiator::User).await
     }
@@ -101,6 +104,43 @@ impl RepoManager {
 
     async fn fetch_by(self: &Arc<Self>, repo_id: u32, initiator: Initiator) -> Result<()> {
         let repo = self.get(repo_id)?;
+        match initiator {
+            // A fetch the user asks for waits for the operations asked for before it, and
+            // holds up the ones asked for after it: it never runs beside one. It waits on
+            // its own task, so a caller that goes away leaves no count behind.
+            Initiator::User => {
+                if repo.user_fetch.swap(true, Ordering::SeqCst) {
+                    // The one waiting or running covers this one.
+                    return Ok(());
+                }
+                let m = self.clone();
+                let task = tokio::spawn(async move {
+                    repo.op_waiting.fetch_add(1, Ordering::SeqCst);
+                    m.op_queue_changed(&repo).await;
+                    let turn = repo.op_queue.lock().await;
+                    repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
+                    let done = m.start_fetch(repo.clone(), initiator).await;
+                    // Also when it did not run (no remotes, closed, one already running).
+                    repo.user_fetch.store(false, Ordering::SeqCst);
+                    drop(turn);
+                    done
+                });
+                task.await.unwrap_or(Ok(()))
+            }
+            // A scheduled one is skipped while an operation runs or waits; the next one
+            // comes an interval later.
+            Initiator::Schedule => {
+                if repo.op_waiting.load(Ordering::SeqCst) > 0 || repo.op_queue.try_lock().is_err() {
+                    return Ok(());
+                }
+                self.start_fetch(repo, initiator).await
+            }
+        }
+    }
+
+    /// Marks a fetch of `repo` as running and runs it (see [`RepoManager::fetch`]).
+    async fn start_fetch(self: &Arc<Self>, repo: Arc<Repo>, initiator: Initiator) -> Result<()> {
+        let repo_id = repo.identity.repo_id;
         let started = {
             let mut slot = repo.slot.write().await;
             if slot.closed {
@@ -167,6 +207,10 @@ impl RepoManager {
         };
         let finished = {
             let mut slot = repo.slot.write().await;
+            if initiator == Initiator::User {
+                // From here on, a fetch asked for is a new one.
+                repo.user_fetch.store(false, Ordering::SeqCst);
+            }
             slot.fetch = FetchState {
                 running: false,
                 last_error: error,

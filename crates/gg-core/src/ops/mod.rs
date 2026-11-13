@@ -10,6 +10,7 @@
 mod danger;
 mod explain;
 mod local;
+mod network;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -87,8 +88,6 @@ impl OpCtx<'_> {
     /// without output or 2 h in all (git and its helpers are killed; the output then has
     /// exit code -1 and ends with a line saying so), and the latest line of its progress is
     /// sent as `op-progress` events, at most 10 a second. Pass `--progress`.
-    // Network operations (push, pull) use it from Task 3 on.
-    #[allow(dead_code)]
     pub async fn git_net(&self, args: &[&str]) -> Result<GitOutput> {
         let progress = Progress::new(self.sink, self.repo.identity.repo_id, self.op_id);
         let run = self
@@ -226,13 +225,15 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
     let (title, body) = match request.clone() {
         OpRequest::CheckoutBranch {
             branch,
-            fast_forward: false,
+            fast_forward,
         } => {
             check_arg(&branch, "branch")?;
             (
                 fixed(format!("Check out {branch}")),
                 body(move |ctx, _| {
-                    Box::pin(async move { local::checkout_branch(ctx, &branch).await })
+                    Box::pin(
+                        async move { local::checkout_branch(ctx, &branch, fast_forward).await },
+                    )
                 }),
             )
         }
@@ -391,6 +392,89 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             (
                 fixed(format!("Delete tag {name}")),
                 body(move |ctx, _| Box::pin(async move { local::delete_tag(ctx, &name).await })),
+            )
+        }
+        OpRequest::DeleteTag {
+            name,
+            remote: Some(remote),
+        } => {
+            check_tag_name(&name)?;
+            check_arg(&remote, "remote")?;
+            (
+                fixed(format!("Delete tag {name} here and on {remote}")),
+                body(move |ctx, _| {
+                    Box::pin(
+                        async move { network::delete_tag_everywhere(ctx, &name, &remote).await },
+                    )
+                }),
+            )
+        }
+        OpRequest::PushTag { name, remote } => {
+            check_tag_name(&name)?;
+            check_arg(&remote, "remote")?;
+            (
+                fixed(format!("Push tag {name} to {remote}")),
+                body(move |ctx, _| {
+                    Box::pin(async move { network::push_tag(ctx, &name, &remote).await })
+                }),
+            )
+        }
+        OpRequest::Push {
+            branch,
+            remote,
+            set_upstream,
+            force,
+        } => {
+            check_branch_name(&branch)?;
+            check_arg(&remote, "remote")?;
+            let title = if force {
+                format!("Force push {branch} to {remote}")
+            } else {
+                format!("Push {branch} to {remote}")
+            };
+            (
+                fixed(title),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        network::push(ctx, &branch, &remote, set_upstream, force).await
+                    })
+                }),
+            )
+        }
+        OpRequest::Pull { branch, mode } => {
+            check_branch_name(&branch)?;
+            (
+                fixed(format!("Pull {branch}")),
+                body(move |ctx, _| {
+                    Box::pin(async move { network::pull(ctx, &branch, mode).await })
+                }),
+            )
+        }
+        OpRequest::FetchIntoLocal {
+            remote_branch,
+            local_name,
+        } => {
+            check_arg(&remote_branch, "remote branch")?;
+            check_branch_name(&local_name)?;
+            (
+                fixed(format!("Fetch {remote_branch} into {local_name}")),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        network::fetch_into_local(ctx, &remote_branch, &local_name).await
+                    })
+                }),
+            )
+        }
+        OpRequest::DeleteRemoteBranch { remote, branch } => {
+            check_arg(&remote, "remote")?;
+            check_branch_name(&branch)?;
+            (
+                fixed(format!("Delete branch {branch} on {remote}")),
+                body(move |ctx, _| {
+                    Box::pin(
+                        async move { network::delete_remote_branch(ctx, &remote, &branch).await },
+                    )
+                }),
             )
         }
         _ => {

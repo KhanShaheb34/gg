@@ -142,6 +142,9 @@ pub(crate) struct Repo {
     pub(crate) op_queue: tokio::sync::Mutex<()>,
     /// Operations waiting for their turn.
     pub(crate) op_waiting: AtomicU32,
+    /// A fetch the user asked for is waiting for its turn or running; another one asked for
+    /// meanwhile returns at once.
+    pub(super) user_fetch: AtomicBool,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -473,6 +476,7 @@ impl RepoManager {
             body_search: Mutex::new(None),
             op_queue: tokio::sync::Mutex::new(()),
             op_waiting: AtomicU32::new(0),
+            user_fetch: AtomicBool::new(false),
         });
 
         // Nobody else can hold this lock yet; holding it while registering the repository

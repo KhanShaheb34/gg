@@ -19,7 +19,16 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
             hash,
             mode: ResetMode::Hard,
         } => vec![hard_reset(ctx, hash).await?],
-        // The others carry none (the network and stash ones are added with them).
+        OpRequest::Push {
+            branch,
+            remote,
+            force: true,
+            ..
+        } => vec![force_push(ctx, branch, remote).await?],
+        OpRequest::DeleteRemoteBranch { remote, branch } => {
+            vec![remote_branch_deleted(ctx, remote, branch).await?]
+        }
+        // The others carry none (the stash ones are added with them).
         _ => Vec::new(),
     })
 }
@@ -99,6 +108,95 @@ async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>
         message,
         detail: None,
     }))
+}
+
+/// Most commits a danger's detail lists.
+const MAX_COMMITS_LISTED: &str = "10";
+
+/// `force_push`, always: it replaces `<remote>/<branch>` with the local branch. The message
+/// counts the commits there that the local branch lacks, as of the last fetch, which a
+/// force push discards (the detail lists them); `--force-with-lease` refuses if the remote
+/// has moved since that fetch.
+async fn force_push(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<Danger> {
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let local = format!("refs/heads/{branch}");
+    let shown = format!("{remote}/{branch}");
+    if !verifies(ctx, &tracking).await? {
+        return Ok(Danger {
+            kind: DangerKind::ForcePush,
+            message: format!(
+                "A force push replaces {branch} on {remote} with yours, whatever it holds. It \
+                 has not been fetched, so what it would discard is not known here."
+            ),
+            detail: None,
+        });
+    }
+    let mut only_there = vec![tracking.as_str()];
+    if verifies(ctx, &local).await? {
+        only_there.extend(["--not", local.as_str()]);
+    }
+    let mut count = vec!["rev-list", "--count"];
+    count.extend(&only_there);
+    let n: u64 = ctx.read(&count).await?.text().trim().parse().unwrap_or(0);
+    let message = match n {
+        0 => format!(
+            "A force push replaces {shown} with {branch}. As of the last fetch it has no \
+             commits that {branch} lacks, so nothing is discarded; if it has changed since, \
+             the push is refused."
+        ),
+        1 => format!(
+            "A force push replaces {shown} with {branch}, discarding 1 commit there that \
+             {branch} does not have (as of the last fetch)."
+        ),
+        n => format!(
+            "A force push replaces {shown} with {branch}, discarding {n} commits there that \
+             {branch} does not have (as of the last fetch)."
+        ),
+    };
+    let detail = if n == 0 {
+        None
+    } else {
+        let mut log = vec!["log", "--format=%h %s", "-n", MAX_COMMITS_LISTED];
+        log.extend(&only_there);
+        let listed = ctx.read(&log).await?.text();
+        Some(listed).filter(|l| !l.trim().is_empty())
+    };
+    Ok(Danger {
+        kind: DangerKind::ForcePush,
+        message,
+        detail,
+    })
+}
+
+/// `delete_remote_branch`, always: the branch goes for everyone who uses the remote. The
+/// message says how many of its commits (as last fetched) are on no local branch here.
+async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> Result<Danger> {
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let gone = format!(
+        "Deleting branch \u{201c}{branch}\u{201d} on {remote} removes it there, for everyone \
+         who uses {remote}."
+    );
+    let message = if verifies(ctx, &tracking).await? {
+        let out = ctx
+            .read(&["rev-list", "--count", &tracking, "--not", "--branches"])
+            .await?;
+        match out.text().trim().parse::<u64>().unwrap_or(0) {
+            0 => format!("{gone} Its commits are all on local branches here."),
+            1 => {
+                format!("{gone} 1 of its commits is on no local branch here, and is lost here too.")
+            }
+            n => format!(
+                "{gone} {n} of its commits are on no local branch here, and are lost here too."
+            ),
+        }
+    } else {
+        format!("{gone} It has not been fetched, so its commits are not known here.")
+    };
+    Ok(Danger {
+        kind: DangerKind::DeleteRemoteBranch,
+        message,
+        detail: None,
+    })
 }
 
 /// `refs/remotes/origin/x` as `origin/x`, `refs/heads/x` as `x`.

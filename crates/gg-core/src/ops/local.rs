@@ -10,7 +10,7 @@ use crate::dto::{
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{NO_BRANCH, nothing_to_do};
-use crate::ops::{OpCtx, Step, explain};
+use crate::ops::{OpCtx, Step, explain, network};
 
 /// The first 7 characters of `hash`, for messages.
 pub(crate) fn short(hash: &str) -> &str {
@@ -27,14 +27,25 @@ async fn run(ctx: &OpCtx<'_>, args: &[&str], done: String) -> Result<Step> {
     })
 }
 
-/// `checkout <branch> --`.
-pub(crate) async fn checkout_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
-    run(
+/// `checkout <branch> --`; with `fast_forward`, then brought up to its upstream if that is
+/// a fast-forward (see [`network::fast_forward_checked_out`]).
+pub(crate) async fn checkout_branch(
+    ctx: &OpCtx<'_>,
+    branch: &str,
+    fast_forward: bool,
+) -> Result<Step> {
+    let step = run(
         ctx,
         &["checkout", branch, "--"],
         format!("Checked out {branch}."),
     )
-    .await
+    .await?;
+    match step {
+        Step::Done(checked_out) if fast_forward => {
+            network::fast_forward_checked_out(ctx, branch, checked_out).await
+        }
+        other => Ok(other),
+    }
 }
 
 /// `checkout -b <local> --track refs/remotes/<remote_branch>`.
@@ -150,15 +161,21 @@ pub(crate) async fn stopped_kind(ctx: &OpCtx<'_>) -> Option<InProgressKind> {
     }
 }
 
-/// Runs `args`, a command that can stop on conflicts. `Ok(out)` if git exits 0; else the
-/// step it ended with: done if there was nothing to do, stopped if git is now in a state it
-/// was not in before (conflicts to resolve), else failed.
-async fn git_may_stop(
+/// Runs `args`, a command that can stop on conflicts (with `net`, one that talks to a
+/// remote: see [`OpCtx::git_net`]). `Ok(out)` if git exits 0; else the step it ended with:
+/// done if there was nothing to do, stopped if git is now in a state it was not in before,
+/// with conflicts to resolve, else failed.
+pub(crate) async fn git_may_stop(
     ctx: &OpCtx<'_>,
     args: &[&str],
+    net: bool,
 ) -> Result<std::result::Result<GitOutput, Step>> {
     let before = stopped_kind(ctx).await;
-    let out = ctx.git(args).await?;
+    let out = if net {
+        ctx.git_net(args).await?
+    } else {
+        ctx.git(args).await?
+    };
     if out.code == 0 {
         return Ok(Ok(out));
     }
@@ -241,7 +258,7 @@ pub(crate) async fn current_branch(ctx: &OpCtx<'_>) -> Result<Option<String>> {
 }
 
 /// The commit HEAD points at, if any.
-async fn head_commit(ctx: &OpCtx<'_>) -> Result<Option<String>> {
+pub(crate) async fn head_commit(ctx: &OpCtx<'_>) -> Result<Option<String>> {
     let out = ctx
         .read(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
         .await?;
@@ -322,7 +339,7 @@ pub(crate) async fn merge(
 
     let branch = current_branch(ctx).await?;
     let before = head_commit(ctx).await?;
-    let out = match git_may_stop(ctx, &args).await? {
+    let out = match git_may_stop(ctx, &args, false).await? {
         Ok(out) => out,
         Err(step) => return Ok(step),
     };
@@ -459,7 +476,7 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
         onto.to_owned()
     };
     let args = ["rebase", full.as_str()];
-    let out = match git_may_stop(ctx, &args).await? {
+    let out = match git_may_stop(ctx, &args, false).await? {
         Ok(out) => out,
         Err(step) => return Ok(step),
     };
@@ -486,7 +503,7 @@ pub(crate) async fn cherry_pick(
     args.push(hash);
     let into = current_branch(ctx).await?;
     let into = into.as_deref().unwrap_or("detached HEAD");
-    if let Err(step) = git_may_stop(ctx, &args).await? {
+    if let Err(step) = git_may_stop(ctx, &args, false).await? {
         return Ok(step);
     }
     Ok(Step::Done(if no_commit {
@@ -507,7 +524,7 @@ pub(crate) async fn revert(ctx: &OpCtx<'_>, hash: &str, mainline: Option<u32>) -
         args.extend(["-m", n]);
     }
     args.push(hash);
-    if let Err(step) = git_may_stop(ctx, &args).await? {
+    if let Err(step) = git_may_stop(ctx, &args, false).await? {
         return Ok(step);
     }
     Ok(Step::Done(format!(

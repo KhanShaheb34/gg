@@ -36,21 +36,6 @@ async fn checkout_branch_switches_to_it() {
 }
 
 #[tokio::test]
-async fn checkout_branch_with_fast_forward_is_not_built_yet() {
-    let repo = TestRepo::new();
-    repo.commit("one");
-    repo.branch("x");
-    let h = harness().await;
-    let id = h.open(repo.path()).await.repo_id;
-    let request = OpRequest::CheckoutBranch {
-        branch: "x".into(),
-        fast_forward: true,
-    };
-    let err = h.m.run_op(id, request, &[]).await.unwrap_err();
-    assert_eq!(err.code, ErrorCode::BadRequest);
-}
-
-#[tokio::test]
 async fn checkout_remote_makes_a_tracking_branch() {
     let repo = TestRepo::new();
     repo.commit("one");
@@ -1259,12 +1244,15 @@ async fn delete_tag_deletes_it_locally() {
         name: "v1".into(),
         remote: remote.map(str::to_owned),
     };
-    // On a remote too: the network part comes with the network operations.
-    let err =
-        h.m.run_op(id, request(Some("origin")), &[])
-            .await
-            .unwrap_err();
-    assert_eq!(err.code, ErrorCode::BadRequest);
+    // On a remote too: the remote goes first, so when it fails the tag stays here.
+    let out = h.run(id, request(Some("origin"))).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("\u{201c}origin\u{201d}"),
+        "{}",
+        out.message
+    );
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v1"]));
 
     let out = h.run(id, request(None)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");

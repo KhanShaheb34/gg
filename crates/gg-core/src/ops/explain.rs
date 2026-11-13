@@ -18,6 +18,41 @@ pub(crate) const NO_BRANCH: &str = "No branch is checked out (HEAD is detached),
                                     is no current branch to do this on. Check out a branch \
                                     first.";
 
+/// Said when a push is rejected because the remote branch has commits the local one lacks.
+pub(crate) const REMOTE_AHEAD: &str = "The remote has commits you don't have: fetch them, \
+                                       and merge or rebase (pull) before pushing again, or \
+                                       force push to discard them.";
+
+/// Said when a force push with lease is refused because the remote branch moved.
+pub(crate) const REMOTE_MOVED: &str = "The remote branch has changed since your last fetch, \
+                                       so the force push was refused (it would have \
+                                       discarded commits you have not seen). Fetch, look at \
+                                       what is new, then decide again.";
+
+/// Said when a remote cannot be reached at all.
+const UNREACHABLE: &str = "The remote could not be reached. Check the network connection \
+                           and the remote's address.";
+
+/// Said when git needs credentials it has no way to get.
+const NEEDS_CREDENTIALS: &str = "The remote asks for a username and password (or token), \
+                                 and git has none stored for it. This app cannot type them \
+                                 in: set up a credential helper or an SSH key, or run the \
+                                 command once in a terminal to store them.";
+
+/// Said when the remote refuses the credentials git gave it.
+const AUTH_FAILED: &str = "The remote refused the username and password (or token) git gave \
+                           it. Update the credentials stored for it, then try again.";
+
+/// Said when an SSH server refuses every key offered.
+const SSH_KEY_REFUSED: &str = "The SSH server refused your key (permission denied). Check \
+                               that your key is loaded (ssh-add) and added to your account \
+                               on the server.";
+
+/// Said when ssh does not know, or no longer trusts, the server's host key.
+const HOST_KEY: &str = "ssh refused to connect: the server's host key is not known here, or \
+                        it has changed. Connect once with ssh in a terminal to check and \
+                        accept it.";
+
 /// Most file names an explanation lists; the rest are counted.
 const MAX_FILES_LISTED: usize = 10;
 
@@ -82,6 +117,9 @@ pub(crate) fn nothing_to_do(args: &[&str], out: &GitOutput) -> Option<String> {
 fn known_failure(args: &[&str], all: &str) -> Option<String> {
     if lock_file_exists(all) {
         return Some(LOCKED.to_owned());
+    }
+    if let Some(network) = network_failure(args, all) {
+        return Some(network);
     }
     if let Some((what, files)) = files_in_the_way(
         all,
@@ -164,6 +202,139 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
         ));
     }
     None
+}
+
+/// How a push or fetch was rejected, from git's ` ! [rejected]  a -> b (reason)` lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rejected {
+    /// The remote branch has commits the pushed one lacks ("fetch first",
+    /// "non-fast-forward" on a push).
+    RemoteAhead,
+    /// `--force-with-lease` found the remote branch moved ("stale info").
+    StaleInfo,
+    /// The remote has a tag of that name elsewhere ("already exists").
+    TagExists,
+}
+
+/// The first rejection in a push's output `all`, if any.
+pub(crate) fn push_rejected(all: &str) -> Option<Rejected> {
+    all.lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("! [rejected]") || l.starts_with("! [remote rejected]"))
+        .find_map(|l| {
+            if l.ends_with("(fetch first)") || l.ends_with("(non-fast-forward)") {
+                Some(Rejected::RemoteAhead)
+            } else if l.ends_with("(stale info)") {
+                Some(Rejected::StaleInfo)
+            } else if l.ends_with("(already exists)") {
+                Some(Rejected::TagExists)
+            } else {
+                None
+            }
+        })
+}
+
+/// Whether a pull failed because the branches diverged and no way to reconcile them is
+/// configured (`pull.rebase`, `pull.ff`).
+pub(crate) fn needs_pull_mode(all: &str) -> bool {
+    all.contains("Need to specify how to reconcile divergent branches")
+}
+
+/// The explanation of a failure to reach, or be let into, a remote, or of a push or fetch
+/// the remote or git rejected.
+fn network_failure(args: &[&str], all: &str) -> Option<String> {
+    let has = |needle: &str| all.contains(needle);
+    if let Some(line) = all
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("Timed out: "))
+    {
+        let why = line.trim_start_matches("Timed out: ").trim_end_matches('.');
+        return Some(format!(
+            "The remote took too long to answer, so the command was stopped ({why})."
+        ));
+    }
+    if has("could not read Username for") || has("could not read Password for") {
+        return Some(NEEDS_CREDENTIALS.to_owned());
+    }
+    if has("Authentication failed for") {
+        return Some(AUTH_FAILED.to_owned());
+    }
+    if has("Permission denied (publickey") {
+        return Some(SSH_KEY_REFUSED.to_owned());
+    }
+    if has("Host key verification failed") {
+        return Some(HOST_KEY.to_owned());
+    }
+    let unreachable = [
+        "Could not resolve host",
+        "Couldn't connect to server",
+        "Connection refused",
+        "Connection timed out",
+        "Operation timed out",
+        "Network is unreachable",
+        "No route to host",
+        "Failed to connect to",
+    ];
+    if unreachable.iter().any(|n| has(n)) {
+        return Some(UNREACHABLE.to_owned());
+    }
+    for line in all.lines().map(str::trim) {
+        if let Some(name) = between(line, "fatal: '", "' does not appear to be a git repository") {
+            return Some(format!(
+                "No git repository was found at \u{201c}{name}\u{201d}: there is no remote \
+                 of that name, or the remote's address is wrong, or the repository is gone."
+            ));
+        }
+        if let Some(rest) = line.strip_prefix("fatal: refusing to fetch into branch 'refs/heads/")
+            && let Some((branch, path)) = rest.split_once("' checked out at '")
+        {
+            let path = path.strip_suffix('\'').unwrap_or(path);
+            return Some(format!(
+                "Branch \u{201c}{branch}\u{201d} is checked out (at {path}), and git does not \
+                 move a checked-out branch by fetching into it: pull it instead."
+            ));
+        }
+        if line == "There is no tracking information for the current branch." {
+            return Some(
+                "The current branch has no upstream branch, so there is nothing to pull from: \
+                 push it with an upstream first, or set one."
+                    .to_owned(),
+            );
+        }
+    }
+    if needs_pull_mode(all) {
+        return Some(
+            "This branch and its upstream have diverged: choose whether to pull by merging or \
+             by rebasing."
+                .to_owned(),
+        );
+    }
+    match args.first() {
+        Some(&"push") => match push_rejected(all)? {
+            Rejected::RemoteAhead => Some(REMOTE_AHEAD.to_owned()),
+            Rejected::StaleInfo => Some(REMOTE_MOVED.to_owned()),
+            Rejected::TagExists => Some(
+                "The remote already has a tag of that name, on another commit. A push does \
+                 not move tags: delete it on the remote first if it is to change."
+                    .to_owned(),
+            ),
+        },
+        Some(&"fetch") => all
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("! [rejected]") && l.ends_with("(non-fast-forward)"))
+            .find_map(|l| {
+                let (_, dst) = l.split_once("->")?;
+                let dst = dst.trim().trim_end_matches("(non-fast-forward)").trim();
+                Some(format!(
+                    "Branch \u{201c}{dst}\u{201d} has commits of its own that the remote \
+                     branch does not have, so it cannot simply be moved forward to it (not a \
+                     fast-forward). Check it out and pull, to merge or rebase."
+                ))
+            }),
+        _ => None,
+    }
 }
 
 /// What would overwrite files, and the files git lists (tab-indented lines) after the line
@@ -311,6 +482,85 @@ mod tests {
             file_list(&many),
             "f0, f1, f2, f3, f4, f5, f6, f7, f8, f9 and 2 more"
         );
+    }
+
+    fn message(args: &[&str], stderr: &str) -> String {
+        match explain(args, &failed(stderr, "")) {
+            Step::Failed { message, .. } => message,
+            other => panic!("not failed: {other:?}"),
+        }
+    }
+
+    /// git's wording for failures that cannot be reproduced without a real server: an SSH
+    /// server refusing the key, an unknown host key, a host name that does not resolve and
+    /// a connection that times out (from git 2.54 and OpenSSH, as printed on macOS).
+    #[test]
+    fn ssh_and_dns_failures_are_explained() {
+        let push = [
+            "push",
+            "--progress",
+            "origin",
+            "refs/heads/main:refs/heads/main",
+        ];
+        let publickey = "git@github.com: Permission denied (publickey).\r\n\
+                         fatal: Could not read from remote repository.\n\n\
+                         Please make sure you have the correct access rights\n\
+                         and the repository exists.\n";
+        assert_eq!(message(&push, publickey), SSH_KEY_REFUSED);
+        let host_key = "No ED25519 host key is known for example.com and you have requested \
+                        strict checking.\r\nHost key verification failed.\r\n\
+                        fatal: Could not read from remote repository.\n";
+        assert_eq!(message(&push, host_key), HOST_KEY);
+        let ssh_dns = "ssh: Could not resolve hostname nowhere.invalid: nodename nor servname \
+                       provided, or not known\r\nfatal: Could not read from remote \
+                       repository.\n";
+        assert_eq!(message(&push, ssh_dns), UNREACHABLE);
+        let https_dns = "fatal: unable to access 'https://nowhere.invalid/r.git/': Could not \
+                         resolve host: nowhere.invalid\n";
+        assert_eq!(message(&push, https_dns), UNREACHABLE);
+        let ssh_timeout = "ssh: connect to host example.com port 22: Operation timed out\r\n\
+                           fatal: Could not read from remote repository.\n";
+        assert_eq!(message(&push, ssh_timeout), UNREACHABLE);
+        let https_timeout = "fatal: unable to access 'https://example.com/r.git/': Failed to \
+                             connect to example.com port 443 after 75004 ms: Couldn't connect \
+                             to server\n";
+        assert_eq!(message(&push, https_timeout), UNREACHABLE);
+    }
+
+    #[test]
+    fn a_timed_out_network_command_is_explained() {
+        let out = format!(
+            "Writing objects:  10% (1/10)\n{}",
+            timed_out(Expired::Idle(Duration::from_secs(120)))
+        );
+        assert_eq!(
+            message(&["push"], &out),
+            "The remote took too long to answer, so the command was stopped (no output from \
+             git for 2 min)."
+        );
+    }
+
+    #[test]
+    fn push_rejections_are_told_apart() {
+        let line = |reason: &str| format!("To o\n ! [rejected]        main -> main ({reason})\n");
+        assert_eq!(
+            push_rejected(&line("fetch first")),
+            Some(Rejected::RemoteAhead)
+        );
+        assert_eq!(
+            push_rejected(&line("non-fast-forward")),
+            Some(Rejected::RemoteAhead)
+        );
+        assert_eq!(
+            push_rejected(&line("stale info")),
+            Some(Rejected::StaleInfo)
+        );
+        assert_eq!(
+            push_rejected(&line("already exists")),
+            Some(Rejected::TagExists)
+        );
+        assert_eq!(push_rejected(&line("something new")), None);
+        assert_eq!(push_rejected("Everything up-to-date\n"), None);
     }
 
     #[test]

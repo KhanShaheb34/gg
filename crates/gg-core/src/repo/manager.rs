@@ -610,9 +610,20 @@ impl RepoManager {
         self.apply(repo, info, None, None).await.map(|_| ())
     }
 
-    /// Closes a repository and stops its background load and its watcher.
+    /// Closes a repository and stops its background load and its watcher. `busy` while an
+    /// operation runs on it or waits for its turn: reopened, the repository would get a
+    /// queue of its own, and two operations could run on it at once.
     pub async fn close(&self, repo_id: u32) -> Result<()> {
-        let repo = lock(&self.repos)
+        let repo = self.get(repo_id)?;
+        // Held until the repository is marked closed: an operation that takes its turn
+        // after this finds it closed and runs nothing.
+        let Ok(_idle) = repo.op_queue.try_lock() else {
+            return Err(busy_with_op());
+        };
+        if repo.op_waiting.load(Ordering::SeqCst) > 0 {
+            return Err(busy_with_op());
+        }
+        lock(&self.repos)
             .remove(&repo_id)
             .ok_or_else(|| unknown_repo(repo_id))?;
         drop(lock(&repo.watcher).take());
@@ -1296,6 +1307,13 @@ fn bare_repo() -> CoreError {
     CoreError::new(
         ErrorCode::BareRepo,
         "This folder is a bare repository, which has no working tree to show.",
+    )
+}
+
+fn busy_with_op() -> CoreError {
+    CoreError::new(
+        ErrorCode::Busy,
+        "An operation is running on this repository. Close it once the operation is done.",
     )
 }
 

@@ -525,3 +525,45 @@ async fn a_panicking_body_still_ends_its_operation() {
         "{changes:#?}"
     );
 }
+
+/// Closing a repository while an operation runs or waits is refused: reopened, it would get
+/// a queue of its own and two operations could run at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_is_refused_while_an_operation_runs_or_waits() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_op_delay(Duration::from_millis(600));
+
+    let first = tokio::spawn({
+        let (m, head) = (h.m.clone(), head.clone());
+        async move { m.run_op(id, create_branch("a", &head), &[]).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("running");
+    let err = h.m.close(id).await.expect_err("busy while running");
+    assert_eq!(err.code, ErrorCode::Busy);
+    assert!(!err.message.is_empty());
+
+    let second = tokio::spawn({
+        let (m, head) = (h.m.clone(), head.clone());
+        async move { m.run_op(id, create_branch("b", &head), &[]).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"]["queued"] == 1
+        })
+        .await
+        .expect("queued");
+    first.await.unwrap().expect("first");
+    // The second may be waiting or running by now; either way the repository is busy.
+    assert_eq!(h.m.close(id).await.unwrap_err().code, ErrorCode::Busy);
+    second.await.unwrap().expect("second");
+
+    h.m.close(id).await.expect("closes once idle");
+}

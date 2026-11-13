@@ -93,3 +93,35 @@ for (const theme of ["light", "dark"] as const) {
     await page.screenshot({ path: path.join(OUT, `toolbar-search-${theme}.png`) });
   });
 }
+
+for (const theme of ["light", "dark"] as const) {
+  test(`details panel, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("details"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    const panel = page.getByRole("region", { name: "Commit details" });
+    const shot = async (name: string) => {
+      await expect(panel.getByTestId("details-files-count")).toBeVisible();
+      await page.mouse.move(1270, 60);
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+    };
+
+    // A normal commit: added, modified, renamed and binary files, a message with a body.
+    await grid.locator('[role="row"]', { hasText: "Rework peaches routes" }).click();
+    await shot("details");
+
+    // A merge commit: two parents, files against the first.
+    await grid.locator('[role="row"]', { hasText: "Merge branch 'side'" }).click();
+    await shot("details-merge");
+
+    // A long message and many files, as a flat list.
+    await grid.locator('[role="row"]', { hasText: "Generate the module scaffolding" }).click();
+    await shot("details-long");
+    await panel.getByRole("button", { name: "List" }).click();
+    await shot("details-list");
+    await panel.getByRole("button", { name: "Tree" }).click();
+  });
+}

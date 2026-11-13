@@ -124,7 +124,7 @@ describe("layout constants (single source)", () => {
     expect(HEADER_H).toBe(28);
     expect(GRAPH_PAD).toBe(6);
     expect(LANE_COLORS).toBe(10);
-    expect(OVERSCAN).toBe(10);
+    expect(OVERSCAN).toBe(6);
     expect(PREFETCH).toBe(400);
   });
 });

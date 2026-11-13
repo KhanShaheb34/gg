@@ -19,8 +19,11 @@ export const GRAPH_MIN_AUTO_W = 52;
 export const GRAPH_MAX_AUTO_W = 240;
 /** Number of lane colours (`--lane-0` … `--lane-9`). */
 export const LANE_COLORS = 10;
-/** Rows rendered above and below the viewport. */
-export const OVERSCAN = 10;
+/**
+ * Rows rendered above and below the viewport. With POOL_STEP rows more in the container,
+ * the rendered rows are as many as with 10 and no step, so the layer costs no more memory.
+ */
+export const OVERSCAN = 6;
 /** Rows loaded ahead in the direction of scrolling. */
 export const PREFETCH = 400;
 /** Most px of rows the scroll content may hold; browsers break somewhere above 16M. */

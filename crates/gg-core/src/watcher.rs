@@ -54,7 +54,7 @@ pub fn watch_git_dir(
     let runtime = tokio::runtime::Handle::try_current().map_err(|e| {
         CoreError::new(ErrorCode::Io, "no async runtime").with_detail(e.to_string())
     })?;
-    let git_dir = std::fs::canonicalize(common_git_dir).map_err(|e| {
+    let git_dir = dunce::canonicalize(common_git_dir).map_err(|e| {
         CoreError::new(
             ErrorCode::PathMissing,
             format!("Folder not found: {}", common_git_dir.display()),

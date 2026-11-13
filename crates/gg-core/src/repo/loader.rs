@@ -1,6 +1,7 @@
 //! The background task that reads a repository's log into its state, batch by batch.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -22,19 +23,55 @@ pub(super) fn start_load(repo: &Arc<Repo>, slot: &mut Slot, sink: &Arc<dyn Event
     }
     slot.load_id += 1;
     slot.load_failed = false;
-    repo.loading.send_replace(true);
+    repo.loading.send_replace(Some(slot.load_id));
     let args = slot.pending.as_ref().unwrap_or(&slot.current).log_args();
-    let task = tokio::spawn(load(repo.clone(), sink.clone(), slot.load_id, args));
+    // Made here, outside the task, so it also runs if the task is dropped before it starts.
+    let guard = LoadGuard {
+        repo: repo.clone(),
+        load_id: slot.load_id,
+        finished: false,
+    };
+    let task = tokio::spawn(load(guard, sink.clone(), args));
     if let Some(old) = lock(&repo.load_task).replace(task) {
         old.abort();
     }
 }
 
-/// Reads the log and appends each batch to the state while this load is the newest one.
-/// The first batch of a reload swaps the pending state in, so the old rows are served until
-/// then. Emits progress after the first 500 rows, then at most every 150 ms, and a final
-/// snapshot with `loading: false`; a failed load also emits `repo-error`.
-async fn load(repo: Arc<Repo>, sink: Arc<dyn EventSink>, load_id: u64, args: Vec<String>) {
+/// Clears `loading` when a load ends without finishing (a panic, an abort) while it is
+/// still the newest load, and records it as abandoned so the next refresh reloads.
+struct LoadGuard {
+    repo: Arc<Repo>,
+    load_id: u64,
+    finished: bool,
+}
+
+impl Drop for LoadGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let (repo, id) = (&self.repo, self.load_id);
+        repo.loading.send_if_modified(|loading| {
+            if *loading != Some(id) {
+                return false; // superseded or closed: someone else owns `loading`
+            }
+            repo.abandoned_load.store(id, Ordering::SeqCst);
+            *loading = None;
+            true
+        });
+    }
+}
+
+/// Reads the log and appends each batch while this load is the newest one, then emits a
+/// final snapshot with `loading: false` (a failed load also emits `repo-error`).
+///
+/// The first load of a repository fills the served state directly, emitting progress after
+/// the first 500 rows and then at most every 150 ms. A reload fills its pending state while
+/// the old rows stay served, and swaps it in (emitting at once) when it has as many rows as
+/// the old view or when it finishes, so a reload never shrinks the view mid-scroll.
+async fn load(mut guard: LoadGuard, sink: Arc<dyn EventSink>, args: Vec<String>) {
+    let repo = guard.repo.clone();
+    let load_id = guard.load_id;
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Commit>>();
     let read = read_log(&repo.runner, &repo.worktree, &args, move |batch| {
         // Fails only once the consumer below has stopped because this load was superseded.
@@ -44,15 +81,32 @@ async fn load(repo: Arc<Repo>, sink: Arc<dyn EventSink>, load_id: u64, args: Vec
         let mut progress = Progress::new();
         while let Some(batch) = rx.recv().await {
             let to_emit = {
-                let mut slot = repo.slot.write().await;
+                let mut guard = repo.slot.write().await;
+                let slot = &mut *guard;
                 if slot.load_id != load_id {
                     return false;
                 }
-                slot.promote_pending();
-                slot.current.append(batch);
-                progress
-                    .due(slot.current.total_rows())
-                    .then(|| slot.snapshot_to_emit(&repo.identity, true))
+                let emit = match slot.pending.as_mut() {
+                    Some(pending) => {
+                        pending.append(batch);
+                        let caught_up = pending.total_rows() >= slot.current.total_rows();
+                        if caught_up {
+                            slot.promote_pending();
+                            progress.emitted_now();
+                        }
+                        caught_up
+                    }
+                    None => {
+                        let shifted = slot.current.append(batch);
+                        if shifted {
+                            // The uncommitted row was inserted at index 0.
+                            slot.current.generation += 1;
+                            progress.emitted_now();
+                        }
+                        shifted || progress.due(slot.current.total_rows())
+                    }
+                };
+                emit.then(|| slot.snapshot_to_emit(&repo.identity, true))
             };
             if let Some(stamped) = to_emit {
                 repo.publish(sink.as_ref(), stamped);
@@ -69,10 +123,11 @@ async fn load(repo: Arc<Repo>, sink: Arc<dyn EventSink>, load_id: u64, args: Vec
         if slot.load_id != load_id {
             return;
         }
-        // A reload whose log came back empty (or failed) still replaces the old state.
+        // A reload that never caught up (a smaller view, or a failure) swaps in now.
         slot.promote_pending();
         slot.load_failed = result.is_err();
-        repo.loading.send_replace(false);
+        repo.loading.send_replace(None);
+        guard.finished = true;
         slot.snapshot_to_emit(&repo.identity, false)
     };
     if let Err(error) = result {
@@ -84,7 +139,7 @@ async fn load(repo: Arc<Repo>, sink: Arc<dyn EventSink>, load_id: u64, args: Vec
     repo.publish(sink.as_ref(), to_emit);
 }
 
-/// Decides when a load reports progress.
+/// Decides when the first load of a repository reports progress.
 struct Progress {
     /// When the last progress event went out; `None` before the first.
     last: Option<Instant>,
@@ -102,9 +157,14 @@ impl Progress {
             Some(at) => at.elapsed() >= EVENT_INTERVAL,
         };
         if due {
-            self.last = Some(Instant::now());
+            self.emitted_now();
         }
         due
+    }
+
+    /// Records an event emitted for another reason, so progress waits 150 ms from it.
+    fn emitted_now(&mut self) {
+        self.last = Some(Instant::now());
     }
 }
 
@@ -119,8 +179,10 @@ mod tests {
         assert!(!p.due(499));
         assert!(p.due(500));
         assert!(!p.due(900), "less than 150 ms since the last event");
-        p.last = Some(Instant::now() - EVENT_INTERVAL);
+        p.last = Instant::now().checked_sub(EVENT_INTERVAL);
         assert!(p.due(901));
         assert!(!p.due(902));
+        p.emitted_now();
+        assert!(!p.due(903));
     }
 }

@@ -100,8 +100,10 @@ impl RepoState {
         !tips(&self.info, &self.view).is_empty()
     }
 
-    /// Appends commits read from the log (newest first) and lays them out.
-    pub fn append(&mut self, commits: Vec<Commit>) {
+    /// Appends commits read from the log (newest first) and lays them out. Returns `true`
+    /// when this inserted the uncommitted row at index 0 (HEAD's commit arrived in a view
+    /// that does not select it directly), shifting every row index.
+    pub fn append(&mut self, commits: Vec<Commit>) -> bool {
         self.commits.reserve(commits.len());
         self.layouts.reserve(commits.len());
         for commit in commits {
@@ -114,6 +116,11 @@ impl RepoState {
                 .insert(commit.hash.clone(), self.commits.len() as u32);
             self.commits.push(commit);
         }
+        if self.uncommitted.is_none() && self.wanted_uncommitted().is_some() {
+            self.relayout();
+            return true;
+        }
+        false
     }
 
     /// Replaces refs, worktrees, status and view options (normalized against the new refs),
@@ -126,7 +133,7 @@ impl RepoState {
         }
         self.info = info;
         self.view = view;
-        if uncommitted_parent(&self.info) != self.uncommitted {
+        if self.wanted_uncommitted() != self.uncommitted {
             self.relayout();
         }
         self.rebuild_labels();
@@ -135,16 +142,15 @@ impl RepoState {
 
     /// Whether moving to `info` and `view` needs the log read again, because the set of
     /// commits reachable from the selected tips may differ from the commits this state has
-    /// (or will have, once its load finishes): a selected tip went away, a new tip is not a
-    /// known commit, or HEAD moved to a commit that is not known.
+    /// (or will have, once its load finishes): a selected tip went away, or a new tip is not
+    /// a known commit. HEAD needs no rule of its own: with all branches shown it is one of
+    /// the tips, and with selected branches it is not part of the log at all.
     pub fn needs_reload(&self, info: &RepoInfo, view: &ViewOptions) -> bool {
         let view = normalize_view(view.clone(), info);
         let old = tips(&self.info, &self.view);
         let new = tips(info, &view);
         let known = |hash: &str| old.contains(hash) || self.index.contains_key(hash);
-        let head_moved_away = info.head.hash != self.info.head.hash
-            && info.head.hash.as_deref().is_some_and(|h| !known(h));
-        old.iter().any(|t| !new.contains(t)) || new.iter().any(|t| !known(t)) || head_moved_away
+        old.iter().any(|t| !new.contains(t)) || new.iter().any(|t| !known(t))
     }
 
     pub fn total_rows(&self) -> u32 {
@@ -272,7 +278,7 @@ impl RepoState {
     /// Lays out every row again from scratch: the uncommitted row (if any), then the
     /// commits. Needed when the uncommitted row appears, disappears or changes parent.
     fn relayout(&mut self) {
-        self.uncommitted = uncommitted_parent(&self.info);
+        self.uncommitted = self.wanted_uncommitted();
         self.allocator = LaneAllocator::new();
         self.layouts.clear();
         self.layouts
@@ -284,6 +290,18 @@ impl RepoState {
         for c in &self.commits {
             self.layouts.push(self.allocator.push(&c.hash, &c.parents));
         }
+    }
+
+    /// The parent of the uncommitted row, if there should be one: the active worktree has
+    /// changes, HEAD has a commit, and that commit belongs to the view (all branches are
+    /// shown, HEAD is a selected tip, or its commit has been loaded). Otherwise the row
+    /// would draw a line to a commit that never comes.
+    fn wanted_uncommitted(&self) -> Option<String> {
+        let head = uncommitted_parent(&self.info)?;
+        let in_view = self.view.branches.is_none()
+            || self.index.contains_key(&head)
+            || tips(&self.info, &self.view).contains(head.as_str());
+        in_view.then_some(head)
     }
 
     fn rebuild_labels(&mut self) {
@@ -893,27 +911,96 @@ mod tests {
     }
 
     #[test]
-    fn head_outside_the_selection_reloads_only_when_unknown() {
-        let feature = ViewOptions {
-            branches: Some(vec!["feature".into()]),
-            ..all()
-        };
+    fn head_outside_the_selection_never_reloads() {
+        let feature = feature_view();
         let mut s = RepoState::new(info(), feature.clone(), 1);
-        s.append(vec![
-            commit('c', &['a'], "Feature work", "Grace"),
-            commit('a', &[], "Initial", "Linus"),
-        ]);
+        s.append(feature_log());
         let mut i = info();
         i.head.hash = Some(h('a'));
         assert!(
             !s.needs_reload(&i, &feature),
             "HEAD moved to a loaded commit"
         );
+        // HEAD is not part of a selected-branches log, so where it goes cannot matter.
         i.head.hash = Some(h('b'));
         assert!(
-            s.needs_reload(&i, &feature),
-            "HEAD moved to an unknown commit"
+            !s.needs_reload(&i, &feature),
+            "HEAD moved outside the selection"
         );
+        i.head.hash = Some(h('e'));
+        assert!(!s.needs_reload(&i, &feature), "HEAD moved to a new commit");
+    }
+
+    fn feature_view() -> ViewOptions {
+        ViewOptions {
+            branches: Some(vec!["feature".into()]),
+            ..all()
+        }
+    }
+
+    /// The log of `feature` in `history()`: c, a.
+    fn feature_log() -> Vec<Commit> {
+        vec![
+            commit('c', &['a'], "Feature work", "Grace"),
+            commit('a', &[], "Initial", "Linus"),
+        ]
+    }
+
+    #[test]
+    fn uncommitted_row_is_hidden_when_head_is_outside_the_view() {
+        // HEAD (d, on main) is dirty but the view shows only `feature` (c, a).
+        let mut s = RepoState::new(dirty(info(), 1, 0), feature_view(), 1);
+        assert!(!s.append(feature_log()));
+        let mut clean = RepoState::new(info(), feature_view(), 1);
+        clean.append(feature_log());
+        assert_eq!(s.total_rows(), 2);
+        assert_eq!(s.rows(0, 10), clean.rows(0, 10));
+        assert_eq!(s.find_row(UNCOMMITTED), None);
+        let fetch = FetchState::default();
+        assert_eq!(s.snapshot(&identity(), false, &fetch).max_lane, 0);
+        // Going clean and dirty again changes nothing either.
+        assert!(s.update(info(), feature_view()));
+        assert!(s.update(dirty(info(), 2, 0), feature_view()));
+        assert_eq!(s.rows(0, 10), clean.rows(0, 10));
+    }
+
+    #[test]
+    fn uncommitted_row_shows_when_head_is_a_selected_tip() {
+        let mut i = dirty(info(), 1, 0);
+        i.head = HeadInfo {
+            branch: Some("feature".into()),
+            hash: Some(h('c')),
+        };
+        let mut s = RepoState::new(i, feature_view(), 1);
+        assert_eq!(s.total_rows(), 1, "before any commit arrives");
+        assert!(!s.append(feature_log()), "row 0 was there from the start");
+        assert_eq!(s.rows(0, 1)[0].kind, RowKind::Uncommitted);
+        assert_eq!(s.total_rows(), 3);
+    }
+
+    #[test]
+    fn uncommitted_row_appears_when_head_commit_streams_in() {
+        // HEAD is detached at `a`, which `feature` reaches but does not point at.
+        let mut i = dirty(info(), 1, 0);
+        i.head = HeadInfo {
+            branch: None,
+            hash: Some(h('a')),
+        };
+        let mut s = RepoState::new(i, feature_view(), 1);
+        let mut log = feature_log();
+        let a = log.pop().unwrap();
+        assert!(!s.append(log));
+        assert_eq!(s.total_rows(), 1);
+        assert!(s.append(vec![a]), "row 0 inserted: indices shifted");
+        let rows = s.rows(0, 10);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].kind, RowKind::Uncommitted);
+        assert_eq!(rows[0].parents, [h('a')]);
+        assert_eq!(s.find_row(&h('a')), Some(2));
+        // The same layout as if row 0 had been there from the start.
+        let mut whole = RepoState::new(s.info().clone(), feature_view(), 1);
+        whole.append(feature_log());
+        assert_eq!(whole.rows(0, 10), rows);
     }
 
     #[test]

@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -85,8 +85,11 @@ pub(super) struct Repo {
     /// Runs this repository's commands.
     pub(super) runner: GitRunner,
     pub(super) slot: RwLock<Slot>,
-    /// Whether a log load is running. Changed only while holding the `slot` write lock.
-    pub(super) loading: watch::Sender<bool>,
+    /// The id of the log load that is running, if any. Set and cleared while holding the
+    /// `slot` write lock, except by a load that dies, which clears its own id.
+    pub(super) loading: watch::Sender<Option<u64>>,
+    /// The id of the last load that ended without finishing; the next refresh reloads.
+    pub(super) abandoned_load: AtomicU64,
     /// Serializes refreshes and view-option changes.
     refresh_lock: tokio::sync::Mutex<()>,
     /// A refresh was asked for that no refresh has started on yet.
@@ -105,7 +108,7 @@ pub(super) struct Repo {
 pub(super) struct Slot {
     /// The state rows are served from.
     pub(super) current: RepoState,
-    /// A reloaded state that replaces `current` when its load delivers the first batch.
+    /// A reloaded state that replaces `current` once its load has as many rows, or ends.
     pub(super) pending: Option<RepoState>,
     /// Id of the newest load; a load with another id has been superseded and must not
     /// change anything.
@@ -134,8 +137,20 @@ impl Slot {
         }
     }
 
+    /// The served state's snapshot, except that `viewOptions` are the newest ones asked for,
+    /// even while the reload they started is still loading.
     fn snapshot(&self, id: &RepoIdentity, loading: bool) -> RepoSnapshot {
-        self.current.snapshot(id, loading, &self.fetch)
+        let mut snapshot = self.current.snapshot(id, loading, &self.fetch);
+        if let Some(pending) = &self.pending {
+            snapshot.view_options = pending.view().clone();
+        }
+        snapshot
+    }
+
+    /// Whether the commits may be incomplete because the last load failed or died.
+    fn load_incomplete(&self, repo: &Repo) -> bool {
+        self.load_failed
+            || (self.load_id != 0 && repo.abandoned_load.load(Ordering::SeqCst) == self.load_id)
     }
 
     /// A snapshot to emit, stamped so that emits arriving out of order can be dropped.
@@ -150,7 +165,7 @@ pub(super) struct Stamped(u64, RepoSnapshot);
 
 impl Repo {
     fn is_loading(&self) -> bool {
-        *self.loading.borrow()
+        self.loading.borrow().is_some()
     }
 
     async fn snapshot(&self) -> RepoSnapshot {
@@ -252,7 +267,8 @@ impl RepoManager {
                 closed: false,
                 emit_seq: 0,
             }),
-            loading: watch::channel(false).0,
+            loading: watch::channel(None).0,
+            abandoned_load: AtomicU64::new(0),
             refresh_lock: tokio::sync::Mutex::new(()),
             refresh_wanted: AtomicBool::new(false),
             load_task: Mutex::new(None),
@@ -303,7 +319,7 @@ impl RepoManager {
         if let Some(task) = lock(&repo.load_task).take() {
             task.abort();
         }
-        repo.loading.send_replace(false);
+        repo.loading.send_replace(None);
         Ok(())
     }
 
@@ -372,8 +388,10 @@ impl RepoManager {
     }
 
     /// Re-reads HEAD, refs, worktrees and status. Reloads the log only if the commits to
-    /// show may have changed (a selected tip went away, a new tip or HEAD is not a loaded
-    /// commit); otherwise only labels and the uncommitted row change. Overlapping calls
+    /// show may have changed (a selected tip went away, or a new tip is not a loaded commit),
+    /// or the last load did not finish; otherwise only labels and the uncommitted row change.
+    /// During a reload the old rows stay served until the new load has caught up with them,
+    /// but the returned snapshot already carries the new view options. Overlapping calls
     /// coalesce: a call made while another runs waits for it, and then at most one more
     /// refresh runs for all the calls that waited.
     pub async fn refresh(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
@@ -463,7 +481,7 @@ impl RepoManager {
         };
         let mut loading = repo.loading.subscribe();
         // The sender lives in `repo`, which this function holds; it cannot be dropped.
-        let _ = loading.wait_for(|l| !*l).await;
+        let _ = loading.wait_for(Option::is_none).await;
     }
 
     /// Ids and main worktree paths of the open repositories, by id.
@@ -584,7 +602,8 @@ impl RepoManager {
             }
             let view = view.unwrap_or_else(|| slot.target().view().clone());
             let view = normalize_view(view, &info);
-            let changed = if slot.load_failed || slot.target().needs_reload(&info, &view) {
+            let changed = if slot.load_incomplete(repo) || slot.target().needs_reload(&info, &view)
+            {
                 let next = RepoState::new(info, view, 0);
                 let has_tips = next.has_tips();
                 slot.pending = Some(next);
@@ -598,7 +617,7 @@ impl RepoManager {
                         task.abort();
                     }
                     slot.promote_pending();
-                    repo.loading.send_replace(false);
+                    repo.loading.send_replace(None);
                 }
                 true
             } else if let Some(pending) = slot.pending.as_mut() {
@@ -752,10 +771,11 @@ async fn read_info(runner: &GitRunner, worktree: &Path) -> Result<RepoInfo> {
 }
 
 /// `path` with symlinks resolved, so paths from different sources compare equal (on macOS
-/// temp dirs are reached through `/var` → `/private/var`). Unchanged if it cannot be
-/// resolved, for example a worktree whose directory is gone.
+/// temp dirs are reached through `/var` → `/private/var`); on Windows without the `\\?\`
+/// prefix. Unchanged if it cannot be resolved, for example a worktree whose directory is
+/// gone.
 fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn path_string(path: &Path) -> String {
@@ -788,6 +808,33 @@ pub(super) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::runner::CommandLog;
+    use crate::testutil::{RecordingSink, TestRepo};
+
+    /// A load that ends without finishing (a panic, an abort) while it is still the newest
+    /// must not leave `loading` set, and the next refresh must reload what it left behind.
+    #[tokio::test]
+    async fn a_load_that_dies_clears_loading() {
+        let repo = TestRepo::new();
+        repo.commit_many(1500);
+        let runner = GitRunner::detect(CommandLog::new()).await.unwrap();
+        let m = RepoManager::new(runner, Arc::new(RecordingSink::default()));
+        let id = m.open(repo.path()).await.unwrap().repo_id;
+        let task = lock(&m.get(id).unwrap().load_task)
+            .take()
+            .expect("a load is running");
+        task.abort();
+        let wait = Duration::from_secs(20);
+        tokio::time::timeout(wait, m.wait_loaded(id))
+            .await
+            .expect("loading is cleared");
+        assert!(!m.snapshot(id).await.unwrap().loading);
+        m.refresh(id).await.unwrap();
+        tokio::time::timeout(wait, m.wait_loaded(id))
+            .await
+            .expect("the reload finishes");
+        assert_eq!(m.snapshot(id).await.unwrap().total_rows, 1500);
+    }
 
     const MIN: Duration = Duration::from_secs(60);
 

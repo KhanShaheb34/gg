@@ -87,6 +87,20 @@ impl Harness {
             .count()
     }
 
+    /// Waits for the `repo-changed` event that ends a load with `total_rows` rows (it can
+    /// arrive just after `wait_loaded` returns).
+    async fn final_event(&self, id: u32, total_rows: u32) {
+        self.sink
+            .wait_for(TIMEOUT, |name, v| {
+                name == "repo-changed"
+                    && v["repoId"] == id
+                    && v["loading"] == false
+                    && v["totalRows"] == total_rows
+            })
+            .await
+            .expect("final snapshot");
+    }
+
     fn last_command_id(&self) -> u64 {
         self.log.since(0).last().map_or(0, |r| r.id)
     }
@@ -812,20 +826,171 @@ async fn reload_is_superseded_by_a_newer_one() {
     let rows = h.rows(snap.repo_id).await;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].hash, f);
-    // `wait_loaded` can return just before the loader emits its final snapshot.
     let id = snap.repo_id;
-    h.sink
-        .wait_for(TIMEOUT, |name, v| {
-            name == "repo-changed"
-                && v["repoId"] == id
-                && v["loading"] == false
-                && v["totalRows"] == 2
-        })
-        .await
-        .expect("final snapshot");
-    let last = h.repo_changed(id).pop().unwrap();
+    h.final_event(id, 2).await;
+
+    // However far the initial load got, it stopped publishing once superseded: after the
+    // first event with the new view, rows are either the frozen old ones or the new ones.
+    let events = h.repo_changed(id);
+    let feature = Some(vec!["feature".to_owned()]);
+    let k = events
+        .iter()
+        .position(|e| e.view_options.branches == feature)
+        .expect("an event with the new view");
+    let frozen = events[k].total_rows;
+    for e in &events[k..] {
+        assert_eq!(e.view_options.branches, feature);
+        assert!(
+            e.total_rows == frozen || e.total_rows <= 2,
+            "{} rows after the view changed (frozen at {frozen})",
+            e.total_rows
+        );
+    }
+    let last = events.last().unwrap();
     assert!(!last.loading);
     assert_eq!(last.total_rows, 2);
+}
+
+/// A dirty worktree whose HEAD (on `main`) is not in the view shows no uncommitted row,
+/// and its rows are laid out exactly as with a clean worktree.
+#[tokio::test]
+async fn uncommitted_row_follows_the_view() {
+    let repo = diverged_repo();
+    repo.write("file-0.txt", "changed\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let feature = ViewOptions {
+        branches: Some(vec!["feature".into()]),
+        ..all_refs()
+    };
+    let dirty = h.view(id, feature.clone()).await;
+    assert_eq!(dirty.status.changed, 1);
+    assert_eq!(dirty.total_rows, 3);
+    assert_eq!(dirty.max_lane, 0);
+    let dirty_rows = h.rows(id).await;
+    assert!(dirty_rows.iter().all(|r| r.kind == RowKind::Commit));
+
+    repo.git(&["checkout", "--", "file-0.txt"]);
+    let clean = h.refresh(id).await;
+    assert_eq!(clean.status.changed, 0);
+    assert_eq!(clean.max_lane, 0);
+    assert_eq!(h.rows(id).await, dirty_rows);
+
+    // HEAD detached at a commit the selected branch reaches (not its tip): row 0 shows.
+    let base = repo.git(&["rev-parse", "feature~2"]);
+    repo.git(&["checkout", "-q", "--detach", &base]);
+    repo.write("new.txt", "untracked\n");
+    let snap = h.refresh(id).await;
+    assert_eq!(snap.total_rows, 4);
+    let rows = h.rows(id).await;
+    assert_eq!(rows[0].kind, RowKind::Uncommitted);
+    assert_eq!(rows[0].parents, [base]);
+}
+
+#[tokio::test]
+async fn head_move_outside_the_selection_does_not_reload() {
+    let repo = diverged_repo();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let snap = h
+        .view(
+            id,
+            ViewOptions {
+                branches: Some(vec!["feature".into()]),
+                ..all_refs()
+            },
+        )
+        .await;
+    assert_eq!(snap.total_rows, 3);
+    // A new commit on main moves HEAD to a commit the feature view does not contain.
+    let c = repo.commit("main moves on");
+    let before = h.last_command_id();
+    let after = h.refresh(id).await;
+    assert_eq!(h.log_commands_since(before), 0, "no log reload");
+    assert_eq!(after.head.hash, Some(c));
+    assert_eq!(after.total_rows, 3);
+}
+
+/// 1,200 commits on main plus a `small` branch of 2 commits.
+fn big_repo() -> TestRepo {
+    let repo = TestRepo::new();
+    repo.commit("base");
+    repo.branch("small");
+    repo.checkout("small");
+    repo.commit("small only");
+    repo.checkout("main");
+    repo.commit_many(1200);
+    repo
+}
+
+/// During a reload the old rows stay served until the new load has as many, and the swap
+/// is announced at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reload_keeps_old_rows_until_caught_up() {
+    let repo = big_repo();
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    let old_rows = snap.total_rows;
+    assert_eq!(old_rows, 1202);
+    h.final_event(id, old_rows).await;
+    let seen = h.repo_changed(id).len();
+
+    repo.commit("one more");
+    let after = h.refresh(id).await;
+    assert_eq!(after.total_rows, old_rows + 1);
+    h.final_event(id, old_rows + 1).await;
+    let events = h.repo_changed(id).split_off(seen);
+    assert!(!events.is_empty());
+    for e in &events {
+        assert!(
+            e.total_rows >= old_rows,
+            "the reload showed {} rows (generation {}); the old view had {old_rows}",
+            e.total_rows,
+            e.generation
+        );
+    }
+    // The swap itself was announced while the load was still running.
+    assert!(
+        events
+            .iter()
+            .any(|e| e.generation == after.generation && e.loading),
+        "no event for the swap: {:?}",
+        events
+            .iter()
+            .map(|e| (e.generation, e.total_rows, e.loading))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reload_to_a_smaller_view_completes() {
+    let repo = big_repo();
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    h.final_event(id, 1202).await;
+    let small = ViewOptions {
+        branches: Some(vec!["small".into()]),
+        ..all_refs()
+    };
+    let returned = h.m.set_view_options(id, small.clone()).await.unwrap();
+    assert_eq!(
+        returned.view_options, small,
+        "the new view, even while loading"
+    );
+    h.wait(id).await;
+    h.final_event(id, 2).await;
+    let snap = h.m.snapshot(id).await.unwrap();
+    assert_eq!(snap.total_rows, 2);
+    assert!(snap.generation > 1);
+    assert_eq!(
+        hashes(&h.rows(id).await),
+        git_lines(
+            &repo,
+            &["log", "--date-order", "refs/heads/small", "--format=%H"]
+        )
+    );
 }
 
 // ---------------------------------------------------------------------------------------

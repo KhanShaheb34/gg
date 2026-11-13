@@ -1044,6 +1044,7 @@ dependencies = [
 name = "gg-core"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "gg-core",
  "notify",
  "serde",

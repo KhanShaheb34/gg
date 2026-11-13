@@ -1,7 +1,7 @@
 <!-- Shown when no repository is open: open one, or pick from the recent ones. -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { colorIndex, displayFolder, relativeTime } from "../format";
+  import { colorIndex, displayFolder, relativeTime, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
   import { app, openPath, openViaPicker, removeRecent } from "../state/app.svelte";
   import Mark from "./Mark.svelte";
@@ -52,10 +52,15 @@
         <ul aria-label="Recent repositories">
           {#each app.recents as recent (recent.path)}
             <li>
-              <button class="open" aria-label="Open {recent.name}" title={recent.path} onclick={() => openPath(recent.path)}>
+              <button
+                class="open"
+                aria-label="Open {recent.name}"
+                title={shortenPath(recent.path, app.homeDir)}
+                onclick={() => openPath(recent.path)}
+              >
                 <span class="dot" style:background="var(--lane-{colorIndex(recent.path)})" aria-hidden="true"></span>
                 <span class="name">{recent.name}</span>
-                <span class="folder">{displayFolder(recent.path)}</span>
+                <span class="folder path-tail"><bdi>{displayFolder(recent.path, app.homeDir)}</bdi></span>
                 <span class="when">{relativeTime(recent.lastOpenedMs, now)}</span>
               </button>
               <button
@@ -241,9 +246,6 @@
 
   .folder {
     color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .when {

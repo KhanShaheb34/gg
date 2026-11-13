@@ -16,6 +16,9 @@ vi.mock("../ipc", async (importOriginal) => {
       openRepo: vi.fn(),
       closeRepo: vi.fn(),
       pickFolder: vi.fn(),
+      // Each tab's graph view asks for its snapshot; never answered here.
+      getSnapshot: vi.fn(() => new Promise(() => {})),
+      perfMark: vi.fn(async () => {}),
     },
   };
 });
@@ -32,6 +35,7 @@ function appState(overrides: Partial<AppState> = {}): AppState {
     session: { tabs: [], active: null },
     settings: { theme: "system", fetchIntervalSecs: 300 },
     launchPath: null,
+    homeDir: null,
     ...overrides,
   };
 }

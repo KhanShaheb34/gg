@@ -19,5 +19,7 @@ export default defineConfig({
   test: {
     // Unit tests only; e2e/*.spec.ts belongs to Playwright.
     include: ["src/**/*.test.ts"],
+    // Dates are formatted in local time; pin it so the expected strings hold everywhere.
+    env: { TZ: "UTC" },
   },
 });

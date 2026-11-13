@@ -216,8 +216,18 @@ impl Core {
             session: self.store.session(),
             settings: self.store.settings(),
             launch_path: self.launch_path.clone(),
+            home_dir: home_dir(),
         }
     }
+}
+
+/// The user's home folder from the environment (`USERPROFILE` on Windows, `HOME` elsewhere),
+/// if set and not empty.
+fn home_dir() -> Option<String> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string_lossy().into_owned())
 }
 
 /// `args` as `cmd`'s argument struct; `BadRequest` with serde's message as `detail` if they

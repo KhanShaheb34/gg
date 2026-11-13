@@ -4,11 +4,13 @@
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
-  import { colorIndex } from "./lib/format";
+  import { colorIndex, shortenPath } from "./lib/format";
+  import GraphView from "./lib/graph/GraphView.svelte";
   import { api, onFolderDrop } from "./lib/ipc";
   import { isMac } from "./lib/platform";
   import { shortcutFor } from "./lib/shortcuts";
   import { activateIndex, app, closeTab, cycleTab, init, openPath, openViaPicker } from "./lib/state/app.svelte";
+  import { repoView } from "./lib/state/repo.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
 
   const active = $derived(app.tabs.find((t) => t.repoId === app.activeRepoId) ?? null);
@@ -78,10 +80,14 @@
         <header class="repo-head">
           <span class="dot" style:background="var(--lane-{colorIndex(active.path)})" aria-hidden="true"></span>
           <h1 class="repo-name">{active.name}</h1>
-          <span class="repo-path selectable">{active.path}</span>
+          <span class="repo-path selectable path-tail" title={shortenPath(active.path, app.homeDir)}
+            ><bdi>{shortenPath(active.path, app.homeDir)}</bdi></span
+          >
         </header>
         <div class="repo-body">
-          <p class="placeholder">The commit graph will appear here.</p>
+          {#key active.repoId}
+            <GraphView view={repoView(active.repoId)} />
+          {/key}
         </div>
       </div>
     {:else if app.ready}
@@ -160,22 +166,13 @@
 
   .repo-path {
     min-width: 0;
-    overflow: hidden;
     color: var(--text-muted);
     font-size: var(--fs-sm);
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
 
   .repo-body {
-    display: grid;
-    place-items: center;
     flex: 1;
     min-height: 0;
-  }
-
-  .placeholder {
-    color: var(--text-faint);
   }
 
   .drop {

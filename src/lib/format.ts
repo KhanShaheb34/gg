@@ -22,17 +22,54 @@ export function relativeTime(ms: number, now: number = Date.now()): string {
   return plural(count(365 * DAY), "year");
 }
 
+/** Separator used by `path`: backslash for a Windows path without forward slashes. */
+function separatorOf(path: string): "/" | "\\" {
+  return path.includes("\\") && !path.includes("/") ? "\\" : "/";
+}
+
 /**
- * The folder that contains `path`, for display: the user's home folder (guessed from the
- * usual `/Users/<name>`, `/home/<name>` and `C:\Users\<name>` layouts) shown as `~`.
+ * `path` with the user's home folder `home` shown as `~` ("~/Dev/x"). Only a whole leading
+ * folder is replaced; Windows paths compare without case. Without `home`, `path` as is.
  */
-export function displayFolder(path: string): string {
-  const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+export function shortenPath(path: string, home?: string | null): string {
+  if (!home) return path;
+  const sep = separatorOf(home);
+  let root = home;
+  while (root.length > 1 && root.endsWith(sep)) root = root.slice(0, -1);
+  const fold = (s: string) => (sep === "\\" ? s.toLowerCase() : s);
+  const p = fold(path);
+  const h = fold(root);
+  if (p === h) return "~";
+  if (p.startsWith(h + sep)) return "~" + path.slice(root.length);
+  return path;
+}
+
+/** The folder that contains `path`, for display, with the home folder `home` shown as `~`. */
+export function displayFolder(path: string, home?: string | null): string {
+  const sep = separatorOf(path);
   const cut = path.lastIndexOf(sep);
   let parent = cut <= 0 ? sep : path.slice(0, cut);
   if (/^[A-Za-z]:$/.test(parent)) parent += sep;
-  const home = sep === "/" ? /^\/(?:Users|home)\/[^/]+/ : /^[A-Za-z]:\\Users\\[^\\]+/;
-  return parent.replace(home, "~");
+  return shortenPath(parent, home);
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const pad2 = (n: number) => (n < 10 ? `0${n}` : String(n));
+
+/** A commit time (unix seconds) in local time: "12 Nov 2026 16:02". */
+export function formatDate(unixSecs: number): string {
+  const d = new Date(unixSecs * 1000);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** A commit time in full, for tooltips: "Thursday, 12 Nov 2026 16:02:00 (UTC+01:00)". */
+export function formatDateLong(unixSecs: number): string {
+  const d = new Date(unixSecs * 1000);
+  const offset = -d.getTimezoneOffset();
+  const sign = offset < 0 ? "-" : "+";
+  const zone = `UTC${sign}${pad2(Math.floor(Math.abs(offset) / 60))}:${pad2(Math.abs(offset) % 60)}`;
+  return `${WEEKDAYS[d.getDay()]}, ${formatDate(unixSecs)}:${pad2(d.getSeconds())} (${zone})`;
 }
 
 /** Number of lane colours (`--lane-0` … `--lane-9`). */

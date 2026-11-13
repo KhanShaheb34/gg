@@ -19,6 +19,8 @@ const VITE_ORIGIN = "http://127.0.0.1:1420";
 export type Git = (...args: string[]) => string;
 /** Writes `content` to `file`, relative to the repository. */
 export type Write = (file: string, content: string) => void;
+/** A fixture repository's script: gets `git` and `write` (both run in it) and its folder. */
+export type RepoScript = (git: Git, write: Write, dir: string) => void;
 
 /** An empty file used as git's global config, so the user's own config never applies. */
 const EMPTY_CONFIG = (() => {
@@ -43,10 +45,19 @@ function isolatedEnv(): NodeJS.ProcessEnv {
 /** Commit times start here and advance one hour per git call, so histories are reproducible. */
 const EPOCH = Date.UTC(2026, 0, 5, 9, 0, 0) / 1000;
 
+/** Each repository's clock: how many git calls (hours since EPOCH) it has had. */
+const clocks = new Map<string, number>();
+
+/** Moves `dir`'s clock on to `tick` hours after EPOCH, if it is not there yet. */
+function advanceClock(dir: string, tick: number): void {
+  clocks.set(dir, Math.max(clocks.get(dir) ?? 0, tick));
+}
+
 function gitIn(dir: string): Git {
-  let tick = 0;
   return (...args) => {
-    const when = `${EPOCH + tick++ * 3600} +0000`;
+    const tick = clocks.get(dir) ?? 0;
+    clocks.set(dir, tick + 1);
+    const when = `${EPOCH + tick * 3600} +0000`;
     return execFileSync("git", args, {
       cwd: dir,
       encoding: "utf8",
@@ -66,11 +77,12 @@ function gitIn(dir: string): Git {
 
 /**
  * Creates the folder `name` in `parent` (a new temp folder by default), runs `script` in it
- * and returns the folder's path. The script gets `git` (run in the folder) and `write`.
+ * and returns the folder's path. The script gets `git` (run in the folder), `write` and the
+ * folder.
  */
 export function makeRepo(
   name: string,
-  script: (git: Git, write: Write) => void,
+  script: RepoScript,
   parent: string = mkdtempSync(path.join(tmpdir(), "gg-e2e-")),
 ): string {
   const dir = path.join(parent, name);
@@ -80,12 +92,37 @@ export function makeRepo(
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, content);
   };
-  script(gitIn(dir), write);
+  script(gitIn(dir), write, dir);
   return dir;
 }
 
+/** Subject of commit `i` (1 = oldest) of the `big` fixture. */
+export const bigSubject = (i: number) => `Big commit ${i}`;
+/** Number of commits in the `big` fixture. */
+export const BIG_COMMITS = 3000;
+
+/** A `git fast-import` stream of `count` linear commits on `main`, one hour apart. */
+function linearHistory(count: number): string {
+  const parts: string[] = [];
+  const data = (text: string) => `data ${Buffer.byteLength(text)}\n${text}\n`;
+  for (let i = 1; i <= count; i++) {
+    const who = `Ada Lovelace <ada@example.com> ${EPOCH + i * 3600} +0000`;
+    parts.push(
+      "commit refs/heads/main\n",
+      `mark :${i}\n`,
+      `author ${who}\n`,
+      `committer ${who}\n`,
+      data(bigSubject(i)),
+      i > 1 ? `from :${i - 1}\n` : "",
+      "M 644 inline log.txt\n",
+      data(`line ${i}`),
+    );
+  }
+  return parts.join("");
+}
+
 /** Named fixture repositories. */
-const REPOS: Record<string, (git: Git, write: Write) => void> = {
+const REPOS: Record<string, RepoScript> = {
   /**
    * 30 commits: `main` with tag `v1`, `feature/login` merged into it, `fix/typo` unmerged;
    * a bare `origin` (next to the repository) whose `main` is 2 commits behind.
@@ -115,16 +152,99 @@ const REPOS: Record<string, (git: Git, write: Write) => void> = {
   empty(git) {
     git("init", "-q", "-b", "main");
   },
+  /** 3,000 linear commits on `main` ("Big commit 1" is the oldest), made with fast-import. */
+  big(git, _write, dir) {
+    git("init", "-q", "-b", "main");
+    execFileSync("git", ["fast-import", "--quiet"], {
+      cwd: dir,
+      input: linearHistory(BIG_COMMITS),
+      stdio: ["pipe", "ignore", "pipe"],
+      env: isolatedEnv(),
+    });
+    advanceClock(dir, BIG_COMMITS + 1); // later commits come after the imported ones
+    git("reset", "-q", "--hard");
+  },
+  /**
+   * 48 commits on `main`, `develop`, `feature/search`, `feature/ui`, `release/1.0` and a merged
+   * `hotfix/crash` that now exists only on the remote, with merges between them; tags `v0.1`,
+   * `v0.2`, `v1.0`; a bare `origin` whose `develop` is at the local one, and whose `main` and
+   * `feature/ui` are behind the local ones.
+   */
+  branchy(git, write) {
+    git("init", "-q", "-b", "main");
+    let n = 0;
+    const commit = (subject: string) => {
+      write(`files/f${++n}.txt`, `${subject}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    const merge = (branch: string) => git("merge", "-q", "--no-ff", "-m", `Merge branch '${branch}'`, branch);
+    for (const s of ["Initial layout", "Add README", "Set up CI", "Add config loader", "Parse arguments", "Add logging"])
+      commit(s);
+    git("tag", "v0.1", "HEAD~2");
+    git("switch", "-q", "-c", "develop");
+    for (const s of ["Introduce plugin API", "Plugin registry", "Load plugins lazily", "Document plugin hooks"]) commit(s);
+    git("switch", "-q", "-c", "feature/search");
+    for (const s of ["Search index skeleton", "Tokenize subjects", "Rank results"]) commit(s);
+    git("switch", "-q", "main");
+    for (const s of ["Bump dependencies", "Fix flaky test"]) commit(s);
+    git("switch", "-q", "-c", "hotfix/crash");
+    for (const s of ["Guard against empty config", "Add crash regression test"]) commit(s);
+    git("switch", "-q", "feature/search");
+    for (const s of ["Highlight matches", "Search keyboard shortcuts"]) commit(s);
+    git("switch", "-q", "main");
+    merge("hotfix/crash");
+    git("tag", "v0.2");
+    git("switch", "-q", "develop");
+    commit("Plugin settings page");
+    git("switch", "-q", "-c", "feature/ui");
+    for (const s of ["New sidebar", "Theme tokens", "Dark theme"]) commit(s);
+    git("switch", "-q", "develop");
+    merge("feature/search");
+    git("switch", "-q", "feature/ui");
+    for (const s of ["Toolbar icons", "Compact rows"]) commit(s);
+    git("switch", "-q", "develop");
+    for (const s of ["Cache plugin manifests", "Retry failed plugin loads"]) commit(s);
+    git("switch", "-q", "main");
+    commit("Update licence year");
+    git("switch", "-q", "develop");
+    merge("main");
+    git("switch", "-q", "feature/ui");
+    for (const s of ["Animate panel transitions", "Keyboard focus rings", "Accessible labels"]) commit(s);
+    git("switch", "-q", "develop");
+    merge("feature/ui");
+    git("switch", "-q", "-c", "release/1.0");
+    for (const s of ["Release notes for 1.0", "Bump version to 1.0.0"]) commit(s);
+    git("switch", "-q", "main");
+    merge("release/1.0");
+    git("tag", "v1.0");
+    git("switch", "-q", "develop");
+    merge("main");
+    for (const s of ["Start 1.1 cycle", "Plugin sandboxing", "Sandbox file access"]) commit(s);
+    git("switch", "-q", "feature/ui");
+    for (const s of ["Resizable columns", "Column persistence"]) commit(s);
+    git("switch", "-q", "main");
+    commit("Hotfix: config path on Windows");
+    git("init", "-q", "--bare", "-b", "main", "../branchy-origin.git");
+    git("remote", "add", "origin", "../branchy-origin.git");
+    git("push", "-q", "-u", "origin", "main", "develop", "feature/ui", "hotfix/crash");
+    git("branch", "-q", "-D", "hotfix/crash");
+    commit("Tidy imports");
+    git("switch", "-q", "feature/ui");
+    for (const s of ["Sticky header", "Row hover states"]) commit(s);
+    git("switch", "-q", "main");
+  },
 };
 
 /** A running gg-devserver. */
 type Devserver = { url: string; process: ChildProcess };
 
-function startDevserver(configDir: string): Promise<Devserver> {
+/** Starts a devserver whose home folder is `home` (so paths under it show as `~/…`). */
+function startDevserver(configDir: string, home: string): Promise<Devserver> {
   const child = spawn(
     DEVSERVER,
     ["--port", "0", "--config-dir", configDir, "--allow-origin", VITE_ORIGIN],
-    { stdio: ["ignore", "pipe", "pipe"], env: isolatedEnv() },
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...isolatedEnv(), HOME: home, USERPROFILE: home } },
   );
   return new Promise((resolve, reject) => {
     let out = "";
@@ -159,7 +279,7 @@ async function stopDevserver(server: Devserver): Promise<void> {
 
 export type GG = {
   page: Page;
-  /** Path of fixture repository `name` (`small`, `empty`), created on first use. */
+  /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`), created on first use. */
   repoPath(name: string): string;
   /** Path of a plain (non-repository) folder `name`, created on first use. */
   folder(name: string): string;
@@ -184,7 +304,7 @@ export const test = base.extend<{ gg: GG }, { devserverBuilt: void }>({
   gg: async ({ page, devserverBuilt: _ }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
-    const server = await startDevserver(path.join(root, "config"));
+    const server = await startDevserver(path.join(root, "config"), root);
     try {
       await page.addInitScript((url) => {
         (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;

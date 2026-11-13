@@ -277,13 +277,18 @@ async fn launch_path_is_reported() {
 
     let none = harness().await;
     let state = none.call("get_app_state", json!({})).await;
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home = std::env::var_os(home_var)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string_lossy().into_owned());
     assert_eq!(
         state,
         json!({
             "recents": [],
             "session": {"tabs": [], "active": null},
             "settings": {"theme": "system", "fetchIntervalSecs": 300},
-            "launchPath": null
+            "launchPath": null,
+            "homeDir": home
         })
     );
 }

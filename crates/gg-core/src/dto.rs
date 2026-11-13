@@ -278,6 +278,8 @@ pub struct AppState {
     pub settings: Settings,
     /// A folder the app was asked to open at launch (command line or `GG_OPEN`).
     pub launch_path: Option<String>,
+    /// The user's home folder, so the UI can show paths as `~/...`.
+    pub home_dir: Option<String>,
 }
 
 #[cfg(test)]
@@ -300,6 +302,7 @@ mod tests {
             },
             settings: Settings::default(),
             launch_path: Some("/l".into()),
+            home_dir: Some("/h".into()),
         };
         let v = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -308,7 +311,8 @@ mod tests {
                 "recents": [{"path": "/r", "name": "r", "lastOpenedMs": 5}],
                 "session": {"tabs": ["/r"], "active": null},
                 "settings": {"theme": "system", "fetchIntervalSecs": 300},
-                "launchPath": "/l"
+                "launchPath": "/l",
+                "homeDir": "/h"
             })
         );
         assert_eq!(serde_json::from_value::<AppState>(v).unwrap(), state);

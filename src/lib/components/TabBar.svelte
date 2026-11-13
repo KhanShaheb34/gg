@@ -5,7 +5,7 @@
 -->
 <script lang="ts">
   import { tick } from "svelte";
-  import { colorIndex } from "../format";
+  import { colorIndex, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
   import { activate, app, closeTab, cycleTheme, openViaPicker } from "../state/app.svelte";
 
@@ -51,7 +51,7 @@
     <div class="tabs" role="tablist" aria-label="Open repositories" bind:this={list}>
       {#each app.tabs as tab, i (tab.repoId)}
         {@const selected = tab.repoId === app.activeRepoId}
-        <div class="tab" class:selected title={tab.path}>
+        <div class="tab" class:selected title={shortenPath(tab.path, app.homeDir)}>
           <button
             class="tab-main"
             role="tab"

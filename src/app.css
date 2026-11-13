@@ -157,6 +157,16 @@ button {
   outline-offset: 1px;
 }
 
+/* A path that keeps its last folders visible when cut: the ellipsis goes at the start.
+   Wrap the text in <bdi> so it still reads left to right. */
+.path-tail {
+  overflow: hidden;
+  direction: rtl;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .mono {
   font-family: var(--font-mono);
   font-size: 0.95em;

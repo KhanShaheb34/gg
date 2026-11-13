@@ -30,12 +30,13 @@ describe("relativeTime", () => {
 
 describe("displayFolder", () => {
   it("shows the parent folder with the home folder as ~", () => {
-    expect(displayFolder("/Users/ada/Dev/git-graph")).toBe("~/Dev");
-    expect(displayFolder("/home/ada/src/x")).toBe("~/src");
-    expect(displayFolder("/Users/ada/x")).toBe("~");
-    expect(displayFolder("/srv/repos/x")).toBe("/srv/repos");
+    expect(displayFolder("/Users/ada/Dev/git-graph", "/Users/ada")).toBe("~/Dev");
+    expect(displayFolder("/home/ada/src/x", "/home/ada")).toBe("~/src");
+    expect(displayFolder("/Users/ada/x", "/Users/ada")).toBe("~");
+    expect(displayFolder("/Users/ada/Dev/x")).toBe("/Users/ada/Dev");
+    expect(displayFolder("/srv/repos/x", "/Users/ada")).toBe("/srv/repos");
     expect(displayFolder("/x")).toBe("/");
-    expect(displayFolder("C:\\Users\\ada\\code\\x")).toBe("~\\code");
+    expect(displayFolder("C:\\Users\\ada\\code\\x", "C:\\Users\\ada")).toBe("~\\code");
     expect(displayFolder("D:\\work\\x")).toBe("D:\\work");
   });
 });

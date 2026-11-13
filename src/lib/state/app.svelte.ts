@@ -3,7 +3,8 @@
 
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
-import type { CoreErrorDto, Recent, Settings } from "../types";
+import type { CoreErrorDto, Recent, RepoSnapshot, Settings } from "../types";
+import { disposeRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
 export type ToastKind = "info" | "error";
@@ -19,6 +20,8 @@ export const app = $state({
   ready: false,
   /** The core could not find git: nothing can be opened. */
   gitMissing: false,
+  /** The user's home folder, for showing paths as `~/…`. */
+  homeDir: null as string | null,
 });
 
 let nextToastId = 1;
@@ -68,11 +71,16 @@ async function openTab(path: string): Promise<boolean> {
     reportError(e);
     return false;
   }
-  if (!app.tabs.some((t) => t.repoId === snapshot.repoId)) {
-    app.tabs.push({ repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name });
-  }
+  addTab(snapshot);
   app.activeRepoId = snapshot.repoId;
   return true;
+}
+
+/** Adds a tab (and its graph's view) for `snapshot`'s repository, unless it has one. */
+function addTab(snapshot: RepoSnapshot): void {
+  if (app.tabs.some((t) => t.repoId === snapshot.repoId)) return;
+  app.tabs.push({ repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name });
+  repoView(snapshot.repoId, snapshot);
 }
 
 /** Opens the repository at `path` in a tab and activates it; failures become toasts. */
@@ -123,6 +131,7 @@ export async function closeTab(repoId: number): Promise<void> {
     app.activeRepoId = (app.tabs[at] ?? app.tabs[at - 1])?.repoId ?? null;
   }
   saveSession();
+  disposeRepoView(repoId);
   try {
     await api.closeRepo(repoId);
   } catch (e) {
@@ -180,6 +189,7 @@ export async function init(): Promise<void> {
   }
   app.recents = state.recents;
   app.settings = state.settings;
+  app.homeDir = state.homeDir;
   applyTheme(state.settings.theme);
 
   // Reopened together, added in the session's order.
@@ -190,10 +200,7 @@ export async function init(): Promise<void> {
       reportError(result.reason, `Could not reopen ${tabs[i]}`);
       return;
     }
-    const snapshot = result.value;
-    if (!app.tabs.some((t) => t.repoId === snapshot.repoId)) {
-      app.tabs.push({ repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name });
-    }
+    addTab(result.value);
   });
   app.activeRepoId = app.tabs.find((t) => t.path === active)?.repoId ?? app.tabs[0]?.repoId ?? null;
   app.ready = true;

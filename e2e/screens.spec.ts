@@ -37,3 +37,24 @@ for (const theme of ["light", "dark"] as const) {
     await page.screenshot({ path: path.join(OUT, `welcome-${theme}.png`) });
   });
 }
+
+for (const theme of ["light", "dark"] as const) {
+  test(`graph, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("small"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await grid.locator('[data-index="3"]').click();
+    await page.mouse.move(900, 700);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `graph-${theme}.png`) });
+
+    await open(page, gg.repoPath("branchy"));
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await page.mouse.move(900, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `graph-branchy-${theme}.png`) });
+  });
+}

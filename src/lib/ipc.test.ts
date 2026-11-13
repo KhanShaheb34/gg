@@ -70,7 +70,7 @@ describe("HTTP transport", () => {
   it("names every command's arguments as the core expects", async () => {
     const fetchMock = respond({ ok: null });
     vi.stubGlobal("fetch", fetchMock);
-    const options = { branches: null, showRemotes: true, showTags: false };
+    const options = { branches: null, showRemotes: true, showTags: false, showStashes: true };
 
     await api.updateSettings({ theme: "dark" });
     await api.removeRecent("/r");
@@ -84,6 +84,14 @@ describe("HTTP transport", () => {
     await api.refresh(1);
     await api.perfMark("first-rows", 12.5);
     await api.commandLog(4);
+    await api.commandLog(0, { repoId: 2, writesOnly: true });
+    await api.runOp(2, { op: "create_branch", name: "x", at: "abc", checkout: false });
+    await api.runOp(2, { op: "reset", hash: "abc", mode: "hard" }, ["hard_reset"]);
+    await api.runOp(2, { op: "continue" });
+    await api.getRepoPrefs(2);
+    await api.setRepoPrefs(2, { mergeNoFf: false });
+    await api.openInEditor(2, null);
+    await api.openInEditor(2, "src/a b.ts");
 
     const bodies = fetchMock.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));
     expect(bodies).toEqual([
@@ -99,6 +107,17 @@ describe("HTTP transport", () => {
       { cmd: "refresh", args: { repoId: 1 } },
       { cmd: "perf_mark", args: { name: "first-rows", ms: 12.5 } },
       { cmd: "command_log", args: { sinceId: 4 } },
+      { cmd: "command_log", args: { sinceId: 0, repoId: 2, writesOnly: true } },
+      {
+        cmd: "run_op",
+        args: { repoId: 2, request: { op: "create_branch", name: "x", at: "abc", checkout: false }, confirmed: [] },
+      },
+      { cmd: "run_op", args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard" }, confirmed: ["hard_reset"] } },
+      { cmd: "run_op", args: { repoId: 2, request: { op: "continue" }, confirmed: [] } },
+      { cmd: "get_repo_prefs", args: { repoId: 2 } },
+      { cmd: "set_repo_prefs", args: { repoId: 2, patch: { mergeNoFf: false } } },
+      { cmd: "open_in_editor", args: { repoId: 2, path: null } },
+      { cmd: "open_in_editor", args: { repoId: 2, path: "src/a b.ts" } },
     ]);
   });
 });

@@ -11,12 +11,15 @@ export type CoreErrorDto = {
     | "unknown_repo"
     | "stale_generation"
     | "bad_request"
-    | "io";
+    | "io"
+    | "bad_name" // a branch or tag name git would not take, or one that is taken
+    | "busy"
+    | "nothing_to_do";
   message: string;
   detail: string | null;
 };
 
-export type ViewOptions = { branches: string[] | null; showRemotes: boolean; showTags: boolean }; // branches null = all
+export type ViewOptions = { branches: string[] | null; showRemotes: boolean; showTags: boolean; showStashes: boolean }; // branches null = all
 export type WorktreeInfo = {
   path: string;
   head: string | null;
@@ -51,11 +54,23 @@ export type RepoSnapshot = {
   status: WorktreeStatus;
   viewOptions: ViewOptions;
   fetch: FetchState;
+  /** The operation running on this repository; `queued`: requests waiting behind it. */
+  op: { id: number; title: string; startedAtMs: number; queued: number } | null;
+  inProgress: InProgress | null;
+};
+
+/** A merge, rebase, cherry-pick or revert git stopped in. */
+export type InProgress = {
+  kind: "merge" | "rebase" | "cherry-pick" | "revert";
+  conflicted: string[]; // paths relative to the worktree, sorted
+  step: number | null; // rebase only
+  total: number | null; // rebase only
+  subject: string | null; // what is being applied: the incoming branch or the commit's subject
 };
 
 export type Edge = { from: number; to: number; color: number; half: "top" | "bottom" | "full" };
 export type RefLabel = {
-  kind: "branch" | "remote" | "tag";
+  kind: "branch" | "remote" | "tag" | "stash"; // stash: name "stash@{0}"
   name: string;
   remotes: string[]; // branch only: remotes whose same-named branch is at this commit
   current: boolean; // checked out in the active worktree
@@ -66,7 +81,7 @@ export type RefLabel = {
 };
 export type CommitRow = {
   index: number;
-  kind: "commit" | "uncommitted";
+  kind: "commit" | "uncommitted" | "stash";
   hash: string;
   parents: string[];
   author: string;
@@ -108,7 +123,10 @@ export type CommitDetails = {
   shallowBoundary: boolean;
 };
 
-export type Settings = { theme: "system" | "light" | "dark"; fetchIntervalSecs: number }; // default system, 300; 0 = off
+/** Defaults: system, 300 (0 = off), null (the system's default opener). */
+export type Settings = { theme: "system" | "light" | "dark"; fetchIntervalSecs: number; editorCommand: string | null };
+/** Kept per repository. Default: mergeNoFf true. */
+export type RepoPrefs = { mergeNoFf: boolean };
 export type Recent = { path: string; name: string; lastOpenedMs: number };
 export type AppState = {
   recents: Recent[];
@@ -130,4 +148,60 @@ export type CommandRecord = {
   exitCode: number;
   stdout: string;
   stderr: string;
+  repoId: number | null; // the repository it ran for
+  opId: number | null; // the operation it was part of
 };
+
+export type MergeTarget = { kind: "branch" | "remote" | "commit"; name: string }; // name: branch, "origin/x" or full hash
+
+/** One operation for `run_op`. */
+export type OpRequest =
+  | { op: "checkout_branch"; branch: string; fastForward: boolean }
+  | { op: "checkout_remote"; remoteBranch: string; localName: string }
+  | { op: "checkout_commit"; hash: string }
+  | { op: "create_branch"; name: string; at: string; checkout: boolean }
+  | { op: "rename_branch"; branch: string; newName: string }
+  | { op: "delete_branch"; branch: string }
+  | { op: "merge"; target: MergeTarget; noFf: boolean; squash: boolean; noCommit: boolean }
+  | { op: "rebase"; onto: string } // local or remote branch name
+  | { op: "cherry_pick"; hash: string; mainline: number | null; noCommit: boolean }
+  | { op: "revert"; hash: string; mainline: number | null }
+  | { op: "reset"; hash: string; mode: "soft" | "mixed" | "hard" }
+  | { op: "create_tag"; name: string; hash: string; message: string | null }
+  | { op: "delete_tag"; name: string; remote: string | null } // remote set = also delete there
+  | { op: "push_tag"; name: string; remote: string }
+  | { op: "push"; branch: string; remote: string; setUpstream: boolean; force: boolean }
+  | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase" }
+  | { op: "fetch_into_local"; remoteBranch: string; localName: string }
+  | { op: "delete_remote_branch"; remote: string; branch: string }
+  | { op: "stash_save"; message: string | null; includeUntracked: boolean }
+  | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string } // stash commit hash
+  | { op: "stash_branch"; stash: string; name: string }
+  | { op: "continue" }
+  | { op: "abort" };
+
+export type DangerKind = "force_push" | "hard_reset" | "delete_unmerged_branch" | "delete_remote_branch" | "drop_stash";
+export type Danger = { kind: DangerKind; message: string; detail: string | null };
+export type OpHint =
+  | { kind: "push"; branch: string; remote: string; setUpstream: boolean }
+  | { kind: "fetch" }
+  | { kind: "pull"; branch: string }
+  | { kind: "force_push"; branch: string; remote: string }
+  | { kind: "choose_pull_mode"; branch: string };
+
+/** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
+export type OpOutcome = {
+  opId: number;
+  status: "done" | "stopped" | "failed" | "needs_confirmation";
+  title: string; // "Merge feature/x into staging"
+  message: string; // one plain line for the notice
+  detail: string | null; // git's own output on failure
+  logFrom: number; // command-log ids of the operation's writes (0, 0 if none ran)
+  logTo: number;
+  dangers: Danger[]; // non-empty only for needs_confirmation
+  hints: OpHint[];
+  snapshot: RepoSnapshot; // after the operation and its refresh
+};
+
+/** `op-progress` event: the latest progress line of a network operation (at most 10 a second). */
+export type OpProgress = { repoId: number; opId: number; line: string };

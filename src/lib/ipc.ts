@@ -8,14 +8,18 @@ import type {
   CommandRecord,
   CommitDetails,
   CoreErrorDto,
+  DangerKind,
+  OpOutcome,
+  OpRequest,
   Recent,
+  RepoPrefs,
   RepoSnapshot,
   RowsPage,
   Settings,
   ViewOptions,
 } from "./types";
 
-export type EventName = "repo-changed" | "repo-error" | "paths-opened";
+export type EventName = "repo-changed" | "repo-error" | "paths-opened" | "op-progress";
 
 /** Files or folders dragged onto the window (Tauri only). `drop` carries their paths. */
 export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "drop"; paths: string[] };
@@ -291,8 +295,21 @@ export const api = {
   async perfMark(name: string, ms: number): Promise<void> {
     await call("perf_mark", { name, ms });
   },
-  /** Git commands run after the one with id `sinceId` (0: all kept), oldest first. */
-  commandLog: (sinceId: number) => call<CommandRecord[]>("command_log", { sinceId }),
+  /**
+   * Git commands run after the one with id `sinceId` (0: all kept), oldest first; only those of
+   * repository `repoId`, or only writes, if asked.
+   */
+  commandLog: (sinceId: number, options: { repoId?: number; writesOnly?: boolean } = {}) =>
+    call<CommandRecord[]>("command_log", { sinceId, ...options }),
+  /** Runs an operation once the ones before it on that repository are done. */
+  runOp: (repoId: number, request: OpRequest, confirmed: DangerKind[] = []) =>
+    call<OpOutcome>("run_op", { repoId, request, confirmed }),
+  getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
+  setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
+  /** Opens `path` (relative to the worktree), or the worktree folder when null, in the editor. */
+  async openInEditor(repoId: number, path: string | null): Promise<void> {
+    await call("open_in_editor", { repoId, path });
+  },
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */

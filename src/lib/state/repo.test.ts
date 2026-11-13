@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommitRow, RepoSnapshot, ViewOptions } from "../types";
+import { readOptions, sameOptions } from "./viewOptionsStore";
 
 // A fake core: the rows of the current generation are a list of hashes.
 const core = vi.hoisted(() => ({
@@ -69,8 +70,10 @@ function snapshot(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     remotes: ["origin"],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0 },
-    viewOptions: { branches: null, showRemotes: true, showTags: true },
+    viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
+    op: null,
+    inProgress: null,
     ...overrides,
   };
 }
@@ -331,7 +334,7 @@ describe("RepoView.applySnapshot", () => {
   });
 });
 
-const ALL: ViewOptions = { branches: null, showRemotes: true, showTags: true };
+const ALL: ViewOptions = { branches: null, showRemotes: true, showTags: true, showStashes: true };
 
 describe("RepoView search", () => {
   it("run stores the hits and selects the first, scrolled into view", async () => {
@@ -488,11 +491,12 @@ describe("RepoView view options", () => {
     // The toolbar shows the choice at once.
     expect(view.viewOptions).toEqual({ ...ALL, showRemotes: false });
     await done;
-    expect(ipc.api.setViewOptions).toHaveBeenCalledWith(7, { branches: null, showRemotes: false, showTags: true });
+    expect(ipc.api.setViewOptions).toHaveBeenCalledWith(7, { branches: null, showRemotes: false, showTags: true, showStashes: true });
     expect(JSON.parse(localStorage.getItem("gg.view.v1:/r")!)).toEqual({
       branches: null,
       showRemotes: false,
       showTags: true,
+      showStashes: true,
     });
   });
 
@@ -505,9 +509,9 @@ describe("RepoView view options", () => {
       snapshot({ remoteBranches: ["origin/main"], viewOptions: options }),
     );
     await view.setViewOptions({ showRemotes: false });
-    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main"], showRemotes: false, showTags: true });
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main"], showRemotes: false, showTags: true, showStashes: true });
     // The whole choice is kept (and remembered), only the visible part is shown.
-    const kept = { branches: ["main", "origin/main"], showRemotes: false, showTags: true };
+    const kept = { branches: ["main", "origin/main"], showRemotes: false, showTags: true, showStashes: true };
     expect(view.viewOptions).toEqual(kept);
     expect(JSON.parse(localStorage.getItem("gg.view.v1:/r")!)).toEqual(kept);
     // An event with the core's (visible) options does not overwrite it.
@@ -516,7 +520,7 @@ describe("RepoView view options", () => {
     expect(view.viewOptions).toEqual(kept);
 
     await view.setViewOptions({ showRemotes: true });
-    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main", "origin/main"], showRemotes: true, showTags: true });
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main", "origin/main"], showRemotes: true, showTags: true, showStashes: true });
   });
 
   it("a selection of only hidden remote branches shows all branches", async () => {
@@ -528,7 +532,7 @@ describe("RepoView view options", () => {
       snapshot({ remoteBranches: ["origin/main"], viewOptions: options }),
     );
     await view.setViewOptions({ showRemotes: false });
-    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: null, showRemotes: false, showTags: true });
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: null, showRemotes: false, showTags: true, showStashes: true });
     expect(view.viewOptions.branches).toEqual(["origin/main"]);
     expect(view.visibleOptions.branches).toBeNull();
   });
@@ -540,7 +544,7 @@ describe("RepoView view options", () => {
     vi.mocked(ipc.api.setViewOptions).mockRejectedValue(
       new ipc.CoreError({ code: "git_failed", message: "boom", detail: null }),
     );
-    await view.setViewOptions({ showTags: false });
+    await view.setViewOptions({ showTags: false, showStashes: true });
     expect(view.viewOptions).toEqual(ALL);
     expect(localStorage.getItem("gg.view.v1:/r")).toBeNull(); // the defaults are not stored
     expect(notice).toHaveBeenCalledWith("Could not change the view", "boom");
@@ -553,7 +557,7 @@ describe("RepoView view options", () => {
     vi.mocked(ipc.api.setViewOptions).mockRejectedValue(
       new ipc.CoreError({ code: "git_failed", message: "git failed", detail: "fatal: bad object" }),
     );
-    await view.setViewOptions({ showTags: false });
+    await view.setViewOptions({ showTags: false, showStashes: true });
     expect(notice).toHaveBeenCalledWith("Could not change the view", "git failed\nfatal: bad object");
   });
 
@@ -561,7 +565,7 @@ describe("RepoView view options", () => {
     const view = await openView(0);
     let answer: (s: RepoSnapshot) => void = () => {};
     vi.mocked(ipc.api.setViewOptions).mockImplementation(() => new Promise((r) => (answer = r)));
-    const done = view.setViewOptions({ showTags: false });
+    const done = view.setViewOptions({ showTags: false, showStashes: true });
     // An event (newer than the answer) arrives first: the fetch finished.
     const fetched = { running: false, lastError: "fatal: x", lastErrorDetail: "fatal: x\n", lastAtMs: 5 };
     const latest = snapshot({ viewOptions: { ...ALL, showTags: false }, fetch: fetched });
@@ -581,16 +585,16 @@ describe("RepoView view options", () => {
     vi.mocked(ipc.api.setViewOptions).mockImplementation(
       (_id, options) => new Promise((r) => answers.push(() => r(snapshot({ viewOptions: options })))),
     );
-    void view.setViewOptions({ showTags: false });
+    void view.setViewOptions({ showTags: false, showStashes: true });
     void view.setViewOptions({ branches: ["main"] });
     const last = view.setViewOptions({ showRemotes: false });
     expect(ipc.api.setViewOptions).toHaveBeenCalledTimes(1);
     answers[0]();
     await vi.waitFor(() => expect(ipc.api.setViewOptions).toHaveBeenCalledTimes(2));
-    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main"], showRemotes: false, showTags: false });
+    expect(ipc.api.setViewOptions).toHaveBeenLastCalledWith(7, { branches: ["main"], showRemotes: false, showTags: false, showStashes: true });
     answers[1]();
     await last;
-    expect(view.viewOptions).toEqual({ branches: ["main"], showRemotes: false, showTags: false });
+    expect(view.viewOptions).toEqual({ branches: ["main"], showRemotes: false, showTags: false, showStashes: true });
   });
 
   it("keeps the selected commit selected and at the same place on screen", async () => {
@@ -624,7 +628,7 @@ describe("RepoView view options", () => {
   });
 
   it("re-applies remembered options on open and shows no other rows before them", async () => {
-    const stored: ViewOptions = { branches: ["feature"], showRemotes: true, showTags: true };
+    const stored: ViewOptions = { branches: ["feature"], showRemotes: true, showTags: true, showStashes: true };
     localStorage.setItem("gg.view.v1:/r", JSON.stringify(stored));
     // The core loads the filtered rows as a new generation; until then it serves the old ones.
     vi.mocked(ipc.api.setViewOptions).mockImplementation(async () => snapshot({ viewOptions: stored, loading: true }));
@@ -652,6 +656,14 @@ describe("RepoView view options", () => {
     await settle();
     expect(ipc.api.setViewOptions).not.toHaveBeenCalled();
     expect(view.snapshot.totalRows).toBe(1000);
+  });
+
+  it("reads options remembered before stashes were shown as showing them", async () => {
+    localStorage.setItem("gg.view.v1:/r", JSON.stringify({ branches: null, showRemotes: true, showTags: true }));
+    expect(readOptions("/r")).toEqual(ALL);
+    localStorage.setItem("gg.view.v1:/r", JSON.stringify({ ...ALL, showStashes: "no" }));
+    expect(readOptions("/r")).toBeNull();
+    expect(sameOptions(ALL, { ...ALL, showStashes: false })).toBe(false);
   });
 
   it("shows the rows anyway when the remembered options cannot be applied", async () => {

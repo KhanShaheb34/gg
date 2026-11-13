@@ -1652,3 +1652,125 @@ async fn stashes_hidden_by_view_option() {
     assert_eq!(stash_rows(&rows).len(), 1);
     assert_eq!(row(&rows, &w).labels, [label(RefKind::Stash, "stash@{0}")]);
 }
+
+/// Task 5 review, item 5: stashes put in memory sit where `git log --date-order` puts them,
+/// which goes by committer time: after a commit amended later than the stash, though it was
+/// authored before it. Hiding and showing them gives the rows of a fresh load.
+#[tokio::test]
+async fn stashes_shown_again_sit_where_a_fresh_load_puts_them() {
+    let repo = TestRepo::new();
+    let c1 = repo.commit("one");
+    repo.write("file-0.txt", "changed\n");
+    let w = repo.stash(&[]);
+    // Authored long before the stash, committed now (long after it).
+    repo.write("amended.txt", "amended\n");
+    repo.git(&["add", "amended.txt"]);
+    repo.git(&["commit", "-q", "-m", "amended", "--date=@1000000000 +0000"]);
+    let x = repo.git(&["rev-parse", "HEAD"]);
+
+    let fresh = harness().await;
+    let id = fresh.open(repo.path()).await.repo_id;
+    let expected = hashes(&fresh.rows(id).await);
+    assert_eq!(expected, [x, w, c1]);
+
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_command_id();
+    h.view(
+        id,
+        ViewOptions {
+            show_stashes: false,
+            ..all_refs()
+        },
+    )
+    .await;
+    h.view(id, all_refs()).await;
+    assert_eq!(h.log_commands_since(mark), 0, "in memory");
+    assert_eq!(hashes(&h.rows(id).await), expected);
+}
+
+/// `main` (c1, c2) and `side` (from c1: s1), a stash on each tip: `on_main` on c2,
+/// `on_side` on s1. HEAD on `main`.
+fn stashes_on_two_branches(repo: &TestRepo) -> [String; 5] {
+    let c1 = repo.commit("one");
+    repo.branch("side");
+    let c2 = repo.commit("two");
+    repo.checkout("side");
+    let s1 = repo.commit("side one");
+    repo.write("file-0.txt", "on side\n");
+    let on_side = repo.stash(&[]);
+    repo.checkout("main");
+    repo.write("file-0.txt", "on main\n");
+    let on_main = repo.stash(&[]);
+    [c1, c2, s1, on_main, on_side]
+}
+
+/// R21: with a branch selection, the stashes whose base is a commit of the selection are
+/// shown (and only those), without the stashes becoming tips of the log; stashes can be
+/// hidden and shown in that mode too; back to all branches, the rows are those of a fresh
+/// load.
+#[tokio::test]
+async fn a_branch_selection_shows_the_stashes_on_its_commits() {
+    let repo = TestRepo::new();
+    let [c1, c2, s1, on_main, on_side] = stashes_on_two_branches(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let main_only = ViewOptions {
+        branches: Some(vec!["main".into()]),
+        ..all_refs()
+    };
+
+    let mark = h.last_command_id();
+    let snap = h.view(id, main_only.clone()).await;
+    assert!(snap.view_options.show_stashes);
+    let rows = h.rows(id).await;
+    assert_eq!(hashes(&rows), [on_main.clone(), c2.clone(), c1.clone()]);
+    assert_eq!(row(&rows, &on_main).kind, RowKind::Stash);
+    assert_eq!(
+        row(&rows, &on_main).labels,
+        [label(RefKind::Stash, "stash@{0}")]
+    );
+    let log = h
+        .log
+        .since(mark)
+        .into_iter()
+        .rfind(|r| r.args[0] == "log")
+        .expect("the selection's log was read");
+    assert!(!log.args.contains(&on_main) && !log.args.contains(&on_side));
+
+    // The side branch alone: its stash, not main's.
+    let side_only = ViewOptions {
+        branches: Some(vec!["side".into()]),
+        ..all_refs()
+    };
+    h.view(id, side_only).await;
+    assert_eq!(
+        hashes(&h.rows(id).await),
+        [on_side.clone(), s1.clone(), c1.clone()]
+    );
+
+    // Hidden and shown again within the selection, in memory.
+    h.view(id, main_only.clone()).await;
+    let mark = h.last_command_id();
+    h.view(
+        id,
+        ViewOptions {
+            show_stashes: false,
+            ..main_only.clone()
+        },
+    )
+    .await;
+    assert_eq!(hashes(&h.rows(id).await), [c2.clone(), c1.clone()]);
+    h.view(id, main_only).await;
+    assert_eq!(hashes(&h.rows(id).await), [on_main, c2, c1]);
+    assert_eq!(h.log_commands_since(mark), 0, "in memory");
+
+    // Back to all branches: as a fresh load.
+    h.view(id, all_refs()).await;
+    let fresh = harness().await;
+    let fresh_id = fresh.open(repo.path()).await.repo_id;
+    assert_eq!(
+        hashes(&h.rows(id).await),
+        hashes(&fresh.rows(fresh_id).await)
+    );
+}

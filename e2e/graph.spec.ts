@@ -738,3 +738,24 @@ test("a stash saved outside the app appears at the top without moving the view",
   await expect(row(page, 0).locator('[data-ref="stash@{0}"]')).toBeVisible();
   expect((await firstVisible(page)).scrollTop).toBe(0);
 });
+
+test("with a branch selection, the stashes on its commits show, and the Stashes toggle still works", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("stashes"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
+  await page.getByRole("button", { name: /^Branches:/ }).click();
+  await page.getByRole("dialog", { name: "Branch filter" }).getByRole("option", { name: "main", exact: true }).click();
+  await page.keyboard.press("Escape");
+  // Both stashes are on commits of main.
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
+  await expect(row(page, 0).locator('[data-ref="stash@{0}"]')).toBeVisible();
+  const toggle = page.getByRole("checkbox", { name: "Stashes" });
+  await expect(toggle).toBeEnabled();
+  await toggle.click();
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 1));
+  await toggle.click();
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
+});

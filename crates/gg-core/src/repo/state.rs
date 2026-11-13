@@ -74,7 +74,9 @@ pub struct RepoState {
     labels: HashMap<String, Vec<RefLabel>>,
     /// Commit hash → paths of worktrees detached there.
     detached: HashMap<String, Vec<String>>,
-    /// Commit of each stash shown → its base: a stash's row has that one parent.
+    /// Commit of each stash shown → its base: a stash's row has that one parent. With all
+    /// branches shown, every stash (they are tips of the log); with a branch selection, the
+    /// stashes whose base is a loaded commit (R21), put in memory.
     stash_bases: HashMap<String, String>,
     /// The index and untracked commits of the stashes shown, which never become rows.
     stash_helpers: HashSet<String>,
@@ -112,12 +114,12 @@ impl RepoState {
         &self.view
     }
 
-    /// Arguments of the `git log` that lists this state's commits: the stashes shown are
-    /// tips too, by commit (their index and untracked commits come with them, and
-    /// [`RepoState::append`] leaves those out).
+    /// Arguments of the `git log` that lists this state's commits: with all branches shown,
+    /// the stashes are tips too, by commit (their index and untracked commits come with
+    /// them, and [`RepoState::append`] leaves those out).
     pub fn log_args(&self) -> Vec<String> {
         let mut args = log_args(&self.view, &names(&self.info.refs, RefKind::Remote));
-        let stashes = shown_stashes(&self.info, &self.view);
+        let stashes = tip_stashes(&self.info, &self.view);
         let end = args.len() - 1; // before the final `--`
         args.splice(end..end, stashes.iter().map(|s| s.hash.clone()));
         args
@@ -125,8 +127,7 @@ impl RepoState {
 
     /// Whether the view selects any commit at all (an empty repository selects none).
     pub fn has_tips(&self) -> bool {
-        !tips(&self.info, &self.view).is_empty()
-            || !shown_stashes(&self.info, &self.view).is_empty()
+        !tips(&self.info, &self.view).is_empty() || !tip_stashes(&self.info, &self.view).is_empty()
     }
 
     /// Appends commits read from the log (newest first) and lays them out. Returns `true`
@@ -171,7 +172,7 @@ impl RepoState {
             && info.remotes == self.info.remotes
             && info.worktrees == self.info.worktrees
             && info.status == self.info.status
-            && shown_stashes(&info, &view) == shown_stashes(&self.info, &self.view);
+            && self.stashes_shown(&info, &view) == self.stashes_shown(&self.info, &self.view);
         self.info = info;
         self.view = view;
         if rows_same {
@@ -203,8 +204,8 @@ impl RepoState {
             .collect();
         self.commits.retain(|c| !gone.contains(c.hash.as_str()));
         let mut index = index_of(&self.commits);
-        for st in shown_stashes(&self.info, &self.view) {
-            if index.contains_key(&st.hash) {
+        for st in &self.info.stashes {
+            if !self.stash_bases.contains_key(&st.hash) || index.contains_key(&st.hash) {
                 continue;
             }
             let Some(&base) = index.get(&st.base) else {
@@ -247,11 +248,12 @@ impl RepoState {
         let view = normalize_view(view.clone(), info);
         let old = tips(&self.info, &self.view);
         let new = tips(info, &view);
-        let old_stashes: BTreeSet<&str> = shown_stashes(&self.info, &self.view)
+        // With a branch selection, stashes are no tips: they come and go in memory (R21).
+        let old_stashes: BTreeSet<&str> = tip_stashes(&self.info, &self.view)
             .iter()
             .map(|s| s.hash.as_str())
             .collect();
-        let new_stashes = shown_stashes(info, &view);
+        let new_stashes = tip_stashes(info, &view);
         let known = |hash: &str| {
             old.contains(hash) || old_stashes.contains(hash) || self.index.contains_key(hash)
         };
@@ -511,22 +513,68 @@ impl RepoState {
         in_view.then_some(head)
     }
 
+    /// Puts in the rows of the stashes a branch selection shows now that its log has been
+    /// read whole: those whose base is one of its commits (R21). Returns whether the rows
+    /// changed. With all branches shown the stashes came with the log: nothing to do.
+    pub fn log_read(&mut self) -> bool {
+        if self.view.branches.is_none() {
+            return false;
+        }
+        let wanted = self.stashes_shown(&self.info, &self.view);
+        let had: BTreeSet<&str> = self.stash_bases.keys().map(String::as_str).collect();
+        if wanted
+            .iter()
+            .map(|s| s.hash.as_str())
+            .collect::<BTreeSet<_>>()
+            == had
+        {
+            return false;
+        }
+        let old_bases = std::mem::take(&mut self.stash_bases);
+        self.rebuild_stashes();
+        self.replace_stash_rows(&old_bases);
+        self.relayout();
+        self.rebuild_labels();
+        true
+    }
+
+    /// The stashes shown with `info` and `view`, given the commits loaded: with all branches,
+    /// every stash (when stashes are shown); with a branch selection, those whose base is a
+    /// loaded commit (and whose own commit is no other row).
+    fn stashes_shown<'a>(&self, info: &'a RepoInfo, view: &ViewOptions) -> Vec<&'a Stash> {
+        if !view.show_stashes {
+            return Vec::new();
+        }
+        if view.branches.is_none() {
+            return info.stashes.iter().collect();
+        }
+        info.stashes
+            .iter()
+            .filter(|s| {
+                self.index.contains_key(&s.base)
+                    && (!self.index.contains_key(&s.hash) || self.stash_bases.contains_key(&s.hash))
+            })
+            .collect()
+    }
+
     /// The stashes' commits and helper commits, for the stashes this view shows.
     fn rebuild_stashes(&mut self) {
-        let shown = shown_stashes(&self.info, &self.view);
-        self.stash_bases = shown
+        let shown = self.stashes_shown(&self.info, &self.view);
+        let bases: HashMap<String, String> = shown
             .iter()
             .map(|s| (s.hash.clone(), s.base.clone()))
             .collect();
-        self.stash_helpers = shown
+        let helpers: HashSet<String> = shown
             .iter()
             .flat_map(|s| s.index_parent.iter().chain(&s.untracked_parent))
             .cloned()
             .collect();
+        self.stash_bases = bases;
+        self.stash_helpers = helpers;
     }
 
     fn rebuild_labels(&mut self) {
-        self.labels = build_labels(&self.info, &self.view);
+        self.labels = build_labels(&self.info, &self.view, &self.stash_bases);
         self.detached.clear();
         for wt in &self.info.worktrees {
             if let (None, Some(head)) = (&wt.branch, &wt.head) {
@@ -555,8 +603,9 @@ pub fn normalize_view(mut view: ViewOptions, info: &RepoInfo) -> ViewOptions {
     view
 }
 
-/// The stashes `view` shows: all of them when it shows all branches and stashes, else none.
-fn shown_stashes<'a>(info: &'a RepoInfo, view: &ViewOptions) -> &'a [Stash] {
+/// The stashes that are tips of the log for `view`: all of them when it shows all branches
+/// and stashes, else none (a branch selection shows stashes in memory; R21).
+fn tip_stashes<'a>(info: &'a RepoInfo, view: &ViewOptions) -> &'a [Stash] {
     if view.branches.is_none() && view.show_stashes {
         &info.stashes
     } else {
@@ -635,7 +684,11 @@ fn split_remote<'a>(name: &'a str, remotes: &[String]) -> Option<(&'a str, &'a s
 /// Labels per commit hash: branches (the current one first, then by name), then remote
 /// branches, then tags, by name, then stashes (`stash@{n}`). A branch absorbs the remote branches of the same name at
 /// the same commit. Remote and tag labels are left out when the view hides them.
-fn build_labels(info: &RepoInfo, view: &ViewOptions) -> HashMap<String, Vec<RefLabel>> {
+fn build_labels(
+    info: &RepoInfo,
+    view: &ViewOptions,
+    stashes_shown: &HashMap<String, String>,
+) -> HashMap<String, Vec<RefLabel>> {
     // (commit, branch name) → remotes whose branch of that name is at that commit.
     let mut remotes_at: HashMap<(&str, &str), Vec<String>> = HashMap::new();
     if view.show_remotes {
@@ -690,7 +743,11 @@ fn build_labels(info: &RepoInfo, view: &ViewOptions) -> HashMap<String, Vec<RefL
         };
         labels.entry(r.hash.clone()).or_default().push(label);
     }
-    for st in shown_stashes(info, view) {
+    for st in info
+        .stashes
+        .iter()
+        .filter(|s| stashes_shown.contains_key(&s.hash))
+    {
         labels.entry(st.hash.clone()).or_default().push(RefLabel {
             kind: RefKind::Stash,
             name: st.selector.clone(),

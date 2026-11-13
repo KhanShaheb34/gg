@@ -28,12 +28,6 @@
   /** A repository without commits: filtering and searching have nothing to work on. */
   const noCommits = $derived(!view.snapshot.loading && view.snapshot.totalRows === 0);
   const NO_COMMITS = "Nothing to show yet: this repository has no commits";
-  /** Stashes show only with all branches: a stash belongs to no branch. */
-  const stashesOff = $derived(noCommits || view.viewOptions.branches !== null);
-  const stashesTitle = $derived(
-    noCommits ? NO_COMMITS : view.viewOptions.branches !== null ? "Stashes show when all branches are shown" : undefined,
-  );
-
   const fetchInfo = $derived(view.snapshot.fetch);
   const noRemotes = $derived(view.snapshot.remotes.length === 0);
   const fetchState = $derived(view.fetching ? "running" : fetchInfo.lastError ? "error" : "idle");
@@ -102,11 +96,12 @@
     />
     <span>Tags</span>
   </label>
-  <label class="toggle" title={stashesTitle}>
+  <!-- With a branch selection, the stashes on its commits show (R21). -->
+  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
     <input
       type="checkbox"
       class="checkbox"
-      disabled={stashesOff}
+      disabled={noCommits}
       checked={view.viewOptions.showStashes}
       onchange={(e) => view.setViewOptions({ showStashes: e.currentTarget.checked })}
     />

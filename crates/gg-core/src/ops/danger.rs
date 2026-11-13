@@ -143,7 +143,8 @@ async fn force_push(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<Dange
             token: None,
         });
     };
-    let mut only_there = vec![tracking.as_str()];
+    // From the token's commit, not the ref: a fetch could move it between these reads.
+    let mut only_there = vec![token.as_str()];
     if verifies(ctx, &local).await? {
         only_there.extend(["--not", local.as_str()]);
     }

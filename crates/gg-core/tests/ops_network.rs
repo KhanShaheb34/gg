@@ -254,9 +254,25 @@ async fn force_push_needs_confirmation_and_uses_lease() {
         h.writes_since(mark)
     );
     assert_ne!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
-    // The token is the remote-tracking commit the count was made from.
+    // The token is the remote-tracking commit the count was made from: the count and the
+    // list name that commit, not the ref, which could move between the reads.
     let token = rev(&repo, "refs/remotes/origin/main");
     assert_eq!(out.dangers[0].token.as_deref(), Some(token.as_str()));
+    let reads: Vec<Vec<String>> = h
+        .log
+        .since(mark)
+        .into_iter()
+        .filter(|r| r.op_id == Some(out.op_id) && matches!(r.args[0].as_str(), "rev-list" | "log"))
+        .map(|r| r.args)
+        .collect();
+    assert_eq!(reads.len(), 2, "{reads:?}");
+    for args in &reads {
+        assert!(args.contains(&token), "{args:?}");
+        assert!(
+            !args.iter().any(|a| a == "refs/remotes/origin/main"),
+            "{args:?}"
+        );
+    }
 
     // Confirmed without the token: asked again, nothing runs.
     let mark = h.last_log_id();

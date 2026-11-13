@@ -232,6 +232,22 @@ async fn missing_cwd_is_path_missing() {
     assert_eq!(err.code, ErrorCode::PathMissing);
 }
 
+/// A streamed command that cannot even start is logged at once, as a failed one is.
+#[tokio::test]
+async fn spawn_stream_that_cannot_start_is_logged() {
+    let repo = TestRepo::new();
+    let log = CommandLog::new();
+    let git = GitRunner::detect(log.clone()).await.unwrap();
+    let missing = repo.path().join("does-not-exist");
+    let err = git.spawn_stream(&missing, &["log"]).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PathMissing);
+    let records = log.since(0);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, CmdKind::Read);
+    assert_eq!(records[0].args, ["log"]);
+    assert_eq!(records[0].exit_code, -1);
+}
+
 #[tokio::test]
 async fn spawn_stream_pipes_stdout_and_logs_on_done() {
     use tokio::io::AsyncReadExt;

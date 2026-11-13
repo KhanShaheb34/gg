@@ -114,20 +114,16 @@ impl RepoManager {
         }
         args.extend(FETCH_ARGS);
         let timeout = Duration::from_millis(self.fetch_timeout_ms.load(Ordering::Relaxed));
-        // On timeout the git child is dropped, which kills it.
-        let started = std::time::Instant::now();
+        // On timeout git and the transport helpers it started are killed.
         let run = repo
             .runner
-            .run_unchecked(&repo.worktree, &args, CmdKind::Write);
-        let error = match tokio::time::timeout(timeout, run).await {
-            Err(_) => {
-                repo.runner
-                    .log_timed_out(&repo.worktree, &args, CmdKind::Write, started);
-                Some(TIMED_OUT.to_owned())
-            }
-            Ok(Ok(out)) if out.code == 0 => None,
-            Ok(Ok(out)) => Some(git_failed(&FETCH_ARGS, out.code, &out.stderr).message),
-            Ok(Err(e)) => Some(e.message),
+            .run_with_timeout(&repo.worktree, &args, CmdKind::Write, timeout)
+            .await;
+        let error = match run {
+            Ok(None) => Some(TIMED_OUT.to_owned()),
+            Ok(Some(out)) if out.code == 0 => None,
+            Ok(Some(out)) => Some(git_failed(&FETCH_ARGS, out.code, &out.stderr).message),
+            Err(e) => Some(e.message),
         };
         let finished = {
             let mut slot = repo.slot.write().await;

@@ -564,6 +564,46 @@ async fn dropped_fetch_still_finishes() {
     assert_eq!(h.commands_since(before, "fetch"), 1);
 }
 
+/// A timed-out fetch takes what git started with it (here the remote's upload-pack, as an
+/// ssh transport would be) down too, not only git.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_timed_out_fetch_kills_the_helpers_git_started() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    let pid_file = repo.dir.path().join("helper.pid");
+    // Hangs whether or not git is still there to talk to.
+    upload_pack(
+        &repo,
+        "stuck-upload-pack",
+        &format!("echo $$ > '{}'\nexec sleep 600", pid_file.display()),
+    );
+    let h = harness().await;
+    h.m.set_fetch_timeout(Duration::from_millis(500));
+    let snap = h.open(repo.path()).await;
+    tokio::time::timeout(TIMEOUT, h.m.fetch(snap.repo_id))
+        .await
+        .expect("the fetch was not killed")
+        .unwrap();
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(
+        eventually(Duration::from_secs(5), || !alive()).await,
+        "the upload-pack ({pid}) outlived the timed-out fetch"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn hung_fetch_times_out() {

@@ -153,23 +153,30 @@ impl DirWatches {
     }
 
     /// Watches the directories that now exist and unwatches those that are gone. Reports
-    /// each directory that cannot be watched to `on_error` (it is tried again next time).
+    /// each directory that cannot be watched to `on_error` (it is tried again next time),
+    /// after letting go of the watcher's lock: `on_error` may stop the watcher.
     fn sync<W: Watcher>(&mut self, os: &Mutex<Option<W>>, on_error: &dyn Fn(CoreError)) {
-        let mut os = lock(os);
-        let Some(os) = os.as_mut() else {
-            return;
-        };
-        for (dir, watched) in &mut self.dirs {
-            let exists = dir.is_dir();
-            if exists && !*watched {
-                match os.watch(dir, RecursiveMode::Recursive) {
-                    Ok(()) => *watched = true,
-                    Err(e) => on_error(watch_error(dir, e.to_string())),
+        let mut errors = Vec::new();
+        {
+            let mut os = lock(os);
+            let Some(os) = os.as_mut() else {
+                return;
+            };
+            for (dir, watched) in &mut self.dirs {
+                let exists = dir.is_dir();
+                if exists && !*watched {
+                    match os.watch(dir, RecursiveMode::Recursive) {
+                        Ok(()) => *watched = true,
+                        Err(e) => errors.push(watch_error(dir, e.to_string())),
+                    }
+                } else if !exists && *watched {
+                    let _ = os.unwatch(dir);
+                    *watched = false;
                 }
-            } else if !exists && *watched {
-                let _ = os.unwatch(dir);
-                *watched = false;
             }
+        }
+        for error in errors {
+            on_error(error);
         }
     }
 }
@@ -333,6 +340,20 @@ mod tests {
         // Still unwatched, so the next sync tries (and reports) again.
         dirs.sync(&os, &on_error);
         assert_eq!(lock(&errors).len(), 2);
+    }
+
+    /// `on_error` may stop the watcher (the repository closes); it must not be called with
+    /// the watcher's lock held.
+    #[test]
+    fn errors_are_reported_without_the_watcher_lock_held() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("worktrees")).unwrap();
+        let mut dirs = DirWatches::new(dir.path());
+        let os = Mutex::new(Some(FailingWatcher));
+        let free = Mutex::new(Vec::new());
+        let on_error = |_: CoreError| lock(&free).push(os.try_lock().is_ok());
+        dirs.sync(&os, &on_error);
+        assert_eq!(*lock(&free), [true]);
     }
 
     #[tokio::test(start_paused = true)]

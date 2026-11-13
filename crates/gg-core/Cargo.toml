@@ -18,6 +18,10 @@ tempfile = { version = "3", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "macros", "time", "sync"] }
 
+[target.'cfg(unix)'.dependencies]
+# killpg for a fetch that timed out (already in the build through tokio).
+libc = "0.2"
+
 [dev-dependencies]
 # Self dev-dependency: turns on `testutil` for the integration tests in `tests/`.
 gg-core = { path = ".", features = ["testutil"] }

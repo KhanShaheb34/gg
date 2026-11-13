@@ -292,9 +292,68 @@ impl GitRunner {
         }
     }
 
+    /// Like [`GitRunner::run_unchecked`], but gives up after `timeout`: then git and
+    /// everything it started (a remote helper, ssh) are killed, the command is logged as
+    /// timed out, and the result is `Ok(None)`. On Unix git runs in its own process group
+    /// for this; elsewhere only git itself is killed.
+    pub async fn run_with_timeout(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        timeout: std::time::Duration,
+    ) -> Result<Option<GitOutput>> {
+        let started = Instant::now();
+        let mut cmd = self.command(Some(cwd), args);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let child = cmd.spawn().map_err(|e| {
+            let err = spawn_error(cwd, e);
+            self.log
+                .push(kind, cwd, args, started, -1, b"", &err.message);
+            err
+        })?;
+        let group = child.id();
+        match tokio::time::timeout(timeout, child.wait_with_output()).await {
+            Ok(Ok(out)) => {
+                let code = out.status.code().unwrap_or(-1);
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                self.log
+                    .push(kind, cwd, args, started, code, &out.stdout, &stderr);
+                Ok(Some(GitOutput {
+                    stdout: out.stdout,
+                    stderr,
+                    code,
+                }))
+            }
+            Ok(Err(e)) => {
+                let err = spawn_error(cwd, e);
+                self.log
+                    .push(kind, cwd, args, started, -1, b"", &err.message);
+                Err(err)
+            }
+            Err(_) => {
+                // Dropping the wait killed git; its helpers are in its process group.
+                #[cfg(unix)]
+                if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
+                    // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+                    unsafe {
+                        libc::killpg(pid, libc::SIGKILL);
+                    }
+                }
+                #[cfg(not(unix))]
+                let _ = group;
+                self.log_timed_out(cwd, args, kind, started);
+                Ok(None)
+            }
+        }
+    }
+
     /// Starts a read-only git command with stdout and stderr piped, for output too large to
     /// buffer. Must be called inside a Tokio runtime. Not logged until the caller reports
-    /// completion with [`GitRunner::log_stream_done`].
+    /// completion with [`GitRunner::log_stream_done`], unless it cannot start: that is
+    /// logged at once.
     ///
     /// The caller must read stdout and drain stderr concurrently: git blocks once either pipe
     /// is full, so reading one to the end before the other can deadlock. If reading stdout
@@ -303,7 +362,13 @@ impl GitRunner {
     pub fn spawn_stream(&self, cwd: &Path, args: &[&str]) -> Result<Child> {
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        cmd.spawn().map_err(|e| spawn_error(cwd, e))
+        let started = Instant::now();
+        cmd.spawn().map_err(|e| {
+            let err = spawn_error(cwd, e);
+            self.log
+                .push(CmdKind::Read, cwd, args, started, -1, b"", &err.message);
+            err
+        })
     }
 
     /// Records a `Read` command started with [`GitRunner::spawn_stream`] at `started`.

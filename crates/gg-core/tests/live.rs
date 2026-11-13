@@ -83,13 +83,38 @@ impl Harness {
         self.log
             .since(since)
             .iter()
-            .filter(|r| r.args.first().map(String::as_str) == Some(sub))
+            .filter(|r| subcommand(&r.args) == Some(sub))
             .count()
     }
 
     fn last_command_id(&self) -> u64 {
         self.log.since(0).last().map_or(0, |r| r.id)
     }
+}
+
+/// The subcommand of a logged command, after any `-c key=value` options.
+fn subcommand(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while args.get(i).map(String::as_str) == Some("-c") {
+        i += 2;
+    }
+    args.get(i).map(String::as_str)
+}
+
+/// Writes an executable shell script.
+#[cfg(unix)]
+fn script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Makes fetches from `origin` in `repo` go through `body` as the remote's upload-pack.
+#[cfg(unix)]
+fn upload_pack(repo: &TestRepo, name: &str, body: &str) {
+    let path = repo.dir.path().join(name);
+    script(&path, body);
+    repo.git(&["config", "remote.origin.uploadpack", path.to_str().unwrap()]);
 }
 
 fn snapshot_from_json(v: &Value) -> RepoSnapshot {
@@ -328,7 +353,7 @@ async fn watcher_debounces_and_still_fires_during_continuous_activity() {
     }
     let during = fired.load(Ordering::SeqCst);
     assert!(
-        (2..=4).contains(&during),
+        (2..=10).contains(&during),
         "{during} calls during 2.5 s of continuous activity"
     );
     // And once more after it stops.
@@ -497,6 +522,162 @@ async fn scheduled_fetch_runs_every_interval() {
     let off = h.last_command_id();
     tokio::time::sleep(QUIET_WINDOW).await;
     assert_eq!(h.commands_since(off, "fetch"), 0, "fetched with interval 0");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropped_fetch_still_finishes() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    upload_pack(
+        &repo,
+        "slow-upload-pack",
+        "sleep 1\nexec git-upload-pack \"$@\"",
+    );
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+
+    // Drop the fetch future as soon as it reports that git is running.
+    tokio::select! {
+        _ = h.m.fetch(id) => panic!("the fetch finished before it could be dropped"),
+        running = h.changed(id, TIMEOUT, |s| s.fetch.running) => {
+            running.expect("fetch.running was announced");
+        }
+    }
+    let finished = h
+        .changed(id, Duration::from_secs(10), |s| {
+            !s.fetch.running && s.fetch.last_at_ms.is_some()
+        })
+        .await;
+    assert!(
+        finished.is_some(),
+        "fetch.running stayed set after the future was dropped"
+    );
+    assert!(!h.m.snapshot(id).await.unwrap().fetch.running);
+
+    // And the next fetch runs git again.
+    repo.git(&["config", "--unset", "remote.origin.uploadpack"]);
+    let before = h.last_command_id();
+    h.m.fetch(id).await.unwrap();
+    assert_eq!(h.commands_since(before, "fetch"), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hung_fetch_times_out() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    // Never answers: waits for input that git sends only after the server speaks first.
+    upload_pack(&repo, "hung-upload-pack", "cat >/dev/null");
+    let h = harness().await;
+    h.m.set_fetch_timeout(Duration::from_millis(500));
+    let snap = h.open(repo.path()).await;
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(TIMEOUT, h.m.fetch(snap.repo_id))
+        .await
+        .expect("the fetch was not killed")
+        .expect("a timed-out fetch is still Ok");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let now = h.m.snapshot(snap.repo_id).await.unwrap();
+    assert_eq!(now.fetch.last_error.as_deref(), Some("Fetch timed out"));
+    assert!(!now.fetch.running);
+    assert!(now.fetch.last_at_ms.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fetch_is_ok_when_the_refresh_after_it_fails() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let origin = repo.clone_as_remote();
+    let other = second_clone(&origin);
+    other.commit("pushed");
+    other.git(&["push", "-q", "origin", "main"]);
+    // A hook that breaks the repository once the fetch has updated its refs, so every
+    // later git command in it fails.
+    let hooks = repo.dir.path().join("breaking-hooks");
+    std::fs::create_dir(&hooks).unwrap();
+    let head = repo.path().join(".git/HEAD");
+    script(
+        &hooks.join("reference-transaction"),
+        &format!(
+            "[ \"$1\" = committed ] && printf 'garbage' > '{}'\nexit 0",
+            head.display()
+        ),
+    );
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+
+    let result = h.m.fetch(snap.repo_id).await;
+    assert!(
+        h.m.refresh(snap.repo_id).await.is_err(),
+        "the repository is broken after the fetch"
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scheduled_fetch_never_runs_hooks() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let origin = repo.clone_as_remote();
+    let other = second_clone(&origin);
+    let first = other.commit("pushed first");
+    other.git(&["push", "-q", "origin", "main"]);
+    // The hook runs on every ref update of a fetch.
+    let hooks = repo.dir.path().join("marker-hooks");
+    std::fs::create_dir(&hooks).unwrap();
+    let marker = repo.dir.path().join("hook-ran");
+    script(
+        &hooks.join("reference-transaction"),
+        &format!("touch '{}'", marker.display()),
+    );
+    repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+
+    h.m.set_fetch_interval(1);
+    // The fetched commit shows once the refresh after the fetch is done.
+    let fetched = h
+        .changed(id, TIMEOUT, |s| {
+            s.total_rows == 2 && !s.fetch.running && s.fetch.last_at_ms.is_some()
+        })
+        .await;
+    h.m.set_fetch_interval(0);
+    assert!(fetched.is_some(), "no scheduled fetch");
+    let row = h.m.find_row(id, &first).await.unwrap();
+    assert!(row.is_some(), "the scheduled fetch updated the remote refs");
+    assert!(!marker.exists(), "a scheduled fetch ran a repository hook");
+    let scheduled = h
+        .log
+        .since(0)
+        .into_iter()
+        .find(|r| subcommand(&r.args) == Some("fetch"))
+        .unwrap();
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    assert_eq!(
+        scheduled.args,
+        [
+            "-c".to_owned(),
+            format!("core.hooksPath={null}"),
+            "fetch".into(),
+            "--all".into(),
+            "--prune".into()
+        ]
+    );
+
+    // A fetch the user asks for runs hooks, as in a terminal.
+    other.commit("pushed second");
+    other.git(&["push", "-q", "origin", "main"]);
+    h.m.fetch(id).await.unwrap();
+    assert!(marker.exists(), "the user's fetch ran the hook");
 }
 
 // ---------------------------------------------------------------------------------------

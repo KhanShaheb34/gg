@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use tokio::sync::{Notify, RwLock, watch};
 use tokio::task::JoinHandle;
@@ -27,10 +28,10 @@ use crate::git::refs::{read_head, read_refs, read_remotes};
 use crate::git::runner::{CmdKind, GitRunner};
 use crate::git::status::read_status;
 use crate::git::worktrees::read_worktrees;
-use crate::repo::fetch::Schedule;
+use crate::repo::fetch::{FETCH_TIMEOUT, Schedule};
 use crate::repo::loader::start_load;
 use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, normalize_view};
-use crate::watcher::{RepoWatcher, watch_git_dir};
+use crate::watcher::{RepoWatcher, watch_git_dir_reporting};
 
 /// Opens repositories and keeps their state. Create one per app with [`RepoManager::new`].
 pub struct RepoManager {
@@ -44,6 +45,8 @@ pub struct RepoManager {
     pub(super) schedule_changed: Arc<Notify>,
     /// The schedule task, started with the first `open`.
     pub(super) schedule_task: Mutex<Option<JoinHandle<()>>>,
+    /// How long a fetch may run before it is killed, in milliseconds.
+    pub(super) fetch_timeout_ms: AtomicU64,
 }
 
 impl Drop for RepoManager {
@@ -181,6 +184,7 @@ impl RepoManager {
             schedule: Mutex::new(Schedule::new()),
             schedule_changed: Arc::new(Notify::new()),
             schedule_task: Mutex::new(None),
+            fetch_timeout_ms: AtomicU64::new(duration_ms(FETCH_TIMEOUT)),
         })
     }
 
@@ -210,9 +214,14 @@ impl RepoManager {
             .find(|w| w.is_main)
             .map_or_else(|| location.worktree.clone(), |w| PathBuf::from(&w.path));
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        // Watching is a convenience: a repository that cannot be watched still opens, and
-        // refreshes on focus and on request.
-        let watcher = watch_git_dir(&location.common_dir, self.refresher(id)).ok();
+        // Watching is a convenience: a repository that cannot be watched still opens (and
+        // says so once, with `repo-error`), and refreshes on focus and on request.
+        let watch_reported = Arc::new(AtomicBool::new(false));
+        let watcher = watch_git_dir_reporting(
+            &location.common_dir,
+            self.refresher(id),
+            self.watch_failure_reporter(id, watch_reported.clone()),
+        );
         let view = ViewOptions {
             branches: None,
             show_remotes: true,
@@ -247,7 +256,7 @@ impl RepoManager {
             refresh_wanted: AtomicBool::new(false),
             load_task: Mutex::new(None),
             emitted: Mutex::new(0),
-            watcher: Mutex::new(watcher),
+            watcher: Mutex::new(None),
             fetched_at: Mutex::new(Instant::now()),
         });
 
@@ -275,6 +284,12 @@ impl RepoManager {
         }
         let snapshot = slot.snapshot(&repo.identity, repo.is_loading());
         drop(slot);
+        match watcher {
+            Ok(watcher) => *lock(&repo.watcher) = Some(watcher),
+            Err(error) => {
+                report_live_updates_unavailable(self.sink.as_ref(), id, &watch_reported, error);
+            }
+        }
         self.start_schedule();
         Ok(snapshot)
     }
@@ -438,6 +453,21 @@ impl RepoManager {
         }
     }
 
+    /// The watcher's error callback of repository `repo_id`; see
+    /// [`report_live_updates_unavailable`].
+    fn watch_failure_reporter(
+        self: &Arc<Self>,
+        repo_id: u32,
+        reported: Arc<AtomicBool>,
+    ) -> impl Fn(CoreError) + Send + Sync + 'static {
+        let m = Arc::downgrade(self);
+        move |error| {
+            if let Some(m) = m.upgrade() {
+                report_live_updates_unavailable(m.sink.as_ref(), repo_id, &reported, error);
+            }
+        }
+    }
+
     pub(super) fn get(&self, repo_id: u32) -> Result<Arc<Repo>> {
         lock(&self.repos)
             .get(&repo_id)
@@ -555,6 +585,36 @@ impl RepoManager {
     }
 }
 
+/// Emits `repo-error` (code `io`) saying that live updates are unavailable for repository
+/// `repo_id` because of `reason`, unless `reported` shows it was said already: once per
+/// repository, however often watching fails.
+fn report_live_updates_unavailable(
+    sink: &dyn EventSink,
+    repo_id: u32,
+    reported: &AtomicBool,
+    reason: CoreError,
+) {
+    if reported.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let mut error = CoreError::new(
+        ErrorCode::Io,
+        format!(
+            "Live updates are unavailable for this repository: {}",
+            reason.message
+        ),
+    );
+    error.detail = reason.detail;
+    sink.emit(
+        "repo-error",
+        serde_json::json!({ "repoId": repo_id, "error": error }),
+    );
+}
+
+pub(super) fn duration_ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Where an opened path lives.
 struct Location {
     worktree: PathBuf,
@@ -623,6 +683,26 @@ mod tests {
     use super::*;
     use crate::git::runner::CommandLog;
     use crate::testutil::{RecordingSink, TestRepo};
+
+    #[test]
+    fn live_updates_unavailable_is_reported_once() {
+        let sink = RecordingSink::default();
+        let reported = AtomicBool::new(false);
+        let reason = |m: &str| CoreError::new(ErrorCode::Io, m).with_detail("os said no");
+        report_live_updates_unavailable(&sink, 7, &reported, reason("Could not watch x."));
+        report_live_updates_unavailable(&sink, 7, &reported, reason("Could not watch y."));
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        let (name, payload) = &events[0];
+        assert_eq!(name, "repo-error");
+        assert_eq!(payload["repoId"], 7);
+        assert_eq!(payload["error"]["code"], "io");
+        assert_eq!(
+            payload["error"]["message"],
+            "Live updates are unavailable for this repository: Could not watch x."
+        );
+        assert_eq!(payload["error"]["detail"], "os said no");
+    }
 
     /// A load that ends without finishing (a panic, an abort) while it is still the newest
     /// must not leave `loading` set, and the next refresh must reload what it left behind.

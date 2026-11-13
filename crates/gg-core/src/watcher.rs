@@ -30,7 +30,8 @@ const MAX_DELAY: Duration = Duration::from_secs(1);
 const RECURSIVE_DIRS: [&str; 2] = ["refs", "worktrees"];
 
 /// Watches a git directory until dropped. Dropping it stops the OS watcher and the
-/// debounce task; `on_change` is not called afterwards.
+/// debounce task. A call to `on_change` already running when it is dropped still
+/// completes, but no new call starts afterwards.
 pub struct RepoWatcher {
     os: Arc<Mutex<Option<RecommendedWatcher>>>,
     task: JoinHandle<()>,
@@ -50,6 +51,17 @@ impl Drop for RepoWatcher {
 pub fn watch_git_dir(
     common_git_dir: &Path,
     on_change: impl Fn() + Send + Sync + 'static,
+) -> Result<RepoWatcher> {
+    watch_git_dir_reporting(common_git_dir, on_change, |_| {})
+}
+
+/// Like [`watch_git_dir`], and calls `on_error` (on the debounce task) each time a
+/// directory created later (`refs/`, `worktrees/`) cannot be watched, so changes inside it
+/// will be missed. Failing to watch anything that exists at the start is an `Err` instead.
+pub fn watch_git_dir_reporting(
+    common_git_dir: &Path,
+    on_change: impl Fn() + Send + Sync + 'static,
+    on_error: impl Fn(CoreError) + Send + Sync + 'static,
 ) -> Result<RepoWatcher> {
     let runtime = tokio::runtime::Handle::try_current().map_err(|e| {
         CoreError::new(ErrorCode::Io, "no async runtime").with_detail(e.to_string())
@@ -82,7 +94,12 @@ pub fn watch_git_dir(
             .add(&git_dir, RecursiveMode::NonRecursive)
             .map_err(|e| watch_error(&git_dir, e.to_string()))?;
         for (dir, watched) in dirs.dirs.iter_mut() {
-            *watched = dir.is_dir() && paths.add(dir, RecursiveMode::Recursive).is_ok();
+            if dir.is_dir() {
+                paths
+                    .add(dir, RecursiveMode::Recursive)
+                    .map_err(|e| watch_error(dir, e.to_string()))?;
+                *watched = true;
+            }
         }
         paths
             .commit()
@@ -97,7 +114,7 @@ pub fn watch_git_dir(
                 wait_for_quiet(&signal).await;
                 // Add watches for directories created since (and drop those of removed
                 // ones) before reporting, so nothing after this point is missed.
-                dirs.sync(&os);
+                dirs.sync(&os, &on_error);
                 on_change();
             }
         }
@@ -131,8 +148,9 @@ impl DirWatches {
         }
     }
 
-    /// Watches the directories that now exist and unwatches those that are gone.
-    fn sync(&mut self, os: &Mutex<Option<RecommendedWatcher>>) {
+    /// Watches the directories that now exist and unwatches those that are gone. Reports
+    /// each directory that cannot be watched to `on_error` (it is tried again next time).
+    fn sync<W: Watcher>(&mut self, os: &Mutex<Option<W>>, on_error: &dyn Fn(CoreError)) {
         let mut os = lock(os);
         let Some(os) = os.as_mut() else {
             return;
@@ -140,7 +158,10 @@ impl DirWatches {
         for (dir, watched) in &mut self.dirs {
             let exists = dir.is_dir();
             if exists && !*watched {
-                *watched = os.watch(dir, RecursiveMode::Recursive).is_ok();
+                match os.watch(dir, RecursiveMode::Recursive) {
+                    Ok(()) => *watched = true,
+                    Err(e) => on_error(watch_error(dir, e.to_string())),
+                }
             } else if !exists && *watched {
                 let _ = os.unwatch(dir);
                 *watched = false;
@@ -266,6 +287,48 @@ mod tests {
             Event::new(EventKind::Create(CreateKind::File)).add_path(git_dir.join("objects/ab/cd"));
         assert!(!is_change(git_dir, &objects));
         assert!(is_change(git_dir, &objects.add_path(git_dir.join("HEAD"))));
+    }
+
+    /// A watcher whose every `watch` fails.
+    struct FailingWatcher;
+
+    impl Watcher for FailingWatcher {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self)
+        }
+        fn watch(&mut self, _: &Path, _: RecursiveMode) -> notify::Result<()> {
+            Err(notify::Error::generic("no more watches"))
+        }
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    #[test]
+    fn late_directories_that_cannot_be_watched_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dirs = DirWatches::new(dir.path());
+        let os = Mutex::new(Some(FailingWatcher));
+        let errors = Mutex::new(Vec::new());
+        let on_error = |e: CoreError| lock(&errors).push(e);
+
+        // Nothing exists yet: nothing to watch, nothing to report.
+        dirs.sync(&os, &on_error);
+        assert!(lock(&errors).is_empty());
+
+        std::fs::create_dir(dir.path().join("worktrees")).unwrap();
+        dirs.sync(&os, &on_error);
+        let reported = lock(&errors).clone();
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].code, ErrorCode::Io);
+        assert!(reported[0].message.contains("worktrees"), "{reported:?}");
+        assert_eq!(reported[0].detail.as_deref(), Some("no more watches"));
+        // Still unwatched, so the next sync tries (and reports) again.
+        dirs.sync(&os, &on_error);
+        assert_eq!(lock(&errors).len(), 2);
     }
 
     #[tokio::test(start_paused = true)]

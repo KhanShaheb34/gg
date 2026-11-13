@@ -1,6 +1,10 @@
 //! Fetching: `git fetch` on request and on a background schedule, and the window focus
 //! that both the schedule and refresh-on-focus depend on.
+//!
+//! A fetch the user asks for runs like one in a terminal, hooks included. A scheduled fetch
+//! happens without anyone asking, so it never runs the repository's hooks.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -8,7 +12,7 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use crate::dto::FetchState;
-use crate::error::Result;
+use crate::error::{ErrorCode, Result};
 use crate::git::runner::{CmdKind, git_failed};
 use crate::repo::manager::{Repo, RepoManager, lock, unknown_repo};
 
@@ -16,6 +20,21 @@ use crate::repo::manager::{Repo, RepoManager, lock, unknown_repo};
 const FOCUS_GRACE: Duration = Duration::from_secs(10 * 60);
 /// Arguments of every fetch.
 const FETCH_ARGS: [&str; 3] = ["fetch", "--all", "--prune"];
+/// A fetch running longer than this is killed.
+pub(super) const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
+/// `lastError` of a fetch that was killed for running too long.
+const TIMED_OUT: &str = "Fetch timed out";
+/// Where scheduled fetches look for hooks: nowhere.
+const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// Who started a fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Initiator {
+    /// The user: hooks run, as in a terminal.
+    User,
+    /// The background schedule: hooks never run.
+    Schedule,
+}
 
 /// What decides when scheduled fetches run.
 pub(super) struct Schedule {
@@ -47,9 +66,25 @@ impl Schedule {
 impl RepoManager {
     /// Runs `git fetch --all --prune`, then refreshes. `fetch.running` is set (and
     /// `repo-changed` emitted) before git starts; when it ends, `lastAtMs` and `lastError`
-    /// (git's first stderr line, or `None`) are set and emitted. A failed fetch is still
-    /// `Ok`. Does nothing for a repository without remotes or while a fetch is running.
+    /// (git's first stderr line, "Fetch timed out" after 120 s, or `None`) are set and
+    /// emitted. Only an unknown (or meanwhile closed) repository is an `Err`; a failed fetch,
+    /// or a failed refresh after it, is `Ok`. Does nothing for a repository without remotes
+    /// or while a fetch is running. The fetch runs on its own task, so dropping the returned
+    /// future does not stop it and `running` is always cleared.
     pub async fn fetch(self: &Arc<Self>, repo_id: u32) -> Result<()> {
+        self.fetch_by(repo_id, Initiator::User).await
+    }
+
+    /// Sets how long a fetch may run before it is killed (tests only; normally 120 s).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_fetch_timeout(&self, timeout: Duration) {
+        self.fetch_timeout_ms.store(
+            crate::repo::manager::duration_ms(timeout),
+            Ordering::Relaxed,
+        );
+    }
+
+    async fn fetch_by(self: &Arc<Self>, repo_id: u32, initiator: Initiator) -> Result<()> {
         let repo = self.get(repo_id)?;
         let started = {
             let mut slot = repo.slot.write().await;
@@ -64,15 +99,30 @@ impl RepoManager {
         };
         *lock(&repo.fetched_at) = Instant::now();
         repo.publish(self.sink.as_ref(), started);
+        // No await between setting `running` and spawning: once set, the task clears it.
+        let task = tokio::spawn(self.clone().run_fetch(repo, initiator));
+        task.await.unwrap_or(Ok(()))
+    }
 
-        let error = match repo
+    /// Runs git for a fetch whose `running` is set, records the outcome and refreshes.
+    async fn run_fetch(self: Arc<Self>, repo: Arc<Repo>, initiator: Initiator) -> Result<()> {
+        let repo_id = repo.identity.repo_id;
+        let no_hooks = format!("core.hooksPath={NULL_DEVICE}");
+        let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 2);
+        if initiator == Initiator::Schedule {
+            args.extend(["-c", no_hooks.as_str()]);
+        }
+        args.extend(FETCH_ARGS);
+        let timeout = Duration::from_millis(self.fetch_timeout_ms.load(Ordering::Relaxed));
+        // On timeout the git child is dropped, which kills it.
+        let run = repo
             .runner
-            .run_unchecked(&repo.worktree, &FETCH_ARGS, CmdKind::Write)
-            .await
-        {
-            Ok(out) if out.code == 0 => None,
-            Ok(out) => Some(git_failed(&FETCH_ARGS, out.code, &out.stderr).message),
-            Err(e) => Some(e.message),
+            .run_unchecked(&repo.worktree, &args, CmdKind::Write);
+        let error = match tokio::time::timeout(timeout, run).await {
+            Err(_) => Some(TIMED_OUT.to_owned()),
+            Ok(Ok(out)) if out.code == 0 => None,
+            Ok(Ok(out)) => Some(git_failed(&FETCH_ARGS, out.code, &out.stderr).message),
+            Ok(Err(e)) => Some(e.message),
         };
         let finished = {
             let mut slot = repo.slot.write().await;
@@ -87,7 +137,13 @@ impl RepoManager {
             slot.snapshot_to_emit(&repo.identity, repo.is_loading())
         };
         repo.publish(self.sink.as_ref(), finished);
-        self.refresh(repo_id).await.map(drop)
+        // The watcher also sees the fetch's ref updates and refreshes ~300 ms later; that
+        // second refresh finds nothing new and emits nothing. This one is kept so that the
+        // state is current when `fetch` returns.
+        match self.refresh(repo_id).await {
+            Err(e) if e.code == ErrorCode::UnknownRepo => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// Sets how often every open repository is fetched in the background; 0 turns it off.
@@ -135,17 +191,15 @@ impl RepoManager {
         let now = Instant::now();
         let mut next: Option<Instant> = None;
         for repo in repos {
-            let mut fetched_at = lock(&repo.fetched_at);
-            if fetch_due(now, interval, *fetched_at, focus) == Due::Now {
-                // Counts as fetched now even if `fetch` turns out to have nothing to do.
-                *fetched_at = now;
+            let (start, at) = plan_fetch(now, interval, focus, &mut lock(&repo.fetched_at));
+            if start {
                 let m = self.clone();
                 let id = repo.identity.repo_id;
                 tokio::spawn(async move {
-                    let _ = m.fetch(id).await;
+                    let _ = m.fetch_by(id, Initiator::Schedule).await;
                 });
             }
-            if let Due::At(at) = fetch_due(now, interval, *fetched_at, focus) {
+            if let Some(at) = at {
                 next = Some(next.map_or(at, |n| n.min(at)));
             }
         }
@@ -153,15 +207,36 @@ impl RepoManager {
     }
 }
 
+/// Whether a repository last fetched at `fetched_at` is to be fetched now (if so,
+/// `fetched_at` becomes `now`, even if the fetch turns out to have nothing to do), and when
+/// its next scheduled fetch is due, if ever.
+fn plan_fetch(
+    now: Instant,
+    interval: Duration,
+    focus: Focus,
+    fetched_at: &mut Instant,
+) -> (bool, Option<Instant>) {
+    let start = fetch_due(now, interval, *fetched_at, focus) == Due::Now;
+    if start {
+        *fetched_at = now;
+    }
+    match fetch_due(now, interval, *fetched_at, focus) {
+        Due::At(at) => (start, Some(at)),
+        Due::Now | Due::Never => (start, None),
+    }
+}
+
 /// The schedule task: starts due fetches, then sleeps until the next one is due or the
 /// schedule changes. With nothing due ever (interval 0, no repositories, unfocused for too
 /// long) it sleeps until the schedule changes. Ends with the manager.
 async fn run_schedule(m: Weak<RepoManager>, changed: Arc<Notify>) {
-    loop {
-        let next = match m.upgrade() {
-            Some(m) => m.start_due_fetches(),
-            None => return,
-        };
+    schedule_loop(&changed, || m.upgrade().map(|m| m.start_due_fetches())).await;
+}
+
+/// The loop of [`run_schedule`]: `tick` starts what is due and returns when to wake next
+/// (`Some(None)`: only when `changed` is notified), or `None` to stop.
+async fn schedule_loop(changed: &Notify, mut tick: impl FnMut() -> Option<Option<Instant>>) {
+    while let Some(next) = tick() {
         match next {
             Some(at) => {
                 tokio::select! {
@@ -225,6 +300,70 @@ mod tests {
             focused: false,
             since,
         }
+    }
+
+    /// The schedule loop over one repository, with real `plan_fetch` decisions and a
+    /// paused clock: counts wake-ups (ticks) and fetches started.
+    #[tokio::test(start_paused = true)]
+    async fn loop_sleeps_while_unfocused_past_the_grace_and_resumes_on_focus() {
+        struct State {
+            interval: Duration,
+            focus: Focus,
+            fetched_at: Instant,
+            ticks: u32,
+            fetches: u32,
+        }
+        let start = Instant::now();
+        let state = Arc::new(std::sync::Mutex::new(State {
+            interval: 5 * MIN,
+            focus: unfocused(start),
+            fetched_at: start,
+            ticks: 0,
+            fetches: 0,
+        }));
+        let changed = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let (state, changed) = (state.clone(), changed.clone());
+            async move {
+                schedule_loop(&changed, || {
+                    let mut s = lock(&state);
+                    s.ticks += 1;
+                    let (interval, focus) = (s.interval, s.focus);
+                    let (fetch, next) =
+                        plan_fetch(Instant::now(), interval, focus, &mut s.fetched_at);
+                    s.fetches += u32::from(fetch);
+                    Some(next)
+                })
+                .await;
+            }
+        });
+        let counts = || {
+            let s = lock(&state);
+            (s.ticks, s.fetches)
+        };
+        let ms = Duration::from_millis(1);
+
+        tokio::time::sleep(ms).await;
+        assert_eq!(counts(), (1, 0), "first fetch is one interval away");
+        // Unfocused since `start`: the fetch at +5 min is inside the 10-minute grace.
+        tokio::time::sleep(5 * MIN).await;
+        assert_eq!(counts(), (2, 1));
+        // The next one (+10 min) is not: the loop now waits only for a schedule change.
+        tokio::time::sleep(3 * 60 * MIN).await;
+        assert_eq!(counts(), (2, 1), "woke up or fetched while long unfocused");
+
+        lock(&state).focus = focused(Instant::now());
+        changed.notify_one();
+        tokio::time::sleep(ms).await;
+        assert_eq!(
+            counts(),
+            (3, 2),
+            "focus makes the overdue fetch run at once"
+        );
+        // And the schedule continues every interval.
+        tokio::time::sleep(5 * MIN).await;
+        assert_eq!(counts(), (4, 3));
+        task.abort();
     }
 
     #[test]

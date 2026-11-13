@@ -536,6 +536,11 @@
     align-items: center;
     height: var(--row-h);
     contain: layout paint style;
+    /* The simple text path: no kerning or ligatures. Measured in WKWebView, it leaves the
+       web process about 20 MB less 30 s after a full scroll (docs/perf, task 13 fix round). */
+    font-kerning: none;
+    font-variant-ligatures: none;
+    text-rendering: optimizeSpeed;
   }
 
   .row[hidden] {

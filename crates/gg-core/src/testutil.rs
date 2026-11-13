@@ -38,6 +38,16 @@ const HOST_GIT_VARS: [&str; 9] = [
     "GIT_COMMITTER_DATE",
 ];
 
+/// A repository folder with this name (`TestRepo::new_in_subdir(UNWATCHABLE)`) cannot be
+/// watched: `watch_git_dir` fails for it, as it would for a file system without change
+/// notifications.
+pub const UNWATCHABLE: &str = "gg-unwatchable";
+
+/// Whether `git_dir` belongs to an [`UNWATCHABLE`] test repository.
+pub fn is_unwatchable(git_dir: &Path) -> bool {
+    git_dir.components().any(|c| c.as_os_str() == UNWATCHABLE)
+}
+
 /// A git repository in a temp directory, deleted on drop. The repository is a subdirectory
 /// of `dir`; worktrees are created next to it.
 pub struct TestRepo {

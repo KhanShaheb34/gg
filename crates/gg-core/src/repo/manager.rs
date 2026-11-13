@@ -47,6 +47,10 @@ pub struct RepoManager {
     pub(super) schedule_task: Mutex<Option<JoinHandle<()>>>,
     /// How long a fetch may run before it is killed, in milliseconds.
     pub(super) fetch_timeout_ms: AtomicU64,
+    /// Repositories (by common git dir) being opened right now. Another `open` of the same
+    /// repository waits for that one instead of reading and watching it a second time; the
+    /// receiver's sender is dropped when that open ends.
+    opening: Mutex<HashMap<PathBuf, watch::Receiver<()>>>,
 }
 
 impl Drop for RepoManager {
@@ -85,6 +89,27 @@ pub(super) struct Repo {
     /// When the last fetch started, or when the repository was opened; the next scheduled
     /// fetch is one interval later.
     pub(super) fetched_at: Mutex<Instant>,
+    /// Errors held for the UI; see [`Repo::report_error`].
+    errors: Mutex<HeldErrors>,
+}
+
+/// `repo-error` payloads of a repository nobody has asked for yet (opened in the background
+/// at start), kept until `open` adopts it. Only the latest of each kind is kept.
+#[derive(Default)]
+struct HeldErrors {
+    /// The UI has asked for this repository: errors are emitted as they happen.
+    adopted: bool,
+    load: Option<serde_json::Value>,
+    live_updates: Option<serde_json::Value>,
+}
+
+/// What a held `repo-error` is about.
+#[derive(Clone, Copy)]
+pub(super) enum ErrorKind {
+    /// The log could not be read.
+    Load,
+    /// The git dir cannot be watched.
+    LiveUpdates,
 }
 
 /// The state lock's contents.
@@ -147,6 +172,41 @@ impl Slot {
 pub(super) struct Stamped(u64, RepoSnapshot);
 
 impl Repo {
+    /// Emits `repo-error` with `payload`, or, while nobody has asked for this repository yet,
+    /// keeps it (the latest of each kind) until [`Repo::adopt`].
+    pub(super) fn report_error(
+        &self,
+        sink: &dyn EventSink,
+        kind: ErrorKind,
+        payload: serde_json::Value,
+    ) {
+        let mut held = lock(&self.errors);
+        if held.adopted {
+            drop(held);
+            sink.emit("repo-error", payload);
+            return;
+        }
+        match kind {
+            ErrorKind::Load => held.load = Some(payload),
+            ErrorKind::LiveUpdates => held.live_updates = Some(payload),
+        }
+    }
+
+    /// Marks the repository as asked for by the UI and emits the errors held until now.
+    fn adopt(&self, sink: &dyn EventSink) {
+        let held = {
+            let mut held = lock(&self.errors);
+            if held.adopted {
+                return;
+            }
+            held.adopted = true;
+            [held.live_updates.take(), held.load.take()]
+        };
+        for payload in held.into_iter().flatten() {
+            sink.emit("repo-error", payload);
+        }
+    }
+
     pub(super) fn is_loading(&self) -> bool {
         self.loading.borrow().is_some()
     }
@@ -185,6 +245,7 @@ impl RepoManager {
             schedule_changed: Arc::new(Notify::new()),
             schedule_task: Mutex::new(None),
             fetch_timeout_ms: AtomicU64::new(duration_ms(FETCH_TIMEOUT)),
+            opening: Mutex::new(HashMap::new()),
         })
     }
 
@@ -192,6 +253,16 @@ impl RepoManager {
     /// starts watching its git dir. Returns once refs, HEAD, worktrees and status are read.
     /// Opening any path of an already open repository returns that repository's snapshot.
     pub async fn open(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
+        self.open_as(path, true).await
+    }
+
+    /// Like [`RepoManager::open`], for a repository the UI has not asked for yet (opened
+    /// ahead at start): its `repo-error`s are held until a later `open` adopts it.
+    pub async fn open_in_background(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
+        self.open_as(path, false).await
+    }
+
+    async fn open_as(self: &Arc<Self>, path: &Path, adopt: bool) -> Result<RepoSnapshot> {
         if !path.exists() {
             return Err(CoreError::new(
                 ErrorCode::PathMissing,
@@ -202,9 +273,35 @@ impl RepoManager {
             return Err(not_a_repo());
         }
         let location = self.locate(path).await?;
-        if let Some(repo) = self.find_open(&location.common_dir) {
-            return Ok(repo.snapshot().await);
-        }
+        // Held until this open ends; then the next one waiting for it goes on.
+        let _opening = loop {
+            if let Some(repo) = self.find_open(&location.common_dir) {
+                if adopt {
+                    repo.adopt(self.sink.as_ref());
+                }
+                return Ok(repo.snapshot().await);
+            }
+            let waiting = {
+                let mut opening = lock(&self.opening);
+                match opening.get(&location.common_dir) {
+                    Some(rx) => Err(rx.clone()),
+                    None => {
+                        let (tx, rx) = watch::channel(());
+                        opening.insert(location.common_dir.clone(), rx);
+                        Ok(Opening {
+                            manager: self,
+                            common_dir: location.common_dir.clone(),
+                            _done: tx,
+                        })
+                    }
+                }
+            };
+            match waiting {
+                Ok(opening) => break opening,
+                // Wakes when that open ends, whether it succeeded or not.
+                Err(mut rx) => while rx.changed().await.is_ok() {},
+            }
+        };
 
         let runner = self.runner.clone();
         let info = read_info(&runner, &location.worktree).await?;
@@ -258,6 +355,10 @@ impl RepoManager {
             emitted: Mutex::new(0),
             watcher: Mutex::new(None),
             fetched_at: Mutex::new(Instant::now()),
+            errors: Mutex::new(HeldErrors {
+                adopted: adopt,
+                ..HeldErrors::default()
+            }),
         });
 
         // Nobody else can hold this lock yet; holding it while registering the repository
@@ -277,6 +378,9 @@ impl RepoManager {
         if let Some(existing) = existing {
             // Opened concurrently by another call; use that one.
             drop(slot);
+            if adopt {
+                existing.adopt(self.sink.as_ref());
+            }
             return Ok(existing.snapshot().await);
         }
         if slot.current.has_tips() {
@@ -287,7 +391,7 @@ impl RepoManager {
         match watcher {
             Ok(watcher) => *lock(&repo.watcher) = Some(watcher),
             Err(error) => {
-                report_live_updates_unavailable(self.sink.as_ref(), id, &watch_reported, error);
+                report_live_updates_unavailable(self.sink.as_ref(), &repo, &watch_reported, error);
             }
         }
         self.start_schedule();
@@ -462,8 +566,10 @@ impl RepoManager {
     ) -> impl Fn(CoreError) + Send + Sync + 'static {
         let m = Arc::downgrade(self);
         move |error| {
-            if let Some(m) = m.upgrade() {
-                report_live_updates_unavailable(m.sink.as_ref(), repo_id, &reported, error);
+            if let Some(m) = m.upgrade()
+                && let Ok(repo) = m.get(repo_id)
+            {
+                report_live_updates_unavailable(m.sink.as_ref(), &repo, &reported, error);
             }
         }
     }
@@ -585,18 +691,27 @@ impl RepoManager {
     }
 }
 
-/// Emits `repo-error` (code `io`) saying that live updates are unavailable for repository
-/// `repo_id` because of `reason`, unless `reported` shows it was said already: once per
-/// repository, however often watching fails.
+/// Reports `repo-error` (code `io`) saying that live updates are unavailable for `repo`
+/// because of `reason`, unless `reported` shows it was said already: once per repository,
+/// however often watching fails.
 fn report_live_updates_unavailable(
     sink: &dyn EventSink,
-    repo_id: u32,
+    repo: &Repo,
     reported: &AtomicBool,
     reason: CoreError,
 ) {
     if reported.swap(true, Ordering::SeqCst) {
         return;
     }
+    repo.report_error(
+        sink,
+        ErrorKind::LiveUpdates,
+        live_updates_unavailable(repo.identity.repo_id, reason),
+    );
+}
+
+/// The `repo-error` payload saying that live updates are unavailable for `repo_id`.
+fn live_updates_unavailable(repo_id: u32, reason: CoreError) -> serde_json::Value {
     let mut error = CoreError::new(
         ErrorCode::Io,
         format!(
@@ -605,10 +720,21 @@ fn report_live_updates_unavailable(
         ),
     );
     error.detail = reason.detail;
-    sink.emit(
-        "repo-error",
-        serde_json::json!({ "repoId": repo_id, "error": error }),
-    );
+    serde_json::json!({ "repoId": repo_id, "error": error })
+}
+
+/// An `open` in progress; removes itself from `opening` when the open ends.
+struct Opening<'a> {
+    manager: &'a RepoManager,
+    common_dir: PathBuf,
+    /// Dropped with this, which wakes the opens waiting for this one.
+    _done: watch::Sender<()>,
+}
+
+impl Drop for Opening<'_> {
+    fn drop(&mut self) {
+        lock(&self.manager.opening).remove(&self.common_dir);
+    }
 }
 
 pub(super) fn duration_ms(d: Duration) -> u64 {
@@ -685,16 +811,9 @@ mod tests {
     use crate::testutil::{RecordingSink, TestRepo};
 
     #[test]
-    fn live_updates_unavailable_is_reported_once() {
-        let sink = RecordingSink::default();
-        let reported = AtomicBool::new(false);
-        let reason = |m: &str| CoreError::new(ErrorCode::Io, m).with_detail("os said no");
-        report_live_updates_unavailable(&sink, 7, &reported, reason("Could not watch x."));
-        report_live_updates_unavailable(&sink, 7, &reported, reason("Could not watch y."));
-        let events = sink.events();
-        assert_eq!(events.len(), 1);
-        let (name, payload) = &events[0];
-        assert_eq!(name, "repo-error");
+    fn live_updates_unavailable_payload() {
+        let reason = CoreError::new(ErrorCode::Io, "Could not watch x.").with_detail("os said no");
+        let payload = live_updates_unavailable(7, reason);
         assert_eq!(payload["repoId"], 7);
         assert_eq!(payload["error"]["code"], "io");
         assert_eq!(

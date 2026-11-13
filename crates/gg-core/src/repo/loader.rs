@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::EventSink;
 use crate::git::log::{Commit, read_log};
-use crate::repo::manager::{Repo, Slot, lock};
+use crate::repo::manager::{ErrorKind, Repo, Slot, lock};
 
 /// Rows loaded before the first progress event.
 const FIRST_EVENT_ROWS: u32 = 500;
@@ -131,8 +131,9 @@ async fn load(mut guard: LoadGuard, sink: Arc<dyn EventSink>, args: Vec<String>)
         slot.snapshot_to_emit(&repo.identity, false)
     };
     if let Err(error) = result {
-        sink.emit(
-            "repo-error",
+        repo.report_error(
+            sink.as_ref(),
+            ErrorKind::Load,
             serde_json::json!({ "repoId": repo.identity.repo_id, "error": error }),
         );
     }

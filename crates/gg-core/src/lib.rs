@@ -105,7 +105,7 @@ impl Core {
         for path in session.chain(self.launch_path.clone()) {
             let repos = repos.clone();
             tokio::spawn(async move {
-                let _ = repos.open(std::path::Path::new(&path)).await;
+                let _ = repos.open_in_background(std::path::Path::new(&path)).await;
             });
         }
     }

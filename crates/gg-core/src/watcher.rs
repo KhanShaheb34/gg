@@ -73,6 +73,10 @@ pub fn watch_git_dir_reporting(
         )
         .with_detail(e.to_string())
     })?;
+    #[cfg(feature = "testutil")]
+    if crate::testutil::is_unwatchable(&git_dir) {
+        return Err(watch_error(&git_dir, "made unwatchable for a test".into()));
+    }
     let signal = Arc::new(Notify::new());
 
     let handler = {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gg_core::error::ErrorCode;
-use gg_core::testutil::{RecordingSink, TestRepo};
+use gg_core::testutil::{RecordingSink, TestRepo, UNWATCHABLE};
 use gg_core::{Core, CoreError};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -266,6 +266,157 @@ async fn open_missing_recent_path_errors_and_recent_is_removable() {
     assert_eq!(rest[0]["path"], path_string(keep.path()));
     let state = h.call("get_app_state", json!({})).await;
     assert_eq!(state["recents"], Value::Array(rest.clone()));
+}
+
+/// A core whose saved session holds `tabs` and whose launch path is `launch`.
+async fn core_with_session(
+    config: &Path,
+    tabs: &[&Path],
+    launch: Option<&Path>,
+) -> (Arc<Core>, Arc<RecordingSink>) {
+    let first = Core::new(
+        config.to_path_buf(),
+        None,
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .unwrap();
+    let session = json!({"tabs": tabs, "active": tabs.first()});
+    first.dispatch("save_session", session).await.unwrap();
+    let sink = Arc::new(RecordingSink::default());
+    let core = Core::new(
+        config.to_path_buf(),
+        launch.map(Path::to_path_buf),
+        sink.clone(),
+    )
+    .await
+    .unwrap();
+    (core, sink)
+}
+
+/// Git commands run so far whose arguments include `arg`.
+async fn commands_with(core: &Arc<Core>, arg: &str) -> usize {
+    let log = core
+        .dispatch("command_log", json!({"sinceId": 0}))
+        .await
+        .unwrap();
+    log.as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["args"].as_array().unwrap().iter().any(|a| a == arg))
+        .count()
+}
+
+async fn wait_loaded_event(sink: &RecordingSink, id: u64) {
+    let loaded = sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["loading"] == false
+        })
+        .await;
+    assert!(loaded.is_some(), "repository {id} did not finish loading");
+}
+
+fn repo_errors(sink: &RecordingSink) -> Vec<Value> {
+    sink.events()
+        .into_iter()
+        .filter(|(name, _)| name == "repo-error")
+        .map(|(_, v)| v)
+        .collect()
+}
+
+/// An error found while a repository was opened before the UI asked for it (here: its git
+/// dir cannot be watched) is held until the UI's `open_repo` adopts the repository, then
+/// delivered once.
+#[tokio::test]
+async fn errors_of_a_pre_opened_repo_reach_the_ui_once() {
+    let repo = TestRepo::new_in_subdir(UNWATCHABLE);
+    repo.commit("one");
+    let config = tempfile::tempdir().unwrap();
+    let (core, sink) = core_with_session(config.path(), &[], Some(repo.path())).await;
+    core.open_startup_repos();
+    wait_loaded_event(&sink, 1).await;
+    assert!(repo_errors(&sink).is_empty(), "nobody is listening yet");
+
+    let snap = core
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["repoId"], 1);
+    let errors = repo_errors(&sink);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0]["repoId"], 1);
+    let message = errors[0]["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Live updates are unavailable"),
+        "{message}"
+    );
+
+    core.dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(repo_errors(&sink).len(), 1, "delivered again");
+}
+
+/// The same failure for a repository the UI opens itself is reported at once, as before.
+#[tokio::test]
+async fn errors_of_a_repo_the_ui_opens_are_reported_at_once() {
+    let repo = TestRepo::new_in_subdir(UNWATCHABLE);
+    repo.commit("one");
+    let h = harness().await;
+    h.call("open_repo", json!({ "path": repo.path() })).await;
+    assert_eq!(repo_errors(&h.sink).len(), 1);
+}
+
+/// The UI's `open_repo` arriving while the pre-open is still reading the repository waits
+/// for it instead of opening the repository a second time.
+#[tokio::test]
+async fn open_repo_during_the_pre_open_opens_once() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let config = tempfile::tempdir().unwrap();
+    let (core, sink) = core_with_session(config.path(), &[], Some(repo.path())).await;
+    core.open_startup_repos();
+    let snap = core
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["repoId"], 1);
+    wait_loaded_event(&sink, 1).await;
+    assert_eq!(
+        commands_with(&core, "for-each-ref").await,
+        1,
+        "refs read twice"
+    );
+    assert_eq!(commands_with(&core, "log").await, 1, "log loaded twice");
+}
+
+/// A repository that is both a session tab and the launch path is opened once: one
+/// repository, one read, one watcher.
+#[tokio::test]
+async fn session_tab_that_is_also_the_launch_path_opens_once() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let config = tempfile::tempdir().unwrap();
+    let (core, sink) = core_with_session(config.path(), &[repo.path()], Some(repo.path())).await;
+    core.open_startup_repos();
+    wait_loaded_event(&sink, 1).await;
+    let snap = core
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["repoId"], 1);
+    assert_eq!(
+        commands_with(&core, "for-each-ref").await,
+        1,
+        "refs read twice"
+    );
+    assert_eq!(commands_with(&core, "log").await, 1, "log loaded twice");
+    let opened = sink
+        .events()
+        .iter()
+        .filter(|(name, v)| name == "repo-changed" && v["repoId"] != 1)
+        .count();
+    assert_eq!(opened, 0, "a second repository was opened");
 }
 
 /// The session's tabs and the launch path start opening (and loading) before the UI asks;

@@ -1,0 +1,246 @@
+// Screenshots for the visual check, written to docs/perf/screens/. Run on demand:
+//   GG_SCREENS=1 pnpm e2e screens
+import path from "node:path";
+import type { Page } from "@playwright/test";
+import { expect, makeRepo, test } from "./fixtures";
+
+const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");
+
+test.skip(!process.env.GG_SCREENS, "set GG_SCREENS=1 to take screenshots");
+test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+
+/** Somewhere nothing reacts to the pointer: the empty middle of the tab bar. */
+const park = (page: Page) => page.mouse.move(1000, 20);
+
+async function open(page: Page, dir: string) {
+  page.once("dialog", (dialog) => dialog.accept(dir));
+  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await expect(page.getByRole("tab", { name: path.basename(dir) })).toBeVisible();
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`welcome and open tab, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    const parent = path.dirname(gg.repoPath("small"));
+    const others = ["payments-api", "design-system"].map((name) =>
+      makeRepo(name, (git) => git("init", "-q", "-b", "main"), parent),
+    );
+
+    await page.goto("/");
+    for (const dir of [...others, gg.repoPath("empty"), gg.repoPath("small")]) await open(page, dir);
+    await page.mouse.move(640, 400);
+    await page.waitForTimeout(150); // let hover styles settle
+    await page.screenshot({ path: path.join(OUT, `tab-${theme}.png`) });
+
+    for (let i = 0; i < 4; i++) await page.keyboard.press("ControlOrMeta+w");
+    await expect(page.getByTestId("welcome")).toBeVisible();
+    await page.mouse.move(640, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `welcome-${theme}.png`) });
+  });
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`graph, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("small"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await grid.locator('[data-index="3"]').click();
+    await page.mouse.move(900, 700);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `graph-${theme}.png`) });
+
+    await open(page, gg.repoPath("branchy"));
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await park(page);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `graph-branchy-${theme}.png`) });
+  });
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`toolbar, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("branchy"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await page.mouse.move(700, 60);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `toolbar-${theme}.png`) });
+
+    // The branch filter open, filtered to "feature", one branch ticked.
+    await page.getByRole("button", { name: /^Branches:/ }).click();
+    const dialog = page.getByRole("dialog", { name: "Branch filter" });
+    await dialog.getByRole("option", { name: "feature/ui", exact: true }).click();
+    await expect(grid.locator('[data-index="0"] .subject')).toHaveText("Row hover states");
+    await page.keyboard.type("feat");
+    await page.mouse.move(1000, 60); // off the list and the grid
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: path.join(OUT, `toolbar-filter-${theme}.png`) });
+    await dialog.getByRole("option", { name: "Show all", exact: true }).click();
+    await page.keyboard.press("Escape");
+
+    // Search active, a few hits, the second one selected.
+    await page.keyboard.press("ControlOrMeta+f");
+    await page.keyboard.type("plugin");
+    await expect(page.getByTestId("search-count")).toHaveText(/^1 of \d+$/);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("search-count")).toHaveText(/^2 of \d+$/);
+    await page.mouse.move(700, 60);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `toolbar-search-${theme}.png`) });
+  });
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`details panel, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("details"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    const panel = page.getByRole("region", { name: "Commit details" });
+    const shot = async (name: string) => {
+      await expect(panel.getByTestId("details-files-count")).toBeVisible();
+      await page.mouse.move(1000, 60); // empty toolbar space, off every button
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+    };
+
+    // A normal commit: added, modified, renamed and binary files, a message with a body.
+    await grid.locator('[role="row"]', { hasText: "Rework peaches routes" }).click();
+    await shot("details");
+
+    // A merge commit: two parents, files against the first.
+    await grid.locator('[role="row"]', { hasText: "Merge branch 'side'" }).click();
+    await shot("details-merge");
+
+    // A long message and many files, as a flat list.
+    await grid.locator('[role="row"]', { hasText: "Generate the module scaffolding" }).click();
+    await shot("details-long");
+    await panel.getByRole("button", { name: "List" }).click();
+    await shot("details-list");
+    await panel.getByRole("button", { name: "Tree" }).click();
+  });
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`first run, empty, loading and error states, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    // For the loading shot: "small" stays loading with no rows (no events reach the page,
+    // and its snapshots say so); the empty repository needs neither.
+    const small = gg.repoPath("small");
+    await page.route("**/events", (route) => route.abort());
+    await page.route("**/invoke", async (route) => {
+      const body = route.request().postDataJSON() as { cmd?: string } | null;
+      if (body?.cmd !== "open_repo" && body?.cmd !== "get_snapshot") return route.continue();
+      const response = await route.fetch();
+      const json = (await response.json()) as { ok?: { rootPath: string; totalRows: number; loading: boolean } };
+      if (json.ok?.rootPath === small) Object.assign(json.ok, { totalRows: 0, loading: true });
+      await route.fulfill({ response, json });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("welcome")).toBeVisible();
+    await page.mouse.move(640, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `welcome-first-run-${theme}.png`) });
+
+    // A folder that is not a repository: the error toast, over the welcome screen.
+    page.once("dialog", (dialog) => dialog.accept(gg.folder("plain")));
+    await page.getByRole("button", { name: "Open repository" }).first().click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await park(page);
+    await page.waitForTimeout(250); // the toast's entrance
+    await page.screenshot({ path: path.join(OUT, `toast-${theme}.png`) });
+    await page.getByRole("button", { name: "Dismiss notification" }).click();
+
+    // A repository without commits.
+    await open(page, gg.repoPath("empty"));
+    await expect(page.getByText("No commits yet")).toBeVisible();
+    await page.mouse.move(640, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `empty-${theme}.png`) });
+
+    // Loading: the first rows held back (see the routes above), so the skeleton rows show.
+    await open(page, small);
+    await expect(page.locator('[role="row"][aria-busy="true"]:not([hidden])').first()).toBeVisible();
+    await page.mouse.move(640, 790);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `loading-${theme}.png`) });
+  });
+}
+
+// The smallest window (900×560) and keyboard focus / hover, both themes.
+for (const theme of ["light", "dark"] as const) {
+  test(`small window, focus and hover, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.setViewportSize({ width: 900, height: 560 });
+    await page.emulateMedia({ colorScheme: theme });
+    const parent = path.dirname(gg.repoPath("small"));
+    makeRepo("payments-api", (git) => git("init", "-q", "-b", "main"), parent);
+    await page.goto("/");
+    await open(page, gg.repoPath("small"));
+    await page.keyboard.press("ControlOrMeta+w");
+    await expect(page.getByTestId("welcome")).toBeVisible();
+    await park(page);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `small-welcome-${theme}.png`) });
+
+    await open(page, gg.repoPath("branchy"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await park(page);
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `small-graph-${theme}.png`) });
+
+    await page.getByRole("button", { name: /^Branches:/ }).click();
+    await page.keyboard.type("feat");
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `small-filter-${theme}.png`) });
+    await page.keyboard.press("Escape");
+
+    await page.keyboard.press("ControlOrMeta+f");
+    await page.keyboard.type("plugin");
+    await expect(page.getByTestId("search-count")).toHaveText(/^1 of \d+$/);
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `small-search-${theme}.png`) });
+    await page.keyboard.press("Escape");
+
+    await grid.locator('[role="row"]', { hasText: "Sandbox file access" }).click();
+    await expect(page.getByRole("region", { name: "Commit details" }).getByTestId("details-files-count")).toBeVisible();
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `small-details-${theme}.png`) });
+
+    // Keyboard focus: the grid's selected row, then a toolbar button.
+    await grid.focus();
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `focus-row-${theme}.png`) });
+    await page.getByRole("button", { name: "Refresh" }).focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `focus-button-${theme}.png`) });
+
+    // Hover: a row and a tab.
+    // A row that is not the selected one, so the hover tint is what shows.
+    const hovered = grid.locator('[role="row"][aria-selected="false"]', { hasText: "Resizable columns" });
+    await hovered.hover();
+    await expect(hovered).toHaveAttribute("aria-selected", "false");
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `hover-row-${theme}.png`) });
+    await page.getByRole("tab", { name: "branchy" }).hover();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(OUT, `hover-tab-${theme}.png`) });
+  });
+}

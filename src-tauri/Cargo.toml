@@ -1,0 +1,26 @@
+[package]
+name = "gitgraph"
+description = "GitGraph desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name (cargo#8519 on Windows).
+name = "gitgraph_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# Measurement hooks for scripts/perf.sh (GG_PERF_SCROLL); not in a normal build.
+perf = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+gg-core = { path = "../crates/gg-core" }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["sync"] }

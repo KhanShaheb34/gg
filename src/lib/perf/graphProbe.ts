@@ -15,7 +15,7 @@ export type ProbeSlot = { readonly index: number; readonly row: unknown; skeleto
 /** Rows at least partly in view. */
 export type VisibleRows = { readonly visibleFirst: number; readonly visibleLast: number };
 
-type PerfScroll = boolean | "still" | "smooth" | "pages";
+type PerfScroll = boolean | "still" | "smooth" | "pages" | "jump3";
 
 export class GraphProbe {
   private scrolledSinceFrame = false;
@@ -93,9 +93,18 @@ export class GraphProbe {
         await api.getRows(view.repoId, snap.generation, start, 200).catch(() => {});
       }
     }
+    // "jump3": two more full scrolls first, each marked (the script reads memory after each).
+    if (mode === "jump3") {
+      for (let pass = 1; pass <= 2; pass++) {
+        await runScrollProbe(scroller, this.probe, { mode: "jump" });
+        await api.perfMark(`pass-${pass}`, performance.now()).catch(() => {});
+        await new Promise((r) => setTimeout(r, 8000));
+      }
+    }
     const scroll = await runScrollProbe(scroller, this.probe, {
-      mode: mode === true ? "jump" : mode === "smooth" ? "smooth" : "still",
+      mode: mode === true || mode === "jump3" ? "jump" : mode === "smooth" ? "smooth" : "still",
     });
+    if (mode === "jump3") await api.perfMark("pass-3", performance.now()).catch(() => {});
     const c = await runClickProbe(scroller);
     const marks: [string, number][] = [
       ["scroll-frames", scroll.frames],

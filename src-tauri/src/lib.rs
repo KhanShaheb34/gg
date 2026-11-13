@@ -135,7 +135,8 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// frame times for as long without scrolling (the control); with `GG_PERF_SCROLL=smooth` it
 /// scrolls a few px every frame, like a trackpad; with `GG_PERF_SCROLL=pages` it loads every
 /// page of rows once without scrolling (to tell the memory of loading rows from that of
-/// drawing them). Every mode also records the page's errors, unhandled rejections, CSP
+/// drawing them); with `GG_PERF_SCROLL=jump3` it scrolls top to bottom three times, marking
+/// `pass-1`..`pass-3` after each (memory over repeated scrolls). Every mode also records the page's errors, unhandled rejections, CSP
 /// violations and console errors and warnings in `window.__GG_PAGE_ERRORS__`, which the
 /// probe reports as `page-error` marks. `None` otherwise.
 #[cfg(any(test, feature = "perf"))]
@@ -145,6 +146,7 @@ fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<String> {
         "still" => "\"still\"",
         "smooth" => "\"smooth\"",
         "pages" => "\"pages\"",
+        "jump3" => "\"jump3\"",
         _ => return None,
     };
     Some(format!(
@@ -239,7 +241,9 @@ mod tests {
             smooth.contains("__GG_PROBE__") && smooth.contains("__GG_PERF_SCROLL__ = \"smooth\"")
         );
         // Every mode also records what goes wrong on the page.
-        for mode in ["1", "still", "smooth", "pages"] {
+        let three = perf_scroll_script(Some("jump3".into())).unwrap();
+        assert!(three.contains("__GG_PERF_SCROLL__ = \"jump3\""));
+        for mode in ["1", "still", "smooth", "pages", "jump3"] {
             let script = perf_scroll_script(Some(mode.into())).unwrap();
             assert!(script.contains("__GG_PAGE_ERRORS__"), "{mode}");
             assert!(script.contains("securitypolicyviolation"), "{mode}");

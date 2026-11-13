@@ -518,7 +518,58 @@ async fn merge_with_conflicts_stops() {
     assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
     assert!(out.message.contains("conflict"), "{}", out.message);
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
-    assert_eq!(out.detail, None);
+    // git's own output comes along on a stop too.
+    let detail = out.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("CONFLICT"), "{detail}");
+}
+
+/// Writes an executable hook `name` that prints "hook says no" and fails.
+#[cfg(unix)]
+fn failing_hook(repo: &TestRepo, name: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = repo.path().join(".git/hooks").join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "#!/bin/sh\necho 'hook says no' >&2\nexit 1\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A hook that refuses the merge commit leaves the merge staged, with no conflict: that
+/// is a failure with git's (the hook's) output, not a stop on conflicts.
+#[cfg(unix)]
+#[tokio::test]
+async fn merge_commit_refused_by_a_hook_fails_with_its_output() {
+    let repo = TestRepo::new();
+    diverged(&repo);
+    failing_hook(&repo, "pre-merge-commit");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, merge_branch("feature")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        out.message,
+        "A hook stopped the merge commit; the merge is staged and not committed."
+    );
+    let detail = out.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("hook says no"), "{detail}");
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
+}
+
+/// A pre-rebase hook that refuses: the rebase never starts, and git's output is shown.
+#[cfg(unix)]
+#[tokio::test]
+async fn rebase_refused_by_a_hook_fails_with_its_output() {
+    let repo = TestRepo::new();
+    diverged(&repo);
+    failing_hook(&repo, "pre-rebase");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, rebase("feature")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    let detail = out.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("hook says no"), "{detail}");
+    assert!(!in_git_dir(&repo, "rebase-merge") && !in_git_dir(&repo, "rebase-apply"));
 }
 
 #[tokio::test]

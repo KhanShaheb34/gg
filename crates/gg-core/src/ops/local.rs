@@ -176,21 +176,60 @@ async fn git_may_stop(
         }
         return Ok(Err(step));
     }
-    Ok(Err(match after {
-        Some(kind) => Step::Stopped(stopped_message(kind)),
-        None => step,
+    let Some(kind) = after else {
+        return Ok(Err(step));
+    };
+    let Step::Failed { detail, .. } = step else {
+        return Ok(Err(step));
+    };
+    // In progress now, but only conflicts make it a stop: a hook that refused the commit
+    // (pre-merge-commit, commit-msg) leaves it in progress too, with nothing to resolve.
+    let unmerged = ctx.read(&["ls-files", "--unmerged", "-z"]).await?;
+    Ok(Err(if unmerged.code == 0 && !unmerged.stdout.is_empty() {
+        Step::Stopped {
+            message: stopped_message(kind),
+            detail,
+        }
+    } else {
+        Step::Failed {
+            message: stopped_without_conflicts(kind),
+            detail,
+            hints: Vec::new(),
+        }
     }))
 }
 
-/// The plain line for git having stopped a `kind` on conflicts.
-fn stopped_message(kind: InProgressKind) -> String {
-    let what = match kind {
+/// What `kind` is called in messages.
+fn kind_name(kind: InProgressKind) -> &'static str {
+    match kind {
         InProgressKind::Merge => "merge",
         InProgressKind::Rebase => "rebase",
         InProgressKind::CherryPick => "cherry-pick",
         InProgressKind::Revert => "revert",
-    };
+    }
+}
+
+/// The plain line for git having stopped a `kind` on conflicts.
+fn stopped_message(kind: InProgressKind) -> String {
+    let what = kind_name(kind);
     format!("The {what} stopped on conflicts. Resolve them, then continue the {what}, or abort it.")
+}
+
+/// The plain line for git having failed with a `kind` left in progress but no conflicts:
+/// a hook refused the commit, or something else git says below went wrong.
+fn stopped_without_conflicts(kind: InProgressKind) -> String {
+    match kind {
+        InProgressKind::Merge => {
+            "A hook stopped the merge commit; the merge is staged and not committed.".to_owned()
+        }
+        _ => {
+            let what = kind_name(kind);
+            format!(
+                "The {what} stopped without conflicts (git says why below). It is still in \
+                 progress: continue it, or abort it."
+            )
+        }
+    }
 }
 
 /// The branch HEAD is on, or `None` when detached (or unborn and unreadable).

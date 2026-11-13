@@ -38,8 +38,8 @@ pub enum Step {
     Done(String),
     /// It worked, and these follow-ups are worth offering (push after a merge).
     DoneWithHints { message: String, hints: Vec<OpHint> },
-    /// git stopped on conflicts (not a failure); a plain line saying so.
-    Stopped(String),
+    /// git stopped on conflicts (not a failure): a plain line saying so, and git's output.
+    Stopped { message: String, detail: String },
     /// It failed: a plain line (an explanation where one is known), git's own output and
     /// follow-ups to offer.
     Failed {
@@ -541,9 +541,10 @@ impl RepoManager {
                 outcome.message = message;
                 outcome.hints = hints;
             }
-            Ran::Step(Step::Stopped(message)) => {
+            Ran::Step(Step::Stopped { message, detail }) => {
                 outcome.status = OpStatus::Stopped;
                 outcome.message = message;
+                outcome.detail = Some(detail);
             }
             Ran::Step(Step::Failed {
                 message,

@@ -11,7 +11,7 @@ use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::{CmdKind, GitRunner, git_failed};
 
 /// `git log` format: fields separated by US (0x1f), records terminated by RS (0x1e).
-pub const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1e";
+pub const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ct%x1f%s%x1e";
 
 const FIELD_SEP: u8 = 0x1f;
 const RECORD_END: u8 = 0x1e;
@@ -28,6 +28,8 @@ pub struct Commit {
     pub email: String,
     /// Author time, unix seconds (0 if git's value could not be read).
     pub time: i64,
+    /// Committer time, unix seconds (0 if unreadable): what `--date-order` goes by.
+    pub commit_time: i64,
     pub subject: String,
 }
 
@@ -70,12 +72,13 @@ impl LogParser {
 /// Parses one record (without its terminator). `None` if it is malformed.
 fn parse_record(rec: &[u8]) -> Option<Commit> {
     // `--format` ends every record with a newline, which lands before the next record.
-    let mut fields = rec.trim_ascii_start().splitn(6, |&b| b == FIELD_SEP);
+    let mut fields = rec.trim_ascii_start().splitn(7, |&b| b == FIELD_SEP);
     let hash = fields.next()?;
     let parents = fields.next()?;
     let author = fields.next()?;
     let email = fields.next()?;
     let time = fields.next()?;
+    let commit_time = fields.next()?;
     let subject = fields.next()?;
     if hash.is_empty() || !hash.iter().all(u8::is_ascii_hexdigit) {
         return None;
@@ -89,6 +92,7 @@ fn parse_record(rec: &[u8]) -> Option<Commit> {
         author: lossy(author),
         email: lossy(email),
         time: lossy(time).trim().parse().unwrap_or(0),
+        commit_time: lossy(commit_time).trim().parse().unwrap_or(0),
         subject: lossy(subject),
     })
 }
@@ -327,9 +331,10 @@ mod tests {
 
     /// One record exactly as `git log` prints it with `LOG_FORMAT` (tformat adds `\n`).
     fn record(hash: &str, parents: &str, subject: &[u8]) -> Vec<u8> {
-        let mut r =
-            format!("{hash}\x1f{parents}\x1fAda Lovelace\x1fada@example.com\x1f1700000000\x1f")
-                .into_bytes();
+        let mut r = format!(
+            "{hash}\x1f{parents}\x1fAda Lovelace\x1fada@example.com\x1f1700000000\x1f1700000000\x1f"
+        )
+        .into_bytes();
         r.extend_from_slice(subject);
         r.extend_from_slice(b"\x1e\n");
         r
@@ -342,6 +347,7 @@ mod tests {
             author: "Ada Lovelace".into(),
             email: "ada@example.com".into(),
             time: 1_700_000_000,
+            commit_time: 1_700_000_000,
             subject: subject.into(),
         }
     }
@@ -445,9 +451,10 @@ mod tests {
             parse_chunks([bytes.as_slice()]),
             [commit(H1, &[], "one"), commit(H2, &[], "two")]
         );
-        // Unparseable time becomes 0 rather than dropping the commit.
-        let bytes = format!("{H1}\x1f\x1fa\x1fe\x1fnot-a-number\x1fs\x1e");
-        assert_eq!(parse_chunks([bytes.as_bytes()])[0].time, 0);
+        // Unparseable times become 0 rather than dropping the commit.
+        let bytes = format!("{H1}\x1f\x1fa\x1fe\x1fnot-a-number\x1fnor-this\x1fs\x1e");
+        let parsed = &parse_chunks([bytes.as_bytes()])[0];
+        assert_eq!((parsed.time, parsed.commit_time), (0, 0));
     }
 
     #[test]

@@ -211,9 +211,10 @@ impl RepoState {
                 continue; // not loaded: needs_reload asked for the log instead
             };
             let base = base as usize;
+            // `--date-order` goes by committer time.
             let at = self.commits[..base]
                 .iter()
-                .position(|c| c.time < st.time)
+                .position(|c| c.commit_time < st.commit_time)
                 .unwrap_or(base);
             self.commits.insert(
                 at,
@@ -223,6 +224,7 @@ impl RepoState {
                     author: st.author.clone(),
                     email: st.email.clone(),
                     time: st.time,
+                    commit_time: st.commit_time,
                     subject: st.subject.clone(),
                 },
             );
@@ -754,6 +756,7 @@ mod tests {
             author: author.into(),
             email: format!("{}@example.com", author.to_lowercase()),
             time: 1_700_000_000,
+            commit_time: 1_700_000_000,
             subject: subject.into(),
         }
     }
@@ -1377,6 +1380,7 @@ mod tests {
             author: "Ada".into(),
             email: "ada@example.com".into(),
             time: 1_700_000_100,
+            commit_time: 1_700_000_100,
             subject: format!("WIP on main: stash {w}"),
         }
     }
@@ -1390,6 +1394,7 @@ mod tests {
             author: s.author.clone(),
             email: s.email.clone(),
             time: s.time,
+            commit_time: s.commit_time,
             subject: s.subject.clone(),
         };
         let mut out = Vec::new();

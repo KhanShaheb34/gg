@@ -8,9 +8,9 @@ use crate::git::runner::{CmdKind, GitRunner};
 /// `stash list` format: fields separated by US (0x1f), the subject last (so a US inside it
 /// survives); records separated by NUL (`-z`), which a commit message cannot contain.
 /// Fields: commit, parents, reflog selector (`stash@{0}`), author name, author email,
-/// author time, subject.
-const STASH_FORMAT: &str = "--format=%H%x1f%P%x1f%gd%x1f%an%x1f%ae%x1f%at%x1f%s";
-const STASH_FIELDS: usize = 7;
+/// author time, committer time, subject.
+const STASH_FORMAT: &str = "--format=%H%x1f%P%x1f%gd%x1f%an%x1f%ae%x1f%at%x1f%ct%x1f%s";
+const STASH_FIELDS: usize = 8;
 const FIELD_SEP: u8 = 0x1f;
 
 /// One stash entry. Its commit (`hash`) has the commit the changes were stashed on as its
@@ -29,6 +29,8 @@ pub struct Stash {
     pub email: String,
     /// Author time, unix seconds (0 if git's value could not be read).
     pub time: i64,
+    /// Committer time, unix seconds (0 if unreadable): where `--date-order` puts it.
+    pub commit_time: i64,
     /// What git stores as the stash's subject: "WIP on main: …", or "On main: <message>".
     pub subject: String,
 }
@@ -51,8 +53,16 @@ fn parse_record(rec: &[u8]) -> Option<Stash> {
     // A record may start with the newline that ends the one before.
     let rec = rec.trim_ascii_start();
     let fields: Vec<&[u8]> = rec.splitn(STASH_FIELDS, |&b| b == FIELD_SEP).collect();
-    let [hash, parents, selector, author, email, time, subject] =
-        <[&[u8]; STASH_FIELDS]>::try_from(fields).ok()?;
+    let [
+        hash,
+        parents,
+        selector,
+        author,
+        email,
+        time,
+        commit_time,
+        subject,
+    ] = <[&[u8]; STASH_FIELDS]>::try_from(fields).ok()?;
     let hex = |h: &str| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit());
     let hash = lossy(hash);
     let parents = lossy(parents);
@@ -72,6 +82,7 @@ fn parse_record(rec: &[u8]) -> Option<Stash> {
         author: lossy(author),
         email: lossy(email),
         time: lossy(time).trim().parse().unwrap_or(0),
+        commit_time: lossy(commit_time).trim().parse().unwrap_or(0),
         // `--format` puts a newline after the last record.
         subject: subject.strip_suffix('\n').unwrap_or(&subject).to_owned(),
     })
@@ -90,9 +101,10 @@ mod tests {
     const I: &str = "3333333333333333333333333333333333333333";
 
     fn record(hash: &str, parents: &str, n: u32, subject: &[u8]) -> Vec<u8> {
-        let mut r =
-            format!("{hash}\x1f{parents}\x1fstash@{{{n}}}\x1fAda\x1fada@x\x1f1700000000\x1f")
-                .into_bytes();
+        let mut r = format!(
+            "{hash}\x1f{parents}\x1fstash@{{{n}}}\x1fAda\x1fada@x\x1f1700000000\x1f1700000060\x1f"
+        )
+        .into_bytes();
         r.extend_from_slice(subject);
         r
     }

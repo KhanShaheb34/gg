@@ -261,6 +261,48 @@ describe("init", () => {
     expect(s.app.activeRepoId).toBe(1);
   });
 
+  it("a save while tabs are still reopening keeps the ones not open yet at their places", async () => {
+    let answerB: (s: RepoSnapshot) => void = () => {};
+    vi.mocked(ipc.api.openRepo).mockImplementation((path) =>
+      path === "/r/b" ? new Promise((r) => (answerB = r)) : fakeOpenRepo(path),
+    );
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(
+      appState({ session: { tabs: ["/r/a", "/r/b"], active: "/r/b" } }),
+    );
+    const done = s.init();
+    await vi.waitFor(() => expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]));
+    await s.openPath("/r/c");
+    expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/a", "/r/b", "/r/c"], "/r/c");
+    s.activate(1);
+    expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/a", "/r/b", "/r/c"], "/r/a");
+    answerB(snapshot(2, "/r/b"));
+    await done;
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2, 3]);
+    expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/a", "/r/b", "/r/c"], "/r/a");
+  });
+
+  it("a launch path that is also a session tab keeps its place in the session", async () => {
+    // The session's own open of /r/b answers last, after the launch path's.
+    const waiting: ((s: RepoSnapshot) => void)[] = [];
+    let bCalls = 0;
+    vi.mocked(ipc.api.openRepo).mockImplementation((path) => {
+      if (path === "/r/c" || (path === "/r/b" && bCalls++ > 0)) return fakeOpenRepo(path);
+      return new Promise((r) => waiting.push(() => r(snapshot(REPOS[path], path))));
+    });
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(
+      appState({ session: { tabs: ["/r/b", "/r/a"], active: "/r/a" }, launchPath: "/r/b" }),
+    );
+    const done = s.init();
+    await vi.waitFor(() => expect(s.app.tabs.map((t) => t.repoId)).toEqual([2]));
+    // A save while /r/a and the session's own /r/b are still opening: /r/b once.
+    await s.openPath("/r/c");
+    expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/b", "/r/a", "/r/c"], "/r/c");
+    for (const answer of waiting) answer({} as RepoSnapshot);
+    await done;
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([2, 1, 3]);
+    expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/b", "/r/a", "/r/c"], "/r/c");
+  });
+
   it("finds out at start that git is missing, before anything is opened", async () => {
     vi.mocked(ipc.api.getSnapshot).mockImplementation((repoId: number) =>
       repoId === 0 ? Promise.reject(coreError("git_not_found", "git was not found")) : new Promise(() => {}),

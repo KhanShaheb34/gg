@@ -86,12 +86,22 @@ function reportError(e: unknown, prefix?: string): void {
   toast("error", prefix ? `${prefix}: ${message}` : message, detail);
 }
 
+/**
+ * Saves the tabs and the active one. While the session is being reopened, its tabs that are
+ * not open yet are saved too, at their places (and the tab still to be shown as active, if
+ * none is), so a save made meanwhile loses nothing.
+ */
 function saveSession(): void {
-  const active = app.tabs.find((t) => t.repoId === app.activeRepoId)?.path ?? null;
-  api.saveSession(
-    app.tabs.map((t) => t.path),
-    active,
-  ).catch((e: unknown) => reportError(e, "Could not save the open tabs"));
+  const open = app.tabs.map((t, i) => ({ rank: sessionRank.get(t.repoId) ?? Infinity, i, path: t.path }));
+  // A session tab already open another way (the launch path) is not listed twice.
+  const placed = new Set(app.tabs.map((t) => sessionRank.get(t.repoId)));
+  const waiting = [...stillReopening]
+    .filter(([rank]) => !placed.has(rank))
+    .map(([rank, path]) => ({ rank, i: -1, path }));
+  // Session tabs by their place there; tabs the user opened after them, in tab order.
+  const paths = [...open, ...waiting].sort((a, b) => a.rank - b.rank || a.i - b.i).map((t) => t.path);
+  const active = app.tabs.find((t) => t.repoId === app.activeRepoId)?.path ?? restoreTarget;
+  api.saveSession(paths, active).catch((e: unknown) => reportError(e, "Could not save the open tabs"));
 }
 
 async function refreshRecents(): Promise<void> {
@@ -118,6 +128,8 @@ async function openTab(path: string): Promise<boolean> {
 
 /** Where each tab reopened from the session goes: its place in the saved order. */
 const sessionRank = new Map<number, number>();
+/** The session's tabs still being reopened: place in the saved order → path. */
+const stillReopening = new Map<number, string>();
 
 /**
  * Adds a tab (and its graph's view) for `snapshot`'s repository, unless it has one. A tab
@@ -125,7 +137,17 @@ const sessionRank = new Map<number, number>();
  * whatever order the repositories finish opening in; others go last.
  */
 function addTab(snapshot: RepoSnapshot, rank?: number): void {
-  if (app.tabs.some((t) => t.repoId === snapshot.repoId)) return;
+  const existing = app.tabs.findIndex((t) => t.repoId === snapshot.repoId);
+  if (existing >= 0) {
+    // Opened first another way (the launch path) but a session tab: to its session place.
+    if (rank !== undefined && !sessionRank.has(snapshot.repoId)) {
+      const [tab] = app.tabs.splice(existing, 1);
+      sessionRank.set(snapshot.repoId, rank);
+      const at = app.tabs.findIndex((t) => (sessionRank.get(t.repoId) ?? Infinity) > rank);
+      app.tabs.splice(at < 0 ? app.tabs.length : at, 0, tab);
+    }
+    return;
+  }
   const tab = { repoId: snapshot.repoId, path: snapshot.rootPath, name: snapshot.name };
   if (rank === undefined) {
     app.tabs.push(tab);
@@ -322,16 +344,22 @@ export async function init(): Promise<void> {
       app.restoring = false;
     }
   };
+  tabs.forEach((path, rank) => stillReopening.set(rank, path));
   const reopen = tabs.map(async (path, rank) => {
     try {
-      opened(path, await api.openRepo(path), rank);
+      const snapshot = await api.openRepo(path);
+      stillReopening.delete(rank);
+      opened(path, snapshot, rank);
     } catch (e) {
+      stillReopening.delete(rank);
       reportError(e, `Could not reopen ${path}`);
     }
   });
+  // A launch path that is also a session tab keeps its place there.
+  const launchRank = launch === null ? -1 : tabs.indexOf(launch);
   const openLaunch = async (path: string) => {
     try {
-      opened(path, await api.openRepo(path));
+      opened(path, await api.openRepo(path), launchRank >= 0 ? launchRank : undefined);
     } catch (e) {
       reportError(e);
     }

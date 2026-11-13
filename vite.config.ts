@@ -15,6 +15,9 @@ export default defineConfig({
     host: host || "127.0.0.1",
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
     watch: { ignored: ["**/src-tauri/**", "**/target/**"] },
+    // The page's console stays in the browser: e2e tests stop their devserver while rows
+    // may still be loading, and those expected warnings would otherwise fill the test output.
+    forwardConsole: false,
   },
   test: {
     // Unit tests only; e2e/*.spec.ts belongs to Playwright.

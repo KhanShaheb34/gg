@@ -376,9 +376,22 @@ fn spawn_error(cwd: &Path, e: io::Error) -> CoreError {
     }
 }
 
+/// The login shell's `PATH`, read once per process.
+static LOGIN_PATH: OnceLock<Option<OsString>> = OnceLock::new();
+
 fn cached_login_path() -> &'static Option<OsString> {
-    static LOGIN_PATH: OnceLock<Option<OsString>> = OnceLock::new();
     LOGIN_PATH.get_or_init(resolve_login_path)
+}
+
+/// Starts reading the login shell's `PATH` on a background thread, so that
+/// [`GitRunner::detect`] finds it ready instead of waiting for the shell (a few hundred ms
+/// with a typical profile). Call first thing at app start; calling it again does nothing.
+pub fn prefetch_login_path() {
+    if LOGIN_PATH.get().is_none() {
+        std::thread::spawn(|| {
+            cached_login_path();
+        });
+    }
 }
 
 /// The `PATH` of the user's login shell (`$SHELL -ilc`, printing `PATH` between markers), so
@@ -662,5 +675,18 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn prefetched_login_path_is_cached_in_the_background() {
+        prefetch_login_path();
+        let deadline = Instant::now() + LOGIN_SHELL_TIMEOUT + Duration::from_secs(2);
+        while LOGIN_PATH.get().is_none() {
+            assert!(Instant::now() < deadline, "the login PATH was never cached");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let cached = LOGIN_PATH.get().cloned();
+        prefetch_login_path();
+        assert_eq!(LOGIN_PATH.get().cloned(), cached);
     }
 }

@@ -137,6 +137,9 @@ fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<&'static str> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The core starts after the window and webview are created; the login shell it asks
+    // for git's PATH can run meanwhile.
+    gg_core::git::runner::prefetch_login_path();
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu);

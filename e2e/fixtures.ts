@@ -306,12 +306,29 @@ export function startDevserver(configDir: string, home: string, binary = DEVSERV
   return new Promise((resolve, reject) => {
     let out = "";
     let err = "";
-    const timer = setTimeout(() => fail(new Error("gg-devserver did not start within 20 s")), 20_000);
+    const t0 = Date.now();
+    const timer = setTimeout(() => {
+      // What the server (and anything it started: login shell, git) is doing, for the report.
+      let ps = "";
+      try {
+        ps = execFileSync("ps", ["-A", "-o", "pid,ppid,etime,stat,command"], { encoding: "utf8" })
+          .split("\n")
+          .filter((l) => l.includes(String(child.pid)) || /gg-devserver|zsh|xcrun|git /.test(l))
+          .join("\n");
+      } catch {}
+      fail(new Error(`gg-devserver did not start within 20 s (pid ${child.pid}, out ${JSON.stringify(out)})\n${ps}`));
+    }, 20_000);
     const fail = (e: Error) => {
       clearTimeout(timer);
       child.kill();
       reject(new Error(`${e.message}\n${err}`));
     };
+    // Start-up times, for looking into slow starts: GG_STARTLOG=<file> pnpm e2e
+    if (process.env.GG_STARTLOG) {
+      child.stdout!.once("data", () => {
+        writeFileSync(process.env.GG_STARTLOG!, `${new Date().toISOString()} ${Date.now() - t0}\n`, { flag: "a" });
+      });
+    }
     child.stderr!.on("data", (d: Buffer) => (err += d.toString()));
     child.stdout!.on("data", (d: Buffer) => {
       out += d.toString();
@@ -344,21 +361,27 @@ export type GG = {
   git(name: string, ...args: string[]): string;
 };
 
-export const test = base.extend<{ gg: GG }, { devserverBuilt: void }>({
-  devserverBuilt: [
-    async ({}, use) => {
-      // Once per worker; cargo serializes concurrent builds and skips an up-to-date one.
-      execFileSync("cargo", ["build", "-q", "-p", "gg-devserver"], {
-        cwd: ROOT,
-        stdio: ["ignore", "ignore", "pipe"],
-        env: { ...process.env, CARGO_INCREMENTAL: "0" },
-      });
-      await use();
-    },
-    { scope: "worker", timeout: 600_000 },
-  ],
+/**
+ * Builds the debug gg-devserver and starts it once, so that tests only ever start an
+ * up-to-date binary that has run before. Called once per run, from e2e/global-setup.ts,
+ * before any worker starts.
+ */
+export async function buildDevserver(): Promise<void> {
+  execFileSync("cargo", ["build", "-q", "-p", "gg-devserver"], {
+    cwd: ROOT,
+    stdio: ["ignore", "ignore", "inherit"],
+    env: { ...process.env, CARGO_INCREMENTAL: "0" },
+  });
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-warmup-")));
+  try {
+    await stopDevserver(await startDevserver(path.join(root, "config"), root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
-  gg: async ({ page, devserverBuilt: _ }, use) => {
+export const test = base.extend<{ gg: GG }>({
+  gg: async ({ page }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
     const server = await startDevserver(path.join(root, "config"), root);

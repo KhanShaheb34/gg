@@ -335,6 +335,25 @@ describe("poolStart", () => {
     expect(poolStart(100, 5000, 8, 26, 2)).toBe(5000);
   });
 
+  it("moves once every 8 rows or less often at fractional pixel ratios, both ways", () => {
+    for (const dpr of [1.25, 1.75, 1.5, 2]) {
+      for (const dir of [1, -1]) {
+        let first = dir === 1 ? 0 : 400;
+        let start = alignedFirstRow(first, 26, dpr);
+        let moves = 0;
+        for (let k = 0; k < 200; k++) {
+          first += dir;
+          const next = poolStart(start, first, POOL_STEP, 26, dpr);
+          if (next !== start) moves++;
+          start = next;
+          expect(first - start, `dpr ${dpr} dir ${dir}`).toBeLessThanOrEqual(POOL_STEP + 8);
+          expect(start).toBeLessThanOrEqual(first);
+        }
+        expect(moves, `dpr ${dpr} dir ${dir}`).toBeLessThanOrEqual(200 / POOL_STEP);
+      }
+    }
+  });
+
   it("starts on a whole device pixel, never below the window's first row", () => {
     for (const dpr of [1, 1.25, 1.5, 2]) {
       let start = 0;

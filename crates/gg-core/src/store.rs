@@ -2,8 +2,8 @@
 //! `<config_dir>/state.json`.
 //!
 //! The file is read once, when the store is created; a missing file gives defaults and one
-//! that cannot be parsed is renamed to `state.json.bad-<ms>` first. A file that exists but cannot
-//! be read (permissions, say), or a corrupt one that cannot be moved aside, also gives
+//! that cannot be parsed is renamed to `state.json.bad-<ms>` first. A file that exists but
+//! cannot be read (permissions, say), or a corrupt one that cannot be moved aside, also gives
 //! defaults but is never written over: changes then apply for the running session only, and
 //! [`Store::problem`] says why, until [`Store::reset`] moves the file aside. Otherwise every
 //! change is written at once and atomically (a temp file renamed over the old one); a change
@@ -58,9 +58,9 @@ pub struct Store {
 
 impl Store {
     /// Loads `<config_dir>/state.json`. Never fails: a missing file gives defaults, and a
-    /// file that cannot be parsed is renamed to `state.json.bad-<ms>` and gives defaults. A file
-    /// that cannot be read gives defaults too, and makes every change fail rather than
-    /// replace it. The directory is created on the first write.
+    /// file that cannot be parsed is renamed to `state.json.bad-<ms>` and gives defaults. A
+    /// file that cannot be read gives defaults too, and is never written over: changes apply
+    /// in memory (see [`Store::problem`]). The directory is created on the first write.
     pub fn load(config_dir: &Path) -> Self {
         let path = config_dir.join(FILE_NAME);
         let mut unreadable = None;

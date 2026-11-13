@@ -551,6 +551,13 @@ export class RepoView {
       void api.perfMark("fully-loaded", performance.now()).catch(() => {});
     }
     this.onChange?.();
+    // A perf run (the probe is on) marks the frame that shows each later generation, so the
+    // time from an on-disk change to the screen can be read from the perf log.
+    if (generationChanged && this.markedLoaded && (globalThis as { __GG_PROBE__?: object }).__GG_PROBE__) {
+      const mark = () => void api.perfMark("generation-shown", s.generation).catch(() => {});
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(mark);
+      else mark();
+    }
   }
 
   /**

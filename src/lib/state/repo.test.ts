@@ -665,6 +665,24 @@ describe("RepoView search while loading", () => {
   });
 });
 
+describe("RepoView perf marks", () => {
+  it("in a perf run, marks each new generation shown (refresh latency); otherwise not", async () => {
+    const view = await openView(0);
+    commitOnTop(1);
+    await view.applySnapshot(snapshot());
+    expect(ipc.api.perfMark).not.toHaveBeenCalledWith("generation-shown", expect.anything());
+
+    (globalThis as { __GG_PROBE__?: object }).__GG_PROBE__ = {};
+    try {
+      commitOnTop(1);
+      await view.applySnapshot(snapshot());
+      await vi.waitFor(() => expect(ipc.api.perfMark).toHaveBeenCalledWith("generation-shown", 3));
+    } finally {
+      delete (globalThis as { __GG_PROBE__?: object }).__GG_PROBE__;
+    }
+  });
+});
+
 describe("RepoView fetch and refresh", () => {
   it("refresh applies its answer only if no event came meanwhile; else asks again", async () => {
     const view = await openView(0);

@@ -14,7 +14,7 @@
 //! operations take: reads, view-option changes and refreshes never wait for an operation,
 //! however long its network command runs. An operation takes `refresh_lock` only to publish
 //! its start and for its final refresh; while it runs, refreshes the watcher asks for are
-//! folded into that final refresh (see [`RepoManager::refresh_on_change`]).
+//! folded into that final refresh (see [`RepoManager::refresh`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -81,6 +81,9 @@ pub struct RepoManager {
     /// Tests only: the next operation's body panics after running.
     #[cfg(any(test, feature = "testutil"))]
     op_panic: AtomicBool,
+    /// Tests only: refreshes folded into an operation's final refresh so far.
+    #[cfg(any(test, feature = "testutil"))]
+    folded_refreshes: AtomicU64,
 }
 
 impl Drop for RepoManager {
@@ -332,6 +335,8 @@ impl RepoManager {
             op_delay_ms: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             op_panic: AtomicBool::new(false),
+            #[cfg(any(test, feature = "testutil"))]
+            folded_refreshes: AtomicU64::new(0),
         })
     }
 
@@ -802,20 +807,25 @@ impl RepoManager {
     /// but the returned snapshot already carries the new view options. Overlapping calls
     /// coalesce: a call made while another runs waits for it, and then at most one more
     /// refresh runs for all the calls that waited.
+    ///
+    /// While an operation runs, the refresh is left to the refresh the operation ends with,
+    /// which starts after it; the snapshot as it is returns at once. So the result of an
+    /// operation arrives once, with its end, and never half-done. This holds for the
+    /// refreshes the watcher asks for (usually for the operation's own changes) and for the
+    /// ones the UI asks for (when the window regains focus). It is checked under
+    /// `refresh_lock`, which an operation holds when it publishes its start, so no refresh
+    /// started before an operation can apply after the operation has begun changing the
+    /// repository.
     pub async fn refresh(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
         let repo = self.get(repo_id)?;
-        self.refresh_repo(&repo, false).await
+        self.refresh_repo(&repo, true).await
     }
 
-    /// The watcher's refresh: like [`RepoManager::refresh`], except while an operation runs.
-    /// Then the change (usually the operation's own) is left to the refresh the operation
-    /// ends with, which starts after it, so the result of an operation arrives once, with
-    /// its end, and never half-done. Checked under `refresh_lock`, which an operation holds
-    /// when it publishes its start, so no refresh started before an operation can apply
-    /// after the operation has begun changing the repository.
-    async fn refresh_on_change(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
+    /// Like [`RepoManager::refresh`], also while an operation runs: for a fetch, which only
+    /// moves remote-tracking branches.
+    pub(super) async fn refresh_now(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
         let repo = self.get(repo_id)?;
-        self.refresh_repo(&repo, true).await
+        self.refresh_repo(&repo, false).await
     }
 
     /// [`RepoManager::refresh`] of `repo`; with `fold_into_op`, not while an operation runs.
@@ -828,6 +838,8 @@ impl RepoManager {
         let _serial = repo.refresh_lock.lock().await;
         if fold_into_op && repo.slot.read().await.op.is_some() {
             // `refresh_wanted` stays set; the operation's final refresh clears it.
+            #[cfg(any(test, feature = "testutil"))]
+            self.folded_refreshes.fetch_add(1, Ordering::SeqCst);
             return Ok(repo.snapshot().await);
         }
         if !repo.refresh_wanted.swap(false, Ordering::SeqCst) {
@@ -839,6 +851,12 @@ impl RepoManager {
         let snapshot = self.apply(repo, info, None, None).await?;
         self.request_status(repo);
         Ok(snapshot)
+    }
+
+    /// How many refreshes have been folded into an operation's final refresh (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn folded_refreshes(&self) -> u64 {
+        self.folded_refreshes.load(Ordering::SeqCst)
     }
 
     /// Next operation id (they start at 1).
@@ -997,14 +1015,14 @@ impl RepoManager {
     }
 
     /// Refreshes `repo_id` in the background (if there is a runtime to do it on), for a
-    /// change the watcher saw (see [`RepoManager::refresh_on_change`]). Errors have no one
+    /// change the watcher saw (see [`RepoManager::refresh`]). Errors have no one
     /// to go to: a closed repository is expected, and anything else shows up on the next
     /// refresh the user asks for.
     pub(super) fn spawn_refresh(self: &Arc<Self>, repo_id: u32) {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let m = self.clone();
             runtime.spawn(async move {
-                let _ = m.refresh_on_change(repo_id).await;
+                let _ = m.refresh(repo_id).await;
             });
         }
     }

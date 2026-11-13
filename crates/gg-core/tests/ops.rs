@@ -215,9 +215,8 @@ async fn an_operation_refreshes_once() {
             .await
             .expect("run_op");
     assert_eq!(out.status, OpStatus::Done);
-    // Long enough for a watcher refresh that was not folded to have shown up (quiet time
-    // 300 ms); nothing can be waited for when the point is that nothing comes.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    // The watcher did ask for a refresh while the operation ran, and it was folded.
+    assert!(h.m.folded_refreshes() >= 1);
 
     let changes: Vec<Value> = h.changes(id).into_iter().skip(seen).collect();
     assert!(!changes.is_empty());
@@ -566,4 +565,43 @@ async fn close_is_refused_while_an_operation_runs_or_waits() {
     second.await.unwrap().expect("second");
 
     h.m.close(id).await.expect("closes once idle");
+}
+
+/// Ruling 7: a `refresh` asked for while an operation runs (the UI sends one when the
+/// window regains focus) is folded into the operation's final refresh: it returns the
+/// current snapshot at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_asked_for_during_an_operation_is_folded() {
+    const DELAY: Duration = Duration::from_millis(1500);
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_op_delay(DELAY);
+
+    let op = tokio::spawn({
+        let (m, head) = (h.m.clone(), head.clone());
+        async move { m.run_op(id, create_branch("x", &head), &[]).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("running");
+    // The body has made the branch: a refresh that ran now would show it.
+    while !repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/x"]) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let folded = h.m.folded_refreshes();
+    let asked = std::time::Instant::now();
+    let snap = h.m.refresh(id).await.expect("refresh");
+    assert!(asked.elapsed() < DELAY / 2, "waited {:?}", asked.elapsed());
+    assert!(snap.op.is_some(), "the snapshot as it is, mid-operation");
+    assert!(!snap.branches.contains(&"x".to_owned()));
+    assert!(h.m.folded_refreshes() > folded);
+
+    let out = op.await.unwrap().expect("run_op");
+    assert!(out.snapshot.branches.contains(&"x".to_owned()));
+    assert_eq!(out.snapshot.op, None);
 }

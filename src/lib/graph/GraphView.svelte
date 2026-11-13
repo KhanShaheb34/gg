@@ -5,9 +5,12 @@
   Speed rules this follows:
   - A fixed pool of row elements, one per slot; row i lives in slot i % pool size, so
     scrolling by a row rewrites one slot, and nothing is created or destroyed while scrolling.
-  - Rows and canvas sit inside the scrolled content, so the compositor moves them together:
-    lines never lag behind text. The canvas covers the rendered rows (visible ± overscan) and
-    is redrawn and repositioned in requestAnimationFrame, at most once per frame.
+  - Rows and canvas sit in one container inside the scrolled content, so the compositor moves
+    them together: lines never lag behind text. The container covers only the rendered rows
+    (visible ± overscan) and is moved with a transform on its own layer, so the tall content
+    it scrolls in paints nothing: jumping through the history does not make WebKit paint (and
+    keep) new tiles for every position. The canvas is redrawn in requestAnimationFrame, at
+    most once per frame.
   - Scrolling reads only `scrollTop`; sizes come from a ResizeObserver; colours are read once
     per theme.
 -->
@@ -122,6 +125,11 @@
   }
 
   let slots: Slot[] = $state.raw([]);
+  /**
+   * First row of the rendered range, where the row container sits; rounded down to a row
+   * whose top is a whole device pixel, so the canvas bitmap is never resampled.
+   */
+  let poolFirst = $state(0);
   let scroller: HTMLDivElement;
   let canvas: HTMLCanvasElement;
   let ctx: CanvasRenderingContext2D | null = null;
@@ -245,6 +253,8 @@
       void cache.ensure(down ? w.first : w.first - PREFETCH, down ? w.last + PREFETCH : w.last);
     }
     lastTop = scrollTop;
+    const first = alignedFirstRow(w.first, ROW_H, window.devicePixelRatio || 1);
+    if (first !== poolFirst) poolFirst = first;
     draw(w);
     recordProbe(now, w);
   }
@@ -261,7 +271,6 @@
   let canvasW = 0;
   let canvasH = 0;
   let canvasRatio = 0;
-  let canvasTop = -1;
   /** Rows the canvas may start above the first rendered row, to start on a whole device pixel. */
   let alignSlack = 0;
 
@@ -288,13 +297,8 @@
       canvasH = height;
       canvasRatio = ratio;
     }
-    // Starts on a row whose top is a whole device pixel, so the bitmap is never resampled.
-    const firstRow = alignedFirstRow(w.first, ROW_H, ratio);
-    const top = firstRow * ROW_H;
-    if (top !== canvasTop) {
-      canvas.style.transform = `translateY(${top}px)`;
-      canvasTop = top;
-    }
+    // The canvas sits at the top of the row container, at row `poolFirst`.
+    const firstRow = poolFirst;
 
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, width, height);
@@ -590,50 +594,59 @@
       {/each}
     </div>
 
-    <!-- Clicks and hovers are handled here for every row; the grid itself takes the keys. -->
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-    <div class="rows" role="rowgroup" style:height="{rowsHeight}px" onclick={onRowsClick} onpointerover={onRowsPointerOver}>
-      <canvas class="lanes" data-testid="graph-canvas" aria-hidden="true" bind:this={canvas}></canvas>
-      {#each slots as slot (slot)}
-        {@const r = slot.row}
-        <div
-          class="row"
-          role="row"
-          id={slot.index >= 0 ? `gg-${view.repoId}-${slot.index}` : undefined}
-          hidden={slot.index < 0}
-          data-index={slot.index >= 0 ? slot.index : undefined}
-          aria-rowindex={slot.index >= 0 ? slot.index + 2 : undefined}
-          aria-selected={r !== undefined && r.hash === view.selectedHash}
-          aria-busy={r === undefined}
-          class:merge={r?.isMerge}
-          class:head={r?.isHead}
-          class:uncommitted={r?.kind === "uncommitted"}
-          style:transform="translateY({slot.index * ROW_H}px)"
-          style:--c={r ? `var(--lane-${r.color % LANE_COLORS})` : undefined}
-        >
-          <div class="cell lanes-cell" role="gridcell"></div>
-          <div class="cell desc" role="gridcell">
-            <RefLabels
-              labels={r?.labels ?? NO_LABELS}
-              detachedHead={!!r?.isHead && detachedHead}
-              detachedWorktrees={r?.detachedWorktrees ?? NO_PATHS}
-              homeDir={app.homeDir}
-            />
-            <span class="subject">{r?.subject ?? ""}</span>
+    <div class="rows" style:height="{rowsHeight}px">
+      <!-- Clicks and hovers are handled here for every row; the grid itself takes the keys. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+      <div
+        class="pool"
+        role="rowgroup"
+        style:height="{slots.length * ROW_H}px"
+        style:transform="translateY({poolFirst * ROW_H}px)"
+        onclick={onRowsClick}
+        onpointerover={onRowsPointerOver}
+      >
+        <canvas class="lanes" data-testid="graph-canvas" aria-hidden="true" bind:this={canvas}></canvas>
+        {#each slots as slot (slot)}
+          {@const r = slot.row}
+          <div
+            class="row"
+            role="row"
+            id={slot.index >= 0 ? `gg-${view.repoId}-${slot.index}` : undefined}
+            hidden={slot.index < 0}
+            data-index={slot.index >= 0 ? slot.index : undefined}
+            aria-rowindex={slot.index >= 0 ? slot.index + 2 : undefined}
+            aria-selected={r !== undefined && r.hash === view.selectedHash}
+            aria-busy={r === undefined}
+            class:merge={r?.isMerge}
+            class:head={r?.isHead}
+            class:uncommitted={r?.kind === "uncommitted"}
+            style:transform="translateY({(slot.index - poolFirst) * ROW_H}px)"
+            style:--c={r ? `var(--lane-${r.color % LANE_COLORS})` : undefined}
+          >
+            <div class="cell lanes-cell" role="gridcell"></div>
+            <div class="cell desc" role="gridcell">
+              <RefLabels
+                labels={r?.labels ?? NO_LABELS}
+                detachedHead={!!r?.isHead && detachedHead}
+                detachedWorktrees={r?.detachedWorktrees ?? NO_PATHS}
+                homeDir={app.homeDir}
+              />
+              <span class="subject">{r?.subject ?? ""}</span>
+            </div>
+            <div class="cell date" role="gridcell">
+              {r?.kind === "commit" ? formatDate(r.time) : ""}
+            </div>
+            <div class="cell author" role="gridcell">
+              {r?.author ?? ""}
+            </div>
+            <div class="cell hash-cell" role="gridcell">
+              <span class="hash"
+                >{r?.kind === "commit" ? shortHash(r.hash) : ""}</span
+              >
+            </div>
           </div>
-          <div class="cell date" role="gridcell">
-            {r?.kind === "commit" ? formatDate(r.time) : ""}
-          </div>
-          <div class="cell author" role="gridcell">
-            {r?.author ?? ""}
-          </div>
-          <div class="cell hash-cell" role="gridcell">
-            <span class="hash"
-              >{r?.kind === "commit" ? shortHash(r.hash) : ""}</span
-            >
-          </div>
-        </div>
-      {/each}
+        {/each}
+      </div>
     </div>
 
     {#if shown < total}
@@ -713,6 +726,14 @@
     position: relative;
     contain: strict;
     width: 100%;
+  }
+
+  .pool {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    will-change: transform;
   }
 
   .lanes {

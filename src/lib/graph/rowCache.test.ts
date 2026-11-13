@@ -137,6 +137,17 @@ describe("RowCache", () => {
     expect(cache.get(25)).toBeDefined();
   });
 
+  it("keeps at most 8 pages by default, the latest range included", async () => {
+    const core = fakeCore(() => 100_000);
+    const cache = new RowCache(core.fetchPage);
+    cache.reset(1, 100_000);
+    for (let p = 1; p < 60; p += 3) await Promise.all([cache.ensure(p * 200, p * 200 + 199), core.flush()]);
+    let kept = 0;
+    for (let p = 0; p < 62; p++) if (cache.get(p * 200) !== undefined) kept++;
+    expect(kept).toBeLessThanOrEqual(8);
+    expect(cache.get(58 * 200)).toBeDefined();
+  });
+
   it("clips ranges past the last row", () => {
     const core = fakeCore(() => 300);
     const cache = new RowCache(core.fetchPage);

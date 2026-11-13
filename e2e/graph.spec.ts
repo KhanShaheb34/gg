@@ -379,3 +379,26 @@ test("each rendered row has its own id and its real row index", async ({ gg }) =
     });
   expect(await audit()).toEqual({ duplicateIds: 0, hiddenWithAttrs: 0, wrongIndex: 0, shown: 30 });
 });
+
+test("rows and lanes move as one layer the size of the rendered rows, not of the whole history", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
+  await scrollTo(page, 1500 * 26);
+  await expect(subject(row(page, 1500))).not.toBeEmpty();
+  const layout = await grid(page).evaluate((el) => {
+    const group = el.querySelector<HTMLElement>('[role="rowgroup"]')!;
+    return {
+      groupHeight: group.getBoundingClientRect().height,
+      viewport: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      canvasInGroup: group.contains(el.querySelector('[data-testid="graph-canvas"]')),
+      willChange: getComputedStyle(group).willChange,
+    };
+  });
+  expect(layout.scrollHeight).toBeGreaterThan(BIG_COMMITS * 26);
+  expect(layout.groupHeight).toBeLessThan(3 * layout.viewport);
+  expect(layout.canvasInGroup).toBe(true);
+  expect(layout.willChange).toContain("transform");
+});

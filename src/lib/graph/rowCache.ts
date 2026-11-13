@@ -23,7 +23,9 @@ export class RowCache {
   constructor(
     private readonly fetchPage: FetchPage,
     private readonly pageSize = 200,
-    private readonly maxPages = 60,
+    // The window (about 2 pages) plus 400 rows of prefetch either way and a page either
+    // side; more only grows the web process's memory.
+    private readonly maxPages = 8,
   ) {}
 
   /**

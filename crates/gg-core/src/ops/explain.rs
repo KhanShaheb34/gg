@@ -123,7 +123,9 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
     if lock_file_exists(all) {
         return Some(LOCKED.to_owned());
     }
-    if let Some(network) = network_failure(args, all) {
+    if talks_to_a_remote(args)
+        && let Some(network) = network_failure(args, all)
+    {
         return Some(network);
     }
     if let Some((what, files)) = files_in_the_way(
@@ -245,6 +247,15 @@ pub(crate) fn needs_pull_mode(all: &str) -> bool {
     all.contains("Need to specify how to reconcile divergent branches")
 }
 
+/// Whether git run with `args` talks to a remote. Only then do words like "Connection
+/// refused" in its output mean the remote: in a local command they come from a hook.
+fn talks_to_a_remote(args: &[&str]) -> bool {
+    matches!(
+        args.first(),
+        Some(&("push" | "fetch" | "pull" | "ls-remote"))
+    )
+}
+
 /// The explanation of a failure to reach, or be let into, a remote, or of a push or fetch
 /// the remote or git rejected.
 fn network_failure(args: &[&str], all: &str) -> Option<String> {
@@ -296,8 +307,9 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
         {
             let path = path.strip_suffix('\'').unwrap_or(path);
             return Some(format!(
-                "Branch \u{201c}{branch}\u{201d} is checked out (at {path}), and git does not \
-                 move a checked-out branch by fetching into it: pull it instead."
+                "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, and \
+                 git does not move a checked-out branch by fetching into it: switch to that \
+                 worktree and pull it there."
             ));
         }
         if line == "There is no tracking information for the current branch." {
@@ -466,6 +478,47 @@ mod tests {
             panic!("not failed");
         };
         assert_eq!(message, "git commit exited with code 128");
+    }
+
+    #[test]
+    fn network_wording_counts_only_for_commands_that_talk_to_a_remote() {
+        let out = failed("hook: Connection refused\nCould not resolve host: ci\n", "");
+        for args in [
+            &["merge", "x"][..],
+            &["commit"],
+            &["rebase", "x"],
+            &["tag", "v"],
+        ] {
+            let Step::Failed { message, .. } = explain(args, &out) else {
+                panic!("not failed");
+            };
+            assert_ne!(message, UNREACHABLE, "{args:?}");
+        }
+        for args in [
+            &["push", "o"][..],
+            &["fetch"],
+            &["pull"],
+            &["ls-remote", "o"],
+        ] {
+            let Step::Failed { message, .. } = explain(args, &out) else {
+                panic!("not failed");
+            };
+            assert_eq!(message, UNREACHABLE, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn fetching_into_a_branch_checked_out_elsewhere_names_that_worktree() {
+        let out = failed(
+            "fatal: refusing to fetch into branch 'refs/heads/topic' checked out at '/w/topic'\n",
+            "",
+        );
+        let Step::Failed { message, .. } = explain(&["fetch", "origin", "x:y"], &out) else {
+            panic!("not failed");
+        };
+        assert!(message.contains("/w/topic"), "{message}");
+        assert!(message.contains("that worktree"), "{message}");
+        assert!(!message.contains("pull it instead"), "{message}");
     }
 
     #[test]

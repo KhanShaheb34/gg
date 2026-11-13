@@ -609,6 +609,38 @@ async fn merge_commit_refused_by_a_hook_fails_with_its_output() {
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
 }
 
+/// Words that mean a network failure in a remote command's output mean nothing of the sort
+/// in a local one: a hook that prints "Connection refused" (it talks to some service) is
+/// not explained as an unreachable remote.
+#[cfg(unix)]
+#[tokio::test]
+async fn hook_output_in_a_local_operation_is_not_taken_for_a_network_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = TestRepo::new();
+    diverged(&repo);
+    let path = repo.path().join(".git/hooks/pre-rebase");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "#!/bin/sh\necho 'curl: (7) Failed to connect to ci: Connection refused' >&2\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, rebase("feature")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(!out.message.contains("remote"), "{}", out.message);
+    assert!(
+        out.detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("Connection refused"),
+        "{out:?}"
+    );
+}
+
 /// A pre-rebase hook that refuses: the rebase never starts, and git's output is shown.
 #[cfg(unix)]
 #[tokio::test]

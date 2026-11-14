@@ -8,6 +8,7 @@ import {
   formatDuration,
   groupDigits,
   outputLines,
+  repeatsMergeName,
   shellQuote,
   shortenPath,
   visibleText,
@@ -160,5 +161,19 @@ describe("command log text", () => {
 
   it("gives the time of day, to the second", () => {
     expect(clockTime(Date.UTC(2026, 10, 14, 9, 5, 7))).toBe("09:05:07");
+  });
+});
+
+describe("repeatsMergeName", () => {
+  it("is true only for git's own merge subjects naming what comes in", () => {
+    expect(repeatsMergeName("Merge branch 'feature/x'", "feature/x")).toBe(true);
+    expect(repeatsMergeName("Merge branch 'feature/x' into main", "feature/x")).toBe(true);
+    expect(repeatsMergeName("Merge remote-tracking branch 'origin/main'", "origin/main")).toBe(true);
+    expect(repeatsMergeName("Merge remote-tracking branch 'origin/main' into staging", "origin/main")).toBe(true);
+    expect(repeatsMergeName("Merge tag 'v1.2'", "v1.2")).toBe(true);
+    // Someone's own words that happen to hold a short name are kept.
+    expect(repeatsMergeName("Bring the ui fixes in", "ui")).toBe(false);
+    expect(repeatsMergeName("Merge branch 'ui-2'", "ui")).toBe(false);
+    expect(repeatsMergeName("Merge branch 'x' into main, fixing the build", "x")).toBe(false);
   });
 });

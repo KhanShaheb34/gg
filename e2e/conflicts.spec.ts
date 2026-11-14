@@ -154,6 +154,7 @@ test("rebase_banner_shows_steps_and_continues_through_two_stops", async ({ gg })
 
   await expect(banner(page).getByRole("heading")).toHaveText("Rebasing topic onto main, step 2 of 5");
   await expect(banner(page)).toContainText("Topic two");
+  await expect(banner(page)).toContainText("1 file has conflicts. Resolve it in your editor, then continue.");
   await expect(fileButton(page, "app.txt")).toBeVisible();
   resolve(gg, "app.txt");
   // A look the banner took as it appeared (the pointer was there) must not hold this one back.
@@ -279,7 +280,9 @@ test("conflicts left by a stash show a quieter banner until they are staged", as
   await open(page, gg.repoPath("conflicts"));
 
   await expect(banner(page).getByRole("heading")).toHaveText("1 file has conflicts");
-  await expect(banner(page)).toContainText("Left by applying a stash or an earlier step. Resolve it in your editor");
+  await expect(banner(page)).toContainText(
+    "Left by applying a stash or an earlier step. Resolve it in your editor. The banner goes once git sees no conflict: stage the file (git add), or reset to the current commit (mixed).",
+  );
   await expect(fileButton(page, "app.txt")).toBeVisible();
   await expect(banner(page).getByRole("button", { name: "Open in editor" })).toBeVisible();
   await expect(banner(page).getByRole("button", { name: "Continue…" })).toHaveCount(0);
@@ -313,4 +316,17 @@ test("continue_anyway_names_what_is_not_resolved_and_goes_ahead", async ({ gg })
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "show", "HEAD:style.css")).toContain("<<<<<<< HEAD");
   expect(gg.git("conflicts", "show", "HEAD:app.txt")).toBe("Title\n=======\n");
+});
+
+test("a merge subject of someone's own words is shown, though it holds the branch's name", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  try {
+    gg.git("conflicts", "merge", "-m", "Bring the wide renames in", "wide");
+  } catch {
+    // Stopped on conflicts.
+  }
+  await expect(banner(page).getByRole("heading")).toHaveText("Merging wide into main");
+  await expect(banner(page)).toContainText("Bring the wide renames in");
 });

@@ -168,3 +168,17 @@ export function clockTime(ms: number): string {
   const d = new Date(ms);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
+
+/**
+ * Whether `subject` is git's own message for merging `name` ("Merge branch 'name'", "Merge
+ * remote-tracking branch 'name'", "Merge tag 'name'", "Merge commit 'name'", each optionally
+ * followed by " into <branch>"), which only repeats a headline that names it.
+ */
+export function repeatsMergeName(subject: string, name: string): boolean {
+  for (const kind of ["branch", "remote-tracking branch", "tag", "commit"]) {
+    const head = `Merge ${kind} '${name}'`;
+    if (subject === head) return true;
+    if (subject.startsWith(`${head} into `) && !/\s/.test(subject.slice(head.length + 6))) return true;
+  }
+  return false;
+}

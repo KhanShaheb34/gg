@@ -17,7 +17,7 @@
   top; the graph keeps its rows where they were.
 -->
 <script lang="ts">
-  import { visibleText } from "../format";
+  import { repeatsMergeName, visibleText } from "../format";
   import { shown } from "../menus/common";
   import { openInEditor } from "../state/editor";
   import { showDialog } from "../state/overlays.svelte";
@@ -77,19 +77,19 @@
    */
   const subject = $derived.by(() => {
     if (!progress?.subject) return null;
-    if (progress.kind === "merge" && progress.incoming !== null && progress.subject.includes(progress.incoming)) return null;
+    if (progress.kind === "merge" && progress.incoming !== null && repeatsMergeName(progress.subject, progress.incoming)) return null;
     return progress.subject;
   });
 
   const stateLine = $derived.by(() => {
     if (progress === null) {
-      const it = snap.status.conflicted === 1 ? "it" : "them";
-      return `Left by applying a stash or an earlier step. Resolve ${it} in your editor; this goes once git sees no conflict: git add the ${snap.status.conflicted === 1 ? "file" : "files"}, or reset to the current commit (mixed).`;
+      const one = snap.status.conflicted === 1;
+      return `Left by applying a stash or an earlier step. Resolve ${one ? "it" : "them"} in your editor. The banner goes once git sees no conflict: stage the ${one ? "file" : "files"} (git add), or reset to the current commit (mixed).`;
     }
     const n = progress.fileCount;
     if (n === 0) return "Nothing is conflicted: ready to continue.";
     if (ready) return "All conflicts are resolved: continue stages the files and goes on.";
-    if (resolved === 0) return `${has(n)}. Resolve them in your editor, then continue.`;
+    if (resolved === 0) return `${has(n)}. Resolve ${n === 1 ? "it" : "them"} in your editor, then continue.`;
     return `${resolved} of ${files_(n)} resolved. Resolve the rest in your editor, then continue.`;
   });
 

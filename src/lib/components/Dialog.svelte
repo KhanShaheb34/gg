@@ -6,8 +6,8 @@
   submits, unless focus is on Cancel or in a multi-line field (Cmd/Ctrl+Enter submits
   there), or the primary button is disabled (`valid` false). A dangerous primary button is
   red and never has the focus to begin with: the first field has it, else Cancel. Enter on a
-  button or link inside the dialog presses it instead. A dangerous dialog (an alertdialog)
-  is described by its content, its message.
+  button or link inside the dialog presses it instead. A dangerous dialog (an alertdialog),
+  and one without fields (its words are all it has to say), is described by its content.
 
   Submitting happens once per dialog (`once`; a dialog that stays open after a refusal
   passes false and guards itself while its request is out). A held Enter does not repeat
@@ -60,6 +60,8 @@
 
   const uid = Math.random().toString(36).slice(2, 8);
   let box: HTMLDivElement;
+  /** The content has no field: it is the dialog's message. */
+  let wordsOnly = $state(false);
   let cancelButton: HTMLButtonElement;
   let primaryButton: HTMLButtonElement;
 
@@ -106,6 +108,7 @@
 
   onMount(() => {
     const before = document.activeElement;
+    wordsOnly = box.querySelector("input, select, textarea") === null;
     // A marked field first (a list matches in document order, so it is asked for alone).
     const field =
       box.querySelector<HTMLElement>("[data-autofocus]") ??
@@ -132,7 +135,7 @@
     role={danger ? "alertdialog" : "dialog"}
     aria-modal="true"
     aria-labelledby="dialog-title-{uid}"
-    aria-describedby={danger ? `dialog-body-${uid}` : undefined}
+    aria-describedby={danger || wordsOnly ? `dialog-body-${uid}` : undefined}
     tabindex="-1"
     bind:this={box}
     onkeydown={onKeydown}

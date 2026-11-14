@@ -65,6 +65,8 @@ test("checkout_staging_offers_fast_forward_then_merge_then_push", async ({ gg })
   await pickOnLabel(page, "staging", "Check out");
   const ask = dialog(page);
   await expect(ask.getByRole("heading")).toHaveText("Fast-forward 2 commits first?");
+  // A dialog of words only is described by them.
+  await expect(ask).toHaveAccessibleDescription(/staging is 2 commits behind origin\/staging/);
   await expect(ask.getByRole("button", { name: "Yes", exact: true })).toBeFocused();
   await expect(ask.getByRole("button", { name: "No", exact: true })).toBeVisible();
   await expect(ask.getByRole("button", { name: "Cancel" })).toBeVisible();

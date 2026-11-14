@@ -104,6 +104,7 @@ test("continue_disabled_until_resolved_then_finishes", async ({ gg }) => {
   await continueButton(page).click();
   const confirm = dialog(page);
   await expect(confirm.getByRole("heading")).toHaveText("Continue the merge");
+  await expect(confirm).toHaveAccessibleDescription(/These files are staged as they are now/);
   await expect(confirm.getByRole("listitem")).toHaveText(["app.txt", "style.css"]);
   await confirm.getByRole("button", { name: "Stage and continue" }).click();
 

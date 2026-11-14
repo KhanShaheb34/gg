@@ -5,6 +5,7 @@
 import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
 import PullDialog from "../components/dialogs/PullDialog.svelte";
 import { api, CoreError } from "../ipc";
+import { shown } from "../menus/common";
 import type { CoreErrorDto, Danger, DangerKind, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 import { app, notify, reportError, showLog, type ToastAction } from "./app.svelte";
 import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
@@ -101,8 +102,10 @@ function report(repoId: number, outcome: OpOutcome): void {
   }
   const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint));
   const detail = outcome.detail ?? undefined;
+  // A notice that offers what to do next waits for the user, until the next operation there.
+  const until = actions.length > 0 ? { repoId, opId: outcome.opId } : undefined;
   if (outcome.status === "done") {
-    notify({ kind: "info", message: outcome.message, detail, foldDetail: true, actions });
+    notify({ kind: "info", message: outcome.message, detail, foldDetail: true, actions, persistent: !!until, until });
   } else if (outcome.status === "failed") {
     notify({
       kind: "error",
@@ -110,6 +113,7 @@ function report(repoId: number, outcome: OpOutcome): void {
       detail,
       foldDetail: true,
       persistent: true,
+      until,
       actions,
       // The notice stays: the log is read against it.
       link:
@@ -135,16 +139,18 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
     case "push": {
       const { branch, remote, setUpstream } = hint;
       const push: OpRequest = { op: "push", branch, remote, setUpstream, force: false, lease: null };
-      return [{ label: "Push", run: () => followUp(repoId, push) }];
+      return [{ label: `Push ${shown(branch)}`, run: () => followUp(repoId, push) }];
     }
     case "fetch":
       return [{ label: "Fetch", run: () => findRepoView(repoId)?.fetch() }];
     case "pull":
-      return [{ label: "Pull", run: () => followUp(repoId, { op: "pull", branch: hint.branch, mode: "default" }) }];
+      return [
+        { label: `Pull ${shown(hint.branch)}`, run: () => followUp(repoId, { op: "pull", branch: hint.branch, mode: "default" }) },
+      ];
     case "force_push": {
       const { branch, remote } = hint;
       const push: OpRequest = { op: "push", branch, remote, setUpstream: false, force: true, lease: null };
-      return [{ label: "Force push…", danger: true, run: () => followUp(repoId, push) }];
+      return [{ label: `Force push ${shown(branch)}…`, danger: true, run: () => followUp(repoId, push) }];
     }
     case "choose_pull_mode":
       return []; // a dialog asks instead (see report)

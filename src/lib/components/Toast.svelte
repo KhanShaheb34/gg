@@ -1,11 +1,15 @@
 <!--
   The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s (10 s too
-  for any with buttons); hovering the stack, or keyboard focus inside it, holds them all. A persistent one stays until
-  dismissed. Its buttons follow the message; a folded detail (git's own text) opens below.
+  for any with buttons); hovering the stack, or keyboard focus inside it, holds them all. A
+  persistent one stays until dismissed or one of its buttons is used; one that offers what to
+  do next after an operation (`until`) also goes once a later operation runs there. Its
+  buttons follow the message; a folded detail (git's own text) opens below. F6 moves the focus
+  to the newest one; Tab reaches the stack after the page.
 -->
 <script lang="ts">
   import { visibleText } from "../format";
   import { app, dismissToast, type Toast, type ToastAction } from "../state/app.svelte";
+  import { findRepoView } from "../state/repo.svelte";
 
   const LIFETIME_MS = { info: 4_000, error: 10_000 } as const;
   const WITH_BUTTONS_MS = 10_000;
@@ -20,6 +24,15 @@
     void app.toasts.length;
     if (focused && !stack.contains(document.activeElement)) focused = false;
   });
+  // A notice offering what to do after an operation goes once a later one runs there.
+  $effect(() => {
+    for (const toast of app.toasts) {
+      if (!toast.until) continue;
+      const op = findRepoView(toast.until.repoId)?.snapshot.op;
+      if (op && op.id > toast.until.opId) dismissToast(toast.id);
+    }
+  });
+
   /** Toasts whose folded detail is open. */
   let unfolded: Set<number> = $state(new Set());
 
@@ -63,6 +76,7 @@
   bind:this={stack}
   role="region"
   aria-label="Notifications"
+  data-notices
   onmouseenter={() => (hovered = true)}
   onmouseleave={() => (hovered = false)}
   onfocusin={() => (focused = true)}
@@ -93,12 +107,19 @@
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}
         {#if toast.actions?.length || toast.link || (toast.detail && toast.foldDetail)}
+          <!-- Buttons and links wrap as two groups, never one of them alone. -->
           <div class="row">
-            {#each toast.actions ?? [] as action, i (i)}
-              <button class="action" class:danger={action.danger} onclick={() => press(toast, action)}
-                >{action.label}</button
-              >
-            {/each}
+            {#if toast.actions?.length}
+              <span class="group">
+                {#each toast.actions as action, i (i)}
+                  <button class="action" class:danger={action.danger} onclick={() => press(toast, action)}
+                    >{action.label}</button
+                  >
+                {/each}
+              </span>
+            {/if}
+            {#if (toast.detail && toast.foldDetail) || toast.link}
+            <span class="group">
             {#if toast.detail && toast.foldDetail}
               <button
                 class="link"
@@ -114,6 +135,8 @@
             {#if toast.link}
               {@const link = toast.link}
               <button class="link" onclick={() => press(toast, link)}>{link.label}</button>
+            {/if}
+            </span>
             {/if}
           </div>
           {#if toast.detail && toast.foldDetail && unfolded.has(toast.id)}
@@ -195,8 +218,15 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: 6px 10px;
     margin-top: 8px;
+  }
+
+  .group {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
   }
 
   .action {

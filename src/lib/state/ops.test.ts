@@ -262,6 +262,28 @@ describe("runOp", () => {
 });
 
 describe("hint buttons", () => {
+  it("a notice with buttons stays until it is dismissed or an operation after its own runs there", async () => {
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
+      outcome({ opId: 9, hints: [{ kind: "push", branch: "main", remote: "origin", setUpstream: false }] }),
+    );
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts[0]).toMatchObject({ persistent: true, until: { repoId: 1, opId: 9 } });
+    // Without buttons it goes by itself, as before.
+    app.app.toasts.length = 0;
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 10 }));
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts[0].persistent).toBeFalsy();
+    expect(app.app.toasts[0].until).toBeUndefined();
+  });
+
+  it("names the branch on its buttons", async () => {
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
+      outcome({ hints: [{ kind: "push", branch: "feature/\u202ex", remote: "origin", setUpstream: false }] }),
+    );
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Push feature/‹U+202E›x"]);
+  });
+
   async function buttonsFor(hints: OpHint[], status: OpOutcome["status"] = "done") {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ status, hints }));
     await ops.runOp(1, RESET);
@@ -271,7 +293,7 @@ describe("hint buttons", () => {
 
   it("push: pushes the branch the core named", async () => {
     const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin", setUpstream: true }]);
-    expect(push.label).toBe("Push");
+    expect(push.label).toBe("Push main");
     await push.run();
     expect(ipc.api.runOp).toHaveBeenCalledWith(
       1,
@@ -287,8 +309,8 @@ describe("hint buttons", () => {
     );
     expect(buttons.map((b) => [b.label, !!b.danger])).toEqual([
       ["Fetch", false],
-      ["Pull", false],
-      ["Force push…", true],
+      ["Pull main", false],
+      ["Force push main…", true],
     ]);
     await buttons[0].run();
     expect(view.fetch).toHaveBeenCalled();

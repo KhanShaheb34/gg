@@ -507,7 +507,7 @@ for (const theme of ["light", "dark"] as const) {
     await snap("notice-push-rejected");
 
     // Pull: diverged, and git is not told how: the choice.
-    await rejected.getByRole("button", { name: "Pull", exact: true }).click();
+    await rejected.getByRole("button", { name: "Pull staging", exact: true }).click();
     await expect(dialog).toBeVisible();
     await shot("dialog-pull");
   });

@@ -1,4 +1,9 @@
 // The app's keyboard shortcuts. Cmd is the command modifier on macOS, Ctrl elsewhere.
+//
+//   Cmd+O            open a repository        Cmd+W            close the tab
+//   Ctrl+Tab         next tab (Shift: back)   Cmd+1..8, Cmd+9  a tab, the last tab
+//   Cmd+F            search commits           Cmd+Shift+F      fetch
+//   Cmd+R            refresh                  F6               the newest notice (its first button)
 
 export type Shortcut =
   | { kind: "open" }
@@ -7,7 +12,8 @@ export type Shortcut =
   | { kind: "jump"; index: number }
   | { kind: "search" }
   | { kind: "fetch" }
-  | { kind: "refresh" };
+  | { kind: "refresh" }
+  | { kind: "notices" };
 
 type Keys = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> &
   Partial<Pick<KeyboardEvent, "isComposing">>;
@@ -19,6 +25,7 @@ type Keys = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "al
  */
 export function shortcutFor(e: Keys, isMac: boolean): Shortcut | null {
   if (e.altKey || e.isComposing) return null;
+  if (e.key === "F6" && !e.metaKey && !e.ctrlKey && !e.shiftKey) return { kind: "notices" };
   // Ctrl+Tab / Ctrl+Shift+Tab cycle tabs on every platform.
   if (e.key === "Tab" && e.ctrlKey && !e.metaKey) return { kind: "cycle", delta: e.shiftKey ? -1 : 1 };
 

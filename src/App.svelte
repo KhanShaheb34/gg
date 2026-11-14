@@ -21,6 +21,7 @@
     init,
     openPath,
     openViaPicker,
+    focusNewestNotice,
     toast,
     windowFocusChanged,
   } from "./lib/state/app.svelte";
@@ -89,6 +90,9 @@
         break;
       case "refresh":
         void view?.refresh();
+        break;
+      case "notices":
+        focusNewestNotice();
         break;
     }
   }

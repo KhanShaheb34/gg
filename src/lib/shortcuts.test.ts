@@ -80,3 +80,13 @@ describe("shortcutFor elsewhere (Ctrl)", () => {
     expect(pc(key("r", { metaKey: true }))).toBeNull();
   });
 });
+
+describe("the notices shortcut", () => {
+  it("F6 alone moves to the newest notice, on every platform", () => {
+    expect(shortcutFor(key("F6"), true)).toEqual({ kind: "notices" });
+    expect(shortcutFor(key("F6"), false)).toEqual({ kind: "notices" });
+    expect(shortcutFor(key("F6", { shiftKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("F6", { metaKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "notices" })).toBe(false);
+  });
+});

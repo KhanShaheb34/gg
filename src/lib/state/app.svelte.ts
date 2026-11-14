@@ -25,6 +25,11 @@ export type Toast = {
   detail?: string;
   foldDetail?: boolean;
   persistent?: boolean;
+  /**
+   * With `persistent`: it stays until dismissed, one of its buttons is used, or an operation
+   * after `opId` runs on repository `repoId` (what its buttons offer may no longer hold).
+   */
+  until?: { repoId: number; opId: number };
   actions?: ToastAction[];
   link?: ToastAction;
 };
@@ -55,6 +60,19 @@ let nextToastId = 1;
 /** Shows a toast; the Toast component dismisses it after a while. */
 export function toast(kind: ToastKind, message: string, detail?: string): void {
   app.toasts.push(detail ? { id: nextToastId++, kind, message, detail } : { id: nextToastId++, kind, message });
+}
+
+/**
+ * Moves the focus to the newest notice: its first button (Push…, Show log), else its dismiss
+ * button. False when there is none.
+ */
+export function focusNewestNotice(): boolean {
+  const notices = document.querySelectorAll<HTMLElement>("[data-notices] .toast");
+  const newest = notices[notices.length - 1];
+  const button = newest?.querySelector<HTMLElement>("button");
+  if (!button) return false;
+  button.focus();
+  return true;
 }
 
 /** Shows `notice`; returns its id. */

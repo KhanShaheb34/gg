@@ -4,12 +4,15 @@
   refresh. Every control changes at once when used; the work it starts shows as it runs
   (spinning icons, a loading line along the header's bottom edge). An operation shows once
   it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
-  behind it show as a count.
+  behind it show as a count. One that has run for STOP_AFTER_MS offers Stop (R41): a hook
+  that hangs, or git waiting on something that never comes, must not hold the repository.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
   import { relativeTime, visibleText } from "../format";
   import { isMac } from "../platform";
+  import { api } from "../ipc";
+  import { reportError } from "../state/app.svelte";
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
@@ -66,6 +69,36 @@
     const timer = setTimeout(() => (busy = op), Math.max(0, BUSY_DELAY_MS - (performance.now() - seenAt)));
     return () => clearTimeout(timer);
   });
+  const STOP_AFTER_MS = 5_000;
+  /** The operation shown has run for STOP_AFTER_MS: Stop is offered. */
+  let stoppable = $state(false);
+  /** Stop was asked for this operation. */
+  let stopping = $state<number | null>(null);
+  $effect(() => {
+    const op = busy;
+    stoppable = false;
+    if (op === null) return;
+    const left = STOP_AFTER_MS - (Date.now() - op.startedAtMs);
+    if (left <= 0) {
+      stoppable = true;
+      return;
+    }
+    const timer = setTimeout(() => (stoppable = true), left);
+    return () => clearTimeout(timer);
+  });
+
+  async function stop() {
+    const op = busy;
+    if (op === null || stopping === op.id) return;
+    stopping = op.id;
+    try {
+      await api.stopOp(view.repoId, op.id);
+    } catch (e) {
+      reportError(e);
+      stopping = null;
+    }
+  }
+
   const busyTitle = $derived(
     busy === null
       ? ""
@@ -127,6 +160,15 @@
         <span class="queued" aria-label="{busy.queued} more queued">+{busy.queued}</span>
       {/if}
     </div>
+    {#if stoppable}
+      <button
+        class="button stop"
+        data-testid="stop-op"
+        disabled={stopping === busy.id}
+        title="End {visibleText(busy.title)} and what git started for it (a hook, say)"
+        onclick={() => void stop()}>{stopping === busy.id ? "Stopping…" : "Stop"}</button
+      >
+    {/if}
   {/if}
 
   <SearchBox {view} disabled={noCommits} />
@@ -301,6 +343,14 @@
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     line-height: 16px;
+  }
+
+  .stop {
+    flex: none;
+    height: 24px;
+    margin-right: 6px;
+    padding: 0 10px;
+    font-size: var(--fs-sm);
   }
 
   @keyframes busy-in {

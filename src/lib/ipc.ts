@@ -326,6 +326,12 @@ export const api = {
    */
   runOp: (repoId: number, request: OpRequest, confirmed: Confirmed[] = []) =>
     call<OpOutcome>("run_op", { repoId, request, confirmed, clientId, clientSeq: nextClientSeq(repoId) }),
+  /**
+   * Stops operation `opId` of repository `repoId` if it still runs (R41): the git command it
+   * runs is ended with what it started, and its `runOp` resolves as failed, "Stopped.".
+   * Resolves to whether it was running.
+   */
+  stopOp: (repoId: number, opId: number) => call<boolean>("stop_op", { repoId, opId }),
   getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
   setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
   /**

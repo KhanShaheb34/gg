@@ -110,6 +110,14 @@ struct RunOpArgs {
     client_seq: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StopOpArgs {
+    repo_id: u32,
+    /// The operation to stop (`RunningOp.id`): nothing happens if another one runs by then.
+    op_id: u64,
+}
+
 /// Just the numbering of a `run_op`, read before the rest so that a request whose other
 /// arguments are wrong still gives up its number.
 #[derive(Deserialize)]
@@ -300,6 +308,10 @@ impl Core {
                         )
                         .await?,
                 )
+            }
+            "stop_op" => {
+                let a: StopOpArgs = parse(cmd, args)?;
+                to_json(self.repos()?.stop_op(a.repo_id, a.op_id)?)
             }
             "get_repo_prefs" => {
                 let a: RepoArgs = parse(cmd, args)?;

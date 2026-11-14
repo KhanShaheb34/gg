@@ -609,6 +609,28 @@ test("a dialog whose request waits behind another: a name dialog says so and can
   expect(gg.git("small", "log", "-1", "--format=%s", "main").trim()).not.toMatch(/^Revert/);
 });
 
+test("an operation that hangs (a hook that sleeps) offers Stop after 5 s; Stop ends it as failed (R41)", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const dir = gg.repoPath("small");
+  await open(page, dir);
+  writeFileSync(path.join(dir, ".git/hooks/post-checkout"), "#!/bin/sh\nsleep 60\n", { mode: 0o755 });
+  const busy = page.getByTestId("busy");
+  const stop = page.getByTestId("stop-op");
+
+  const started = Date.now();
+  await startOp(page, { op: "checkout_branch", branch: "fix/typo", fastForward: false });
+  await expect(busy).toContainText("fix/typo");
+  await expect(stop).toHaveCount(0);
+  await expect(stop).toBeVisible({ timeout: 10_000 });
+  expect(Date.now() - started).toBeGreaterThanOrEqual(4_500);
+  await stop.click();
+  await expect(failure(page, "Stopped.")).toBeVisible({ timeout: 10_000 });
+  await expect(busy).toHaveCount(0);
+  await expect(stop).toHaveCount(0);
+  expect(Date.now() - started).toBeLessThan(30_000);
+});
+
 test("a dialog closing under another leaves the focus in the one above; a covered dialog takes no input", async ({
   gg,
 }) => {

@@ -120,6 +120,7 @@ describe("HTTP transport", () => {
       [{ kind: "force_push", token: "abc" }],
     );
     await api.runOp(2, { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } });
+    await api.stopOp(2, 9);
     await api.getRepoPrefs(2);
     await api.setRepoPrefs(2, { mergeNoFf: false });
     await api.openInEditor(2, null);
@@ -163,6 +164,7 @@ describe("HTTP transport", () => {
         },
       },
       { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } }, confirmed: [], clientId: expect.any(String), clientSeq: 4 } },
+      { cmd: "stop_op", args: { repoId: 2, opId: 9 } },
       { cmd: "get_repo_prefs", args: { repoId: 2 } },
       { cmd: "set_repo_prefs", args: { repoId: 2, patch: { mergeNoFf: false } } },
       { cmd: "open_in_editor", args: { repoId: 2, path: null } },

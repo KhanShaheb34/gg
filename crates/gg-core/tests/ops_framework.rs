@@ -1017,3 +1017,92 @@ async fn a_run_op_that_cannot_be_read_lets_the_next_one_in() {
         t.elapsed()
     );
 }
+
+/// R41: a hook that never ends (here, one that sleeps) holds the repository only until the
+/// user stops it: Stop ends git and the hook (its process group), the operation fails as
+/// "Stopped.", the repository is refreshed once and free for the next operation.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hook_that_hangs_is_stopped() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("other");
+    let marker = repo.path().join(".git").join("hook-pid");
+    let hook = repo.path().join(".git/hooks/post-checkout");
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\necho $$ > '{}'\nsleep 60\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let started = std::time::Instant::now();
+    let run = tokio::spawn({
+        let m = h.m.clone();
+        async move { m.run_op(id, checkout_branch("other"), &[]).await }
+    });
+    let running = h
+        .sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the checkout runs");
+    let op_id = running.1["op"]["id"].as_u64().unwrap();
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&marker)
+            .ok()
+            .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+        {
+            break pid;
+        }
+        assert!(started.elapsed() < TIMEOUT, "the hook ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    assert!(!h.m.stop_op(id, op_id + 1).unwrap(), "not that one");
+    assert!(h.m.stop_op(id, op_id).unwrap());
+    let out = tokio::time::timeout(TIMEOUT, run)
+        .await
+        .expect("ends once stopped")
+        .unwrap()
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "not the hook's 60 s"
+    );
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(out.message, "Stopped.");
+    assert_eq!(out.op_id, op_id);
+    assert_eq!(out.snapshot.op, None);
+    // The hook went with git (its process group).
+    let gone = loop {
+        // SAFETY: kill with signal 0 only checks that the process exists.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            break true;
+        }
+        if started.elapsed() > TIMEOUT {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(gone, "the hook was ended");
+    // The checkout itself had happened (the hook runs after it); the log shows the stop.
+    let records = op_records(&h.log, &out);
+    assert!(
+        records
+            .iter()
+            .any(|r| r.args.first().map(String::as_str) == Some("checkout")
+                && r.exit_code == -1
+                && r.stderr.contains("Stopped.")),
+        "{records:?}"
+    );
+    // Free for the next one.
+    std::fs::remove_file(&hook).unwrap();
+    let next = h.run(id, checkout_branch("main")).await;
+    assert_eq!(next.status, OpStatus::Done, "{next:?}");
+    // Nothing to stop once it has ended.
+    assert!(!h.m.stop_op(id, op_id).unwrap());
+}

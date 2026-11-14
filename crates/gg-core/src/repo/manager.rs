@@ -176,6 +176,8 @@ pub(crate) struct Repo {
     pub(crate) op_order: crate::ops::order::ClientOrders,
     /// How the app named the commit coming in to the merge or rebase it started last (R32).
     pub(crate) incoming_name: Mutex<Option<crate::git::progress::KnownIncoming>>,
+    /// The operation running its body, by id, and its Stop (R41).
+    pub(crate) running_stop: Mutex<Option<(u64, Arc<crate::git::runner::Stop>)>>,
     /// A fetch the user asked for is waiting for its turn or running; another one asked for
     /// meanwhile returns at once.
     pub(super) user_fetch: AtomicBool,
@@ -599,6 +601,7 @@ impl RepoManager {
             op_waiting: AtomicU32::new(0),
             op_order: Default::default(),
             incoming_name: Mutex::new(None),
+            running_stop: Mutex::new(None),
             user_fetch: AtomicBool::new(false),
             scheduled_cancel: Mutex::new(None),
             scheduled_running: Arc::new(tokio::sync::Mutex::new(())),

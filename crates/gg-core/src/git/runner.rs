@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -122,6 +123,58 @@ pub struct TimedOut {
 
 /// How long a cancelled command has to stop before it is killed.
 pub const CANCEL_GRACE: Duration = Duration::from_secs(1);
+/// How long a killed command's output may take to end; past it, it is left (something it
+/// started that left its process group holds it open).
+const KILLED_GRACE: Duration = Duration::from_secs(2);
+
+/// Said for a command (and an operation) the user stopped.
+pub const STOPPED: &str = "Stopped.";
+
+/// The user's Stop for one operation's git commands (R41): once stopped, the command running
+/// is ended with everything it started (its process group: SIGTERM, then SIGKILL after
+/// [`CANCEL_GRACE`]), and no further command starts. Cheap to share.
+#[derive(Default)]
+pub struct Stop {
+    stopped: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl Stop {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Stops the operation's commands; harmless if it was stopped before.
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once stopped (at once if it was before).
+    async fn stopped(&self) {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_stopped() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+/// The error of a command that was stopped, or not started because its operation was.
+fn stopped_error(detail: &str) -> CoreError {
+    let err = CoreError::new(ErrorCode::Io, STOPPED);
+    if detail.trim().is_empty() {
+        err
+    } else {
+        err.with_detail(detail)
+    }
+}
 
 /// Most bytes [`GitRunner::run_with_timeout`] keeps of stdout and of stderr: the last ones.
 pub const KEPT_TAIL: usize = 64 * 1024;
@@ -395,6 +448,8 @@ pub struct GitRunner {
     /// `PATH` for git children, from the user's login shell when it could be read.
     path: Option<OsString>,
     tags: Tags,
+    /// The Stop of the operation this runner runs for, if any (see [`Stop`]).
+    stop: Option<Arc<Stop>>,
 }
 
 impl GitRunner {
@@ -427,6 +482,7 @@ impl GitRunner {
                 log: log.clone(),
                 path: Some(path),
                 tags: Tags::default(),
+                stop: None,
             };
             if runner.check().await.is_ok() {
                 return Ok(runner);
@@ -436,6 +492,7 @@ impl GitRunner {
             log,
             path: None,
             tags: Tags::default(),
+            stop: None,
         };
         runner.check().await?;
         Ok(runner)
@@ -448,10 +505,12 @@ impl GitRunner {
         runner
     }
 
-    /// This runner, logging its commands as part of operation `op_id`.
-    pub(crate) fn for_op(&self, op_id: u64) -> Self {
+    /// This runner, logging its commands as part of operation `op_id`, whose commands
+    /// `stop` ends (see [`Stop`]).
+    pub(crate) fn for_op(&self, op_id: u64, stop: Arc<Stop>) -> Self {
         let mut runner = self.clone();
         runner.tags.op_id = Some(op_id);
+        runner.stop = Some(stop);
         runner
     }
 
@@ -483,17 +542,99 @@ impl GitRunner {
     }
 
     /// Runs git in `cwd` and returns its output whatever the exit code. Errs only when git
-    /// could not be started.
+    /// could not be started, or when the operation it runs for was stopped (see [`Stop`]).
     pub async fn run_unchecked(
         &self,
         cwd: &Path,
         args: &[&str],
         kind: CmdKind,
     ) -> Result<GitOutput> {
+        if let Some(stop) = &self.stop {
+            return self.run_stoppable(cwd, args, kind, stop).await;
+        }
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         match cmd.output().await {
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                self.log.push(
+                    self.tags,
+                    kind,
+                    cwd,
+                    args,
+                    started,
+                    code,
+                    &out.stdout,
+                    &stderr,
+                );
+                Ok(GitOutput {
+                    stdout: out.stdout,
+                    stderr,
+                    code,
+                })
+            }
+            Err(e) => {
+                let err = spawn_error(cwd, e);
+                self.log
+                    .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
+                Err(err)
+            }
+        }
+    }
+
+    /// [`GitRunner::run_unchecked`] for an operation's command, which `stop` can end: it is
+    /// not started once stopped; stopped while it runs, its process group (git and what it
+    /// started: a hook, a signing program) is asked to end, then killed. Both err with
+    /// [`STOPPED`] (the output so far as detail), and the command is logged with exit -1.
+    async fn run_stoppable(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        stop: &Stop,
+    ) -> Result<GitOutput> {
+        if stop.is_stopped() {
+            return Err(stopped_error(""));
+        }
+        let started = Instant::now();
+        let mut cmd = self.command(Some(cwd), args);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = cmd.spawn().map_err(|e| {
+            let err = spawn_error(cwd, e);
+            self.log
+                .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
+            err
+        })?;
+        let group = child.id();
+        let output = child.wait_with_output();
+        tokio::pin!(output);
+        let finished = tokio::select! {
+            out = &mut output => Some(out),
+            () = stop.stopped() => None,
+        };
+        let out = match finished {
+            Some(out) => out,
+            None => {
+                let (stdout, stderr) = match end_group(group, &mut output).await {
+                    Some(Ok(out)) => (
+                        out.stdout,
+                        String::from_utf8_lossy(&out.stderr).into_owned(),
+                    ),
+                    _ => (Vec::new(), String::new()),
+                };
+                let note = if stderr.is_empty() {
+                    STOPPED.to_owned()
+                } else {
+                    format!("{}\n{STOPPED}", stderr.trim_end())
+                };
+                self.log
+                    .push(self.tags, kind, cwd, args, started, -1, &stdout, &note);
+                return Err(stopped_error(&stderr));
+            }
+        };
+        match out {
             Ok(out) => {
                 let code = out.status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -527,8 +668,9 @@ impl GitRunner {
     /// are kept (the pipes are still read to the end), and it gives up when `limit` is
     /// reached. Then git and everything it started (a remote helper, ssh) are killed, the
     /// command is logged as timed out, and the result is `Ok(Err(limit hit))`. On Unix git
-    /// runs in a session (and so a process group) of its own for this, without a
-    /// controlling terminal; elsewhere only git itself is killed.
+    /// runs in a session (and so a process group) of its own, without a controlling
+    /// terminal, as every git child does; elsewhere only git itself is killed. An operation's
+    /// Stop cancels it too (see [`Stop`]).
     ///
     /// The group's id is git's pid, taken at spawn. On timeout the group is killed even when
     /// git has already exited (a helper it started still holding its output open): a group
@@ -588,26 +730,12 @@ impl GitRunner {
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
         use tokio::io::AsyncReadExt;
 
+        if self.stop.as_ref().is_some_and(|s| s.is_stopped()) {
+            return Err(stopped_error(""));
+        }
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        // A session of its own (R15): no controlling terminal, so nothing git starts (ssh)
-        // can open `/dev/tty` and wait there when the app was started from a terminal. The
-        // session leader also leads a new process group whose id is its pid, which the
-        // limits kill.
-        #[cfg(unix)]
-        {
-            // SAFETY: the closure runs in the forked child before exec and only calls
-            // setsid, which is async-signal-safe and touches no memory of the parent.
-            unsafe {
-                cmd.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
         let fail = |e: io::Error| {
             let err = spawn_error(cwd, e);
             self.log
@@ -672,9 +800,18 @@ impl GitRunner {
             }
         };
         let cancelled = async {
+            let stopped = async {
+                match &self.stop {
+                    Some(stop) => stop.stopped().await,
+                    None => std::future::pending().await,
+                }
+            };
             match cancel {
-                Some(cancel) => cancel.notified().await,
-                None => std::future::pending().await,
+                Some(cancel) => tokio::select! {
+                    () = cancel.notified() => {}
+                    () = stopped => {}
+                },
+                None => stopped.await,
             }
         };
         let expired = async {
@@ -804,6 +941,11 @@ impl GitRunner {
         self.path.as_ref()
     }
 
+    /// Every git child: the environment and leading options above, stdin null, and (Unix)
+    /// a session of its own (R15, R41): no controlling terminal, so nothing git starts (a
+    /// hook, ssh, a signing program) can open `/dev/tty` and wait there when the app was
+    /// started from a terminal; it fails at once instead. The session leader (git) also leads
+    /// a new process group whose id is its pid: what a time limit or a Stop ends.
     fn command(&self, cwd: Option<&Path>, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.args(LEADING_ARGS)
@@ -811,6 +953,19 @@ impl GitRunner {
             .envs(GIT_ENV)
             .stdin(Stdio::null())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            // SAFETY: the closure runs in the forked child before exec and only calls
+            // setsid, which is async-signal-safe and touches no memory of the parent.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         for var in INHERITED_REPO_VARS {
             cmd.env_remove(var);
         }
@@ -829,6 +984,34 @@ impl GitRunner {
         }
         cmd
     }
+}
+
+/// Ends the process group `group` (git's pid) of a stopped command whose output (not yet
+/// polled to its end) is `output`, and returns that output if it ends: SIGTERM, so git
+/// removes its lock files, then SIGKILL if it has not ended after [`CANCEL_GRACE`], then up
+/// to [`KILLED_GRACE`] for the pipes to close. Elsewhere than on Unix, nothing is returned
+/// and git itself is killed when `output` is dropped.
+async fn end_group<F: std::future::Future + Unpin>(
+    group: Option<u32>,
+    output: &mut F,
+) -> Option<F::Output> {
+    #[cfg(unix)]
+    if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
+        // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+        unsafe {
+            libc::killpg(pid, libc::SIGTERM);
+        }
+        if let Ok(out) = tokio::time::timeout(CANCEL_GRACE, &mut *output).await {
+            return Some(out);
+        }
+        // SAFETY: as above.
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+        return tokio::time::timeout(KILLED_GRACE, output).await.ok();
+    }
+    let _ = (group, output);
+    None
 }
 
 /// The `GitFailed` error for a git command that exited with `code`: the first non-empty
@@ -1028,6 +1211,7 @@ mod tests {
             log: CommandLog::new(),
             path: None,
             tags: Tags::default(),
+            stop: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1062,6 +1246,97 @@ mod tests {
         assert_eq!(out.code, 0);
     }
 
+    /// R41: every git child, not only network ones, runs in a session of its own (no
+    /// controlling terminal: a hook or a signing program that would wait on `/dev/tty`
+    /// fails at once), with stdin null.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_command_runs_in_a_session_of_its_own_without_stdin() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let alias = format!(
+            "alias.probe=!echo $$ > '{}'; sleep 2; cat; echo read-stdin",
+            pidfile.display()
+        );
+        let cwd = dir.path().to_path_buf();
+        let run = tokio::spawn(async move {
+            runner
+                .run_unchecked(&cwd, &["-c", &alias, "probe"], CmdKind::Read)
+                .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the alias ran");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        // SAFETY: getsid only reads a process's session id.
+        let (theirs, ours) = unsafe { (libc::getsid(pid), libc::getsid(0)) };
+        assert!(theirs > 0, "the shell is running");
+        assert_ne!(theirs, ours, "git runs in a session of its own");
+        let out = run.await.unwrap().unwrap();
+        assert_eq!(out.code, 0);
+        // stdin is null: `cat` read nothing and ended.
+        assert_eq!(out.text(), "read-stdin\n");
+    }
+
+    /// A stopped operation's runner starts nothing more; one stopped while git runs ends it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stopped_runner_ends_its_command_and_starts_no_other() {
+        let stop = Stop::new();
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: Some(stop.clone()),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_path_buf();
+        let started = Instant::now();
+        let run = tokio::spawn({
+            let runner = runner.clone();
+            let cwd = cwd.clone();
+            async move {
+                runner
+                    .run_unchecked(
+                        &cwd,
+                        &["-c", "alias.wait=!sleep 30", "wait"],
+                        CmdKind::Write,
+                    )
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop.stop();
+        let err = run.await.unwrap().expect_err("stopped");
+        assert_eq!(err.message, STOPPED);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let logged = runner.log().since(0);
+        assert_eq!(logged.last().map(|r| r.exit_code), Some(-1));
+        let err = runner
+            .run_unchecked(&cwd, &["--version"], CmdKind::Read)
+            .await
+            .expect_err("not started");
+        assert_eq!(err.message, STOPPED);
+        assert_eq!(
+            runner.log().since(0).len(),
+            logged.len(),
+            "nothing more ran"
+        );
+    }
+
     /// Output past the tail is read (so git is never blocked on a full pipe) and dropped.
     #[cfg(unix)]
     #[tokio::test]
@@ -1070,6 +1345,7 @@ mod tests {
             log: CommandLog::new(),
             path: None,
             tags: Tags::default(),
+            stop: None,
         };
         let dir = tempfile::tempdir().unwrap();
         // git prints back a 300 KiB config value given on its command line.
@@ -1100,6 +1376,7 @@ mod tests {
             log: CommandLog::new(),
             path: None,
             tags: Tags::default(),
+            stop: None,
         };
         let cmd = runner.command(None, &["status"]);
         let removed: Vec<_> = cmd
@@ -1150,6 +1427,7 @@ mod tests {
             log: log.clone(),
             path: None,
             tags: Tags::default(),
+            stop: None,
         };
         runner.log_timed_out(
             Path::new("/r"),
@@ -1308,8 +1586,9 @@ mod tests {
             log: log.clone(),
             path: None,
             tags: Tags::default(),
+            stop: None,
         };
-        let op = runner.for_repo(4).for_op(9);
+        let op = runner.for_repo(4).for_op(9, Stop::new());
         op.log_timed_out(Path::new("/r"), &["push"], CmdKind::Write, Instant::now());
         runner.log_timed_out(Path::new("/r"), &["fetch"], CmdKind::Write, Instant::now());
         let records = log.since(0);
@@ -1323,6 +1602,7 @@ mod tests {
             log: CommandLog::new(),
             path: None,
             tags: Tags::default(),
+            stop: None,
         };
         let cmd = runner.command(None, &["rebase"]);
         let env: Vec<(String, String)> = cmd

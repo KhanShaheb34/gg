@@ -34,7 +34,7 @@ use crate::dto::{
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
 use crate::git::progress::read_kind;
-use crate::git::runner::{CmdKind, GitOutput, GitRunner, TimeLimit};
+use crate::git::runner::{CmdKind, GitOutput, GitRunner, STOPPED, Stop, TimeLimit};
 use crate::repo::{Repo, RepoManager, unknown_repo};
 use order::NumberedTurn;
 
@@ -666,6 +666,26 @@ impl RepoManager {
         self.run_numbered(repo_id, None, request, confirmed).await
     }
 
+    /// Stops operation `op_id` of repository `repo_id` if it is running (R41): the git
+    /// command it runs, with everything that command started, is ended, nothing further
+    /// runs, and the operation ends as failed ("Stopped."), with the usual refresh. Whether
+    /// it was running.
+    pub fn stop_op(&self, repo_id: u32, op_id: u64) -> Result<bool> {
+        let repo = self.get(repo_id)?;
+        let running = repo
+            .running_stop
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Ok(match running {
+            Some((id, stop)) if id == op_id => {
+                stop.stop();
+                true
+            }
+            _ => false,
+        })
+    }
+
     /// Gives up number `n` of client `client` on repository `repo_id`: a request that will
     /// never run (its arguments could not be read). Nothing for an unknown repository.
     pub fn release_number(&self, repo_id: u32, client: &str, n: u64) {
@@ -851,9 +871,10 @@ impl RepoManager {
             body,
             numbered: _,
         } = turn;
+        let stop = Stop::new();
         let ctx = OpCtx {
             repo: &repo,
-            runner: repo.runner.for_op(op_id),
+            runner: repo.runner.for_op(op_id, stop.clone()),
             cwd: repo.worktree.clone(),
             op_id,
             sink: self.sink.as_ref(),
@@ -944,7 +965,26 @@ impl RepoManager {
         }
         self.start_op(&repo, op_id, &title).await?;
         started.store(true, Ordering::SeqCst);
+        *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some((op_id, stop.clone()));
         let step = body(&ctx, &dangers).await;
+        *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // Stopped by the user (R41): whatever the body made of it, the operation failed, with
+        // what git said before it was ended.
+        let step = if stop.is_stopped() {
+            let detail = match step {
+                Ok(Step::Failed { detail, .. } | Step::Stopped { detail, .. }) => detail,
+                Ok(Step::DoneWith { detail, .. }) => detail.unwrap_or_default(),
+                Ok(Step::Done(_)) => String::new(),
+                Err(e) => e.detail.unwrap_or_default(),
+            };
+            Ok(Step::Failed {
+                message: STOPPED.to_owned(),
+                detail,
+                hints: Vec::new(),
+            })
+        } else {
+            step
+        };
         let delay = self.op_delay();
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
@@ -1307,7 +1347,7 @@ mod tests {
         let r = m.get(id).expect("open");
         let ctx = OpCtx {
             repo: &r,
-            runner: r.runner.for_op(1),
+            runner: r.runner.for_op(1, Stop::new()),
             cwd: r.worktree.clone(),
             op_id: 1,
             sink: m.sink.as_ref(),

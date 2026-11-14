@@ -87,11 +87,65 @@ test("checkout_staging_offers_fast_forward_then_merge_then_push", async ({ gg })
   await expect(grid(page).locator('[data-index="0"] .subject')).toHaveText("Merge branch 'feature/login' into staging");
   await expect(label(page, "staging").locator(".ab")).toHaveText("↑3");
 
-  await merged.getByRole("button", { name: "Push", exact: true }).click();
+  await merged.getByRole("button", { name: "Push staging", exact: true }).click();
   await expect(notice(page, "Pushed staging to origin.")).toBeVisible();
   // The counts follow without a refresh.
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
   expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
+});
+
+test("the merge notice's push waits for the user, is reached from the keyboard, and goes when another operation runs", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.clock.install();
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  await pickOnLabel(page, "staging", "Check out");
+  await dialog(page).getByRole("button", { name: "Yes", exact: true }).click();
+  await expect(label(page, "staging")).toHaveClass(/current/);
+  await pickOnLabel(page, "feature/login", "Merge feature/login into staging…");
+  await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
+  const merged = notice(page, "Merged feature/login into staging.");
+  const push = merged.getByRole("button", { name: "Push staging", exact: true });
+  await expect(push).toBeVisible();
+
+  // Long after other notices have gone, it is still there.
+  await page.clock.fastForward(12_000);
+  await expect(push).toBeVisible();
+
+  // Tab reaches it from the page…
+  await grid(page).focus();
+  const inNotices = () => page.evaluate(() => !!document.activeElement?.closest("[data-notices]"));
+  for (let i = 0; i < 40 && !(await inNotices()); i++) await page.keyboard.press("Tab");
+  expect(await inNotices()).toBe(true);
+  // …and F6 goes straight to its first button.
+  await grid(page).focus();
+  await page.keyboard.press("F6");
+  await expect(push).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(notice(page, "Pushed staging to origin.")).toBeVisible();
+  await expect(merged).toHaveCount(0);
+  expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
+
+  // A rejected push's notice stays too, until the next operation runs here.
+  commitOutside(gg, "Local tweak");
+  const other = otherClone(gg.repoPath("routine"));
+  gg.gitAt(other, "fetch", "-q", "origin");
+  gg.gitAt(other, "reset", "-q", "--hard", "origin/staging");
+  gg.gitAt(other, "commit", "-q", "--allow-empty", "-m", "Theirs");
+  gg.gitAt(other, "push", "-q", "origin", "HEAD:staging");
+  await page.getByRole("button", { name: "Fetch" }).click();
+  await expect(label(page, "staging").locator(".ab")).toHaveText("↑1 ↓1");
+  await pickOnLabel(page, "staging", "Push 1 commit…");
+  await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
+  const rejected = failure(page, "The remote has commits you don't have");
+  await expect(rejected).toBeVisible();
+  await page.clock.fastForward(12_000);
+  await expect(rejected).toBeVisible();
+  await pickOnLabel(page, "main", "Check out");
+  await expect(label(page, "main")).toHaveClass(/current/);
+  await expect(rejected).toHaveCount(0);
 });
 
 test("push_rejected_then_pull_then_push", async ({ gg }) => {
@@ -107,10 +161,10 @@ test("push_rejected_then_pull_then_push", async ({ gg }) => {
   await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
   const rejected = failure(page, "The remote has commits you don't have");
   await expect(rejected).toBeVisible();
-  await expect(rejected.getByRole("button")).toContainText(["Fetch", "Pull", "Force push…"]);
+  await expect(rejected.getByRole("button")).toContainText(["Fetch", "Pull staging", "Force push staging…"]);
 
   // Pull: the branches have diverged and git's config does not say how to reconcile them.
-  await rejected.getByRole("button", { name: "Pull", exact: true }).click();
+  await rejected.getByRole("button", { name: "Pull staging", exact: true }).click();
   const choose = dialog(page);
   await expect(choose.getByRole("heading")).toHaveText("Pull origin/staging into staging");
   await expect(choose.getByText("This branch and its upstream have diverged")).toBeVisible();
@@ -299,20 +353,33 @@ test("actions_queue_while_one_runs", async ({ gg }) => {
   const hook = path.join(dir, ".git/hooks/post-checkout");
   writeFileSync(hook, "#!/bin/sh\nsleep 2\n", { mode: 0o755 });
 
-  // Check out feature/login (a double click), and at once staging, fast-forwarding it.
-  await label(page, "feature/login").locator(".name").dblclick();
+  // Check out feature/login, and in the same instant staging, fast-forwarding it: they run
+  // in the order they were sent (R28), the second waiting behind the first.
+  const outcomes = page.evaluate(async () => {
+    const ops = await import("/src/lib/state/ops.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    const repoId = app.activeRepoId!;
+    return Promise.all([
+      ops.runOp(repoId, { op: "checkout_branch", branch: "feature/login", fastForward: false }),
+      ops.runOp(repoId, { op: "checkout_branch", branch: "staging", fastForward: true }),
+    ]);
+  });
   const busy = page.getByTestId("busy");
   await expect(busy).toContainText("feature/login");
-  await pickOnLabel(page, "staging", "Check out");
-  await dialog(page).getByRole("button", { name: "Yes", exact: true }).click();
   await expect(busy).toContainText("+1");
 
-  const done = notice(page, /Checked out (feature\/login|staging)\./);
-  await expect(done).toHaveCount(2, { timeout: 10_000 });
-  await expect(done.first()).toContainText("Checked out feature/login.");
-  await expect(done.last()).toContainText("Checked out staging. It was fast-forwarded to origin/staging.");
+  const [first, second] = await outcomes;
+  expect(first.status).toBe("done");
+  expect(second.status).toBe("done");
+  expect(second.opId).toBeGreaterThan(first.opId);
+  expect(second.message).toBe("Checked out staging. It was fast-forwarded to origin/staging.");
+  // The repository's own record of what happened, newest first.
+  expect(gg.git("routine", "reflog", "-n", "3", "--format=%gs", "HEAD").trim().split("\n")).toEqual([
+    "merge @{upstream}: Fast-forward",
+    "checkout: moving from feature/login to staging",
+    "checkout: moving from main to feature/login",
+  ]);
   await expect(busy).toHaveCount(0);
-  expect(gg.git("routine", "branch", "--show-current").trim()).toBe("staging");
   await expect(label(page, "staging")).toHaveClass(/current/);
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
 });

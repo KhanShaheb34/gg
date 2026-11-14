@@ -7,6 +7,7 @@
 <script lang="ts">
   import { shortHash } from "../../format";
   import { shown } from "../../menus/common";
+  import type { HeadInfo } from "../../types";
   import Dialog from "../Dialog.svelte";
   import CommitRef from "./CommitRef.svelte";
   import { closeAndRun } from "./run";
@@ -16,18 +17,18 @@
     repoId: number;
     hash: string;
     subject: string;
-    /** The branch HEAD is on, or null when HEAD is detached. */
-    branch: string | null;
+    /** HEAD as the menu showed it: the reset is for that branch (R39). */
+    head: HeadInfo;
     mode: Mode;
     close: () => void;
   };
 
-  let { repoId, hash, subject, branch, mode: initial, close }: Props = $props();
+  let { repoId, hash, subject, head, mode: initial, close }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   let mode: Mode = $state(initial);
   const uid = Math.random().toString(36).slice(2, 8);
-  const what = $derived(branch === null ? "HEAD" : shown(branch));
+  const what = $derived(head.branch === null ? "HEAD" : shown(head.branch));
 
   const MODES: { mode: Mode; title: string; text: (what: string) => string }[] = [
     {
@@ -52,7 +53,7 @@
   title="Reset {what} to {shortHash(hash)}"
   primary="Reset"
   danger={mode === "hard"}
-  onSubmit={() => closeAndRun(close, repoId, { op: "reset", hash, mode })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "reset", hash, mode, expectHead: head })}
   onCancel={close}
 >
   <div class="dialog-target">

@@ -3,8 +3,7 @@
 import { chmodSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import type { OpOutcome, OpRequest } from "../src/lib/types";
-import { expect, makeRepo, otherClone, test } from "./fixtures";
+import { expect, makeRepo, otherClone, runOp, test } from "./fixtures";
 
 const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");
 
@@ -247,14 +246,6 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-/** Runs `request` through the app's own runOp (the module the page loaded), in the active tab. */
-function runOp(page: Page, request: OpRequest): Promise<OpOutcome> {
-  return page.evaluate(async (req) => {
-    const ops = await import("/src/lib/state/ops.svelte.ts");
-    const { app } = await import("/src/lib/state/app.svelte.ts");
-    return ops.runOp(app.activeRepoId!, req);
-  }, request);
-}
 
 // Menus, the confirmation dialog, the busy indicator and the notices of operations.
 for (const theme of ["light", "dark"] as const) {
@@ -809,7 +800,7 @@ for (const theme of ["light", "dark"] as const) {
     gg.gitAt(other, "-c", "user.name=Grace Hopper", "-c", "user.email=grace@example.com", "commit", "-q", "--allow-empty", "-m", "Pushed from elsewhere");
     gg.gitAt(other, "push", "-q", "origin", "main");
     gg.git("branchy", "fetch", "-q", "origin");
-    void runOp(page, { op: "push", branch: "main", remote: "origin", to: null, force: true, lease: null });
+    void runOp(page, { op: "push", branch: "main", remote: "origin", to: null, force: true, });
     await expect(confirmation).toBeVisible();
     await park(page);
     await shot("dialog-force-push");

@@ -46,7 +46,7 @@
   );
 
   function submit() {
-    closeAndRun(close, repoId, { op: "push", branch, remote, to, force, lease: null });
+    closeAndRun(close, repoId, { op: "push", branch, remote, to, force });
   }
 </script>
 

@@ -28,8 +28,8 @@ pub use explain::explain;
 
 use crate::EventSink;
 use crate::dto::{
-    Danger, DangerKind, InProgressKind, MergeTargetKind, OpHint, OpOutcome, OpRequest, OpStatus,
-    ResetMode,
+    Confirmed, Danger, DangerKind, HeadInfo, InProgressKind, MergeTargetKind, OpHint, OpOutcome,
+    OpRequest, OpStatus, ResetMode,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
@@ -320,6 +320,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             no_ff,
             squash,
             no_commit,
+            expect_head: _,
         } => {
             match target.kind {
                 MergeTargetKind::Commit => check_full_hash(&target.name)?,
@@ -338,7 +339,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::Rebase { onto } => {
+        OpRequest::Rebase { onto, .. } => {
             check_arg(&onto, "branch")?;
             let shown = onto.clone();
             (
@@ -350,6 +351,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             hash,
             mainline,
             no_commit,
+            ..
         } => {
             check_full_hash(&hash)?;
             check_mainline(mainline)?;
@@ -362,7 +364,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::Revert { hash, mainline } => {
+        OpRequest::Revert { hash, mainline, .. } => {
             check_full_hash(&hash)?;
             check_mainline(mainline)?;
             (
@@ -372,7 +374,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::Reset { hash, mode } => {
+        OpRequest::Reset { hash, mode, .. } => {
             check_full_hash(&hash)?;
             let how = match mode {
                 ResetMode::Soft => "soft",
@@ -444,7 +446,6 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             remote,
             to,
             force,
-            lease,
         } => {
             check_branch_name(&branch)?;
             check_arg(&remote, "remote")?;
@@ -459,22 +460,16 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             };
             (
                 fixed(title),
-                body(move |ctx, _| {
+                body(move |ctx, dangers| {
                     Box::pin(async move {
-                        network::push(
-                            ctx,
-                            &branch,
-                            &remote,
-                            to.as_deref(),
-                            force,
-                            lease.as_deref(),
-                        )
-                        .await
+                        // Confirmed with the token the user saw: that is the lease (R11).
+                        let lease = token_of(dangers, DangerKind::ForcePush);
+                        network::push(ctx, &branch, &remote, to.as_deref(), force, lease).await
                     })
                 }),
             )
         }
-        OpRequest::Pull { branch, mode } => {
+        OpRequest::Pull { branch, mode, .. } => {
             check_branch_name(&branch)?;
             (
                 fixed(format!("Pull {branch}")),
@@ -503,10 +498,11 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             check_branch_name(&branch)?;
             (
                 fixed(format!("Delete branch {branch} on {remote}")),
-                body(move |ctx, _| {
-                    Box::pin(
-                        async move { network::delete_remote_branch(ctx, &remote, &branch).await },
-                    )
+                body(move |ctx, dangers| {
+                    Box::pin(async move {
+                        let lease = token_of(dangers, DangerKind::DeleteRemoteBranch);
+                        network::delete_remote_branch(ctx, &remote, &branch, lease).await
+                    })
                 }),
             )
         }
@@ -567,16 +563,24 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             on_progress(|kind| progress::title("Continue", kind)),
             body(move |ctx, _| Box::pin(async move { progress::continue_op(ctx).await })),
         ),
-        OpRequest::Abort => (
+        OpRequest::Abort { .. } => (
             on_progress(|kind| progress::title("Abort", kind)),
             body(move |ctx, _| Box::pin(async move { progress::abort(ctx).await })),
         ),
-        OpRequest::Skip => (
+        OpRequest::Skip { .. } => (
             on_progress(progress::skip_title),
             body(move |ctx, _| Box::pin(async move { progress::skip(ctx).await })),
         ),
     };
     Ok(Prepared { title, body })
+}
+
+/// The token of the danger of `kind` among `dangers` (confirmed with it), if any.
+fn token_of(dangers: &[Danger], kind: DangerKind) -> Option<&str> {
+    dangers
+        .iter()
+        .find(|d| d.kind == kind)
+        .and_then(|d| d.token.as_deref())
 }
 
 /// `Ok` unless `mainline` is 0: git numbers a merge's parents from 1.
@@ -621,7 +625,7 @@ fn check_arg(value: &str, what: &str) -> Result<()> {
 struct Turn {
     repo: Arc<Repo>,
     request: OpRequest,
-    confirmed: Vec<DangerKind>,
+    confirmed: Vec<Confirmed>,
     title: Title,
     body: Body,
     /// A numbered request's turn to join the queue (R28): released once it has joined.
@@ -643,9 +647,10 @@ const STOPPED_UNEXPECTEDLY: &str = "The operation stopped unexpectedly.";
 impl RepoManager {
     /// Runs `request` on repository `repo_id` once the operations asked for before it have
     /// ended, and returns how it went, with the repository as it is afterwards.
-    /// `confirmed` lists the dangers the user has agreed to; if the request carries any
-    /// other, nothing runs and the outcome is `needs_confirmation` with every danger it
-    /// carries. A bad name is a `bad_name` error, before anything is queued or run.
+    /// `confirmed` lists the dangers the user has agreed to, each with the token it came
+    /// with; if the request carries any other, or one whose state has changed since (another
+    /// token), nothing runs and the outcome is `needs_confirmation` with every danger it
+    /// carries, as they are now. A bad name is a `bad_name` error, before anything is queued or run.
     ///
     /// The operation runs on its own task: a caller that goes away does not stop it
     /// halfway, nor leave the repository marked busy.
@@ -653,7 +658,7 @@ impl RepoManager {
         self: &Arc<Self>,
         repo_id: u32,
         request: OpRequest,
-        confirmed: &[DangerKind],
+        confirmed: &[Confirmed],
     ) -> Result<OpOutcome> {
         self.run_numbered(repo_id, None, request, confirmed).await
     }
@@ -683,7 +688,7 @@ impl RepoManager {
         client: &str,
         n: u64,
         request: OpRequest,
-        confirmed: &[DangerKind],
+        confirmed: &[Confirmed],
     ) -> Result<OpOutcome> {
         self.run_numbered(repo_id, Some((client, n)), request, confirmed)
             .await
@@ -694,7 +699,7 @@ impl RepoManager {
         repo_id: u32,
         n: Option<(&str, u64)>,
         request: OpRequest,
-        confirmed: &[DangerKind],
+        confirmed: &[Confirmed],
     ) -> Result<OpOutcome> {
         let prepared = prepare(&request);
         let repo = self.get(repo_id)?;
@@ -858,10 +863,26 @@ impl RepoManager {
             in_progress,
         });
         repo.runner.log().name_op(op_id, &title);
-        match (&request, in_progress) {
-            (OpRequest::Continue { .. } | OpRequest::Abort | OpRequest::Skip, None) => {
-                return Err(progress::nothing_in_progress());
+        if matches!(
+            (&request, in_progress),
+            (
+                OpRequest::Continue { .. } | OpRequest::Abort { .. } | OpRequest::Skip { .. },
+                None
+            )
+        ) {
+            return Err(progress::nothing_in_progress());
+        }
+        // A request on the branch checked out acts on the one the user saw (R39).
+        if let Some((expected, strict)) = expected_head(&request, head.as_deref()) {
+            let now = HeadInfo {
+                branch: head.clone(),
+                hash: local::head_commit(&ctx).await?,
+            };
+            if let Some(why) = head_moved(expected, &now, strict) {
+                return Ok((title, Ran::Refused(why)));
             }
+        }
+        match (&request, in_progress) {
             (_, Some(kind)) => {
                 if let Some(why) = progress::refused_while(&request, kind, head.as_deref()) {
                     return Ok((title, Ran::Refused(why)));
@@ -871,7 +892,8 @@ impl RepoManager {
                 if matches!(
                     request,
                     OpRequest::Continue {
-                        even_with_markers: false
+                        even_with_markers: false,
+                        ..
                     }
                 ) && let Some(why) = progress::unresolved_conflicts(&ctx).await?
                 {
@@ -909,7 +931,7 @@ impl RepoManager {
             return Ok((title, Ran::Refused(why)));
         }
         let dangers = dangers(&ctx, &request).await?;
-        if !all_confirmed(&dangers, &confirmed, lease_of(&request)) {
+        if !all_confirmed(&dangers, &confirmed) {
             return Ok((title, Ran::Unconfirmed(dangers)));
         }
         self.start_op(&repo, op_id, &title).await?;
@@ -927,14 +949,78 @@ impl RepoManager {
     }
 }
 
-/// Whether every danger in `dangers` is confirmed: its kind is in `confirmed`, and a
-/// `force_push` comes with `lease` equal to its token (the user saw the remote branch as it
-/// is now; R11).
-fn all_confirmed(dangers: &[Danger], confirmed: &[DangerKind], lease: Option<&str>) -> bool {
+/// Whether every danger in `dangers` is confirmed: `confirmed` has its kind with the same
+/// token, so the user saw the state it is about as it is now (R11, R39).
+fn all_confirmed(dangers: &[Danger], confirmed: &[Confirmed]) -> bool {
     dangers.iter().all(|d| {
-        confirmed.contains(&d.kind)
-            && (d.kind != DangerKind::ForcePush || d.token.as_deref() == lease)
+        confirmed
+            .iter()
+            .any(|c| c.kind == d.kind && c.token == d.token)
     })
+}
+
+/// HEAD as the UI showed it for `request`, if the request acts on the branch checked out,
+/// and whether its commit must be the same too (a reset, or a continue, abort or skip: what
+/// they do depends on where HEAD is; a merge, rebase, cherry-pick or revert only on which
+/// branch, so that several asked for one after another still run). `head` is the branch
+/// HEAD is on now. A pull counts when the branch it pulls is checked out, then or now.
+fn expected_head<'r>(request: &'r OpRequest, head: Option<&str>) -> Option<(&'r HeadInfo, bool)> {
+    match request {
+        OpRequest::Reset { expect_head, .. }
+        | OpRequest::Continue { expect_head, .. }
+        | OpRequest::Abort { expect_head }
+        | OpRequest::Skip { expect_head, .. } => Some((expect_head, true)),
+        OpRequest::Merge { expect_head, .. }
+        | OpRequest::Rebase { expect_head, .. }
+        | OpRequest::CherryPick { expect_head, .. }
+        | OpRequest::Revert { expect_head, .. } => Some((expect_head, false)),
+        OpRequest::Pull {
+            branch,
+            expect_head,
+            ..
+        } => (expect_head.branch.as_deref() == Some(branch) || head == Some(branch))
+            .then_some((expect_head, false)),
+        _ => None,
+    }
+}
+
+/// Why a request asked for with HEAD at `expected` must not run with HEAD at `now`, if it
+/// must not: another branch is checked out (or HEAD is detached, or a branch is checked out
+/// where it was detached), or, while detached or with `strict`, HEAD is at another commit.
+fn head_moved(expected: &HeadInfo, now: &HeadInfo, strict: bool) -> Option<String> {
+    let at = |h: &HeadInfo| {
+        h.hash
+            .as_deref()
+            .map_or("no commit", local::short)
+            .to_owned()
+    };
+    let why = match (expected.branch.as_deref(), now.branch.as_deref()) {
+        (Some(was), Some(is)) if was != is => {
+            format!("it was asked for on {was}, but {is} is checked out now")
+        }
+        (Some(was), None) => format!(
+            "it was asked for on {was}, but HEAD is detached now (at {})",
+            at(now)
+        ),
+        (None, Some(is)) => format!(
+            "it was asked for on the detached HEAD at {}, but {is} is checked out now",
+            at(expected)
+        ),
+        (None, None) if expected.hash != now.hash => format!(
+            "HEAD has moved since it was asked for (from {} to {})",
+            at(expected),
+            at(now)
+        ),
+        (Some(was), Some(_)) if strict && expected.hash != now.hash => format!(
+            "{was} has moved since it was asked for (from {} to {})",
+            at(expected),
+            at(now)
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "Nothing was done: {why}. Look at it again, and ask again if it still applies."
+    ))
 }
 
 /// The remote a request names, if any: it must be one of the repository's remotes.
@@ -958,14 +1044,6 @@ fn stash_of(request: &OpRequest) -> Option<&str> {
         | OpRequest::StashPop { stash }
         | OpRequest::StashDrop { stash }
         | OpRequest::StashBranch { stash, .. } => Some(stash),
-        _ => None,
-    }
-}
-
-/// The lease a request carries (a push's).
-fn lease_of(request: &OpRequest) -> Option<&str> {
-    match request {
-        OpRequest::Push { lease, .. } => lease.as_deref(),
         _ => None,
     }
 }
@@ -1009,38 +1087,119 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_covers_every_danger() {
+    fn confirmation_covers_every_danger_with_its_token() {
         let danger = |kind, token: Option<&str>| Danger {
             kind,
             message: String::new(),
             detail: None,
             token: token.map(str::to_owned),
         };
+        let yes = |kind, token: Option<&str>| Confirmed {
+            kind,
+            token: token.map(str::to_owned),
+        };
         let both = [
-            danger(DangerKind::HardReset, None),
-            danger(DangerKind::DropStash, None),
+            danger(DangerKind::HardReset, Some("main\nabc\n0")),
+            danger(DangerKind::DropStash, Some("def")),
         ];
-        assert!(all_confirmed(&[], &[], None));
-        assert!(!all_confirmed(&both, &[DangerKind::HardReset], None));
+        assert!(all_confirmed(&[], &[]));
+        assert!(!all_confirmed(
+            &both,
+            &[yes(DangerKind::HardReset, Some("main\nabc\n0"))]
+        ));
         assert!(all_confirmed(
             &both,
             &[
-                DangerKind::DropStash,
-                DangerKind::HardReset,
-                DangerKind::ForcePush
-            ],
-            None
+                yes(DangerKind::DropStash, Some("def")),
+                yes(DangerKind::HardReset, Some("main\nabc\n0")),
+                yes(DangerKind::ForcePush, None),
+            ]
         ));
-        // A force push is confirmed only with the token the user saw.
+        // Every danger is confirmed only with the token the user saw (R11, R39).
+        let reset = [danger(DangerKind::HardReset, Some("main\nabc\n0"))];
+        assert!(!all_confirmed(
+            &reset,
+            &[yes(DangerKind::HardReset, Some("feature\nabc\n0"))]
+        ));
+        assert!(!all_confirmed(&reset, &[yes(DangerKind::HardReset, None)]));
         let force = [danger(DangerKind::ForcePush, Some("abc"))];
-        let yes = [DangerKind::ForcePush];
-        assert!(all_confirmed(&force, &yes, Some("abc")));
-        assert!(!all_confirmed(&force, &yes, Some("old")));
-        assert!(!all_confirmed(&force, &yes, None));
-        assert!(!all_confirmed(&force, &[], Some("abc")));
+        assert!(all_confirmed(
+            &force,
+            &[yes(DangerKind::ForcePush, Some("abc"))]
+        ));
+        assert!(!all_confirmed(
+            &force,
+            &[yes(DangerKind::ForcePush, Some("old"))]
+        ));
+        assert!(!all_confirmed(&force, &[yes(DangerKind::ForcePush, None)]));
+        assert!(!all_confirmed(
+            &force,
+            &[yes(DangerKind::HardReset, Some("abc"))]
+        ));
         let untracked = [danger(DangerKind::ForcePush, None)];
-        assert!(all_confirmed(&untracked, &yes, None));
-        assert!(!all_confirmed(&untracked, &yes, Some("abc")));
+        assert!(all_confirmed(
+            &untracked,
+            &[yes(DangerKind::ForcePush, None)]
+        ));
+        assert!(!all_confirmed(
+            &untracked,
+            &[yes(DangerKind::ForcePush, Some("abc"))]
+        ));
+    }
+
+    #[test]
+    fn a_request_on_the_current_branch_runs_only_on_the_head_it_was_asked_for() {
+        let head = |branch: Option<&str>, hash: &str| HeadInfo {
+            branch: branch.map(str::to_owned),
+            hash: Some(hash.repeat(40)),
+        };
+        let main_a = head(Some("main"), "a");
+        // Same branch, same commit: runs.
+        assert_eq!(head_moved(&main_a, &main_a, true), None);
+        // Another branch: never.
+        let why = head_moved(&main_a, &head(Some("feature"), "a"), false).unwrap();
+        assert_eq!(
+            why,
+            "Nothing was done: it was asked for on main, but feature is checked out now. Look \
+             at it again, and ask again if it still applies."
+        );
+        assert!(head_moved(&main_a, &head(None, "a"), false).is_some());
+        assert!(head_moved(&head(None, "a"), &main_a, false).is_some());
+        // The same branch moved on: only where the commit matters (strict).
+        assert_eq!(head_moved(&main_a, &head(Some("main"), "b"), false), None);
+        let why = head_moved(&main_a, &head(Some("main"), "b"), true).unwrap();
+        assert!(why.contains("main has moved since"), "{why}");
+        // Detached: the commit is what it is about.
+        assert!(head_moved(&head(None, "a"), &head(None, "b"), false).is_some());
+        assert_eq!(head_moved(&head(None, "a"), &head(None, "a"), false), None);
+
+        // Which requests are bound, and how.
+        let reset = OpRequest::Reset {
+            hash: "c".repeat(40),
+            mode: ResetMode::Soft,
+            expect_head: main_a.clone(),
+        };
+        assert_eq!(expected_head(&reset, Some("main")), Some((&main_a, true)));
+        let pull = |branch: &str| OpRequest::Pull {
+            branch: branch.into(),
+            mode: crate::dto::PullMode::Default,
+            expect_head: main_a.clone(),
+        };
+        assert!(expected_head(&pull("main"), Some("main")).is_some());
+        assert!(
+            expected_head(&pull("other"), Some("other")).is_some(),
+            "now current"
+        );
+        assert!(
+            expected_head(&pull("other"), Some("main")).is_none(),
+            "only fetches"
+        );
+        let create = OpRequest::CreateBranch {
+            name: "x".into(),
+            at: "c".repeat(40),
+            checkout: false,
+        };
+        assert!(expected_head(&create, Some("main")).is_none());
     }
 
     #[test]
@@ -1086,10 +1245,14 @@ mod tests {
             no_ff: true,
             squash: false,
             no_commit: false,
+            expect_head: HeadInfo::default(),
         };
         let title = prepare(&merge).map(|p| p.title).expect("ok");
         assert_eq!(title(&facts("trunk")), "Merge x into trunk");
-        let title = prepare(&OpRequest::Abort).map(|p| p.title).expect("ok");
+        let abort = OpRequest::Abort {
+            expect_head: HeadInfo::default(),
+        };
+        let title = prepare(&abort).map(|p| p.title).expect("ok");
         assert_eq!(
             title(&TurnFacts {
                 head: "main",

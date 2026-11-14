@@ -420,6 +420,12 @@ pub enum PullMode {
 
 /// One operation the user asked for. Serialized with its name in `op`
 /// (`{"op": "create_branch", "name": ..}`); field names camelCase.
+///
+/// A request on the branch checked out (reset, merge, rebase, cherry-pick, revert, pull of
+/// it, continue, abort, skip) carries `expect_head`: HEAD as the UI showed it when the user
+/// asked (R39). The core refuses it, running nothing, when HEAD is on another branch (or
+/// detached, or another commit while detached) by its turn; reset, continue, abort and skip
+/// also when the commit moved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "op",
@@ -457,23 +463,28 @@ pub enum OpRequest {
         no_ff: bool,
         squash: bool,
         no_commit: bool,
+        expect_head: HeadInfo,
     },
     Rebase {
         /// A local or remote branch name.
         onto: String,
+        expect_head: HeadInfo,
     },
     CherryPick {
         hash: String,
         mainline: Option<u32>,
         no_commit: bool,
+        expect_head: HeadInfo,
     },
     Revert {
         hash: String,
         mainline: Option<u32>,
+        expect_head: HeadInfo,
     },
     Reset {
         hash: String,
         mode: ResetMode,
+        expect_head: HeadInfo,
     },
     CreateTag {
         name: String,
@@ -498,15 +509,15 @@ pub enum OpRequest {
         branch: String,
         remote: String,
         to: Option<String>,
+        /// With lease: the `force_push` danger's token, once confirmed, is the commit the
+        /// remote branch must still be at (`--force-with-lease=<ref>:<token>`).
         force: bool,
-        /// With `force`: the `token` of the `force_push` danger the user confirmed. The
-        /// push runs only if it is still the remote-tracking commit, and git refuses it if
-        /// the remote branch is anywhere else (`--force-with-lease=<ref>:<lease>`).
-        lease: Option<String>,
     },
     Pull {
         branch: String,
         mode: PullMode,
+        /// Checked when the branch pulled is the one checked out, then or now.
+        expect_head: HeadInfo,
     },
     FetchIntoLocal {
         remote_branch: String,
@@ -539,12 +550,35 @@ pub enum OpRequest {
     /// ahead: a line that only looks like a marker must not trap them; R31).
     Continue {
         even_with_markers: bool,
+        expect_head: HeadInfo,
     },
-    Abort,
+    /// Aborts what git is stopped in: always the `abort` danger first.
+    Abort {
+        expect_head: HeadInfo,
+    },
     /// Leaves out the commit a rebase, cherry-pick or revert is stopped on and goes on with
     /// the next (`<kind> --skip`): the way past a commit that came out empty. A merge has
     /// none to skip.
-    Skip,
+    Skip {
+        expect_head: HeadInfo,
+    },
+}
+
+/// A danger the user confirmed: its kind and the token it came with (see [`Danger`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Confirmed {
+    pub kind: DangerKind,
+    pub token: Option<String>,
+}
+
+impl From<&Danger> for Confirmed {
+    fn from(danger: &Danger) -> Self {
+        Self {
+            kind: danger.kind,
+            token: danger.token.clone(),
+        }
+    }
 }
 
 /// A dangerous effect an operation runs only once confirmed. Serialized snake_case.
@@ -556,6 +590,8 @@ pub enum DangerKind {
     DeleteUnmergedBranch,
     DeleteRemoteBranch,
     DropStash,
+    /// Aborting what git is stopped in puts back what it changed, the user's resolutions too.
+    Abort,
 }
 
 /// What would be lost, said plainly, for the confirmation.
@@ -565,9 +601,12 @@ pub struct Danger {
     pub kind: DangerKind,
     pub message: String,
     pub detail: Option<String>,
-    /// `force_push` only: the remote-tracking commit the message was worked out from
-    /// (`null` when there is no remote-tracking branch). Confirming means sending it back as
-    /// the push's `lease`; if it no longer matches, the core asks again.
+    /// The state the message was worked out from (R39): `force_push` and
+    /// `delete_remote_branch`, the remote-tracking commit (`null` without one), which is
+    /// also the lease git checks; `hard_reset`, HEAD and the files it would discard;
+    /// `delete_unmerged_branch`, the branch's tip; `drop_stash`, the stash's commit;
+    /// `abort`, what is stopped and HEAD. Confirming sends it back with its kind; if it no
+    /// longer matches, the core asks again, with the state as it is then.
     pub token: Option<String>,
 }
 
@@ -752,17 +791,18 @@ mod tests {
             json!({"op": "rename_branch", "branch": "b", "newName": "c"}),
             json!({"op": "delete_branch", "branch": "b"}),
             json!({"op": "merge", "target": {"kind": "remote", "name": "origin/x"},
-                   "noFf": true, "squash": false, "noCommit": false}),
-            json!({"op": "rebase", "onto": "main"}),
-            json!({"op": "cherry_pick", "hash": "h", "mainline": 1, "noCommit": true}),
-            json!({"op": "revert", "hash": "h", "mainline": null}),
-            json!({"op": "reset", "hash": "h", "mode": "hard"}),
+                   "noFf": true, "squash": false, "noCommit": false, "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "rebase", "onto": "main", "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "cherry_pick", "hash": "h", "mainline": 1, "noCommit": true, "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "revert", "hash": "h", "mainline": null, "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "reset", "hash": "h", "mode": "hard", "expectHead": {"branch": "main", "hash": null}}),
             json!({"op": "create_tag", "name": "v1", "hash": "h", "message": null}),
             json!({"op": "delete_tag", "name": "v1", "remote": "origin"}),
             json!({"op": "push_tag", "name": "v1", "remote": "origin"}),
             json!({"op": "push", "branch": "b", "remote": "origin", "to": "main",
-                   "force": true, "lease": "abc"}),
-            json!({"op": "pull", "branch": "b", "mode": "default"}),
+                   "force": true}),
+            json!({"op": "pull", "branch": "b", "mode": "default",
+                   "expectHead": {"branch": null, "hash": "h"}}),
             json!({"op": "fetch_into_local", "remoteBranch": "origin/b", "localName": "b"}),
             json!({"op": "delete_remote_branch", "remote": "origin", "branch": "b"}),
             json!({"op": "stash_save", "message": "m", "includeUntracked": true}),
@@ -770,8 +810,9 @@ mod tests {
             json!({"op": "stash_pop", "stash": "h"}),
             json!({"op": "stash_drop", "stash": "h"}),
             json!({"op": "stash_branch", "stash": "h", "name": "n"}),
-            json!({"op": "continue", "evenWithMarkers": true}),
-            json!({"op": "abort"}),
+            json!({"op": "continue", "evenWithMarkers": true, "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "abort", "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "skip", "expectHead": {"branch": "main", "hash": null}}),
         ];
         for case in cases {
             let request: OpRequest =
@@ -780,7 +821,7 @@ mod tests {
         }
         assert_eq!(
             serde_json::from_value::<OpRequest>(
-                json!({"op": "reset", "hash": "h", "mode": "keep"})
+                json!({"op": "reset", "hash": "h", "mode": "keep", "expectHead": {"branch": "main", "hash": null}})
             )
             .ok(),
             None
@@ -797,6 +838,21 @@ mod tests {
             serde_json::from_value::<OpRequest>(json!({"op": "gc"})).ok(),
             None
         );
+        // A request on the current branch says which HEAD it was asked for (R39).
+        assert_eq!(
+            serde_json::from_value::<OpRequest>(
+                json!({"op": "reset", "hash": "h", "mode": "hard"})
+            )
+            .ok(),
+            None
+        );
+        let confirmed = Confirmed {
+            kind: DangerKind::Abort,
+            token: Some("t".into()),
+        };
+        let v = serde_json::to_value(&confirmed).unwrap();
+        assert_eq!(v, json!({"kind": "abort", "token": "t"}));
+        assert_eq!(serde_json::from_value::<Confirmed>(v).unwrap(), confirmed);
     }
 
     #[test]
@@ -891,6 +947,7 @@ mod tests {
             (DangerKind::HardReset, "hard_reset"),
             (DangerKind::DeleteRemoteBranch, "delete_remote_branch"),
             (DangerKind::DropStash, "drop_stash"),
+            (DangerKind::Abort, "abort"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), name);
         }

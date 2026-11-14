@@ -23,6 +23,7 @@ const item = (page: Page, name: string) => page.getByRole("menuitem", { name, ex
 const dialog = (page: Page) => page.getByRole("dialog");
 const notices = (page: Page) => page.getByRole("region", { name: "Notifications" }).locator(".toast");
 const notice = (page: Page, text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
+const failure = (page: Page, text: string | RegExp) => page.getByRole("alert").filter({ hasText: text });
 const short = (hash: string) => hash.slice(0, 8);
 /** A red button takes no click just after its dialog opens (see Dialog): wait that out. */
 const armed = (page: Page) => page.waitForTimeout(450);
@@ -538,7 +539,7 @@ test("several remotes, none named origin: nothing is chosen until the user picks
   await expect(remote).toHaveValue("");
   await expect(dialog(page).getByRole("button", { name: "Push", exact: true })).toBeDisabled();
   await remote.selectOption("backup");
-  await expect(dialog(page).getByText("backup/feature/login")).toBeVisible();
+  await expect(dialog(page).getByTestId("push-target")).toHaveText("backup/feature/login");
   await expect(dialog(page).getByRole("button", { name: "Push", exact: true })).toBeEnabled();
 });
 
@@ -600,7 +601,12 @@ test("a dialog whose request waits behind another: a name dialog says so and can
   await page.keyboard.press("Enter");
   await expect(d).toHaveCount(0);
   await expect(busy).toContainText("+1");
-  await expect(notice(page, /Reverted [0-9a-f]+: a new commit undoes its changes\./)).toBeVisible({ timeout: 10_000 });
+  // The revert was asked for on queued; the checkout before it moved HEAD to main, so it does
+  // not run there (R39), and says so.
+  await expect(
+    failure(page, "Nothing was done: it was asked for on queued, but main is checked out now."),
+  ).toBeVisible({ timeout: 10_000 });
+  expect(gg.git("small", "log", "-1", "--format=%s", "main").trim()).not.toMatch(/^Revert/);
 });
 
 test("a dialog closing under another leaves the focus in the one above; a covered dialog takes no input", async ({

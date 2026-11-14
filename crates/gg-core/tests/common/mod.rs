@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gg_core::dto::{
-    DangerKind, MergeTarget, MergeTargetKind, OpOutcome, OpRequest, RepoSnapshot, ResetMode,
+    Confirmed, DangerKind, HeadInfo, MergeTarget, MergeTargetKind, OpOutcome, OpRequest, OpStatus,
+    RepoSnapshot, ResetMode,
 };
 use gg_core::git::runner::{CmdKind, CommandLog, CommandRecord, GitRunner};
 use gg_core::repo::RepoManager;
@@ -67,13 +68,38 @@ impl Harness {
             .collect()
     }
 
-    /// Runs `request` with the dangers `confirmed`; panics if it errs or takes too long.
+    /// Runs `request` as the UI does when the user confirms the dangers of `kinds`: asked
+    /// once with nothing confirmed, and, if the core asks to confirm dangers all of whose
+    /// kinds are in `kinds`, again with those dangers (their tokens) confirmed. A request
+    /// expecting [`here`] expects HEAD as it is just before. Panics if it errs or takes too
+    /// long.
     pub async fn run_confirmed(
         &self,
         id: u32,
         request: OpRequest,
-        confirmed: &[DangerKind],
+        kinds: &[DangerKind],
     ) -> OpOutcome {
+        let request = self.at_head(id, request).await;
+        let out = self.run_with(id, request.clone(), &[]).await;
+        if out.status != OpStatus::NeedsConfirmation
+            || kinds.is_empty()
+            || !out.dangers.iter().all(|d| kinds.contains(&d.kind))
+        {
+            return out;
+        }
+        let confirmed: Vec<Confirmed> = out.dangers.iter().map(Confirmed::from).collect();
+        self.run_with(id, request, &confirmed).await
+    }
+
+    /// Runs `request` with exactly `confirmed` (kinds and tokens); panics if it errs or takes
+    /// too long. A request expecting [`here`] expects HEAD as it is just before.
+    pub async fn run_with(
+        &self,
+        id: u32,
+        request: OpRequest,
+        confirmed: &[Confirmed],
+    ) -> OpOutcome {
+        let request = self.at_head(id, request).await;
         tokio::time::timeout(TIMEOUT, self.m.run_op(id, request, confirmed))
             .await
             .expect("the operation ends")
@@ -82,7 +108,19 @@ impl Harness {
 
     /// Runs `request` with nothing confirmed.
     pub async fn run(&self, id: u32, request: OpRequest) -> OpOutcome {
-        self.run_confirmed(id, request, &[]).await
+        self.run_with(id, request, &[]).await
+    }
+
+    /// `request`, expecting HEAD as it is now in repository `id`'s worktree where it
+    /// expects [`here`].
+    pub async fn at_head(&self, id: u32, mut request: OpRequest) -> OpRequest {
+        if let Some(expect) = expect_head_mut(&mut request)
+            && *expect == here()
+        {
+            let worktree = self.m.snapshot(id).await.expect("open").active_worktree;
+            *expect = head_at(Path::new(&worktree));
+        }
+        request
     }
 
     /// The write commands logged after record `mark`.
@@ -97,6 +135,70 @@ impl Harness {
     /// The id of the newest command logged so far (0 if none).
     pub fn last_log_id(&self) -> u64 {
         self.log.since(0).last().map_or(0, |r| r.id)
+    }
+}
+
+/// Stands for "HEAD as it is when the request is sent" in requests the harness sends (see
+/// [`Harness::at_head`]): what the UI would send, having shown the repository as it is.
+pub fn here() -> HeadInfo {
+    HeadInfo {
+        branch: Some("\u{0}here".to_owned()),
+        hash: None,
+    }
+}
+
+/// HEAD of the worktree at `path`, as the UI is shown it.
+pub fn head_at(path: &Path) -> HeadInfo {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("git runs");
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            .filter(|s| !s.is_empty())
+    };
+    HeadInfo {
+        branch: git(&["symbolic-ref", "-q", "--short", "HEAD"]),
+        hash: git(&["rev-parse", "-q", "--verify", "HEAD^{commit}"]),
+    }
+}
+
+/// The HEAD `request` expects, for a request on the branch checked out.
+pub fn expect_head_mut(request: &mut OpRequest) -> Option<&mut HeadInfo> {
+    match request {
+        OpRequest::Reset { expect_head, .. }
+        | OpRequest::Merge { expect_head, .. }
+        | OpRequest::Rebase { expect_head, .. }
+        | OpRequest::CherryPick { expect_head, .. }
+        | OpRequest::Revert { expect_head, .. }
+        | OpRequest::Pull { expect_head, .. }
+        | OpRequest::Continue { expect_head, .. }
+        | OpRequest::Abort { expect_head }
+        | OpRequest::Skip { expect_head, .. } => Some(expect_head),
+        _ => None,
+    }
+}
+
+pub fn continue_op(even_with_markers: bool) -> OpRequest {
+    OpRequest::Continue {
+        even_with_markers,
+        expect_head: here(),
+    }
+}
+
+pub fn abort() -> OpRequest {
+    OpRequest::Abort {
+        expect_head: here(),
+    }
+}
+
+pub fn skip() -> OpRequest {
+    OpRequest::Skip {
+        expect_head: here(),
     }
 }
 
@@ -150,6 +252,7 @@ pub fn merge(
         no_ff,
         squash,
         no_commit,
+        expect_head: here(),
     }
 }
 
@@ -160,6 +263,7 @@ pub fn merge_branch(name: &str) -> OpRequest {
 pub fn rebase(onto: &str) -> OpRequest {
     OpRequest::Rebase {
         onto: onto.to_owned(),
+        expect_head: here(),
     }
 }
 
@@ -179,6 +283,7 @@ pub fn reset(hash: &str, mode: ResetMode) -> OpRequest {
     OpRequest::Reset {
         hash: hash.to_owned(),
         mode,
+        expect_head: here(),
     }
 }
 

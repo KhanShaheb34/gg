@@ -9,7 +9,7 @@
   import { api, CoreError } from "../../ipc";
   import { shown } from "../../menus/common";
   import { runOp } from "../../state/ops.svelte";
-  import type { MergeTarget } from "../../types";
+  import type { HeadInfo, MergeTarget } from "../../types";
   import Dialog from "../Dialog.svelte";
 
   type Props = {
@@ -17,10 +17,12 @@
     target: MergeTarget;
     /** The current branch. */
     into: string;
+    /** HEAD as the menu showed it: the merge is into that branch (R39). */
+    head: HeadInfo;
     close: () => void;
   };
 
-  let { repoId, target, into, close }: Props = $props();
+  let { repoId, target, into, head, close }: Props = $props();
 
   let noFf = $state(true);
   let squash = $state(false);
@@ -49,7 +51,7 @@
     const save = (saved !== null || touched) && choice !== saved;
     close();
     try {
-      await runOp(repoId, { op: "merge", target, noFf: choice && !squash, squash, noCommit });
+      await runOp(repoId, { op: "merge", target, noFf: choice && !squash, squash, noCommit, expectHead: head });
     } catch (e) {
       // Reported by runOp.
       if (e instanceof CoreError && e.code === "bad_request") return;

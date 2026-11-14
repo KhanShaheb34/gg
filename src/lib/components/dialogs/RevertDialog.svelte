@@ -6,6 +6,7 @@
 <script lang="ts">
   import { shortHash } from "../../format";
   import { shown } from "../../menus/common";
+  import type { HeadInfo } from "../../types";
   import Dialog from "../Dialog.svelte";
   import CommitRef from "./CommitRef.svelte";
   import ParentChoice from "./ParentChoice.svelte";
@@ -16,18 +17,20 @@
     hash: string;
     subject: string;
     parents: string[];
-    /** The branch HEAD is on, or null when HEAD is detached. */
-    branch: string | null;
+    /** HEAD as the menu showed it: the new commit goes there (R39). */
+    head: HeadInfo;
     close: () => void;
   };
 
-  let { repoId, hash, subject, parents, branch, close }: Props = $props();
+  let { repoId, hash, subject, parents, head, close }: Props = $props();
+
+  const branch = $derived(head.branch);
 
   let mainline = $state(1);
   const merge = $derived(parents.length > 1);
 
   function submit() {
-    closeAndRun(close, repoId, { op: "revert", hash, mainline: merge ? mainline : null });
+    closeAndRun(close, repoId, { op: "revert", hash, mainline: merge ? mainline : null, expectHead: head });
   }
 </script>
 

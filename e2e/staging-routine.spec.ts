@@ -222,6 +222,8 @@ test("force_push_needs_the_second_confirmation", async ({ gg }) => {
   await armed(page);
   await confirm.getByRole("button", { name: "Force push" }).click();
   await expect(confirm.getByTestId("dangers")).toContainText("discarding 3 commits there");
+  // Asked again, it says so (R39).
+  await expect(confirm.getByTestId("confirm-again")).toHaveText("This changed since you confirmed it. Here it is as it is now.");
   await armed(page);
   await confirm.getByRole("button", { name: "Force push" }).click();
   await expect(notice(page, "Force-pushed staging to origin/staging.")).toBeVisible();

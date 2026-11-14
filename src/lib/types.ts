@@ -172,7 +172,14 @@ export type CommandRecord = {
 
 export type MergeTarget = { kind: "branch" | "remote" | "commit"; name: string }; // name: branch, "origin/x" or full hash
 
-/** One operation for `run_op`. */
+/** What HEAD points at: the branch (null when detached) and the commit (null before the first). */
+export type HeadInfo = RepoSnapshot["head"];
+
+/**
+ * One operation for `run_op`. A request on the branch checked out carries `expectHead`: HEAD as
+ * the UI showed it when the user asked (R39); the core refuses it, running nothing, if another
+ * branch is checked out by its turn (reset, continue, abort and skip: also if the commit moved).
+ */
 export type OpRequest =
   | { op: "checkout_branch"; branch: string; fastForward: boolean }
   | { op: "checkout_remote"; remoteBranch: string; localName: string }
@@ -180,32 +187,42 @@ export type OpRequest =
   | { op: "create_branch"; name: string; at: string; checkout: boolean }
   | { op: "rename_branch"; branch: string; newName: string }
   | { op: "delete_branch"; branch: string }
-  | { op: "merge"; target: MergeTarget; noFf: boolean; squash: boolean; noCommit: boolean }
-  | { op: "rebase"; onto: string } // local or remote branch name
-  | { op: "cherry_pick"; hash: string; mainline: number | null; noCommit: boolean }
-  | { op: "revert"; hash: string; mainline: number | null }
-  | { op: "reset"; hash: string; mode: "soft" | "mixed" | "hard" }
+  | { op: "merge"; target: MergeTarget; noFf: boolean; squash: boolean; noCommit: boolean; expectHead: HeadInfo }
+  | { op: "rebase"; onto: string; expectHead: HeadInfo } // onto: local or remote branch name
+  | { op: "cherry_pick"; hash: string; mainline: number | null; noCommit: boolean; expectHead: HeadInfo }
+  | { op: "revert"; hash: string; mainline: number | null; expectHead: HeadInfo }
+  | { op: "reset"; hash: string; mode: "soft" | "mixed" | "hard"; expectHead: HeadInfo }
   | { op: "create_tag"; name: string; hash: string; message: string | null }
   | { op: "delete_tag"; name: string; remote: string | null } // remote set = also delete there
   | { op: "push_tag"; name: string; remote: string }
   // to: null = the branch of the same name on the remote (R38); else the branch's upstream there,
   // picked in the Push dialog. An existing upstream is never changed; one is set if there is none.
-  // lease: with force, the token of the force_push danger the user confirmed (R11)
-  | { op: "push"; branch: string; remote: string; to: string | null; force: boolean; lease: string | null }
-  | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase" }
+  // force: with lease, the force_push danger's token once confirmed (R11)
+  | { op: "push"; branch: string; remote: string; to: string | null; force: boolean }
+  | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase"; expectHead: HeadInfo }
   | { op: "fetch_into_local"; remoteBranch: string; localName: string }
   | { op: "delete_remote_branch"; remote: string; branch: string }
   | { op: "stash_save"; message: string | null; includeUntracked: boolean }
   | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string } // stash commit hash
   | { op: "stash_branch"; stash: string; name: string }
-  | { op: "continue"; evenWithMarkers: boolean } // R31: true = go ahead though files still have conflict markers
-  | { op: "abort" }
-  | { op: "skip" }; // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge)
+  | { op: "continue"; evenWithMarkers: boolean; expectHead: HeadInfo } // R31: true = go ahead though files still have conflict markers
+  | { op: "abort"; expectHead: HeadInfo } // always the abort danger first
+  | { op: "skip"; expectHead: HeadInfo }; // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge)
 
-export type DangerKind = "force_push" | "hard_reset" | "delete_unmerged_branch" | "delete_remote_branch" | "drop_stash";
-// token: force_push only, the remote-tracking commit the message was worked out from (null without one);
-// send it back as the push's lease to confirm.
+export type DangerKind =
+  | "force_push"
+  | "hard_reset"
+  | "delete_unmerged_branch"
+  | "delete_remote_branch"
+  | "drop_stash"
+  | "abort";
+/**
+ * token: the state the message was worked out from (R39); confirming sends it back with the
+ * kind (`Confirmed`), and the core asks again if the state has changed since.
+ */
 export type Danger = { kind: DangerKind; message: string; detail: string | null; token: string | null };
+/** A danger the user confirmed, as `run_op`'s `confirmed` lists it. */
+export type Confirmed = { kind: DangerKind; token: string | null };
 export type OpHint =
   | { kind: "push"; branch: string; remote: string } // to the branch of the same name there
   | { kind: "fetch" }

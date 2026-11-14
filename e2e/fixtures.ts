@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test as base, type Page } from "@playwright/test";
+import type { OpOutcome, OpRequest } from "../src/lib/types";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DEVSERVER = path.join(ROOT, "target", "debug", "gg-devserver");
@@ -596,6 +597,27 @@ export async function stopDevserver(server: Devserver): Promise<void> {
 }
 
 /** The close button of the tab named `name` (hidden from assistive technology; see TabBar). */
+type Unheaded<R> = R extends { expectHead: unknown } ? Omit<R, "expectHead"> & Partial<Pick<R, "expectHead">> : R;
+/**
+ * A request as a test writes it: one on the current branch may leave out `expectHead`, which
+ * `runOp` fills in with HEAD as the active tab shows it when the request is sent, as a menu
+ * would (R39).
+ */
+export type Asked = Unheaded<OpRequest>;
+
+/** Runs `request` through the app's own runOp (the module the page loaded), in the active tab. */
+export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
+  return page.evaluate(async (req) => {
+    const ops = await import("/src/lib/state/ops.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+    const id = app.activeRepoId!;
+    const onHead = ["reset", "merge", "rebase", "cherry_pick", "revert", "pull", "continue", "abort", "skip"];
+    const full = onHead.includes(req.op) && !("expectHead" in req) ? { ...req, expectHead: findRepoView(id)!.snapshot.head } : req;
+    return ops.runOp(id, full as OpRequest);
+  }, request);
+}
+
 export function closeButton(page: Page, name: string) {
   return page.getByRole("tab", { name, exact: true }).locator("xpath=..").locator(".close");
 }

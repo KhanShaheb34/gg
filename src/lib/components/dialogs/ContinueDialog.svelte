@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
   import { visibleText } from "../../format";
-  import type { ConflictFile, InProgress } from "../../types";
+  import type { ConflictFile, HeadInfo, InProgress } from "../../types";
   import Dialog from "../Dialog.svelte";
   import { closeAndRun } from "./run";
 
@@ -20,10 +20,12 @@
     fileCount: number;
     /** Go ahead although not every file is resolved. */
     force?: boolean;
+    /** HEAD as the banner showed it: what is continued is the stop there (R39). */
+    head: HeadInfo;
     close: () => void;
   };
 
-  let { repoId, kind, files, fileCount, force = false, close }: Props = $props();
+  let { repoId, kind, files, fileCount, force = false, head, close }: Props = $props();
 
   const then = $derived(
     {
@@ -57,7 +59,7 @@
     title="Continue the {kind} anyway?"
     primary="Continue anyway"
     danger
-    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: true })}
+    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: true, expectHead: head })}
     onCancel={close}
   >
     <p class="dialog-text">Every conflicted file is staged as it is now, then {then}.</p>
@@ -83,7 +85,7 @@
   <Dialog
     title="Continue the {kind}"
     primary={files.length > 0 ? "Stage and continue" : "Continue"}
-    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: false })}
+    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: false, expectHead: head })}
     onCancel={close}
   >
     {#if files.length > 0}

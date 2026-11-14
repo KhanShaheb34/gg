@@ -6,6 +6,7 @@
 <script lang="ts">
   import { visibleText } from "../../format";
   import { shown } from "../../menus/common";
+  import type { HeadInfo } from "../../types";
   import Dialog from "../Dialog.svelte";
   import { closeAndRun } from "./run";
 
@@ -16,10 +17,12 @@
     upstream: string | null;
     /** What the core said. */
     message: string;
+    /** HEAD as shown when the core asked. */
+    head: HeadInfo;
     close: () => void;
   };
 
-  let { repoId, branch, upstream, message, close }: Props = $props();
+  let { repoId, branch, upstream, message, head, close }: Props = $props();
 
   type Mode = "merge" | "rebase";
   let mode: Mode = $state("merge");
@@ -41,7 +44,7 @@
 <Dialog
   title={upstream === null ? `Pull into ${into}` : `Pull ${from} into ${into}`}
   primary="Pull"
-  onSubmit={() => closeAndRun(close, repoId, { op: "pull", branch, mode })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "pull", branch, mode, expectHead: head })}
   onCancel={close}
 >
   <p class="dialog-text">{visibleText(message)}</p>

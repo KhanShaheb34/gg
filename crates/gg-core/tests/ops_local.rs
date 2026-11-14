@@ -4,7 +4,9 @@
 use std::fs;
 use std::time::Duration;
 
-use gg_core::dto::{DangerKind, MergeTargetKind, OpHint, OpRequest, OpStatus, PullMode, ResetMode};
+use gg_core::dto::{
+    Confirmed, DangerKind, MergeTargetKind, OpHint, OpRequest, OpStatus, PullMode, ResetMode,
+};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::{CmdKind, CommandLog, GitRunner};
 use gg_core::ops::{Step, explain};
@@ -872,6 +874,7 @@ fn cherry_pick(hash: &str, mainline: Option<u32>, no_commit: bool) -> OpRequest 
         hash: hash.to_owned(),
         mainline,
         no_commit,
+        expect_head: here(),
     }
 }
 
@@ -879,6 +882,7 @@ fn revert(hash: &str, mainline: Option<u32>) -> OpRequest {
     OpRequest::Revert {
         hash: hash.to_owned(),
         mainline,
+        expect_head: here(),
     }
 }
 
@@ -1366,8 +1370,17 @@ async fn empty_repository() {
     ];
     for request in requests {
         let shown = format!("{request:?}");
-        let confirmed = [DangerKind::HardReset, DangerKind::DeleteUnmergedBranch];
-        match tokio::time::timeout(TIMEOUT, h.m.run_op(id, request, &confirmed)).await {
+        // Sent as the UI would, confirming what the core asks to confirm.
+        let request = h.at_head(id, request).await;
+        let first = tokio::time::timeout(TIMEOUT, h.m.run_op(id, request.clone(), &[])).await;
+        let result = match first {
+            Ok(Ok(out)) if out.status == OpStatus::NeedsConfirmation => {
+                let confirmed: Vec<Confirmed> = out.dangers.iter().map(Confirmed::from).collect();
+                tokio::time::timeout(TIMEOUT, h.m.run_op(id, request, &confirmed)).await
+            }
+            other => other,
+        };
+        match result {
             Err(_) => panic!("{shown}: did not end"),
             Ok(Err(e)) => assert!(!e.message.is_empty(), "{shown}: {e:?}"),
             Ok(Ok(out)) => {
@@ -1514,6 +1527,7 @@ async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
         OpRequest::Pull {
             branch: "main".into(),
             mode: PullMode::Default,
+            expect_head: here(),
         },
         merge(MergeTargetKind::Branch, "side", false, true, false),
         merge_branch("side"),
@@ -1523,10 +1537,12 @@ async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
             hash: side.clone(),
             mainline: None,
             no_commit: false,
+            expect_head: here(),
         },
         OpRequest::Revert {
             hash: side.clone(),
             mainline: None,
+            expect_head: here(),
         },
     ];
     for request in requests {
@@ -1560,11 +1576,9 @@ async fn unexplained_conflicts_do_not_stop_a_confirmed_hard_reset() {
     let reset = OpRequest::Reset {
         hash: head.clone(),
         mode: ResetMode::Hard,
+        expect_head: here(),
     };
-    let out =
-        h.m.run_op(id, reset, &[DangerKind::HardReset])
-            .await
-            .unwrap();
+    let out = h.run_confirmed(id, reset, &[DangerKind::HardReset]).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(repo.git(&["ls-files", "--unmerged"]), "");
     assert_eq!(fs::read(repo.path().join("notes")).unwrap(), b"two\n");
@@ -1633,16 +1647,17 @@ async fn a_branch_deleted_underneath_fails_plainly_and_touches_nothing_else() {
             no_ff: true,
             squash: false,
             no_commit: false,
+            expect_head: here(),
         },
         OpRequest::Rebase {
             onto: "gone".into(),
+            expect_head: here(),
         },
         OpRequest::Push {
             branch: "gone".into(),
             remote: "origin".into(),
             to: None,
             force: false,
-            lease: None,
         },
     ];
     for request in requests {

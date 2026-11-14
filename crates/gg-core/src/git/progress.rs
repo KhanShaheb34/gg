@@ -117,7 +117,7 @@ impl StateFiles {
     }
 
     /// The branch a rebase works on (`head-name`, "refs/heads/<branch>"), if it is one.
-    fn rebase_head_name(&self) -> Option<String> {
+    pub(crate) fn rebase_head_name(&self) -> Option<String> {
         let dir = if self.rebase_merge.is_dir() {
             &self.rebase_merge
         } else {

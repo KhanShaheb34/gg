@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gg_core::Core;
-use gg_core::dto::{MergeTargetKind, OpOutcome, OpRequest, OpStatus, ResetMode};
+use gg_core::dto::{MergeTarget, MergeTargetKind, OpOutcome, OpRequest, OpStatus, ResetMode};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::{CmdKind, CommandLog, GitRunner};
 use gg_core::ops::{Step, explain};
@@ -282,10 +282,12 @@ async fn commit_fields_take_only_full_hashes() {
                 hash: hash.clone(),
                 mainline: None,
                 no_commit: false,
+                expect_head: here(),
             },
             OpRequest::Revert {
                 hash: hash.clone(),
                 mainline: None,
+                expect_head: here(),
             },
             reset(hash, ResetMode::Soft),
             OpRequest::CreateTag {
@@ -567,7 +569,8 @@ async fn close_is_refused_while_an_operation_runs_or_waits() {
 }
 
 /// A title that names the current branch is made in the operation's turn: a merge queued
-/// behind a checkout names the branch the checkout switched to.
+/// behind a checkout names the branch the checkout switched to. It was asked for on main,
+/// though, so it does not run there (R39, I2): nothing is merged, and the notice says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
     let repo = TestRepo::new();
@@ -591,10 +594,33 @@ async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
         })
         .await
         .expect("the checkout runs");
-    let merge = h.run(id, merge_branch("other")).await;
+    // Asked for while main is checked out, as the UI shows it.
+    let asked_on_main = OpRequest::Merge {
+        target: MergeTarget {
+            kind: MergeTargetKind::Branch,
+            name: "other".into(),
+        },
+        no_ff: true,
+        squash: false,
+        no_commit: false,
+        expect_head: head_at(repo.path()),
+    };
+    let feature = repo.git(&["rev-parse", "feature"]);
+    let merge = h.run(id, asked_on_main).await;
     first.await.unwrap().expect("checkout");
     assert_eq!(merge.title, "Merge other into feature", "{merge:?}");
-    assert_eq!(merge.status, OpStatus::Done, "{merge:?}");
+    assert_eq!(merge.status, OpStatus::Failed, "{merge:?}");
+    assert_eq!(
+        merge.message,
+        "Nothing was done: it was asked for on main, but feature is checked out now. Look at \
+         it again, and ask again if it still applies."
+    );
+    assert_eq!((merge.log_from, merge.log_to), (0, 0));
+    assert_eq!(
+        repo.git(&["rev-parse", "feature"]),
+        feature,
+        "nothing merged"
+    );
 }
 
 /// Ruling 7: a `refresh` asked for while an operation runs (the UI sends one when the

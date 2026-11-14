@@ -20,10 +20,10 @@
   import { repeatsMergeName, visibleText } from "../format";
   import { shown } from "../menus/common";
   import { openInEditor } from "../state/editor";
+  import { runOp } from "../state/ops.svelte";
   import { showDialog } from "../state/overlays.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { ConflictFile, InProgress } from "../types";
-  import AbortDialog from "./dialogs/AbortDialog.svelte";
   import ContinueDialog from "./dialogs/ContinueDialog.svelte";
 
   /** `compact`: a panel is open below the graph; the file list shows about three rows. */
@@ -111,8 +111,9 @@
     if (progress !== null && !ready) view.recheck();
   }
 
+  /** The core asks to confirm, saying what goes back (R39): no dialog of its own. */
   function abort() {
-    if (progress) showDialog(AbortDialog, { repoId: view.repoId, kind: progress.kind, branch: snap.head.branch });
+    if (progress) runOp(view.repoId, { op: "abort", expectHead: snap.head }).catch(() => {}); // reported by runOp
   }
 
   function continueOp(force: boolean) {
@@ -123,6 +124,7 @@
       files: progress.files,
       fileCount: progress.fileCount,
       force,
+      head: snap.head,
     });
   }
 

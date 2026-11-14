@@ -4,8 +4,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, type GG, test } from "./fixtures";
-import type { OpOutcome, OpRequest } from "../src/lib/types";
+import { type Asked, expect, type GG, runOp, test } from "./fixtures";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -24,14 +23,6 @@ const continueButton = (page: Page) => banner(page).getByRole("button", { name: 
 /** A red button takes no click just after its dialog opens (see Dialog): wait that out. */
 const armed = (page: Page) => page.waitForTimeout(450);
 
-/** Runs `request` through the app's own runOp, in the active tab. */
-function runOp(page: Page, request: OpRequest): Promise<OpOutcome> {
-  return page.evaluate(async (req) => {
-    const ops = await import("/src/lib/state/ops.svelte.ts");
-    const { app } = await import("/src/lib/state/app.svelte.ts");
-    return ops.runOp(app.activeRepoId!, req);
-  }, request);
-}
 
 /** Runs git in the fixture, where it may fail (a merge that stops on conflicts exits 1). */
 function gitMayFail(gg: GG, ...args: string[]): void {
@@ -47,7 +38,7 @@ function resolve(gg: GG, file: string, content = "resolved\n"): void {
   writeFileSync(path.join(gg.repoPath("conflicts"), file), content);
 }
 
-const MERGE_FEATURE: OpRequest = {
+const MERGE_FEATURE: Asked = {
   op: "merge",
   target: { kind: "branch", name: "feature/x" },
   noFf: true,
@@ -128,12 +119,15 @@ test("abort_returns_to_before", async ({ gg }) => {
   expect((await runOp(page, MERGE_FEATURE)).status).toBe("stopped");
   resolve(gg, "app.txt");
 
+  // The core asks to confirm, saying what goes back (R39).
   await banner(page).getByRole("button", { name: "Abort…" }).click();
   const confirm = page.getByRole("alertdialog");
-  await expect(confirm.getByRole("heading")).toHaveText("Abort the merge?");
-  await expect(confirm).toContainText("main goes back to where it was before the merge");
+  await expect(confirm.getByRole("heading")).toHaveText("Abort the merge");
+  await expect(confirm.getByTestId("dangers")).toContainText(
+    "Aborting the merge puts “main” back as it was before it: the changes made to resolve its conflicts are lost.",
+  );
   await armed(page);
-  await confirm.getByRole("button", { name: "Abort merge" }).click();
+  await confirm.getByRole("button", { name: "Abort", exact: true }).click();
 
   await expect(notice(page, "Aborted the merge: main is back as it was before it.")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);

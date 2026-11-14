@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import { shown } from "../../menus/common";
+  import type { HeadInfo } from "../../types";
   import Dialog from "../Dialog.svelte";
   import { closeAndRun } from "./run";
 
@@ -13,16 +14,18 @@
     onto: string;
     /** The current branch, rebased. */
     branch: string;
+    /** HEAD as the menu showed it: the rebase is of that branch (R39). */
+    head: HeadInfo;
     close: () => void;
   };
 
-  let { repoId, onto, branch, close }: Props = $props();
+  let { repoId, onto, branch, head, close }: Props = $props();
 </script>
 
 <Dialog
   title="Rebase {shown(branch)} onto {shown(onto)}"
   primary="Rebase"
-  onSubmit={() => closeAndRun(close, repoId, { op: "rebase", onto })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "rebase", onto, expectHead: head })}
   onCancel={close}
 >
   <p class="dialog-text">Its own commits are made again on top, with new hashes.</p>

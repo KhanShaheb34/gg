@@ -1,13 +1,15 @@
 //! Which dangers a request carries, given the repository's state: the paths that cannot
 //! run unconfirmed (force push, hard reset, deleting an unmerged branch, deleting a remote
-//! branch, dropping a stash). Checked by the core, in the operation's turn, so the state
-//! looked at is the state the operation runs on.
+//! branch, dropping a stash, aborting what git is stopped in). Checked by the core, in the
+//! operation's turn, so the state looked at is the state the operation runs on. Each danger
+//! carries a token of that state (R39): a confirmation counts only with the same token.
 
-use crate::dto::{Danger, DangerKind, OpRequest, ResetMode};
+use crate::dto::{Danger, DangerKind, InProgressKind, OpRequest, ResetMode};
 use crate::error::Result;
+use crate::git::progress::state_files;
 use crate::git::status::read_status;
 use crate::ops::OpCtx;
-use crate::ops::local::current_branch;
+use crate::ops::local::{current_branch, head_commit, kind_name};
 use crate::ops::network::{push_target, ref_commit};
 use crate::ops::stash;
 
@@ -20,6 +22,7 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
         OpRequest::Reset {
             hash,
             mode: ResetMode::Hard,
+            ..
         } => vec![hard_reset(ctx, hash).await?],
         OpRequest::Push {
             branch,
@@ -32,6 +35,7 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
             vec![remote_branch_deleted(ctx, remote, branch).await?]
         }
         OpRequest::StashDrop { stash } => stash::dropped(ctx, stash).await?,
+        OpRequest::Abort { .. } => aborted(ctx).await?.into_iter().collect(),
         // The others carry none.
         _ => Vec::new(),
     })
@@ -111,7 +115,8 @@ async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>
         kind: DangerKind::DeleteUnmergedBranch,
         message,
         detail: None,
-        token: None,
+        // The tip the count was made from: a branch that grew since is asked about again.
+        token: ref_commit(ctx, &full).await?,
     }))
 }
 
@@ -196,16 +201,19 @@ async fn force_push(
 
 /// `delete_remote_branch`, always: the branch goes for everyone who uses the remote. The
 /// message says how many of its commits (as last fetched) are on no local branch here, and
-/// whether it is the remote's default branch.
+/// whether it is the remote's default branch. Its token is the remote-tracking commit the
+/// count was made from (none if it was never fetched): the delete is a lease on it, so git
+/// refuses it if someone pushed to the branch since the last fetch (I1).
 async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> Result<Danger> {
     let tracking = format!("refs/remotes/{remote}/{branch}");
     let gone = format!(
         "Deleting branch \u{201c}{branch}\u{201d} on {remote} removes it there, for everyone \
          who uses {remote}."
     );
-    let message = if verifies(ctx, &tracking).await? {
+    let token = ref_commit(ctx, &tracking).await?;
+    let message = if let Some(seen) = &token {
         let out = ctx
-            .read(&["rev-list", "--count", &tracking, "--not", "--branches"])
+            .read(&["rev-list", "--count", seen, "--not", "--branches"])
             .await?;
         match out.text().trim().parse::<u64>().unwrap_or(0) {
             0 => format!("{gone} Its commits are all on local branches here."),
@@ -217,7 +225,10 @@ async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> R
             ),
         }
     } else {
-        format!("{gone} It has not been fetched, so its commits are not known here.")
+        format!(
+            "{gone} It has not been fetched, so its commits are not known here; if it is \
+             there, git refuses to delete it until it is fetched."
+        )
     };
     // `<remote>/HEAD`, as last learnt (at clone, or `remote set-head`), names the remote's
     // default branch.
@@ -236,7 +247,7 @@ async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> R
         kind: DangerKind::DeleteRemoteBranch,
         message,
         detail: None,
-        token: None,
+        token,
     })
 }
 
@@ -252,7 +263,8 @@ const MAX_LOST_LISTED: usize = 20;
 
 /// `hard_reset`, always: it discards the uncommitted changes, which the message counts and
 /// the detail lists (MAX_LOST_LISTED files, then how many more); untracked files are kept,
-/// which it says too.
+/// which it says too. Its token is HEAD (branch and commit) and the files that differ from
+/// it: confirmed for another branch, another commit or other changes, it is asked again.
 async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
     let status = read_status(&ctx.runner, &ctx.cwd).await?;
     let to = crate::ops::local::short(hash);
@@ -285,11 +297,70 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
         }
         lines.join("\n")
     });
+    let token = format!("{}\n{:016x}", head_token(ctx).await?, fnv1a(&out.stdout));
     Ok(Danger {
         kind: DangerKind::HardReset,
         message: format!("{lost} {kept}"),
         detail,
-        token: None,
+        token: Some(token),
+    })
+}
+
+/// `abort`, when git is stopped in something: aborting puts back what it changed, and the
+/// changes made to resolve its conflicts with it. Its token is what is stopped and HEAD:
+/// confirmed for one stop, it does not abort another.
+async fn aborted(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
+    let Some(files) = state_files(&ctx.runner, &ctx.cwd).await? else {
+        return Ok(None);
+    };
+    let Some(kind) = files.kind() else {
+        return Ok(None);
+    };
+    let what = kind_name(kind);
+    let branch = current_branch(ctx).await?;
+    let message = match kind {
+        InProgressKind::Rebase => {
+            let who = files.rebase_head_name().map_or_else(
+                || "the branch".to_owned(),
+                |b| format!("\u{201c}{b}\u{201d}"),
+            );
+            format!(
+                "Aborting the rebase puts {who} back as it was before it: the commits it has \
+                 made so far, and the changes made to resolve its conflicts, are lost."
+            )
+        }
+        _ => {
+            let who = branch
+                .as_deref()
+                .map_or_else(|| "HEAD".to_owned(), |b| format!("\u{201c}{b}\u{201d}"));
+            format!(
+                "Aborting the {what} puts {who} back as it was before it: the changes made to \
+                 resolve its conflicts are lost."
+            )
+        }
+    };
+    Ok(Some(Danger {
+        kind: DangerKind::Abort,
+        message,
+        detail: None,
+        token: Some(format!("{what}\n{}", head_token(ctx).await?)),
+    }))
+}
+
+/// HEAD as a token: the branch it is on (empty when detached) and its commit (empty before
+/// the first).
+async fn head_token(ctx: &OpCtx<'_>) -> Result<String> {
+    Ok(format!(
+        "{}\n{}",
+        current_branch(ctx).await?.unwrap_or_default(),
+        head_commit(ctx).await?.unwrap_or_default()
+    ))
+}
+
+/// The 64-bit FNV-1a hash of `bytes`: a short, stable digest for a token.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })
 }
 

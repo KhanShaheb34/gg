@@ -946,7 +946,7 @@ async fn credentials_in_urls_never_reach_the_ui() {
             "run_op",
             json!({"repoId": id, "clientId": "c", "clientSeq": 1, "confirmed": [],
                    "request": {"op": "push", "branch": "main", "remote": "origin",
-                               "to": null, "force": false, "lease": null}}),
+                               "to": null, "force": false}}),
         )
         .await;
     assert_eq!(outcome["status"], "failed", "{outcome}");

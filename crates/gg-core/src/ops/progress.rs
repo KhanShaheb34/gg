@@ -381,6 +381,7 @@ mod tests {
         let pull = |branch: &str| OpRequest::Pull {
             branch: branch.into(),
             mode: crate::dto::PullMode::Default,
+            expect_head: crate::dto::HeadInfo::default(),
         };
         assert!(refused(pull("main")).is_some());
         assert!(refused(pull("other")).is_none(), "only fetches into it");

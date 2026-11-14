@@ -4,8 +4,7 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { closeButton, expect, test } from "./fixtures";
-import type { OpOutcome, OpRequest } from "../src/lib/types";
+import { closeButton, expect, runOp, test } from "./fixtures";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 
@@ -36,14 +35,6 @@ async function itemNames(page: Page): Promise<string[]> {
   return menu(page).getByRole("menuitem").allTextContents().then((all) => all.map((t) => t.trim()));
 }
 
-/** Runs `request` through the app's own runOp (the module the page loaded), in the active tab. */
-function runOp(page: Page, request: OpRequest): Promise<OpOutcome> {
-  return page.evaluate(async (req) => {
-    const ops = await import("/src/lib/state/ops.svelte.ts");
-    const { app } = await import("/src/lib/state/app.svelte.ts");
-    return ops.runOp(app.activeRepoId!, req);
-  }, request);
-}
 
 test("right-clicking a commit selects it and shows the commit actions", async ({ gg }) => {
   const { page } = gg;

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Core;
-use crate::dto::{AppState, DangerKind, OpRequest, Session, ViewOptions};
+use crate::dto::{AppState, Confirmed, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::LogFilter;
 use crate::mask;
@@ -102,7 +102,8 @@ struct CommandLogArgs {
 struct RunOpArgs {
     repo_id: u32,
     request: OpRequest,
-    confirmed: Vec<DangerKind>,
+    /// The dangers the user confirmed, each with its token.
+    confirmed: Vec<Confirmed>,
     /// The page load (or window) that numbers its requests (R28).
     client_id: String,
     /// The UI's number for this request, per repository and client (R28).

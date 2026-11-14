@@ -83,12 +83,8 @@ pub(crate) async fn upstream(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Ups
         .await?;
     Ok(out.text().lines().find_map(|line| {
         let mut parts = line.split('\0');
-        let (name, remote, remote_ref, short) = (
-            parts.next()?,
-            parts.next()?,
-            parts.next()?,
-            parts.next()?,
-        );
+        let (name, remote, remote_ref, short) =
+            (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
         (name == full && !remote.is_empty() && !remote_ref.is_empty()).then(|| Upstream {
             remote: remote.to_owned(),
             remote_ref: remote_ref.to_owned(),
@@ -433,20 +429,47 @@ pub(crate) async fn fetch_into_local(
     }))
 }
 
-/// `push --progress <remote> --delete refs/heads/<branch>` (only once confirmed; see the
-/// `delete_remote_branch` danger). The local branch of that name is left alone.
+/// `push --progress --force-with-lease=refs/heads/<branch>:<lease> <remote> --delete
+/// refs/heads/<branch>` (only once confirmed; see the `delete_remote_branch` danger, whose
+/// token is `lease`): git deletes it only if it is still where it was last fetched (with no
+/// lease: only if it is not there at all), so commits pushed since are never deleted
+/// unseen (I1). The local branch of that name is left alone.
 pub(crate) async fn delete_remote_branch(
     ctx: &OpCtx<'_>,
     remote: &str,
     branch: &str,
+    lease: Option<&str>,
 ) -> Result<Step> {
     let full = format!("refs/heads/{branch}");
-    let args = ["push", "--progress", remote, "--delete", full.as_str()];
+    let lease_arg = format!("--force-with-lease={full}:{}", lease.unwrap_or(""));
+    let args = [
+        "push",
+        "--progress",
+        lease_arg.as_str(),
+        remote,
+        "--delete",
+        full.as_str(),
+    ];
     let out = ctx.git_net(&args).await?;
-    Ok(if out.code == 0 {
-        Step::Done(format!("Deleted branch {branch} on {remote}."))
-    } else {
-        explain(&args, &out)
+    if out.code == 0 {
+        return Ok(Step::Done(format!("Deleted branch {branch} on {remote}.")));
+    }
+    let all = format!("{}\n{}", out.stderr, out.text());
+    let step = explain(&args, &out);
+    if push_rejected(&all) != Some(Rejected::StaleInfo) {
+        return Ok(step);
+    }
+    let Step::Failed { detail, .. } = step else {
+        return Ok(step);
+    };
+    Ok(Step::Failed {
+        message: format!(
+            "Branch \u{201c}{branch}\u{201d} on {remote} has changed since your last fetch, so \
+             it was not deleted (that would have deleted commits you have not seen). Fetch, \
+             look at what is new, then decide again."
+        ),
+        detail,
+        hints: vec![OpHint::Fetch],
     })
 }
 

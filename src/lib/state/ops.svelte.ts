@@ -6,7 +6,7 @@ import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
 import PullDialog from "../components/dialogs/PullDialog.svelte";
 import { api, CoreError } from "../ipc";
 import { shown } from "../menus/common";
-import type { CoreErrorDto, Danger, DangerKind, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
+import type { Confirmed, CoreErrorDto, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 import { app, dismissToast, notify, reportError, showLog, type ToastAction } from "./app.svelte";
 import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
@@ -14,8 +14,9 @@ import { findRepoView } from "./repo.svelte";
 /**
  * Runs `request` on repository `repoId` (queued behind the operations before it, by the
  * core). When the core finds dangers in it, nothing has run yet: the user is shown them and,
- * on confirming, the request is sent again with them confirmed, as often as the core asks
- * (a force push asks again if the remote moved meanwhile); cancelling ends it there. The
+ * on confirming, the request is sent again with them confirmed, each with the token of the
+ * state it was shown (R39), as often as the core asks (it asks again, with the state as it
+ * is then, if anything it was about changed meanwhile); cancelling ends it there. The
  * outcome's snapshot is applied to the repository's view. The notice: `done`, its message
  * with a button per hint; `failed`, its message with git's text folded below, the hints, and
  * a link to its command-log entries; `stopped` (git stopped on conflicts), none: the
@@ -29,7 +30,7 @@ export async function runOp(
   request: OpRequest,
   { ownErrors = [] }: { ownErrors?: CoreErrorDto["code"][] } = {},
 ): Promise<OpOutcome> {
-  let confirmed: DangerKind[] = [];
+  let confirmed: Confirmed[] = [];
   for (;;) {
     let outcome: OpOutcome;
     try {
@@ -43,9 +44,9 @@ export async function runOp(
       report(repoId, outcome);
       return outcome;
     }
-    if (!(await confirm(repoId, outcome))) return outcome;
-    confirmed = [...new Set([...confirmed, ...outcome.dangers.map((d) => d.kind)])];
-    request = withTokens(request, outcome.dangers);
+    const again = confirmed.length > 0;
+    if (!(await confirm(repoId, outcome, again))) return outcome;
+    confirmed = outcome.dangers.map((d) => ({ kind: d.kind, token: d.token }));
   }
 }
 
@@ -60,9 +61,10 @@ export const ops = {
 /**
  * Shows the dangers of `outcome` (on top of any dialog open) and resolves to whether the
  * user went ahead. Only the first answer counts, and it closes this confirmation only. For
- * a repository other than the active tab's, the confirmation names it.
+ * a repository other than the active tab's, the confirmation names it. `again`: the user
+ * confirmed before, and what it is about has changed since: the confirmation says so.
  */
-function confirm(repoId: number, outcome: OpOutcome): Promise<boolean> {
+function confirm(repoId: number, outcome: OpOutcome, again: boolean): Promise<boolean> {
   return new Promise((resolve) => {
     let ended = false;
     const end = (yes: boolean) => {
@@ -76,21 +78,11 @@ function confirm(repoId: number, outcome: OpOutcome): Promise<boolean> {
       title: outcome.title,
       dangers: outcome.dangers,
       repository,
+      again,
       onConfirm: () => end(true),
       onCancel: () => end(false),
     });
   });
-}
-
-/**
- * `request` carrying what the user was shown, where it has a field for it: a force push's
- * lease is the remote commit its danger was worked out from (R11). Other dangers need only
- * their kind confirmed.
- */
-function withTokens(request: OpRequest, dangers: Danger[]): OpRequest {
-  const force = dangers.find((d) => d.kind === "force_push");
-  if (request.op === "push" && force) return { ...request, lease: force.token };
-  return request;
 }
 
 function report(repoId: number, outcome: OpOutcome): void {
@@ -102,7 +94,7 @@ function report(repoId: number, outcome: OpOutcome): void {
   const choose = outcome.hints.find((h) => h.kind === "choose_pull_mode");
   if (outcome.status === "failed" && choose) {
     const upstream = findRepoView(repoId)?.loadedLabel(choose.branch)?.upstream ?? null;
-    showDialog(PullDialog, { repoId, branch: choose.branch, upstream, message: outcome.message });
+    showDialog(PullDialog, { repoId, branch: choose.branch, upstream, message: outcome.message, head: headOf(repoId) });
     return;
   }
   const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint));
@@ -143,24 +135,31 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
   switch (hint.kind) {
     case "push": {
       const { branch, remote } = hint;
-      const push: OpRequest = { op: "push", branch, remote, to: null, force: false, lease: null };
+      const push: OpRequest = { op: "push", branch, remote, to: null, force: false };
       return [{ label: `Push ${shown(branch)} to ${shown(`${remote}/${branch}`)}`, run: () => followUp(repoId, push) }];
     }
     case "fetch":
       return [{ label: "Fetch", run: () => findRepoView(repoId)?.fetch() }];
-    case "pull":
-      return [
-        { label: `Pull ${shown(hint.branch)}`, run: () => followUp(repoId, { op: "pull", branch: hint.branch, mode: "default" }) },
-      ];
+    case "pull": {
+      const { branch } = hint;
+      // HEAD as shown when the button is pressed: the pull names its branch.
+      const pull = (): OpRequest => ({ op: "pull", branch, mode: "default", expectHead: headOf(repoId) });
+      return [{ label: `Pull ${shown(branch)}`, run: () => followUp(repoId, pull()) }];
+    }
     case "force_push": {
       const { branch, remote, to } = hint;
-      const push: OpRequest = { op: "push", branch, remote, to, force: true, lease: null };
+      const push: OpRequest = { op: "push", branch, remote, to, force: true };
       const there = shown(`${remote}/${to ?? branch}`);
       return [{ label: `Force push ${shown(branch)} to ${there}…`, danger: true, run: () => followUp(repoId, push) }];
     }
     case "choose_pull_mode":
       return []; // a dialog asks instead (see report)
     case "skip":
-      return [{ label: "Skip this commit", run: () => followUp(repoId, { op: "skip" }) }];
+      return [{ label: "Skip this commit", run: () => followUp(repoId, { op: "skip", expectHead: headOf(repoId) }) }];
   }
+}
+
+/** HEAD of repository `repoId` as its tab shows it now. */
+function headOf(repoId: number): RepoSnapshot["head"] {
+  return findRepoView(repoId)?.snapshot.head ?? { branch: null, hash: null };
 }

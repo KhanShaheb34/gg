@@ -95,7 +95,6 @@ function run(repoId: number, request: OpRequest): void {
 function pickCommit(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
   const repoId = snap.repoId;
   const { hash, subject, parents } = row;
-  const branch = snap.head.branch;
   switch (id) {
     case "checkout":
       run(repoId, { op: "checkout_commit", hash });
@@ -107,15 +106,15 @@ function pickCommit(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
       show(CreateTagDialog, { repoId, hash, subject });
       return true;
     case "cherry_pick":
-      show(CherryPickDialog, { repoId, hash, subject, parents, branch });
+      show(CherryPickDialog, { repoId, hash, subject, parents, head: snap.head });
       return true;
     case "revert":
-      show(RevertDialog, { repoId, hash, subject, parents, branch });
+      show(RevertDialog, { repoId, hash, subject, parents, head: snap.head });
       return true;
     case "reset.soft":
     case "reset.mixed":
     case "reset.hard":
-      show(ResetDialog, { repoId, hash, subject, branch, mode: id.slice("reset.".length) as "soft" | "mixed" | "hard" });
+      show(ResetDialog, { repoId, hash, subject, head: snap.head, mode: id.slice("reset.".length) as "soft" | "mixed" | "hard" });
       return true;
     default:
       return false;
@@ -176,16 +175,16 @@ function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot): boolean {
       show(DeleteBranchDialog, { repoId, branch, upstream: label.upstream });
       return true;
     case "merge":
-      if (into !== null) show(MergeDialog, { repoId, target: { kind: "branch" as const, name: branch }, into });
+      if (into !== null) show(MergeDialog, { repoId, target: { kind: "branch" as const, name: branch }, into, head: snap.head });
       return true;
     case "rebase":
-      if (into !== null) show(RebaseDialog, { repoId, onto: branch, branch: into });
+      if (into !== null) show(RebaseDialog, { repoId, onto: branch, branch: into, head: snap.head });
       return true;
     case "push":
       show(PushDialog, { repoId, branch, upstream: label.upstream, remotes: snap.remotes });
       return true;
     case "pull":
-      run(repoId, { op: "pull", branch, mode: "default" });
+      run(repoId, { op: "pull", branch, mode: "default", expectHead: snap.head });
       return true;
     default:
       return false;
@@ -205,7 +204,7 @@ function pickRemote(id: string, name: string, snap: RepoSnapshot): boolean {
       return true;
     case "merge":
       if (snap.head.branch !== null) {
-        show(MergeDialog, { repoId, target: { kind: "remote" as const, name }, into: snap.head.branch });
+        show(MergeDialog, { repoId, target: { kind: "remote" as const, name }, into: snap.head.branch, head: snap.head });
       }
       return true;
     case "delete": {

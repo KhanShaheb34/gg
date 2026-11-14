@@ -7,8 +7,8 @@ import type {
   BodyHits,
   CommandRecord,
   CommitDetails,
+  Confirmed,
   CoreErrorDto,
-  DangerKind,
   OpOutcome,
   OpRequest,
   Recent,
@@ -324,7 +324,7 @@ export const api = {
    * in the order it is sent, per repository, so that the core queues them in that order
    * even when two reach it in the other (R28).
    */
-  runOp: (repoId: number, request: OpRequest, confirmed: DangerKind[] = []) =>
+  runOp: (repoId: number, request: OpRequest, confirmed: Confirmed[] = []) =>
     call<OpOutcome>("run_op", { repoId, request, confirmed, clientId, clientSeq: nextClientSeq(repoId) }),
   getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
   setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),

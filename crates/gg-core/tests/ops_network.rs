@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use gg_core::dto::{DangerKind, OpHint, OpOutcome, OpRequest, OpStatus, PullMode};
+use gg_core::dto::{Confirmed, DangerKind, OpHint, OpOutcome, OpRequest, OpStatus, PullMode};
 use gg_core::git::runner::{CmdKind, CommandRecord};
 use gg_core::testutil::TestRepo;
 
@@ -25,7 +25,6 @@ fn push(branch: &str, remote: &str, force: bool) -> OpRequest {
         remote: remote.to_owned(),
         to: None,
         force,
-        lease: None,
     }
 }
 
@@ -36,26 +35,28 @@ fn push_to(branch: &str, remote: &str, to: &str) -> OpRequest {
         remote: remote.to_owned(),
         to: Some(to.to_owned()),
         force: false,
-        lease: None,
     }
 }
 
-/// A force push of `branch` to `remote`, with `lease` (the token of the `force_push` danger
-/// the user confirmed).
-fn force_push(branch: &str, remote: &str, lease: Option<&str>) -> OpRequest {
-    OpRequest::Push {
-        branch: branch.to_owned(),
-        remote: remote.to_owned(),
-        to: None,
-        force: true,
-        lease: lease.map(str::to_owned),
-    }
+/// A force push of `branch` to `remote` (the branch of the same name there).
+fn force_push(branch: &str, remote: &str) -> OpRequest {
+    push(branch, remote, true)
+}
+
+/// A force push confirmed with `token` as the `force_push` danger's (what the UI sends back
+/// once the user confirmed the danger it was shown).
+fn with_lease(token: Option<&str>) -> [Confirmed; 1] {
+    [Confirmed {
+        kind: DangerKind::ForcePush,
+        token: token.map(str::to_owned),
+    }]
 }
 
 fn pull(branch: &str, mode: PullMode) -> OpRequest {
     OpRequest::Pull {
         branch: branch.to_owned(),
         mode,
+        expect_head: here(),
     }
 }
 
@@ -289,17 +290,13 @@ async fn force_push_needs_confirmation_and_uses_lease() {
     // Confirmed without the token: asked again, nothing runs.
     let mark = h.last_log_id();
     let out = h
-        .run_confirmed(id, push("main", "origin", true), &[DangerKind::ForcePush])
+        .run_with(id, push("main", "origin", true), &with_lease(None))
         .await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
     assert!(h.writes_since(mark).is_empty());
 
     let out = h
-        .run_confirmed(
-            id,
-            force_push("main", "origin", Some(&token)),
-            &[DangerKind::ForcePush],
-        )
+        .run_confirmed(id, force_push("main", "origin"), &[DangerKind::ForcePush])
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
@@ -328,13 +325,9 @@ async fn force_with_lease_fails_when_remote_moved_since_fetch() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
 
-    let token = rev(&repo, "refs/remotes/origin/main");
+    // Confirmed as fetched, which is no longer where the remote is.
     let out = h
-        .run_confirmed(
-            id,
-            force_push("main", "origin", Some(&token)),
-            &[DangerKind::ForcePush],
-        )
+        .run_confirmed(id, force_push("main", "origin"), &[DangerKind::ForcePush])
         .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
@@ -358,7 +351,7 @@ async fn confirming_with_an_old_lease_asks_again() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
 
-    let out = h.run(id, force_push("main", "origin", None)).await;
+    let out = h.run(id, force_push("main", "origin")).await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation);
     let seen = out.dangers[0].token.clone().expect("a token");
     assert!(out.dangers[0].message.contains("1 commit "));
@@ -370,11 +363,7 @@ async fn confirming_with_an_old_lease_asks_again() {
 
     let mark = h.last_log_id();
     let out = h
-        .run_confirmed(
-            id,
-            force_push("main", "origin", Some(&seen)),
-            &[DangerKind::ForcePush],
-        )
+        .run_with(id, force_push("main", "origin"), &with_lease(Some(&seen)))
         .await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
     assert!(h.writes_since(mark).is_empty(), "nothing ran");
@@ -391,11 +380,7 @@ async fn confirming_with_an_old_lease_asks_again() {
     );
 
     let out = h
-        .run_confirmed(
-            id,
-            force_push("main", "origin", Some(&unseen)),
-            &[DangerKind::ForcePush],
-        )
+        .run_with(id, force_push("main", "origin"), &with_lease(Some(&unseen)))
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
@@ -411,15 +396,11 @@ async fn force_push_without_a_tracking_branch() {
     let id = h.open(repo.path()).await.repo_id;
 
     repo.git(&["branch", "fresh"]);
-    let out = h.run(id, force_push("fresh", "origin", None)).await;
+    let out = h.run(id, force_push("fresh", "origin")).await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation);
     assert_eq!(out.dangers[0].token, None);
     let out = h
-        .run_confirmed(
-            id,
-            force_push("fresh", "origin", None),
-            &[DangerKind::ForcePush],
-        )
+        .run_confirmed(id, force_push("fresh", "origin"), &[DangerKind::ForcePush])
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(ran(
@@ -443,11 +424,7 @@ async fn force_push_without_a_tracking_branch() {
     let theirs = rev(&origin, "refs/heads/theirs");
     repo.git(&["branch", "theirs"]);
     let out = h
-        .run_confirmed(
-            id,
-            force_push("theirs", "origin", None),
-            &[DangerKind::ForcePush],
-        )
+        .run_confirmed(id, force_push("theirs", "origin"), &[DangerKind::ForcePush])
         .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert_eq!(
@@ -550,7 +527,6 @@ async fn force_push_to_the_upstream_picked_in_the_dialog() {
         remote: "origin".into(),
         to: Some("feature".into()),
         force: true,
-        lease: None,
     };
     let out = h.run(id, force.clone()).await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation);
@@ -558,13 +534,7 @@ async fn force_push_to_the_upstream_picked_in_the_dialog() {
     assert!(out.dangers[0].message.contains("origin/feature"), "{out:?}");
     let token = out.dangers[0].token.clone().unwrap();
     assert_eq!(token, rev(&repo, "refs/remotes/origin/feature"));
-    let mut confirmed = force;
-    if let OpRequest::Push { lease, .. } = &mut confirmed {
-        *lease = Some(token.clone());
-    }
-    let out = h
-        .run_confirmed(id, confirmed, &[DangerKind::ForcePush])
-        .await;
+    let out = h.run_with(id, force, &with_lease(Some(&token))).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     let lease = format!("--force-with-lease=refs/heads/feature:{token}");
     assert!(op_args(&h, &out).iter().any(|a| a.contains(&lease)));
@@ -922,17 +892,27 @@ async fn delete_remote_branch_needs_confirmation() {
         )
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
-    assert!(ran(
-        &h,
-        &out,
-        &[
-            "push",
-            "--progress",
-            "origin",
-            "--delete",
-            "refs/heads/topic"
-        ]
-    ));
+    // A lease on the commit the confirmation counted from (I1).
+    let lease = format!(
+        "--force-with-lease=refs/heads/topic:{}",
+        rev(&repo, "topic")
+    );
+    assert!(
+        ran(
+            &h,
+            &out,
+            &[
+                "push",
+                "--progress",
+                &lease,
+                "origin",
+                "--delete",
+                "refs/heads/topic"
+            ]
+        ),
+        "{:?}",
+        op_args(&h, &out)
+    );
     assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
     assert!(
         !out.snapshot
@@ -941,6 +921,40 @@ async fn delete_remote_branch_needs_confirmation() {
     );
     // The local branch is untouched.
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
+}
+
+/// I1: someone pushed to the branch after the last fetch here. Deleting it, confirmed with
+/// what was fetched, is refused by git (the lease), with a plain line; their commit stays.
+#[tokio::test]
+async fn deleting_a_remote_branch_that_moved_since_the_fetch_is_refused() {
+    let (repo, origin, other) = with_remote();
+    repo.branch("topic");
+    repo.git(&["push", "-q", "origin", "topic"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    other.git(&["fetch", "-q", "origin"]);
+    other.git(&["checkout", "-q", "-b", "topic", "origin/topic"]);
+    let theirs = other.commit("pushed after our fetch");
+    other.git(&["push", "-q", "origin", "topic"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run_confirmed(
+            id,
+            delete_remote_branch("origin", "topic"),
+            &[DangerKind::DeleteRemoteBranch],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        out.message,
+        "Branch \u{201c}topic\u{201d} on origin has changed since your last fetch, so it was \
+         not deleted (that would have deleted commits you have not seen). Fetch, look at what \
+         is new, then decide again."
+    );
+    assert!(out.detail.unwrap_or_default().contains("stale info"));
+    assert_eq!(out.hints, [OpHint::Fetch]);
+    assert_eq!(rev(&origin, "refs/heads/topic"), theirs, "nothing deleted");
 }
 
 #[tokio::test]
@@ -1830,6 +1844,7 @@ async fn pulling_the_branch_being_rebased_here_says_a_rebase_is_in_progress() {
             OpRequest::Pull {
                 branch: "main".into(),
                 mode: PullMode::Default,
+                expect_head: here(),
             },
         )
         .await;

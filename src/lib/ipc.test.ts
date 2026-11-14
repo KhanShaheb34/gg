@@ -75,9 +75,10 @@ describe("HTTP transport", () => {
   });
 
   it("numbers each repository's operations in the order they are sent (R28)", async () => {
+    const ABORT = { op: "abort", expectHead: { branch: "main", hash: null } } as const;
     const fetchMock = respond({ ok: null });
     vi.stubGlobal("fetch", fetchMock);
-    const sent = [api.runOp(71, { op: "abort" }), api.runOp(72, { op: "abort" }), api.runOp(71, { op: "abort" })];
+    const sent = [api.runOp(71, ABORT), api.runOp(72, ABORT), api.runOp(71, ABORT)];
     await Promise.all(sent);
     const seqs = fetchMock.mock.calls.map((c) => {
       const body = JSON.parse((c as unknown as [string, RequestInit])[1].body as string);
@@ -112,13 +113,13 @@ describe("HTTP transport", () => {
     await api.commandLog(4);
     await api.commandLog(0, { repoId: 2, writesOnly: true });
     await api.runOp(2, { op: "create_branch", name: "x", at: "abc", checkout: false });
-    await api.runOp(2, { op: "reset", hash: "abc", mode: "hard" }, ["hard_reset"]);
+    await api.runOp(2, { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null } }, [{ kind: "hard_reset", token: "t" }]);
     await api.runOp(
       2,
-      { op: "push", branch: "b", remote: "origin", to: null, force: true, lease: "abc" },
-      ["force_push"],
+      { op: "push", branch: "b", remote: "origin", to: null, force: true },
+      [{ kind: "force_push", token: "abc" }],
     );
-    await api.runOp(2, { op: "continue", evenWithMarkers: false });
+    await api.runOp(2, { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } });
     await api.getRepoPrefs(2);
     await api.setRepoPrefs(2, { mergeNoFf: false });
     await api.openInEditor(2, null);
@@ -150,18 +151,18 @@ describe("HTTP transport", () => {
       },
       {
         cmd: "run_op",
-        args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard" }, confirmed: ["hard_reset"], clientId: expect.any(String), clientSeq: 2 },
+        args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null } }, confirmed: [{ kind: "hard_reset", token: "t" }], clientId: expect.any(String), clientSeq: 2 },
       },
       {
         cmd: "run_op",
         args: {
           repoId: 2,
-          request: { op: "push", branch: "b", remote: "origin", to: null, force: true, lease: "abc" },
-          confirmed: ["force_push"],
+          request: { op: "push", branch: "b", remote: "origin", to: null, force: true },
+          confirmed: [{ kind: "force_push", token: "abc" }],
           clientId: expect.any(String), clientSeq: 3,
         },
       },
-      { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false }, confirmed: [], clientId: expect.any(String), clientSeq: 4 } },
+      { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } }, confirmed: [], clientId: expect.any(String), clientSeq: 4 } },
       { cmd: "get_repo_prefs", args: { repoId: 2 } },
       { cmd: "set_repo_prefs", args: { repoId: 2, patch: { mergeNoFf: false } } },
       { cmd: "open_in_editor", args: { repoId: 2, path: null } },

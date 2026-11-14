@@ -2,7 +2,9 @@
   The confirmation the core asks for before a dangerous operation runs: what it is (the
   operation's title), and each danger it found, in its words, with what would be lost listed
   below it (commits, files). The red button goes ahead; Cancel, which has the focus, does not.
-  For an operation on a repository other than the active tab's, `repository` names it.
+  For an operation on a repository other than the active tab's, `repository` names it. Asked
+  again (`again`: the user confirmed, but what it is about changed before it ran, R39), it
+  says so above the dangers, which are as they are now.
 -->
 <script lang="ts">
   import { visibleText } from "../../format";
@@ -13,11 +15,12 @@
     title: string;
     dangers: Danger[];
     repository?: string | null;
+    again?: boolean;
     onConfirm: () => void;
     onCancel: () => void;
   };
 
-  let { title, dangers, repository = null, onConfirm, onCancel }: Props = $props();
+  let { title, dangers, repository = null, again = false, onConfirm, onCancel }: Props = $props();
 
   const VERB: Record<DangerKind, string> = {
     force_push: "Force push",
@@ -25,6 +28,7 @@
     delete_unmerged_branch: "Delete branch",
     delete_remote_branch: "Delete remote branch",
     drop_stash: "Drop stash",
+    abort: "Abort",
   };
 
   const primary = $derived(dangers.length === 1 ? VERB[dangers[0].kind] : "Go ahead");
@@ -33,6 +37,9 @@
 <Dialog title={visibleText(title)} {primary} danger onSubmit={onConfirm} {onCancel}>
   {#if repository}
     <p class="repository" data-testid="confirm-repository">In <bdi class="name">{visibleText(repository)}</bdi></p>
+  {/if}
+  {#if again}
+    <p class="again" data-testid="confirm-again">This changed since you confirmed it. Here it is as it is now.</p>
   {/if}
   <ul class="dangers" data-testid="dangers">
     {#each dangers as danger (danger.kind)}
@@ -56,6 +63,12 @@
 </Dialog>
 
 <style>
+  .again {
+    margin-bottom: 10px;
+    color: var(--danger);
+    font-weight: 600;
+  }
+
   .repository {
     margin-bottom: 10px;
     color: var(--text-muted);

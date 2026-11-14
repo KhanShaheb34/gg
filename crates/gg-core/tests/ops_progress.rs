@@ -6,7 +6,8 @@ use std::fs;
 use std::path::Path;
 
 use gg_core::dto::{
-    ConflictState, InProgressKind, MergeTarget, MergeTargetKind, OpHint, OpRequest, OpStatus,
+    ConflictState, DangerKind, InProgressKind, MergeTarget, MergeTargetKind, OpHint, OpRequest,
+    OpStatus,
 };
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::CmdKind;
@@ -44,6 +45,7 @@ fn cherry_pick(hash: &str) -> OpRequest {
         hash: hash.to_owned(),
         mainline: None,
         no_commit: false,
+        expect_head: here(),
     }
 }
 
@@ -51,6 +53,7 @@ fn revert(hash: &str) -> OpRequest {
     OpRequest::Revert {
         hash: hash.to_owned(),
         mainline: None,
+        expect_head: here(),
     }
 }
 
@@ -115,24 +118,10 @@ async fn continue_stages_resolved_files_and_finishes_the_merge() {
 
     // The file deleted on one side is git's to keep one side of: only the user can say it
     // is resolved (they go ahead past the warning).
-    let refused = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let refused = h.run(id, continue_op(false)).await;
     assert_eq!(refused.status, OpStatus::Failed, "{refused:?}");
     assert!(refused.message.contains("gone.txt"), "{}", refused.message);
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: true,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(true)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.title, "Continue the merge");
     assert_eq!(out.snapshot.in_progress, None);
@@ -206,14 +195,7 @@ async fn continue_is_refused_while_a_file_has_conflict_markers() {
     let (h, id) = merge_stopped_on_two_files(&repo).await;
     repo.write("clash.txt", "resolved\n");
 
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message.contains("other.txt") && out.message.contains("conflict markers"),
@@ -263,14 +245,7 @@ async fn continue_is_refused_while_git_kept_one_side_of_a_file() {
         "{files:?}"
     );
 
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message.contains("gone.txt") && out.message.contains("image.bin"),
@@ -279,14 +254,7 @@ async fn continue_is_refused_while_git_kept_one_side_of_a_file() {
     );
     assert!(args_of(&h, &out).is_empty(), "nothing ran");
 
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: true,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(true)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(repo.git(&["show", "HEAD:image.bin"]), "main\0".trim_end());
     assert_eq!(repo.git(&["show", "HEAD:gone.txt"]), "feature");
@@ -301,14 +269,7 @@ async fn continue_even_with_markers_stages_them_as_they_are() {
     repo.write("clash.txt", "resolved\n");
     repo.write("other.txt", "kept\n=======\nas written\n");
 
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: true,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(true)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(!in_git_dir(&repo, "MERGE_HEAD"), "the merge is committed");
     assert_eq!(out.snapshot.in_progress, None);
@@ -342,14 +303,7 @@ async fn continue_commits_a_merge_stopped_without_conflicts() {
     assert_eq!(progress.kind, InProgressKind::Merge);
     assert!(progress.files.is_empty());
 
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(args_of(&h, &out), [vec!["merge", "--continue"]]);
     assert_eq!(out.snapshot.in_progress, None);
@@ -376,14 +330,7 @@ async fn continue_rebase_that_stops_again_returns_stopped() {
     );
 
     repo.write("clash.txt", "resolved one\n");
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
     assert_eq!(out.title, "Continue the rebase");
     assert!(out.message.contains("conflicts"), "{}", out.message);
@@ -406,25 +353,11 @@ async fn continue_rebase_that_stops_again_returns_stopped() {
 
     repo.write("clash.txt", "resolved two\n");
     assert_eq!(
-        h.run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false
-            }
-        )
-        .await
-        .status,
+        h.run(id, continue_op(false)).await.status,
         OpStatus::Stopped
     );
     repo.write("clash.txt", "resolved three\n");
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.snapshot.in_progress, None);
     assert_eq!(current_branch(&repo).as_deref(), Some("feature"));
@@ -443,14 +376,7 @@ async fn continue_finishes_a_cherry_pick_and_a_revert() {
     let out = h.run(id, cherry_pick(&one)).await;
     assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
     repo.write("clash.txt", "picked\n");
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.title, "Continue the cherry-pick");
     assert_eq!(out.snapshot.in_progress, None);
@@ -464,14 +390,7 @@ async fn continue_finishes_a_cherry_pick_and_a_revert() {
     let out = h.run(id, revert(&repo.git(&["rev-parse", "HEAD~1"]))).await;
     assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
     repo.write("clash.txt", "reverted\n");
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.snapshot.in_progress, None);
     assert_eq!(
@@ -492,14 +411,7 @@ async fn continue_that_comes_out_empty_explains() {
     assert_eq!(h.run(id, cherry_pick(&one)).await.status, OpStatus::Stopped);
     repo.write("clash.txt", "main\n");
 
-    let out = h
-        .run(
-            id,
-            OpRequest::Continue {
-                even_with_markers: false,
-            },
-        )
-        .await;
+    let out = h.run(id, continue_op(false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(out.message.contains("empty"), "{}", out.message);
     assert!(out.message.contains("abort"), "{}", out.message);
@@ -514,7 +426,7 @@ async fn continue_that_comes_out_empty_explains() {
     assert_eq!(out.hints, vec![OpHint::Skip]);
 
     let head = repo.git(&["rev-parse", "HEAD"]);
-    let skipped = h.run(id, OpRequest::Skip).await;
+    let skipped = h.run(id, skip()).await;
     assert_eq!(skipped.status, OpStatus::Done, "{skipped:?}");
     assert_eq!(skipped.title, "Skip a commit of the cherry-pick");
     assert!(skipped.snapshot.in_progress.is_none(), "{skipped:?}");
@@ -541,19 +453,26 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
         no_ff: false,
         squash: false,
         no_commit: false,
+        expect_head: here(),
     };
     assert_eq!(h.run(id, merge).await.status, OpStatus::Stopped);
-    let refused = h.run(id, OpRequest::Skip).await;
+    let refused = h.run(id, skip()).await;
     assert_eq!(refused.status, OpStatus::Failed, "{refused:?}");
     assert!(refused.message.contains("merge"), "{}", refused.message);
     assert!(refused.snapshot.in_progress.is_some(), "the merge stays");
-    assert_eq!(h.run(id, OpRequest::Abort).await.status, OpStatus::Done);
+    assert_eq!(
+        h.run_confirmed(id, abort(), &[DangerKind::Abort])
+            .await
+            .status,
+        OpStatus::Done
+    );
 
     let rebase = OpRequest::Rebase {
         onto: "feature".into(),
+        expect_head: here(),
     };
     assert_eq!(h.run(id, rebase).await.status, OpStatus::Stopped);
-    let out = h.run(id, OpRequest::Skip).await;
+    let out = h.run(id, skip()).await;
     assert_ne!(out.status, OpStatus::Failed, "{out:?}");
     assert_eq!(out.title, "Skip a commit of the rebase");
 }
@@ -567,12 +486,7 @@ async fn continue_with_nothing_in_progress_is_nothing_to_do() {
     let mark = h.last_log_id();
     let events = h.changes(id).len();
 
-    for request in [
-        OpRequest::Continue {
-            even_with_markers: false,
-        },
-        OpRequest::Abort,
-    ] {
+    for request in [continue_op(false), abort()] {
         let err =
             h.m.run_op(id, request.clone(), &[])
                 .await
@@ -602,7 +516,12 @@ async fn what_comes_in_is_named_as_the_app_asked_for_it() {
     let merging = out.snapshot.in_progress.expect("merging");
     assert_eq!(merging.incoming.as_deref(), Some("feature-copy"));
     assert_eq!(merging.rebasing, None);
-    assert_eq!(h.run(id, OpRequest::Abort).await.status, OpStatus::Done);
+    assert_eq!(
+        h.run_confirmed(id, abort(), &[DangerKind::Abort])
+            .await
+            .status,
+        OpStatus::Done
+    );
 
     repo.checkout("feature");
     h.m.refresh(id).await.unwrap();
@@ -611,6 +530,7 @@ async fn what_comes_in_is_named_as_the_app_asked_for_it() {
             id,
             OpRequest::Rebase {
                 onto: "main-copy".into(),
+                expect_head: here(),
             },
         )
         .await;
@@ -621,7 +541,12 @@ async fn what_comes_in_is_named_as_the_app_asked_for_it() {
 
     // Once it has ended, what the app asked for is forgotten: started outside the app, the
     // same commit is named by the first ref at it.
-    assert_eq!(h.run(id, OpRequest::Abort).await.status, OpStatus::Done);
+    assert_eq!(
+        h.run_confirmed(id, abort(), &[DangerKind::Abort])
+            .await
+            .status,
+        OpStatus::Done
+    );
     assert!(!repo.git_succeeds(&["rebase", "main-copy"]));
     h.m.refresh(id).await.unwrap();
     tokio::time::timeout(TIMEOUT, h.m.wait_status(id))
@@ -655,7 +580,7 @@ async fn abort_restores_the_branch() {
         let out = h.run(id, request).await;
         assert_eq!(out.status, OpStatus::Stopped, "{kind}: {out:?}");
 
-        let out = h.run(id, OpRequest::Abort).await;
+        let out = h.run_confirmed(id, abort(), &[DangerKind::Abort]).await;
         assert_eq!(out.status, OpStatus::Done, "{kind}: {out:?}");
         assert_eq!(out.title, format!("Abort the {kind}"));
         assert!(out.message.contains(&branch), "{kind}: {}", out.message);
@@ -694,6 +619,7 @@ async fn other_operations_explain_while_in_progress() {
         OpRequest::Pull {
             branch: "main".into(),
             mode: gg_core::dto::PullMode::Default,
+            expect_head: here(),
         },
     ] {
         let out = h.run(id, request.clone()).await;
@@ -892,7 +818,7 @@ async fn editor_runs_detached_without_a_shell() {
 /// on with the rest; abort ends it, and says that git keeps the commit made by hand.
 #[tokio::test]
 async fn a_sequence_committed_by_hand_continues_and_aborts() {
-    for abort in [false, true] {
+    for aborting in [false, true] {
         let repo = TestRepo::new();
         repo.write("clash.txt", "base\n");
         repo.commit_all("base");
@@ -917,21 +843,20 @@ async fn a_sequence_committed_by_hand_continues_and_aborts() {
             Some(InProgressKind::CherryPick)
         );
         let out = h
-            .run(
+            .run_confirmed(
                 id,
-                if abort {
-                    OpRequest::Abort
+                if aborting {
+                    abort()
                 } else {
-                    OpRequest::Continue {
-                        even_with_markers: false,
-                    }
+                    continue_op(false)
                 },
+                &[DangerKind::Abort],
             )
             .await;
         assert_eq!(out.status, OpStatus::Done, "{out:?}");
         assert!(out.snapshot.in_progress.is_none());
         assert!(!in_git_dir(&repo, "sequencer"));
-        if abort {
+        if aborting {
             // git does not rewind over a commit made by hand, and the message says so.
             assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), before);
             assert!(

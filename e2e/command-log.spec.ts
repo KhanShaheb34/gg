@@ -4,8 +4,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, type GG, test } from "./fixtures";
-import type { OpOutcome, OpRequest } from "../src/lib/types";
+import { expect, type GG, runOp, test } from "./fixtures";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -19,14 +18,6 @@ const panel = (page: Page) => page.getByRole("region", { name: "Command log" });
 const toggle = (page: Page) => page.getByRole("button", { name: "Command log", exact: true });
 const entries = (page: Page) => panel(page).getByRole("log");
 
-/** Runs `request` through the app's own runOp, in the active tab. */
-function runOp(page: Page, request: OpRequest): Promise<OpOutcome> {
-  return page.evaluate(async (req) => {
-    const ops = await import("/src/lib/state/ops.svelte.ts");
-    const { app } = await import("/src/lib/state/app.svelte.ts");
-    return ops.runOp(app.activeRepoId!, req);
-  }, request);
-}
 
 /** The merge commit is made by the core's git: give it the fixtures' author. */
 function identity(gg: GG, repo: string) {

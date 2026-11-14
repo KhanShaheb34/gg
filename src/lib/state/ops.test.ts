@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { snap } from "../menus/menuTestData";
-import type { Danger, OpHint, OpOutcome, OpRequest } from "../types";
+import type { Danger, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 
 vi.mock("../ipc", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../ipc")>();
@@ -34,6 +34,7 @@ type ConfirmProps = {
   title: string;
   dangers: Danger[];
   repository: string | null;
+  again: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 };
@@ -63,7 +64,8 @@ function danger(overrides: Partial<Danger> = {}): Danger {
   return { kind: "hard_reset", message: "2 changed files will be lost.", detail: "a.txt\nb.txt", token: null, ...overrides };
 }
 
-const RESET: OpRequest = { op: "reset", hash: "a".repeat(40), mode: "hard" };
+const HEAD = { branch: "main", hash: "c".repeat(40) };
+const RESET: OpRequest = { op: "reset", hash: "a".repeat(40), mode: "hard", expectHead: HEAD };
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /** The props of the dialog opened last (the confirmation). */
@@ -124,7 +126,7 @@ describe("runOp", () => {
     expect(overlays.closeDialog).toHaveBeenCalledWith(41);
     expect(vi.mocked(ipc.api.runOp).mock.calls).toEqual([
       [1, RESET, []],
-      [1, RESET, ["hard_reset"]],
+      [1, RESET, [{ kind: "hard_reset", token: null }]],
     ]);
     expect(app.app.toasts.map((t) => t.message)).toEqual(["Reset main to aaaaaaaa."]);
   });
@@ -173,7 +175,7 @@ describe("runOp", () => {
   });
 
   it("confirms a force push with the remote commit it was shown, and asks again if the remote moved", async () => {
-    const push: OpRequest = { op: "push", branch: "main", remote: "origin", to: null, force: true, lease: null };
+    const push: OpRequest = { op: "push", branch: "main", remote: "origin", to: null, force: true };
     const force = (token: string, message: string) =>
       outcome({ status: "needs_confirmation", dangers: [danger({ kind: "force_push", token, message })] });
     vi.mocked(ipc.api.runOp)
@@ -184,24 +186,35 @@ describe("runOp", () => {
     (await confirmation(1)).onConfirm();
     const again = await confirmation(2);
     expect(again.dangers[0].message).toBe("origin/main has 3 commits main does not.");
+    // Asked again: the confirmation says what it is about changed (R39).
+    expect(lastDialog().again).toBe(true);
     again.onConfirm();
     await run;
     expect(vi.mocked(ipc.api.runOp).mock.calls).toEqual([
       [1, push, []],
-      [1, { ...push, lease: "1111" }, ["force_push"]],
-      [1, { ...push, lease: "2222" }, ["force_push"]],
+      [1, push, [{ kind: "force_push", token: "1111" }]],
+      [1, push, [{ kind: "force_push", token: "2222" }]],
     ]);
   });
 
-  it("keeps the request as it is for dangers without a field to carry their token", async () => {
+  it("confirms every danger with the token it was shown with, the request unchanged (R39)", async () => {
     const drop: OpRequest = { op: "stash_drop", stash: "d".repeat(40) };
     vi.mocked(ipc.api.runOp)
-      .mockResolvedValueOnce(outcome({ status: "needs_confirmation", dangers: [danger({ kind: "drop_stash" })] }))
+      .mockResolvedValueOnce(outcome({ status: "needs_confirmation", dangers: [danger({ kind: "drop_stash", token: "d".repeat(40) })] }))
       .mockResolvedValueOnce(outcome());
     const run = ops.runOp(1, drop);
-    (await confirmation(1)).onConfirm();
+    const first = await confirmation(1);
+    expect(lastDialog().again).toBe(false);
+    first.onConfirm();
     await run;
-    expect(vi.mocked(ipc.api.runOp).mock.calls[1]).toEqual([1, drop, ["drop_stash"]]);
+    expect(vi.mocked(ipc.api.runOp).mock.calls[1]).toEqual([1, drop, [{ kind: "drop_stash", token: "d".repeat(40) }]]);
+  });
+
+  it("a request refused because HEAD moved since it was asked for shows the core's plain line", async () => {
+    const message = "Nothing was done: it was asked for on main, but feature is checked out now. Look at it again, and ask again if it still applies.";
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ status: "failed", message }));
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message })]);
   });
 
   it("shows a failure with git's text folded below and a link to its log entries", async () => {
@@ -308,7 +321,7 @@ describe("hint buttons", () => {
     await push.run();
     expect(ipc.api.runOp).toHaveBeenCalledWith(
       1,
-      { op: "push", branch: "main", remote: "origin", to: null, force: false, lease: null },
+      { op: "push", branch: "main", remote: "origin", to: null, force: false },
       [],
     );
   });
@@ -326,11 +339,11 @@ describe("hint buttons", () => {
     await buttons[0].run();
     expect(view.fetch).toHaveBeenCalled();
     await buttons[1].run();
-    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "pull", branch: "main", mode: "default" }, []);
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "pull", branch: "main", mode: "default", expectHead: (view.snapshot as RepoSnapshot).head }, []);
     await buttons[2].run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,
-      { op: "push", branch: "main", remote: "origin", to: null, force: true, lease: null },
+      { op: "push", branch: "main", remote: "origin", to: null, force: true },
       [],
     );
   });
@@ -341,7 +354,7 @@ describe("hint buttons", () => {
     await force.run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,
-      { op: "push", branch: "feature", remote: "origin", to: "main", force: true, lease: null },
+      { op: "push", branch: "feature", remote: "origin", to: "main", force: true },
       [],
     );
   });
@@ -350,7 +363,7 @@ describe("hint buttons", () => {
     const [skip] = await buttonsFor([{ kind: "skip" }], "failed");
     expect(skip.label).toBe("Skip this commit");
     await skip.run();
-    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "skip" }, []);
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "skip", expectHead: (view.snapshot as RepoSnapshot).head }, []);
   });
 
   it("choose_pull_mode: no notice; the dialog that asks merge or rebase opens", async () => {
@@ -359,11 +372,11 @@ describe("hint buttons", () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
       outcome({ status: "failed", message, hints: [{ kind: "choose_pull_mode", branch: "main" }] }),
     );
-    await ops.runOp(1, { op: "pull", branch: "main", mode: "default" });
+    await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD });
     expect(app.app.toasts).toEqual([]);
     expect(overlays.showDialog).toHaveBeenCalledWith(
       { name: "PullDialog" },
-      { repoId: 1, branch: "main", upstream: "origin/main", message },
+      { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head },
     );
   });
 

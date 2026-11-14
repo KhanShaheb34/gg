@@ -197,7 +197,8 @@ export type OpRequest =
   | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string } // stash commit hash
   | { op: "stash_branch"; stash: string; name: string }
   | { op: "continue"; evenWithMarkers: boolean } // R31: true = go ahead though files still have conflict markers
-  | { op: "abort" };
+  | { op: "abort" }
+  | { op: "skip" }; // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge)
 
 export type DangerKind = "force_push" | "hard_reset" | "delete_unmerged_branch" | "delete_remote_branch" | "drop_stash";
 // token: force_push only, the remote-tracking commit the message was worked out from (null without one);
@@ -208,7 +209,8 @@ export type OpHint =
   | { kind: "fetch" }
   | { kind: "pull"; branch: string }
   | { kind: "force_push"; branch: string; remote: string }
-  | { kind: "choose_pull_mode"; branch: string };
+  | { kind: "choose_pull_mode"; branch: string }
+  | { kind: "skip" }; // continuing came out empty: skip that commit
 
 /** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
 export type OpOutcome = {

@@ -5,7 +5,9 @@
 use std::fs;
 use std::path::Path;
 
-use gg_core::dto::{ConflictState, InProgressKind, MergeTargetKind, OpRequest, OpStatus};
+use gg_core::dto::{
+    ConflictState, InProgressKind, MergeTarget, MergeTargetKind, OpHint, OpRequest, OpStatus,
+};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::CmdKind;
 use gg_core::testutil::TestRepo;
@@ -508,6 +510,52 @@ async fn continue_that_comes_out_empty_explains() {
     let p = out.snapshot.in_progress.expect("still in progress");
     assert_eq!(p.kind, InProgressKind::CherryPick);
     assert!(p.files.is_empty());
+    // The notice offers the way past it: skipping that commit.
+    assert_eq!(out.hints, vec![OpHint::Skip]);
+
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    let skipped = h.run(id, OpRequest::Skip).await;
+    assert_eq!(skipped.status, OpStatus::Done, "{skipped:?}");
+    assert_eq!(skipped.title, "Skip a commit of the cherry-pick");
+    assert!(skipped.snapshot.in_progress.is_none(), "{skipped:?}");
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD"]),
+        head,
+        "nothing was committed"
+    );
+    assert_eq!(read(&repo, "clash.txt"), "main\n");
+}
+
+/// Skip goes on with a rebase past the commit it stopped on; a merge has nothing to skip.
+#[tokio::test]
+async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let merge = OpRequest::Merge {
+        target: MergeTarget {
+            kind: MergeTargetKind::Branch,
+            name: "feature".into(),
+        },
+        no_ff: false,
+        squash: false,
+        no_commit: false,
+    };
+    assert_eq!(h.run(id, merge).await.status, OpStatus::Stopped);
+    let refused = h.run(id, OpRequest::Skip).await;
+    assert_eq!(refused.status, OpStatus::Failed, "{refused:?}");
+    assert!(refused.message.contains("merge"), "{}", refused.message);
+    assert!(refused.snapshot.in_progress.is_some(), "the merge stays");
+    assert_eq!(h.run(id, OpRequest::Abort).await.status, OpStatus::Done);
+
+    let rebase = OpRequest::Rebase {
+        onto: "feature".into(),
+    };
+    assert_eq!(h.run(id, rebase).await.status, OpStatus::Stopped);
+    let out = h.run(id, OpRequest::Skip).await;
+    assert_ne!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(out.title, "Skip a commit of the rebase");
 }
 
 #[tokio::test]

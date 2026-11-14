@@ -159,5 +159,7 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
     }
     case "choose_pull_mode":
       return []; // a dialog asks instead (see report)
+    case "skip":
+      return [{ label: "Skip this commit", run: () => followUp(repoId, { op: "skip" }) }];
   }
 }

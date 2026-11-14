@@ -330,3 +330,22 @@ test("a merge subject of someone's own words is shown, though it holds the branc
   await expect(banner(page).getByRole("heading")).toHaveText("Merging wide into main");
   await expect(banner(page)).toContainText("Bring the wide renames in");
 });
+
+test("a cherry-pick that comes out empty is skipped from its notice", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  const hash = gg.git("conflicts", "rev-parse", "feature/x").trim();
+  const head = gg.git("conflicts", "rev-parse", "HEAD").trim();
+  expect((await runOp(page, { op: "cherry_pick", hash, mainline: null, noCommit: false })).status).toBe("stopped");
+  // Resolved by keeping main's side of both files: nothing of the commit is left.
+  resolve(gg, "app.txt", "app from main\n");
+  resolve(gg, "style.css", "body { color: navy; }\n");
+  const failed = await runOp(page, { op: "continue", evenWithMarkers: false });
+  expect(failed.status).toBe("failed");
+  const alert = page.getByRole("alert").filter({ hasText: "skip this commit, or abort the cherry-pick" });
+  await alert.getByRole("button", { name: "Skip this commit" }).click();
+  await expect(notice(page, "Skipped the commit; the cherry-pick is finished.")).toBeVisible();
+  await expect(banner(page)).toHaveCount(0);
+  expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(head);
+});

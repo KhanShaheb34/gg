@@ -335,6 +335,13 @@ describe("hint buttons", () => {
     );
   });
 
+  it("skip: a continue that came out empty offers to skip that commit", async () => {
+    const [skip] = await buttonsFor([{ kind: "skip" }], "failed");
+    expect(skip.label).toBe("Skip this commit");
+    await skip.run();
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "skip" }, []);
+  });
+
   it("choose_pull_mode: no notice; the dialog that asks merge or rebase opens", async () => {
     view.loadedLabel = vi.fn(() => ({ upstream: "origin/main" }));
     const message = "This branch and its upstream have diverged: choose whether to pull by merging or by rebasing.";

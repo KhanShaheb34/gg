@@ -560,6 +560,10 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             on_progress(|kind| progress::title("Abort", kind)),
             body(move |ctx, _| Box::pin(async move { progress::abort(ctx).await })),
         ),
+        OpRequest::Skip => (
+            on_progress(progress::skip_title),
+            body(move |ctx, _| Box::pin(async move { progress::skip(ctx).await })),
+        ),
     };
     Ok(Prepared { title, body })
 }
@@ -844,7 +848,7 @@ impl RepoManager {
         });
         repo.runner.log().name_op(op_id, &title);
         match (&request, in_progress) {
-            (OpRequest::Continue { .. } | OpRequest::Abort, None) => {
+            (OpRequest::Continue { .. } | OpRequest::Abort | OpRequest::Skip, None) => {
                 return Err(progress::nothing_in_progress());
             }
             (_, Some(kind)) => {

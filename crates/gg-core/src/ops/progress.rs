@@ -7,7 +7,7 @@
 //! else.
 
 use crate::dto::ConflictState;
-use crate::dto::{InProgressKind, OpRequest};
+use crate::dto::{InProgressKind, OpHint, OpRequest};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::progress::{judge, read_kind};
 use crate::git::status::{paths, read_conflicted};
@@ -237,20 +237,79 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
         });
     }
     let all = format!("{}\n{}", out.stderr, out.text());
-    let message = if comes_out_empty(&all) {
-        format!(
-            "With the conflicts resolved this way the commit being applied has no changes \
-             left (they are already here), and git will not continue with an empty commit: \
-             abort the {what}, or skip this commit in a terminal (git says how below)."
-        )
-    } else {
-        recognised(args, &all).unwrap_or_else(|| stopped_without_conflicts(still))
-    };
+    if comes_out_empty(&all) && kind != InProgressKind::Merge {
+        return Ok(Step::Failed {
+            message: format!(
+                "With the conflicts resolved this way the commit being applied has no \
+                 changes left (they are already here), and git will not continue with an \
+                 empty commit: skip this commit, or abort the {what}."
+            ),
+            detail,
+            hints: vec![OpHint::Skip],
+        });
+    }
+    let message = recognised(args, &all).unwrap_or_else(|| stopped_without_conflicts(still));
     Ok(Step::Failed {
         message,
         detail,
         hints: Vec::new(),
     })
+}
+
+/// The title of skip for what is in progress: "Skip a commit of the cherry-pick".
+pub(crate) fn skip_title(kind: Option<InProgressKind>) -> String {
+    match kind {
+        Some(kind) => format!("Skip a commit of the {}", kind_name(kind)),
+        None => "Skip".to_owned(),
+    }
+}
+
+/// Leaves out the commit a rebase, cherry-pick or revert stopped on (`<kind> --skip`, which
+/// puts the files back as they were before it) and goes on with the next: stopped if git
+/// stops on conflicts again, done when nothing is left in progress.
+pub(crate) async fn skip(ctx: &OpCtx<'_>) -> Result<Step> {
+    let Some(kind) = read_kind(&ctx.runner, &ctx.cwd).await? else {
+        return Err(nothing_in_progress());
+    };
+    let what = kind_name(kind);
+    if kind == InProgressKind::Merge {
+        return Ok(Step::Failed {
+            message: "A merge has no commit to skip: continue it, or abort it.".to_owned(),
+            detail: String::new(),
+            hints: Vec::new(),
+        });
+    }
+    let args = [what, "--skip"];
+    let out = ctx.git(&args).await?;
+    let after = read_kind(&ctx.runner, &ctx.cwd).await?;
+    let detail = format!("{}\n{}", out.stderr.trim_end(), out.text())
+        .trim()
+        .to_owned();
+    let Some(still) = after else {
+        if out.code != 0 {
+            return Ok(explain(&args, &out));
+        }
+        return Ok(Step::Done(format!(
+            "Skipped the commit; the {what} is finished."
+        )));
+    };
+    if !read_conflicted(&ctx.runner, &ctx.cwd).await?.is_empty() {
+        return Ok(Step::Stopped {
+            message: stopped_message(still),
+            detail,
+        });
+    }
+    if out.code == 0 {
+        return Ok(Step::DoneWith {
+            message: format!(
+                "Skipped the commit; git stopped again without conflicts. The {what} is still \
+                 in progress: continue it, or abort it."
+            ),
+            detail: Some(detail),
+            hints: Vec::new(),
+        });
+    }
+    Ok(explain(&args, &out))
 }
 
 /// Whether git's output `all` says the commit being continued came out empty.

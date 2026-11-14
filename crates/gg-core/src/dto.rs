@@ -537,6 +537,10 @@ pub enum OpRequest {
         even_with_markers: bool,
     },
     Abort,
+    /// Leaves out the commit a rebase, cherry-pick or revert is stopped on and goes on with
+    /// the next (`<kind> --skip`): the way past a commit that came out empty. A merge has
+    /// none to skip.
+    Skip,
 }
 
 /// A dangerous effect an operation runs only once confirmed. Serialized snake_case.
@@ -587,6 +591,8 @@ pub enum OpHint {
     ChoosePullMode {
         branch: String,
     },
+    /// Skip the commit being applied (`OpRequest::Skip`): continuing it came out empty.
+    Skip,
 }
 
 /// How an operation ended. Serialized snake_case.

@@ -38,6 +38,7 @@
   --accent-hover: #086b5d;
   --accent-contrast: #ffffff;
   --focus-ring: rgba(10, 124, 108, 0.55);
+  --danger-focus-ring: rgba(196, 49, 47, 0.55);
   --danger: #c4312f;
   --warning: #a35f00;
   --success: #2a7d3c;
@@ -98,6 +99,7 @@
   --accent-hover: #5ad8c3;
   --accent-contrast: #062521;
   --focus-ring: rgba(60, 203, 180, 0.6);
+  --danger-focus-ring: rgba(255, 107, 102, 0.6);
   --danger: #ff6b66;
   --warning: #f0b232;
   --success: #5cc97a;
@@ -190,6 +192,12 @@ button {
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
+}
+
+/* A control that destroys something has a ring of the danger colour. */
+.danger:focus-visible,
+.danger :focus-visible {
+  outline-color: var(--danger-focus-ring);
 }
 
 /* A path that keeps its last folders visible when cut: the ellipsis goes at the start.
@@ -500,6 +508,10 @@ textarea.text-input {
 .radio:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+.choice.danger .radio:focus-visible {
+  outline-color: var(--danger-focus-ring);
 }
 
 .dialog-text {

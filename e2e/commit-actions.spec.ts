@@ -351,6 +351,20 @@ test("hard_reset_asks_twice_and_cancel_changes_nothing", async ({ gg }) => {
   const reset = d.getByRole("button", { name: "Reset", exact: true });
   await expect(reset).toHaveClass(/danger/);
   await expect(reset).not.toBeFocused();
+  // Its focus ring is the danger colour, not the accent.
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowDown");
+  const ring = await d.getByRole("radio", { name: /^Hard/ }).evaluate((el) => getComputedStyle(el).outlineColor);
+  const dangerRing = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.color = "var(--danger-focus-ring)";
+    document.body.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  });
+  expect(dangerRing).toMatch(/^rgba?\(/);
+  expect(ring).toBe(dangerRing);
   await armed(page);
   await reset.click();
 

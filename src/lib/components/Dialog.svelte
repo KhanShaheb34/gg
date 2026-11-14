@@ -251,7 +251,7 @@
   }
 
   .primary.danger:focus-visible {
-    outline-color: color-mix(in srgb, var(--danger) 55%, transparent);
+    outline-color: var(--danger-focus-ring);
   }
 
   .primary:disabled {

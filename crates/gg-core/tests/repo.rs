@@ -43,7 +43,15 @@ impl Harness {
     /// Opens `path`, waits for the log to load and the status to be read, and returns the
     /// snapshot.
     async fn open(&self, path: &Path) -> RepoSnapshot {
-        let snap = self.m.open(path).await.expect("open");
+        let snap = self.m.open(path).await.unwrap_or_else(|e| {
+            panic!(
+                "open {} failed: {:?}: {}\n{}",
+                path.display(),
+                e.code,
+                e.message,
+                e.detail.as_deref().unwrap_or("(no detail)")
+            )
+        });
         self.wait(snap.repo_id).await;
         tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
             .await
@@ -1794,7 +1802,7 @@ async fn unreadable_stashes_leave_the_repository_usable_and_are_reported_once() 
         });
     let id = snap.repo_id;
     h.wait(id).await;
-    assert_eq!(hashes(&h.rows(id).await), [c1.clone()]);
+    assert_eq!(hashes(&h.rows(id).await), std::slice::from_ref(&c1));
     let c2 = repo.commit("two");
     h.refresh(id).await;
     h.refresh(id).await;
@@ -1812,4 +1820,46 @@ async fn unreadable_stashes_leave_the_repository_usable_and_are_reported_once() 
         message.starts_with("Could not read the stashes"),
         "{message}"
     );
+}
+
+/// Task 5 review, item 11: several stashes on one base are each a row on that base, newest
+/// first, whether they come with the log or are put in memory.
+#[tokio::test]
+async fn several_stashes_on_one_base() {
+    let repo = TestRepo::new();
+    let c1 = repo.commit("one");
+    let mut stashes = Vec::new();
+    for text in ["first\n", "second\n", "third\n"] {
+        repo.write("file-0.txt", text);
+        stashes.push(repo.stash(&[]));
+    }
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let rows = h.rows(id).await;
+    let expected = [
+        stashes[2].clone(),
+        stashes[1].clone(),
+        stashes[0].clone(),
+        c1.clone(),
+    ];
+    assert_eq!(hashes(&rows), expected);
+    for (n, w) in stashes.iter().rev().enumerate() {
+        let r = row(&rows, w);
+        assert_eq!(r.kind, RowKind::Stash);
+        assert_eq!(r.parents, std::slice::from_ref(&c1));
+        assert_eq!(r.labels, [label(RefKind::Stash, &format!("stash@{{{n}}}"))]);
+    }
+
+    let mark = h.last_command_id();
+    h.view(
+        id,
+        ViewOptions {
+            show_stashes: false,
+            ..all_refs()
+        },
+    )
+    .await;
+    h.view(id, all_refs()).await;
+    assert_eq!(h.log_commands_since(mark), 0, "in memory");
+    assert_eq!(hashes(&h.rows(id).await), expected);
 }

@@ -79,7 +79,16 @@ impl TestRepo {
         repo.git(&["config", "user.name", "Test"]);
         repo.git(&["config", "user.email", "test@example.com"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
+        repo.no_background_maintenance();
         repo
+    }
+
+    /// Stops git from starting `git maintenance` / `gc --auto` in the background after
+    /// commits, fetches and merges: detached processes that outlive the command, compete
+    /// for the repository's locks and slow everything under load.
+    fn no_background_maintenance(&self) {
+        self.git(&["config", "maintenance.auto", "false"]);
+        self.git(&["config", "gc.auto", "0"]);
     }
 
     fn in_new_tempdir(name: &str) -> Self {
@@ -247,6 +256,7 @@ impl TestRepo {
     pub fn clone_as_remote(&self) -> TestRepo {
         let origin = Self::in_new_tempdir("origin.git");
         origin.git(&["init", "-q", "--bare", "-b", "main"]);
+        origin.no_background_maintenance();
         self.git_with(
             &[
                 OsStr::new("remote"),
@@ -280,6 +290,7 @@ impl TestRepo {
         repo.git(&["config", "user.name", "Test"]);
         repo.git(&["config", "user.email", "test@example.com"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
+        repo.no_background_maintenance();
         repo
     }
 

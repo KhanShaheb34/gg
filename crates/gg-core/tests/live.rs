@@ -50,7 +50,15 @@ impl Harness {
     /// Opens `path`, waits for the log to load and the status to be read, and returns the
     /// snapshot.
     async fn open(&self, path: &Path) -> RepoSnapshot {
-        let snap = self.m.open(path).await.expect("open");
+        let snap = self.m.open(path).await.unwrap_or_else(|e| {
+            panic!(
+                "open {} failed: {:?}: {}\n{}",
+                path.display(),
+                e.code,
+                e.message,
+                e.detail.as_deref().unwrap_or("(no detail)")
+            )
+        });
         self.wait(snap.repo_id).await;
         tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
             .await

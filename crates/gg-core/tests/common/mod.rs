@@ -38,7 +38,15 @@ pub async fn harness() -> Harness {
 impl Harness {
     /// Opens `path` and waits for its log and status; returns the snapshot.
     pub async fn open(&self, path: &Path) -> RepoSnapshot {
-        let snap = self.m.open(path).await.expect("open");
+        let snap = self.m.open(path).await.unwrap_or_else(|e| {
+            panic!(
+                "open {} failed: {:?}: {}\n{}",
+                path.display(),
+                e.code,
+                e.message,
+                e.detail.as_deref().unwrap_or("(no detail)")
+            )
+        });
         let id = snap.repo_id;
         tokio::time::timeout(TIMEOUT, self.m.wait_loaded(id))
             .await

@@ -92,6 +92,8 @@ test("continue_disabled_until_resolved_then_finishes", async ({ gg }) => {
 
   // One resolved, outside the app: the banner learns it when the pointer comes to it.
   resolve(gg, "app.txt");
+  await page.clock.fastForward(1100);
+  await page.mouse.move(0, 0); // out of the banner, so coming back to it is an entry
   await banner(page).hover({ position: { x: 20, y: 10 } });
   await expect(banner(page).getByRole("listitem").filter({ hasText: "app.txt" })).toContainText("Resolved");
   await expect(banner(page)).toContainText("1 of 2 files resolved");
@@ -154,6 +156,9 @@ test("rebase_banner_shows_steps_and_continues_through_two_stops", async ({ gg })
   await expect(banner(page)).toContainText("Topic two");
   await expect(fileButton(page, "app.txt")).toBeVisible();
   resolve(gg, "app.txt");
+  // A look the banner took as it appeared (the pointer was there) must not hold this one back.
+  await page.clock.fastForward(1100);
+  await page.mouse.move(0, 0); // out of the banner, so coming back to it is an entry
   await banner(page).hover({ position: { x: 20, y: 10 } });
   await continueButton(page).click();
   await expect(dialog(page)).toContainText("then the rebase goes on with the next commit");
@@ -166,6 +171,7 @@ test("rebase_banner_shows_steps_and_continues_through_two_stops", async ({ gg })
   await expect(continueButton(page)).toBeDisabled();
   resolve(gg, "style.css");
   await page.clock.fastForward(1100);
+  await page.mouse.move(0, 0); // out of the banner, so coming back to it is an entry
   await banner(page).hover({ position: { x: 20, y: 10 } });
   await continueButton(page).click();
   await dialog(page).getByRole("button", { name: "Stage and continue" }).click();

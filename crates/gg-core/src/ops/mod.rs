@@ -842,6 +842,7 @@ impl RepoManager {
             head: head.as_deref().unwrap_or("detached HEAD"),
             in_progress,
         });
+        repo.runner.log().name_op(op_id, &title);
         match (&request, in_progress) {
             (OpRequest::Continue { .. } | OpRequest::Abort, None) => {
                 return Err(progress::nothing_in_progress());

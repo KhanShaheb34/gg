@@ -150,7 +150,10 @@ export type AppState = {
   settingsProblem: string | null; // why settings are not being saved (unreadable file); null when they are
 };
 
-/** One git command the core ran (`command_log`); `args` excludes the injected `-c` options. */
+/**
+ * One git command the core ran (`command_log`); `args` excludes the injected `-c` options. The
+ * userinfo of URLs in `args`, `stdout` and `stderr` is masked by the core ("https://***@host/…").
+ */
 export type CommandRecord = {
   id: number;
   kind: "read" | "write";
@@ -163,6 +166,7 @@ export type CommandRecord = {
   stderr: string;
   repoId: number | null; // the repository it ran for
   opId: number | null; // the operation it was part of
+  opTitle: string | null; // that operation's title, once it has one
 };
 
 export type MergeTarget = { kind: "branch" | "remote" | "commit"; name: string }; // name: branch, "origin/x" or full hash

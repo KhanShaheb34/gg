@@ -1,7 +1,8 @@
 //! `GitRunner` is the only place the app spawns `git`. Every command gets the same
 //! non-interactive environment and leading `-c` options, and lands in the `CommandLog`.
 
-use std::collections::VecDeque;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io;
 use std::path::Path;
@@ -162,6 +163,9 @@ pub struct CommandRecord {
     pub repo_id: Option<u32>,
     /// The operation it was part of, if any.
     pub op_id: Option<u64>,
+    /// That operation's title ("Merge feature/x into main"), once it has one. Filled when
+    /// records are served.
+    pub op_title: Option<String>,
 }
 
 /// The last 500 reads and, separately, the last 500 writes, so that a write stays findable
@@ -174,6 +178,8 @@ struct LogInner {
     next_id: u64,
     reads: VecDeque<CommandRecord>,
     writes: VecDeque<CommandRecord>,
+    /// Operations' titles by id, the newest [`2 * LOG_CAPACITY`](LOG_CAPACITY) of them.
+    op_titles: BTreeMap<u64, String>,
 }
 
 /// Which records [`CommandLog::query`] returns.
@@ -194,6 +200,7 @@ impl CommandLog {
                 next_id: 1,
                 reads: VecDeque::with_capacity(LOG_CAPACITY),
                 writes: VecDeque::with_capacity(LOG_CAPACITY),
+                op_titles: BTreeMap::new(),
             }),
         })
     }
@@ -206,14 +213,26 @@ impl CommandLog {
         })
     }
 
-    /// The records `filter` selects, oldest first.
+    /// Gives operation `op_id` its title, which its records are served with.
+    pub fn name_op(&self, op_id: u64, title: &str) {
+        let mut inner = self.lock();
+        inner.op_titles.insert(op_id, title.to_owned());
+        while inner.op_titles.len() > 2 * LOG_CAPACITY {
+            inner.op_titles.pop_first();
+        }
+    }
+
+    /// The records `filter` selects, oldest first, each with its operation's title.
     pub fn query(&self, filter: LogFilter) -> Vec<CommandRecord> {
         let inner = self.lock();
         let after = |ring: &VecDeque<CommandRecord>| {
             let start = ring.partition_point(|r| r.id <= filter.since_id);
             ring.range(start..)
                 .filter(|r| filter.repo_id.is_none_or(|id| r.repo_id == Some(id)))
-                .cloned()
+                .map(|r| CommandRecord {
+                    op_title: r.op_id.and_then(|id| inner.op_titles.get(&id).cloned()),
+                    ..r.clone()
+                })
                 .collect::<Vec<_>>()
         };
         let writes = after(&inner.writes);
@@ -265,8 +284,11 @@ impl CommandLog {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
         let duration_ms = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
+        // A credential in a remote URL never reaches the log.
         let stdout = match kind {
-            CmdKind::Write => truncate_text(String::from_utf8_lossy(stdout).into_owned()),
+            CmdKind::Write => {
+                truncate_text(mask_userinfo(&String::from_utf8_lossy(stdout)).into_owned())
+            }
             CmdKind::Read => String::new(),
         };
         let mut inner = self.lock();
@@ -283,14 +305,15 @@ impl CommandLog {
             id,
             kind,
             cwd: cwd.to_string_lossy().into_owned(),
-            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            args: args.iter().map(|a| mask_userinfo(a).into_owned()).collect(),
             started_at_ms: now_ms - i64::from(duration_ms),
             duration_ms,
             exit_code,
             stdout,
-            stderr: truncate_text(stderr.to_owned()),
+            stderr: truncate_text(mask_userinfo(stderr).into_owned()),
             repo_id: tags.repo_id,
             op_id: tags.op_id,
+            op_title: None,
         });
     }
 
@@ -344,6 +367,36 @@ impl Tail {
         }
         self.bytes
     }
+}
+
+/// `text` with the userinfo of every URL in it (`https://user:token@host/…`, where a
+/// credential may be) replaced by `***`: `https://***@host/…`. The authority ends at the
+/// first `/`, `?`, `#`, quote, angle bracket, backtick, space or control character; its last
+/// `@` ends the userinfo. `git@host:path` (no scheme) carries no secret and stays.
+pub(crate) fn mask_userinfo(text: &str) -> Cow<'_, str> {
+    if !text.contains("://") {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let start = at + 3;
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let end = rest
+            .find(|c: char| {
+                matches!(c, '/' | '?' | '#' | '\'' | '"' | '<' | '>' | '`')
+                    || c.is_whitespace()
+                    || c.is_control()
+            })
+            .unwrap_or(rest.len());
+        if let Some(last) = rest[..end].rfind('@') {
+            out.push_str("***");
+            rest = &rest[last..];
+        }
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
 }
 
 /// Cuts `s` to at most `MAX_LOG_TEXT` bytes on a char boundary.
@@ -1217,6 +1270,85 @@ mod tests {
         assert_eq!(log.op_writes(8), None);
     }
 
+    /// A credential in a remote URL (`https://user:token@host/…`) never reaches the log:
+    /// the userinfo is masked in the arguments and in the output kept.
+    #[test]
+    fn credentials_in_urls_are_masked_in_the_log() {
+        let log = CommandLog::new();
+        log.push(
+            Tags::default(),
+            CmdKind::Write,
+            Path::new("/r"),
+            &[
+                "push",
+                "https://ada:ghp_SECRET@github.com/o/r.git",
+                "refs/heads/main",
+            ],
+            Instant::now(),
+            128,
+            b"To https://x-access-token:SECRET2@example.com/o/r.git\n",
+            "fatal: unable to access 'https://SECRET3@host:8443/r/': 403\nssh://git@h/x and git@h:y\n",
+        );
+        let r = &log.since(0)[0];
+        assert_eq!(r.args[1], "https://***@github.com/o/r.git");
+        assert_eq!(r.args[2], "refs/heads/main");
+        assert_eq!(r.stdout, "To https://***@example.com/o/r.git\n");
+        assert_eq!(
+            r.stderr,
+            "fatal: unable to access 'https://***@host:8443/r/': 403\nssh://***@h/x and git@h:y\n"
+        );
+        for text in [&r.args[1], &r.stdout, &r.stderr] {
+            assert!(!text.contains("SECRET"), "{text}");
+        }
+    }
+
+    #[test]
+    fn userinfo_is_masked_only_inside_urls() {
+        assert_eq!(mask_userinfo("plain text"), "plain text");
+        assert_eq!(mask_userinfo("a@b.c, x://"), "a@b.c, x://");
+        assert_eq!(
+            mask_userinfo("http://host/p@q"),
+            "http://host/p@q",
+            "@ in the path"
+        );
+        assert_eq!(
+            mask_userinfo("https://u:p@h/ then https://h2/?a=b@c"),
+            "https://***@h/ then https://h2/?a=b@c"
+        );
+        assert_eq!(mask_userinfo("file:///tmp/a@b"), "file:///tmp/a@b");
+        assert_eq!(mask_userinfo("https://a@b@host/x"), "https://***@host/x");
+        assert_eq!(mask_userinfo("é https://ü:ß@h"), "é https://***@h");
+    }
+
+    /// The operation a record belongs to is served with its title, once the operation has
+    /// one (records logged before it was titled get it too).
+    #[test]
+    fn records_carry_their_operations_title() {
+        let log = CommandLog::new();
+        let op = Tags {
+            repo_id: Some(1),
+            op_id: Some(7),
+        };
+        record(&log, op, CmdKind::Read, "rev-parse");
+        log.name_op(7, "Merge feature/x into main");
+        record(&log, op, CmdKind::Write, "merge");
+        record(&log, Tags::default(), CmdKind::Read, "status");
+        let titles: Vec<Option<String>> = log.since(0).into_iter().map(|r| r.op_title).collect();
+        assert_eq!(
+            titles,
+            [
+                Some("Merge feature/x into main".to_owned()),
+                Some("Merge feature/x into main".to_owned()),
+                None
+            ]
+        );
+        // Titles of operations long gone are not kept forever.
+        for id in 100..(100 + 2 * LOG_CAPACITY as u64 + 10) {
+            log.name_op(id, "x");
+        }
+        assert!(log.lock().op_titles.len() <= 2 * LOG_CAPACITY);
+    }
+
     #[test]
     fn runners_tag_what_they_log() {
         let log = CommandLog::new();
@@ -1278,6 +1410,7 @@ mod tests {
             stderr: String::new(),
             repo_id: Some(3),
             op_id: None,
+            op_title: None,
         };
         let json = serde_json::to_value(&rec).unwrap();
         assert_eq!(json["kind"], "write");
@@ -1286,6 +1419,7 @@ mod tests {
         assert_eq!(json["exitCode"], 0);
         assert_eq!(json["repoId"], 3);
         assert_eq!(json["opId"], serde_json::Value::Null);
+        assert_eq!(json["opTitle"], serde_json::Value::Null);
         assert_eq!(serde_json::to_value(CmdKind::Read).unwrap(), "read");
     }
 

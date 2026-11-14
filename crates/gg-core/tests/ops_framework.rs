@@ -361,6 +361,7 @@ async fn writes_survive_many_reads_in_the_log() {
         writes.iter().any(|r| r["id"] == write_id
             && r["kind"] == "write"
             && r["opId"] == out["opId"]
+            && r["opTitle"] == "Create branch kept"
             && r["repoId"] == id),
         "{writes:?}"
     );

@@ -160,6 +160,7 @@ export type AppState = {
   launchPath: string | null;
   homeDir: string | null; // the user's home folder, for showing paths as ~/…
   settingsProblem: string | null; // why settings are not being saved (unreadable file); null when they are
+  gitProblem: string | null; // the git found is too old (before 2.29), said once; null when it is not
 };
 
 /**

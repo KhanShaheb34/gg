@@ -41,6 +41,7 @@ function appState(overrides: Partial<AppState> = {}): AppState {
     launchPath: null,
     homeDir: null,
     settingsProblem: null,
+    gitProblem: null,
     ...overrides,
   };
 }
@@ -251,6 +252,13 @@ describe("init", () => {
     expect(s.app.toasts[0].message).toContain("/gone");
     expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/a", "/r/b"], "/r/a");
     expect(s.app.ready).toBe(true);
+  });
+
+  it("says once, plainly, that the git found is too old (M3)", async () => {
+    const said = "Git 2.29 or newer is needed; found 2.25.1. Some actions and the background fetch fail with it: install a newer git, then restart the app.";
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ gitProblem: said }));
+    await s.init();
+    expect(s.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: said, persistent: true })]);
   });
 
   it("is ready, and shows each tab in the saved order, as its repository opens", async () => {

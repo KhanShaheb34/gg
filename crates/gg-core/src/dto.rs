@@ -734,6 +734,9 @@ pub struct AppState {
     /// Why settings and the session are not being saved (the settings file exists but could
     /// not be read); `None` when they are. `reset_settings` moves the file aside.
     pub settings_problem: Option<String>,
+    /// Why the git found is too old for the app (older than 2.29), said once; `None` when it
+    /// is new enough or could not be read.
+    pub git_problem: Option<String>,
 }
 
 #[cfg(test)]
@@ -758,6 +761,7 @@ mod tests {
             launch_path: Some("/l".into()),
             home_dir: Some("/h".into()),
             settings_problem: None,
+            git_problem: None,
         };
         let v = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -768,7 +772,8 @@ mod tests {
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null},
                 "launchPath": "/l",
                 "homeDir": "/h",
-                "settingsProblem": null
+                "settingsProblem": null,
+                "gitProblem": null
             })
         );
         assert_eq!(serde_json::from_value::<AppState>(v).unwrap(), state);

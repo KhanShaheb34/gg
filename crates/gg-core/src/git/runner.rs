@@ -127,6 +127,39 @@ pub const CANCEL_GRACE: Duration = Duration::from_secs(1);
 /// started that left its process group holds it open).
 const KILLED_GRACE: Duration = Duration::from_secs(2);
 
+/// The oldest git the app works with: `--no-auto-maintenance` (scheduled fetches) came in
+/// 2.29; `--end-of-options` in 2.24.
+pub const MIN_GIT: (u32, u32) = (2, 29);
+
+/// `(major, minor, patch)` of `git --version`'s output ("git version 2.54.0 (Apple
+/// Git-157)", "git version 2.25.1.windows.1"), if it has one.
+pub fn parse_git_version(text: &str) -> Option<(u32, u32, u32)> {
+    let word = text.split_whitespace().nth(2)?;
+    let mut parts = word.split('.').map(|p| {
+        p.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u32>()
+            .ok()
+    });
+    Some((
+        parts.next()??,
+        parts.next()??,
+        parts.next().flatten().unwrap_or(0),
+    ))
+}
+
+/// Why `version` is too old for the app (M3), if it is.
+pub fn version_problem(version: (u32, u32, u32)) -> Option<String> {
+    ((version.0, version.1) < MIN_GIT).then(|| {
+        format!(
+            "Git {}.{} or newer is needed; found {}.{}.{}. Some actions and the background \
+             fetch fail with it: install a newer git, then restart the app.",
+            MIN_GIT.0, MIN_GIT.1, version.0, version.1, version.2
+        )
+    })
+}
+
 /// Said for a command (and an operation) the user stopped.
 pub const STOPPED: &str = "Stopped.";
 
@@ -450,6 +483,8 @@ pub struct GitRunner {
     tags: Tags,
     /// The Stop of the operation this runner runs for, if any (see [`Stop`]).
     stop: Option<Arc<Stop>>,
+    /// The git version found at start, when it could be read.
+    version: Option<(u32, u32, u32)>,
 }
 
 impl GitRunner {
@@ -478,23 +513,26 @@ impl GitRunner {
         login_path: Option<OsString>,
     ) -> Result<Self> {
         if let Some(path) = login_path {
-            let runner = Self {
+            let mut runner = Self {
                 log: log.clone(),
                 path: Some(path),
                 tags: Tags::default(),
                 stop: None,
+                version: None,
             };
-            if runner.check().await.is_ok() {
+            if let Ok(version) = runner.check().await {
+                runner.version = version;
                 return Ok(runner);
             }
         }
-        let runner = Self {
+        let mut runner = Self {
             log,
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
-        runner.check().await?;
+        runner.version = runner.check().await?;
         Ok(runner)
     }
 
@@ -514,12 +552,19 @@ impl GitRunner {
         runner
     }
 
-    /// Runs `git --version`; `GitNotFound` unless it succeeds.
-    async fn check(&self) -> Result<()> {
+    /// Why the git found is too old for the app (M3), if it is; checked once, at start.
+    pub fn version_problem(&self) -> Option<String> {
+        self.version.and_then(version_problem)
+    }
+
+    /// Runs `git --version`; `GitNotFound` unless it succeeds. Its version, if readable.
+    async fn check(&self) -> Result<Option<(u32, u32, u32)>> {
         let mut cmd = self.command(None, &["--version"]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         match cmd.output().await {
-            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) if out.status.success() => {
+                Ok(parse_git_version(&String::from_utf8_lossy(&out.stdout)))
+            }
             Ok(out) => Err(
                 CoreError::new(ErrorCode::GitNotFound, "git --version failed")
                     .with_detail(String::from_utf8_lossy(&out.stderr)),
@@ -1212,6 +1257,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1246,6 +1292,29 @@ mod tests {
         assert_eq!(out.code, 0);
     }
 
+    /// M3: the version is read from `git --version`, and one older than 2.29 is a problem
+    /// said once, plainly.
+    #[test]
+    fn git_versions_are_read_and_old_ones_said() {
+        assert_eq!(
+            parse_git_version("git version 2.54.0 (Apple Git-157)\n"),
+            Some((2, 54, 0))
+        );
+        assert_eq!(
+            parse_git_version("git version 2.25.1.windows.1"),
+            Some((2, 25, 1))
+        );
+        assert_eq!(parse_git_version("git version 2.29"), Some((2, 29, 0)));
+        assert_eq!(parse_git_version("nonsense"), None);
+        assert_eq!(version_problem((2, 29, 0)), None);
+        assert_eq!(version_problem((3, 0, 0)), None);
+        let said = version_problem((2, 25, 1)).unwrap();
+        assert!(
+            said.starts_with("Git 2.29 or newer is needed; found 2.25.1."),
+            "{said}"
+        );
+    }
+
     /// R41: every git child, not only network ones, runs in a session of its own (no
     /// controlling terminal: a hook or a signing program that would wait on `/dev/tty`
     /// fails at once), with stdin null.
@@ -1257,6 +1326,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1301,6 +1371,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: Some(stop.clone()),
+            version: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
@@ -1346,6 +1417,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
         let dir = tempfile::tempdir().unwrap();
         // git prints back a 300 KiB config value given on its command line.
@@ -1377,6 +1449,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
         let cmd = runner.command(None, &["status"]);
         let removed: Vec<_> = cmd
@@ -1428,6 +1501,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
         runner.log_timed_out(
             Path::new("/r"),
@@ -1587,6 +1661,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
         let op = runner.for_repo(4).for_op(9, Stop::new());
         op.log_timed_out(Path::new("/r"), &["push"], CmdKind::Write, Instant::now());
@@ -1603,6 +1678,7 @@ mod tests {
             path: None,
             tags: Tags::default(),
             stop: None,
+            version: None,
         };
         let cmd = runner.command(None, &["rebase"]);
         let env: Vec<(String, String)> = cmd

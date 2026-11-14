@@ -402,6 +402,7 @@ impl Core {
             launch_path: self.launch_path.clone(),
             home_dir: home_dir(),
             settings_problem: self.store.problem(),
+            git_problem: self.repos().ok().and_then(|r| r.git_problem()),
         }
     }
 }

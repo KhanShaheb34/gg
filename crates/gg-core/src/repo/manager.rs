@@ -438,6 +438,11 @@ impl Repo {
 }
 
 impl RepoManager {
+    /// Why the git found is too old for the app (M3), if it is.
+    pub fn git_problem(&self) -> Option<String> {
+        self.runner.version_problem()
+    }
+
     pub fn new(runner: GitRunner, sink: Arc<dyn EventSink>) -> Arc<Self> {
         Arc::new(Self {
             runner,

@@ -195,6 +195,11 @@ impl RepoManager {
 
     async fn fetch_by(self: &Arc<Self>, repo_id: u32, initiator: Initiator) -> Result<()> {
         let repo = self.get(repo_id)?;
+        // A git too old for the scheduled fetch's options would fail every time; the app says
+        // so once (M3) instead.
+        if initiator == Initiator::Schedule && self.git_problem().is_some() {
+            return Ok(());
+        }
         match initiator {
             // A fetch the user asks for waits for the operations asked for before it, and
             // holds up the ones asked for after it: it never runs beside one. It waits on

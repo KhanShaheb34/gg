@@ -42,6 +42,8 @@ repository, and shows git's own message when it fails.
 - Opening a folder of another worktree of a repository already open shows that
   repository's tab, which keeps working in its own worktree; a notice names the folder, and
   the tab's tooltip shows it. (Switching worktrees comes later.)
+- Git 2.29 or newer is needed. With an older one the app says so once, when it starts, and
+  skips the background fetch; some actions fail until git is updated.
 - git is looked up on your login shell's `PATH` (read when the app starts), falling back
   to the app's own `PATH`, so a git your shell finds is the one used even when the app is
   started from the Finder.

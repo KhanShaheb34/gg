@@ -533,20 +533,31 @@
     openMenu({ x: e.clientX, y: e.clientY }, items, onPick, { repoId: view.repoId, alive: stillThere(targets) });
   }
 
-  /** The menu key or Shift+F10: the selected row's menu, below the start of its description. */
+  /**
+   * The menu key or Shift+F10: the selected row's menu, below the start of its description.
+   * The row is the selected commit's, found by its hash (I6, R42): the selection's index can
+   * point at another commit for a moment after the rows change. Its drawn row must show that
+   * commit too; if it does not (yet), no menu opens.
+   */
   async function openMenuForSelection() {
     keyboardMenuAt = performance.now();
-    const index = view.selectedHash === null ? null : view.selectedIndex;
-    const row = index === null ? undefined : view.cache.get(index);
-    if (index === null || !row) return;
-    view.scrollToRow(index);
+    const hash = view.selectedHash;
+    const selected = hash === null ? undefined : view.cache.byHash(hash);
+    if (hash === null || !selected) return;
+    view.scrollToRow(selected.index);
     await tick();
-    let el = scroller.querySelector<HTMLElement>(`[role="row"][data-index="${index}"] .desc`);
-    if (!el) {
+    const drawn = () => {
+      const row = view.cache.byHash(hash);
+      const el = row ? scroller.querySelector<HTMLElement>(`[role="row"][data-index="${row.index}"]`) : null;
+      return row && el && el.dataset.hash === hash ? { row, el: el.querySelector<HTMLElement>(".desc") } : null;
+    };
+    let found = drawn();
+    if (!found?.el) {
       await new Promise((r) => requestAnimationFrame(r));
-      el = scroller.querySelector<HTMLElement>(`[role="row"][data-index="${index}"] .desc`);
+      found = drawn();
     }
-    if (!el) return;
+    if (!found?.el || view.selectedHash !== hash) return;
+    const { row, el } = found;
     const r = el.getBoundingClientRect();
     const { items, onPick, targets } = menuAt(el, row);
     openMenu({ x: r.left + 4, y: r.bottom }, items, onPick, {

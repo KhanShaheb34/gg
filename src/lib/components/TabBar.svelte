@@ -8,6 +8,7 @@
   import { colorIndex, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
   import { activate, app, closeTab, cycleTheme, openViaPicker } from "../state/app.svelte";
+  import { findRepoView } from "../state/repo.svelte";
 
   const trafficLights = isTauri() && isMac();
   const openLabel = `Open repository (${isMac() ? "⌘O" : "Ctrl+O"})`;
@@ -17,6 +18,11 @@
   );
 
   let list: HTMLElement | undefined = $state();
+
+  /** The folder a tab's operations run in (its active worktree), as its tooltip says (R42). */
+  function worktreeOf(tab: { repoId: number; path: string }): string {
+    return findRepoView(tab.repoId)?.snapshot.activeWorktree ?? tab.path;
+  }
 
   async function focusTab(repoId: number) {
     await tick();
@@ -66,7 +72,7 @@
       {#each app.tabs as tab, i (tab.repoId)}
         {@const selected = tab.repoId === app.activeRepoId}
         <!-- The list holds only tabs: the close button is for the mouse (keys: Delete, ⌘W). -->
-        <div class="tab" class:selected role="presentation" title={shortenPath(tab.path, app.homeDir)}>
+        <div class="tab" class:selected role="presentation" title={shortenPath(worktreeOf(tab), app.homeDir)}>
           <button
             class="tab-main"
             role="tab"

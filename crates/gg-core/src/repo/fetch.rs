@@ -3,6 +3,7 @@
 //!
 //! A fetch the user asks for runs like one in a terminal, hooks included, and runs for as long
 //! as git keeps reporting progress. A scheduled fetch happens without anyone asking, so it
+//! runs no auto-maintenance and writes no commit-graph (R42),
 //! never runs the repository's hooks and is killed after a fixed time.
 
 use std::sync::atomic::Ordering;
@@ -30,6 +31,18 @@ pub(super) const FETCH_CAP: Duration = Duration::from_secs(2 * 60 * 60);
 const MAX_DETAIL: usize = 8 * 1024;
 /// Where scheduled fetches look for hooks: nowhere.
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+/// What a scheduled fetch sets besides, so that it writes into the repository nothing but
+/// what it fetched (R18, R42): git's auto-maintenance (gc, repack, a commit-graph), which a
+/// fetch otherwise runs past its thresholds, and the commit-graph `fetch.writeCommitGraph`
+/// asks for. With `--no-auto-maintenance` after `fetch` (git 2.29 and later).
+const NO_MAINTENANCE: [&str; 6] = [
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "fetch.writeCommitGraph=false",
+];
 
 /// What a scheduled fetch holds from before it shows as running until it ends: the lock
 /// that tells others it runs, and its cancel signal, already stored in `scheduled_cancel`.
@@ -315,11 +328,15 @@ impl RepoManager {
         let skip = scheduled
             && (repo.op_waiting.load(Ordering::SeqCst) > 0 || repo.op_queue.try_lock().is_err());
         let no_hooks = format!("core.hooksPath={NULL_DEVICE}");
-        let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 3);
+        let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 10);
         if initiator == Initiator::Schedule {
             args.extend(["-c", no_hooks.as_str()]);
+            args.extend(NO_MAINTENANCE);
         }
         args.extend(FETCH_ARGS);
+        if initiator == Initiator::Schedule {
+            args.push("--no-auto-maintenance");
+        }
         let timeout = Duration::from_millis(self.fetch_timeout_ms.load(Ordering::Relaxed));
         let limit = match initiator {
             Initiator::User => {

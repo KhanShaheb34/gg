@@ -112,6 +112,30 @@ async fn malformed_args_is_bad_request() {
     }
 }
 
+/// I7 / R42: opening a folder of another worktree of a repository already open answers with
+/// that repository, whose tab acts on its own worktree, and says which worktree the folder
+/// was in, so the UI can say which folder the tab acts on. Its own folders say nothing.
+#[tokio::test]
+async fn opening_another_worktree_of_an_open_repository_says_so() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let hotfix = repo.add_worktree("hotfix");
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    assert_eq!(first["openedWorktree"], Value::Null);
+    let main = first["activeWorktree"].clone();
+
+    let again = h.call("open_repo", json!({ "path": hotfix })).await;
+    assert_eq!(again["repoId"], first["repoId"]);
+    assert_eq!(
+        again["activeWorktree"], main,
+        "the tab still acts on its own"
+    );
+    assert_eq!(again["openedWorktree"], json!(path_string(&hotfix)));
+    let same = h.call("open_repo", json!({ "path": repo.path() })).await;
+    assert_eq!(same["openedWorktree"], Value::Null);
+}
+
 #[tokio::test]
 async fn open_then_rows_via_dispatch() {
     let repo = TestRepo::new();

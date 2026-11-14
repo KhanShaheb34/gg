@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppState, CoreErrorDto, RepoSnapshot } from "../types";
+import type { AppState, CoreErrorDto, OpenedRepo } from "../types";
 
 // The core is mocked; CoreError stays the real class so `instanceof` checks behave.
 vi.mock("../ipc", async (importOriginal) => {
@@ -45,8 +45,8 @@ function appState(overrides: Partial<AppState> = {}): AppState {
   };
 }
 
-function snapshot(repoId: number, rootPath: string): RepoSnapshot {
-  return { repoId, rootPath, name: rootPath.split("/").pop() ?? rootPath } as RepoSnapshot;
+function snapshot(repoId: number, rootPath: string): OpenedRepo {
+  return { repoId, rootPath, activeWorktree: rootPath, name: rootPath.split("/").pop() ?? rootPath, openedWorktree: null } as OpenedRepo;
 }
 
 function coreError(code: CoreErrorDto["code"], message: string) {
@@ -56,7 +56,7 @@ function coreError(code: CoreErrorDto["code"], message: string) {
 /** The core: each path below is a repository with a fixed id; anything else is not. */
 const REPOS: Record<string, number> = { "/r/a": 1, "/r/b": 2, "/r/c": 3 };
 
-function fakeOpenRepo(path: string): Promise<RepoSnapshot> {
+function fakeOpenRepo(path: string): Promise<OpenedRepo> {
   const root = path.replace(/\/+$/, "");
   const id = REPOS[root];
   if (id === undefined) return Promise.reject(coreError("not_a_repo", "This folder is not a git repository."));
@@ -92,6 +92,22 @@ describe("openPath", () => {
     await s.openPath("/r/a/");
     expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2]);
     expect(s.app.activeRepoId).toBe(1);
+  });
+
+  it("says which folder the tab works in when the folder opened is another worktree of it (R42)", async () => {
+    await s.openPath("/r/a");
+    expect(s.app.toasts).toEqual([]);
+    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), openedWorktree: "/r/a-hotfix" });
+    await s.openPath("/r/a-hotfix");
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
+    expect(s.app.activeRepoId).toBe(1);
+    expect(s.app.toasts).toEqual([
+      expect.objectContaining({
+        kind: "info",
+        persistent: true,
+        message: "/r/a-hotfix is another worktree of a, which is open already: its tab works in /r/a.",
+      }),
+    ]);
   });
 
   it("shows the core's message as an error toast and adds no tab", async () => {
@@ -238,7 +254,7 @@ describe("init", () => {
   });
 
   it("is ready, and shows each tab in the saved order, as its repository opens", async () => {
-    const answers = new Map<string, (s: RepoSnapshot) => void>();
+    const answers = new Map<string, (s: OpenedRepo) => void>();
     vi.mocked(ipc.api.openRepo).mockImplementation((path) => new Promise((r) => answers.set(path, r)));
     vi.mocked(ipc.api.getAppState).mockResolvedValue(
       appState({ session: { tabs: ["/r/a", "/r/b", "/r/c"], active: "/r/b" } }),
@@ -270,7 +286,7 @@ describe("init", () => {
   });
 
   it("a tab the user picks while others are still opening stays active", async () => {
-    let answerB: (s: RepoSnapshot) => void = () => {};
+    let answerB: (s: OpenedRepo) => void = () => {};
     vi.mocked(ipc.api.openRepo).mockImplementation((path) =>
       path === "/r/b" ? new Promise((r) => (answerB = r)) : fakeOpenRepo(path),
     );
@@ -286,7 +302,7 @@ describe("init", () => {
   });
 
   it("a save while tabs are still reopening keeps the ones not open yet at their places", async () => {
-    let answerB: (s: RepoSnapshot) => void = () => {};
+    let answerB: (s: OpenedRepo) => void = () => {};
     vi.mocked(ipc.api.openRepo).mockImplementation((path) =>
       path === "/r/b" ? new Promise((r) => (answerB = r)) : fakeOpenRepo(path),
     );
@@ -307,7 +323,7 @@ describe("init", () => {
 
   it("a launch path that is also a session tab keeps its place in the session", async () => {
     // The session's own open of /r/b answers last, after the launch path's.
-    const waiting: ((s: RepoSnapshot) => void)[] = [];
+    const waiting: ((s: OpenedRepo) => void)[] = [];
     let bCalls = 0;
     vi.mocked(ipc.api.openRepo).mockImplementation((path) => {
       if (path === "/r/c" || (path === "/r/b" && bCalls++ > 0)) return fakeOpenRepo(path);
@@ -321,7 +337,7 @@ describe("init", () => {
     // A save while /r/a and the session's own /r/b are still opening: /r/b once.
     await s.openPath("/r/c");
     expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/b", "/r/a", "/r/c"], "/r/c");
-    for (const answer of waiting) answer({} as RepoSnapshot);
+    for (const answer of waiting) answer({} as OpenedRepo);
     await done;
     expect(s.app.tabs.map((t) => t.repoId)).toEqual([2, 1, 3]);
     expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/b", "/r/a", "/r/c"], "/r/c");

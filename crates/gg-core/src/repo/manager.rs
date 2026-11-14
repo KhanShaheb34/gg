@@ -481,16 +481,30 @@ impl RepoManager {
     /// row comes in when it is known (see [`RepoManager::wait_status`]).
     /// Opening any path of an already open repository returns that repository's snapshot.
     pub async fn open(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
+        Ok(self.open_as(path, true).await?.0)
+    }
+
+    /// Like [`RepoManager::open`], also saying when `path` is in another worktree of a
+    /// repository already open, whose tab acts on its own worktree (R42; switching worktrees
+    /// is Plan 3): then that other worktree's path comes back too.
+    pub async fn open_noting_worktree(
+        self: &Arc<Self>,
+        path: &Path,
+    ) -> Result<(RepoSnapshot, Option<String>)> {
         self.open_as(path, true).await
     }
 
     /// Like [`RepoManager::open`], for a repository the UI has not asked for yet (opened
     /// ahead at start): its `repo-error`s are held until a later `open` adopts it.
     pub async fn open_in_background(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
-        self.open_as(path, false).await
+        Ok(self.open_as(path, false).await?.0)
     }
 
-    async fn open_as(self: &Arc<Self>, path: &Path, adopt: bool) -> Result<RepoSnapshot> {
+    async fn open_as(
+        self: &Arc<Self>,
+        path: &Path,
+        adopt: bool,
+    ) -> Result<(RepoSnapshot, Option<String>)> {
         if !path.exists() {
             return Err(CoreError::new(
                 ErrorCode::PathMissing,
@@ -507,7 +521,9 @@ impl RepoManager {
                 if adopt {
                     repo.adopt(self.sink.as_ref());
                 }
-                return Ok(repo.snapshot().await);
+                let other =
+                    (location.worktree != repo.worktree).then(|| path_string(&location.worktree));
+                return Ok((repo.snapshot().await, other));
             }
             let waiting = {
                 let mut opening = lock(&self.opening);
@@ -628,7 +644,8 @@ impl RepoManager {
             if adopt {
                 existing.adopt(self.sink.as_ref());
             }
-            return Ok(existing.snapshot().await);
+            let other = (repo.worktree != existing.worktree).then(|| path_string(&repo.worktree));
+            return Ok((existing.snapshot().await, other));
         }
         if slot.current.has_tips() {
             start_load(&repo, &mut slot, &self.sink);
@@ -644,7 +661,7 @@ impl RepoManager {
         self.start_schedule();
         // Status beside the log.
         self.request_status(&repo);
-        Ok(snapshot)
+        Ok((snapshot, None))
     }
 
     /// Sets how long `git status` may take (tests only; normally 60 s).

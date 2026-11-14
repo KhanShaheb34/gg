@@ -204,6 +204,29 @@ test("the keyboard opens, moves through and picks from the menu", async ({ gg })
   await expect(page.getByRole("status").filter({ hasText: "Copied the hash" })).toBeVisible();
 });
 
+test("the keyboard menu acts on the selected commit, by its hash, even when its index points elsewhere (I6, R42)", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  const hash = gg.git("small", "rev-parse", "HEAD~3").trim(); // "Add part 17"
+  await rowOf(page, "Add part 17").click();
+  await grid(page).focus();
+  // The index of the selection drifts for a moment (rows replaced underneath): it points at
+  // another commit while the selection is still this one.
+  await page.evaluate(async () => {
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    const view = findRepoView(app.activeRepoId!)!;
+    view.selectedIndex = view.selectedIndex! + 2;
+  });
+  await page.keyboard.press("Shift+F10");
+  await page.keyboard.type("copy h");
+  await page.keyboard.press("Enter");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(hash);
+});
+
 test("the keyboard reaches label menus: the row's menu lists its labels, remote halves included", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
@@ -572,8 +595,10 @@ test("a menu acts on the label the user right-clicked, even if the row's data mo
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("branchy"));
-  // A drawn row still showing develop's commit and label while the data under it is another
-  // row's (what a frame not yet drawn looks like): its element says what the user sees.
+  // Defensive (R43): the app does not reach this state by itself (a row's element and its
+  // data change together, in one frame); the test fakes it, a drawn row still showing
+  // develop's commit and label while the data under it is another row's, to check that the
+  // guard acts on what the element shows.
   const shown = await page.evaluate(() => {
     const develop = document.querySelector<HTMLElement>('.ref[data-ref="develop"]')!;
     const developRow = develop.closest<HTMLElement>('[role="row"]')!;

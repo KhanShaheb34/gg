@@ -1002,9 +1002,16 @@ async fn scheduled_fetch_never_runs_hooks() {
         [
             "-c".to_owned(),
             format!("core.hooksPath={null}"),
+            "-c".into(),
+            "gc.auto=0".into(),
+            "-c".into(),
+            "maintenance.auto=false".into(),
+            "-c".into(),
+            "fetch.writeCommitGraph=false".into(),
             "fetch".into(),
             "--all".into(),
-            "--prune".into()
+            "--prune".into(),
+            "--no-auto-maintenance".into()
         ]
     );
 
@@ -1013,6 +1020,69 @@ async fn scheduled_fetch_never_runs_hooks() {
     other.git(&["push", "-q", "origin", "main"]);
     h.m.fetch(id).await.unwrap();
     assert!(marker.exists(), "the user's fetch ran the hook");
+}
+
+/// I5 / R42: a scheduled fetch never runs git's auto-maintenance in the user's repository
+/// (no repack, no commit-graph), whatever the repository's config asks for; it writes only
+/// what the fetch brings. Here the config would have a plain `git fetch` repack its two packs
+/// and write a commit-graph.
+#[tokio::test]
+async fn scheduled_fetch_never_runs_auto_maintenance() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&["repack", "-q", "-d"]);
+    repo.commit("two");
+    repo.git(&["repack", "-q", "-d"]);
+    let origin = repo.clone_as_remote();
+    let other = second_clone(&origin);
+    let fetched = other.commit("pushed");
+    other.git(&["push", "-q", "origin", "main"]);
+    for (key, value) in [
+        ("gc.auto", "1"),
+        ("gc.autoPackLimit", "1"),
+        ("gc.autoDetach", "false"),
+        ("gc.writeCommitGraph", "true"),
+        ("maintenance.auto", "true"),
+        ("maintenance.autoDetach", "false"),
+        ("fetch.writeCommitGraph", "true"),
+        ("fetch.unpackLimit", "1000"),
+    ] {
+        repo.git(&["config", key, value]);
+    }
+    let objects = repo.path().join(".git/objects");
+    let packs = || {
+        let mut names: Vec<String> = std::fs::read_dir(objects.join("pack"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".pack"))
+            .collect();
+        names.sort();
+        names
+    };
+    let before = packs();
+    assert_eq!(before.len(), 2, "{before:?}");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    h.m.set_fetch_interval(1);
+    let done = h
+        .changed(id, TIMEOUT, |s| {
+            s.total_rows == 3 && !s.fetch.running && s.fetch.last_at_ms.is_some()
+        })
+        .await;
+    h.m.set_fetch_interval(0);
+    assert!(done.is_some(), "no scheduled fetch");
+    assert!(h.m.find_row(id, &fetched).await.unwrap().is_some());
+    assert_eq!(packs(), before, "no repack");
+    assert!(
+        !objects.join("info/commit-graph").exists(),
+        "no commit-graph"
+    );
+    assert!(
+        !objects.join("info/commit-graphs").exists(),
+        "no commit-graph chain"
+    );
 }
 
 // ---------------------------------------------------------------------------------------

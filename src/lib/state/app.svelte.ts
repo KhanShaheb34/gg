@@ -1,9 +1,10 @@
 // The app shell's state: open tabs, recents, settings and toasts, and the actions on them.
 // Every change to the tabs (or the active one) is saved as the session.
 
+import { shortenPath } from "../format";
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
-import type { CoreErrorDto, Recent, RepoSnapshot, Settings } from "../types";
+import type { CoreErrorDto, OpenedRepo, Recent, RepoSnapshot, Settings } from "../types";
 import { setLogOpen } from "./commandLog.svelte";
 import { disposeRepoView, repoView } from "./repo.svelte";
 
@@ -177,7 +178,23 @@ async function openTab(path: string): Promise<boolean> {
   }
   addTab(snapshot);
   show(snapshot.repoId);
+  noteOtherWorktree(snapshot);
   return true;
+}
+
+/**
+ * Says so when a folder opened is in another worktree of a repository already open: its tab
+ * acts on its own worktree, which the notice names (R42; switching worktrees is Plan 3).
+ */
+function noteOtherWorktree(opened: OpenedRepo): void {
+  if (opened.openedWorktree === null) return;
+  const there = shortenPath(opened.openedWorktree, app.homeDir);
+  const here = shortenPath(opened.activeWorktree, app.homeDir);
+  notify({
+    kind: "info",
+    message: `${there} is another worktree of ${opened.name}, which is open already: its tab works in ${here}.`,
+    persistent: true,
+  });
 }
 
 /** Where each tab reopened from the session goes: its place in the saved order. */
@@ -449,7 +466,9 @@ export async function init(): Promise<void> {
   const launchRank = launch === null ? -1 : tabs.indexOf(launch);
   const openLaunch = async (path: string) => {
     try {
-      opened(path, await api.openRepo(path), launchRank >= 0 ? launchRank : undefined);
+      const snapshot = await api.openRepo(path);
+      opened(path, snapshot, launchRank >= 0 ? launchRank : undefined);
+      noteOtherWorktree(snapshot);
     } catch (e) {
       reportError(e);
     }

@@ -10,6 +10,7 @@ import type {
   Confirmed,
   CoreErrorDto,
   OpOutcome,
+  OpenedRepo,
   OpRequest,
   Recent,
   RepoPrefs,
@@ -286,7 +287,7 @@ export const api = {
   async resetSettings(): Promise<void> {
     await call("reset_settings");
   },
-  openRepo: (path: string) => call<RepoSnapshot>("open_repo", { path }),
+  openRepo: (path: string) => call<OpenedRepo>("open_repo", { path }),
   async closeRepo(repoId: number): Promise<void> {
     await call("close_repo", { repoId });
   },

@@ -110,6 +110,17 @@ struct RunOpArgs {
     client_seq: u64,
 }
 
+/// What `open_repo` returns: the repository's snapshot, and the worktree the path asked for
+/// is in when that is another worktree of a repository already open (its tab acts on its
+/// own, `activeWorktree`; R42).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Opened {
+    #[serde(flatten)]
+    snapshot: crate::dto::RepoSnapshot,
+    opened_worktree: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StopOpArgs {
@@ -207,14 +218,18 @@ impl Core {
             }
             "open_repo" => {
                 let a: OpenRepoArgs = parse(cmd, args)?;
-                let snapshot = self.repos()?.open(&a.path).await?;
+                let (snapshot, opened_worktree) =
+                    self.repos()?.open_noting_worktree(&a.path).await?;
                 // The repository is open either way; a recent that cannot be saved is only
                 // missing from the next start's list.
                 let root = snapshot.root_path.clone();
                 let _ = self
                     .blocking(move |core| core.store.add_recent(Path::new(&root)))
                     .await;
-                to_json(snapshot)
+                to_json(Opened {
+                    snapshot,
+                    opened_worktree,
+                })
             }
             "close_repo" => {
                 let a: RepoArgs = parse(cmd, args)?;

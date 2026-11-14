@@ -62,6 +62,13 @@ export type RepoSnapshot = {
   seq: number;
 };
 
+/**
+ * What `open_repo` answers: the repository's snapshot and, when the folder asked for is in
+ * another worktree of a repository already open, that worktree (its tab acts on its own,
+ * `activeWorktree`; R42).
+ */
+export type OpenedRepo = RepoSnapshot & { openedWorktree: string | null };
+
 /** A merge, rebase, cherry-pick or revert git stopped in. */
 export type InProgress = {
   kind: "merge" | "rebase" | "cherry-pick" | "revert";

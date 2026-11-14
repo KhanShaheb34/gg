@@ -197,6 +197,25 @@ test("selection: click, arrows, page keys, escape", async ({ gg }) => {
   await expect(grid(page).locator('[role="row"][aria-selected="true"]')).toHaveCount(0);
 });
 
+test("a row clicked while it is still loading is selected once it has loaded", async ({ gg }) => {
+  const { page } = gg;
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  await page.route("**/invoke", async (route) => {
+    if ((route.request().postDataJSON() as { cmd: string } | null)?.cmd === "get_rows") await held;
+    return route.continue();
+  });
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  await expect(row(page, 2)).toHaveAttribute("aria-busy", "true");
+  await row(page, 2).click();
+  release();
+  await expect(row(page, 2)).toHaveAttribute("aria-busy", "false");
+  await expect(row(page, 2)).toHaveAttribute("aria-selected", "true");
+  await expect(grid(page)).toBeFocused();
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 test("a commit made outside the app appears at the top without moving the view", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

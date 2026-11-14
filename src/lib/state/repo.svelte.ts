@@ -147,6 +147,8 @@ export class RepoView {
   /** When the fetch asked for here was asked for (ms since the epoch), while it is watched. */
   private fetchAskedAt = 0;
   private fetchWatched = false;
+  /** The row `selectRow` will select once it has loaded; any other selection drops it. */
+  private wanted: number | null = null;
   /** When `recheck` last looked (performance.now()). */
   private lastRecheck = -Infinity;
 
@@ -167,6 +169,7 @@ export class RepoView {
   }
 
   select(hash: string | null, index: number | null = null): void {
+    this.wanted = null;
     this.selectedHash = hash;
     this.selectedIndex = hash === null ? null : index;
   }
@@ -190,13 +193,25 @@ export class RepoView {
     this.onChange?.();
   }
 
-  /** Scrolls row `index` into view and selects it once its row is loaded. */
+  /**
+   * Scrolls row `index` into view and selects it once its row is loaded (a click on a row
+   * still loading, a key, a search hit), unless another row was selected meanwhile.
+   */
   async selectRow(index: number, center = false): Promise<void> {
     this.scrollToRow(index, center);
-    const cache = this.cache;
-    if (!cache.get(index)) await cache.ensure(index, index);
-    if (cache !== this.cache) return;
-    const row = cache.get(index);
+    this.wanted = index;
+    if (!this.cache.get(index)) await this.cache.ensure(index, index);
+    this.selectWanted();
+  }
+
+  /**
+   * Selects the row `selectRow` asked for once it is loaded: when its page arrives, or in the
+   * rows that replaced the ones it was asked in (the first rows of a repository being
+   * opened, say).
+   */
+  private selectWanted(): void {
+    const index = this.wanted;
+    const row = index === null ? undefined : this.cache.get(index);
     if (row) this.select(row.hash, index);
   }
 
@@ -527,6 +542,7 @@ export class RepoView {
     await Promise.all([
       next.ensure(first, first + SWAP_PREFETCH_ROWS),
       selectedIndex === null ? null : next.ensure(selectedIndex, selectedIndex),
+      this.wanted === null ? null : next.ensure(this.wanted, this.wanted),
     ]);
     if (token !== this.applyToken || this.disposed) return;
 
@@ -606,12 +622,15 @@ export class RepoView {
     this.cache = cache;
     if (this.optionsSending === null) this.revealSelection = false;
     if (this.selectedHash !== null) {
-      if (this.selectedHash !== found) this.selectedIndex = null; // selected meanwhile: row unknown
+      // Selected meanwhile (a click while the rows were loading): its row in the new ones, if
+      // loaded there (the rows on screen are), else unknown.
+      if (this.selectedHash !== found) this.selectedIndex = cache.byHash(this.selectedHash)?.index ?? null;
       else if (foundIndex === null) this.select(null);
       else this.selectedIndex = foundIndex;
     }
     this.scrollTop = scrollTop;
     this.pendingScroll = scrollTop;
+    this.selectWanted();
     this.show(s);
   }
 
@@ -654,7 +673,9 @@ export class RepoView {
     const cache = new RowCache((gen, start, count) => this.fetchPage(gen, start, count));
     cache.reset(generation, totalRows);
     cache.onUpdate = () => {
-      if (this.cache === cache) this.onChange?.();
+      if (this.cache !== cache) return;
+      this.selectWanted();
+      this.onChange?.();
     };
     cache.onError = (e) => console.warn(`could not load rows of repository ${this.repoId}`, e);
     return cache;

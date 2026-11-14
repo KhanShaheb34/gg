@@ -306,7 +306,12 @@
 
   function onRowsClick(e: MouseEvent) {
     const hit = rowAt(e);
-    if (!hit) return;
+    if (!hit) {
+      // A row still loading is selected as soon as it has loaded.
+      const index = (e.target as Element | null)?.closest?.<HTMLElement>('[role="row"][data-index]')?.dataset.index;
+      if (index !== undefined) void view.selectRow(Number(index));
+      return;
+    }
     view.select(hit.row.hash, hit.index);
     if (hit.row.kind !== "uncommitted" && (e.target as Element).closest(".hash")) copyHash(hit.row.hash);
   }

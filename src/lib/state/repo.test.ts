@@ -211,6 +211,59 @@ describe("RepoView.applySnapshot", () => {
     expect(view.selectedIndex).toBeNull();
   });
 
+  it("selectRow selects a row once it has loaded, unless another row was selected meanwhile", async () => {
+    const view = await openView(0);
+    const far = 900;
+    const pending = view.selectRow(far);
+    view.select("c3", 3);
+    await pending;
+    expect(view.selectedHash).toBe("c3");
+
+    const loads = view.selectRow(far - 10);
+    await loads;
+    expect(view.selectedHash).toBe(`c${far - 10}`);
+    expect(view.selectedIndex).toBe(far - 10);
+  });
+
+  it("selectRow asked while the rows are replaced selects the row in the new ones", async () => {
+    const view = await openView(0);
+    // The rows change before the page asked for arrives: it comes back stale.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const getRows = vi.mocked(ipc.api.getRows).getMockImplementation()!;
+    vi.mocked(ipc.api.getRows).mockImplementation(async (...args) => {
+      if (args[1] === 1) await held;
+      return getRows(...args);
+    });
+    const pending = view.selectRow(600);
+    core.generation++;
+    core.hashes = core.hashes.map((h) => `${h}'`);
+    release();
+    await pending;
+    await view.applySnapshot(snapshot());
+    await vi.waitFor(() => expect(view.selectedHash).toBe("c600'"));
+    expect(view.selectedIndex).toBe(600);
+  });
+
+  it("a row selected while new rows are loading keeps its place in them (index, not only hash)", async () => {
+    const view = await openView(0);
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const getRows = vi.mocked(ipc.api.getRows).getMockImplementation()!;
+    vi.mocked(ipc.api.getRows).mockImplementation(async (...args) => {
+      if (args[1] === 2) await held;
+      return getRows(...args);
+    });
+    commitOnTop(1);
+    const applied = view.applySnapshot(snapshot());
+    await settle();
+    view.select("c2", 2);
+    release();
+    await applied;
+    expect(view.selectedHash).toBe("c2");
+    expect(view.selectedIndex).toBe(3);
+  });
+
   it("ignores a snapshot older than the one shown", async () => {
     const view = await openView(0);
     commitOnTop(1);

@@ -206,6 +206,57 @@ test("merge_dialog_remembers_no_ff_per_repository", async ({ gg }) => {
   await dialog(page).getByRole("button", { name: "Cancel" }).click();
 });
 
+test("the merge dialog never writes the default over a stored choice it has not read, nor saves a refused merge's", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  const prefs = () =>
+    page.evaluate(async () => {
+      const { api } = await import("/src/lib/ipc.ts");
+      const { app } = await import("/src/lib/state/app.svelte.ts");
+      return (await api.getRepoPrefs(app.activeRepoId!)).mergeNoFf;
+    });
+  await page.evaluate(async () => {
+    const { api } = await import("/src/lib/ipc.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    await api.setRepoPrefs(app.activeRepoId!, { mergeNoFf: false });
+  });
+
+  // The stored choice has not arrived when Enter is pressed: nothing is saved.
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  await page.route("**/invoke", async (route) => {
+    if ((route.request().postDataJSON() as { cmd: string } | null)?.cmd === "get_repo_prefs") await held;
+    return route.continue();
+  });
+  await pickOnLabel(page, "feature/login", "Merge feature/login into main…");
+  await page.keyboard.press("Enter");
+  await expect(notice(page, /Merged feature\/login into main/)).toBeVisible();
+  release();
+  await page.unrouteAll({ behavior: "wait" });
+  expect(await prefs()).toBe(false);
+
+  // Changed by hand, but the core refuses the request before it runs: nothing is saved.
+  await page.route("**/invoke", (route) => {
+    if ((route.request().postDataJSON() as { cmd: string } | null)?.cmd === "run_op") {
+      return route.fulfill({
+        json: { err: { code: "bad_request", message: "That is not a branch.", detail: null } },
+      });
+    }
+    return route.continue();
+  });
+  await pickOnLabel(page, "staging", "Merge staging into main…");
+  const box = dialog(page).getByRole("checkbox", { name: /Create a merge commit even if fast-forward is possible/ });
+  await expect(box).not.toBeChecked();
+  await box.check();
+  await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "That is not a branch." })).toBeVisible();
+  await page.unrouteAll({ behavior: "wait" });
+  expect(await prefs()).toBe(false);
+});
+
 test("delete_unmerged_branch_double_confirm", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

@@ -1,16 +1,16 @@
 <!--
   Merge a branch (local or remote) into the current one, with Git Graph's options: a merge
   commit even when a fast-forward is possible (remembered per repository: read as the dialog
-  opens, saved when it merges), squash (stage the changes as one; no merge commit, so the
+  opens, saved when it merges, if it is known to have changed), squash (stage the changes as one; no merge commit, so the
   first option does not apply), and no commit (stop before committing the merge).
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api } from "../../ipc";
+  import { api, CoreError } from "../../ipc";
   import { shown } from "../../menus/common";
+  import { runOp } from "../../state/ops.svelte";
   import type { MergeTarget } from "../../types";
   import Dialog from "../Dialog.svelte";
-  import { closeAndRun } from "./run";
 
   type Props = {
     repoId: number;
@@ -39,13 +39,26 @@
       .catch(() => {}); // the default stands
   });
 
-  function submit() {
-    if (noFf !== saved) api.setRepoPrefs(repoId, { mergeNoFf: noFf }).catch(() => {});
-    closeAndRun(close, repoId, { op: "merge", target, noFf: noFf && !squash, squash, noCommit });
+  /**
+   * Merges, and remembers the merge-commit choice: only when it is known to differ from the
+   * stored one (the stored one was read, or the box was changed by hand: never the default
+   * over a choice not read yet), and not when the core refused the request before running it.
+   */
+  async function submit() {
+    const choice = noFf;
+    const save = (saved !== null || touched) && choice !== saved;
+    close();
+    try {
+      await runOp(repoId, { op: "merge", target, noFf: choice && !squash, squash, noCommit });
+    } catch (e) {
+      // Reported by runOp.
+      if (e instanceof CoreError && e.code === "bad_request") return;
+    }
+    if (save) api.setRepoPrefs(repoId, { mergeNoFf: choice }).catch(() => {});
   }
 </script>
 
-<Dialog title="Merge {shown(target.name)} into {shown(into)}" primary="Merge" onSubmit={submit} onCancel={close}>
+<Dialog title="Merge {shown(target.name)} into {shown(into)}" primary="Merge" onSubmit={() => void submit()} onCancel={close}>
   <label class="check-row first">
     <input
       class="checkbox"

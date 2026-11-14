@@ -346,3 +346,80 @@ for (const theme of ["light", "dark"] as const) {
     await shot("notice-done");
   });
 }
+
+// The dialogs of commit and tag actions (Task 7).
+for (const theme of ["light", "dark"] as const) {
+  test(`commit and tag dialogs, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("branchy"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    const dialog = page.locator('[role="dialog"], [role="alertdialog"]');
+    const shot = async (name: string) => {
+      await park(page);
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+    };
+    const pick = async (subject: string, name: string, parent?: RegExp) => {
+      // Scrolled to where the row is (the details panel takes the bottom of the window).
+      const row = grid.locator('[role="row"]', { hasText: subject }).first();
+      for (let top = 0; top < 60 * 26 && !(await row.isVisible()); top += 150) {
+        await grid.evaluate((el, t) => (el.scrollTop = t), top);
+        await page.waitForTimeout(60);
+      }
+      await row.locator(".subject").click({ button: "right" });
+      if (parent) await page.getByRole("menuitem", { name: parent }).hover();
+      await page.getByRole("menuitem", { name, exact: true }).click();
+      await expect(dialog).toBeVisible();
+    };
+
+    await pick("Plugin sandboxing", "Create branch here…");
+    await page.keyboard.type("feature/sandbox");
+    await shot("dialog-create-branch");
+
+    await pick("Plugin sandboxing", "Create branch here…");
+    await page.keyboard.type("feature/sand box");
+    await shot("dialog-create-branch-invalid");
+
+    // A name the core refuses: the tag exists.
+    await pick("Plugin sandboxing", "Create tag here…");
+    await page.keyboard.type("v1.0");
+    await page.keyboard.press("Enter");
+    await expect(dialog.getByText("already exists")).toBeVisible();
+    await shot("dialog-create-tag-taken");
+
+    await pick("Plugin sandboxing", "Create tag here…");
+    await page.keyboard.type("v1.1-beta");
+    await dialog.getByRole("textbox", { name: "Message" }).fill("First beta of 1.1\n\nPlugin sandboxing lands.");
+    await shot("dialog-create-tag");
+
+    await pick("Merge branch 'release/1.0'", "Cherry-pick…");
+    await expect(dialog.locator(".choice").nth(1)).toContainText("Bump version to 1.0.0");
+    await shot("dialog-cherry-pick-merge");
+
+    await pick("Theme tokens", "Cherry-pick…");
+    await shot("dialog-cherry-pick");
+
+    await pick("Fix flaky test", "Revert…");
+    await shot("dialog-revert");
+
+    await pick("Update licence year", "Hard: discard all changes", /^Reset main to here$/);
+    await shot("dialog-reset-hard");
+
+    await pick("Update licence year", "Mixed: keep changes, unstaged", /^Reset main to here$/);
+    await shot("dialog-reset");
+
+    await grid.evaluate((el) => (el.scrollTop = 0));
+    await grid.locator('[data-ref="v1.0"]').first().click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Delete…" }).click();
+    await shot("dialog-delete-tag");
+
+    await grid.locator('[data-ref="v1.0"]').first().click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Push…" }).click();
+    await shot("dialog-push-tag");
+  });
+}

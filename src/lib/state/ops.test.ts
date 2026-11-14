@@ -359,11 +359,47 @@ describe("hint buttons", () => {
     );
   });
 
-  it("skip: a continue that came out empty offers to skip that commit", async () => {
-    const [skip] = await buttonsFor([{ kind: "skip" }], "failed");
+  it("skip: a continue that came out empty offers to skip that commit, by its hash (R40)", async () => {
+    const commit = "e".repeat(40);
+    const [skip] = await buttonsFor([{ kind: "skip", commit }], "failed");
     expect(skip.label).toBe("Skip this commit");
     await skip.run();
-    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "skip", expectHead: (view.snapshot as RepoSnapshot).head }, []);
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(
+      1,
+      { op: "skip", expectHead: (view.snapshot as RepoSnapshot).head, commit },
+      [],
+    );
+  });
+
+  it("the Skip notice holds only while git is stopped on that commit (R40)", async () => {
+    const commit = "e".repeat(40);
+    const stoppedOn = (c: string | null) =>
+      snap({
+        inProgress: {
+          kind: "cherry-pick",
+          files: [],
+          fileCount: 0,
+          step: null,
+          total: null,
+          subject: null,
+          incoming: null,
+          rebasing: null,
+          commit: c,
+          empty: true,
+        },
+      });
+    view.snapshot = stoppedOn(commit);
+    await buttonsFor([{ kind: "skip", commit }], "failed");
+    const notice = app.app.toasts[0];
+    expect(notice.holds?.()).toBe(true);
+    view.snapshot = stoppedOn("f".repeat(40));
+    expect(notice.holds?.()).toBe(false);
+    view.snapshot = snap();
+    expect(notice.holds?.()).toBe(false);
+    // Other notices with buttons have no such condition.
+    app.app.toasts.length = 0;
+    await buttonsFor([{ kind: "fetch" }], "failed");
+    expect(app.app.toasts[0].holds).toBeUndefined();
   });
 
   it("choose_pull_mode: no notice; the dialog that asks merge or rebase opens", async () => {

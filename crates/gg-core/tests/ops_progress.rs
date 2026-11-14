@@ -422,11 +422,19 @@ async fn continue_that_comes_out_empty_explains() {
     let p = out.snapshot.in_progress.expect("still in progress");
     assert_eq!(p.kind, InProgressKind::CherryPick);
     assert!(p.files.is_empty());
+    // The core says the step is empty, and which commit it is (R40).
+    assert!(p.empty, "{p:?}");
+    assert_eq!(p.commit.as_deref(), Some(one.as_str()));
     // The notice offers the way past it: skipping that commit.
-    assert_eq!(out.hints, vec![OpHint::Skip]);
+    assert_eq!(
+        out.hints,
+        vec![OpHint::Skip {
+            commit: one.clone()
+        }]
+    );
 
     let head = repo.git(&["rev-parse", "HEAD"]);
-    let skipped = h.run(id, skip()).await;
+    let skipped = h.run(id, skip(&one)).await;
     assert_eq!(skipped.status, OpStatus::Done, "{skipped:?}");
     assert_eq!(skipped.title, "Skip a commit of the cherry-pick");
     assert!(skipped.snapshot.in_progress.is_none(), "{skipped:?}");
@@ -456,7 +464,8 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
         expect_head: here(),
     };
     assert_eq!(h.run(id, merge).await.status, OpStatus::Stopped);
-    let refused = h.run(id, skip()).await;
+    let any = repo.git(&["rev-parse", "feature"]);
+    let refused = h.run(id, skip(&any)).await;
     assert_eq!(refused.status, OpStatus::Failed, "{refused:?}");
     assert!(refused.message.contains("merge"), "{}", refused.message);
     assert!(refused.snapshot.in_progress.is_some(), "the merge stays");
@@ -471,10 +480,137 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
         onto: "feature".into(),
         expect_head: here(),
     };
-    assert_eq!(h.run(id, rebase).await.status, OpStatus::Stopped);
-    let out = h.run(id, skip()).await;
-    assert_ne!(out.status, OpStatus::Failed, "{out:?}");
+    let stopped = h.run(id, rebase).await;
+    assert_eq!(stopped.status, OpStatus::Stopped);
+    // Stopped on main's own commit; nothing in the tree beyond its conflict.
+    let main_side = repo.git(&["rev-parse", "main"]);
+    let p = stopped.snapshot.in_progress.expect("stopped");
+    assert_eq!(p.commit.as_deref(), Some(main_side.as_str()));
+    assert!(!p.empty, "it has a conflict");
+    let out = h.run(id, skip(&main_side)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.title, "Skip a commit of the rebase");
+    // Its only commit left out, main is where feature is, and nothing is in progress.
+    assert!(out.snapshot.in_progress.is_none(), "{out:?}");
+    assert_eq!(
+        repo.git(&["rev-parse", "main"]),
+        repo.git(&["rev-parse", "feature"])
+    );
+    assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+    assert_eq!(read(&repo, "clash.txt"), "feature 2\n");
+}
+
+/// R40: a skip is for the commit git was stopped on when it was offered. Once git has moved
+/// on (here, the user skipped it in a terminal and git stopped on the next), the skip is
+/// refused and nothing runs.
+#[tokio::test]
+async fn a_skip_for_another_commit_is_refused() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    repo.checkout("feature");
+    repo.git(&["branch", "-q", "-f", "target", "main"]);
+    let rebase = OpRequest::Rebase {
+        onto: "target".into(),
+        expect_head: here(),
+    };
+    let stopped = h.run(id, rebase).await;
+    assert_eq!(stopped.status, OpStatus::Stopped, "{stopped:?}");
+    let first = stopped.snapshot.in_progress.unwrap().commit.unwrap();
+    assert_eq!(first, repo.git(&["rev-parse", "feature~2"]));
+
+    // Skipped in a terminal: git stops on the next commit.
+    assert!(!repo.git_succeeds(&["rebase", "--skip"]));
+    let now = repo.git(&["rev-parse", "REBASE_HEAD"]);
+    assert_ne!(now, first);
+    let mark = h.last_log_id();
+    let out = h.run(id, skip(&first)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message
+            .starts_with("Nothing was skipped: git has moved on"),
+        "{}",
+        out.message
+    );
+    assert!(h.writes_since(mark).is_empty());
+    assert_eq!(repo.git(&["rev-parse", "REBASE_HEAD"]), now);
+}
+
+/// The repository looked at again (as the UI asks when the user comes back to it), once its
+/// working tree has been read.
+async fn looked_again(h: &Harness, id: u32) -> gg_core::dto::RepoSnapshot {
+    h.m.refresh(id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, h.m.wait_status(id))
+        .await
+        .expect("status read");
+    h.m.snapshot(id).await.unwrap()
+}
+
+/// R40: skipping a rebase's commit puts every tracked file back as HEAD has it. An edit
+/// made after the step came out empty survives unless the user confirms that it goes; the
+/// core reports the empty step (read-only), and the skip is done once confirmed.
+#[tokio::test]
+async fn a_rebase_skip_that_would_discard_other_changes_asks_first() {
+    let repo = TestRepo::new();
+    repo.write("notes.txt", "notes\n");
+    clashing(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let rebase = OpRequest::Rebase {
+        onto: "feature".into(),
+        expect_head: here(),
+    };
+    assert_eq!(h.run(id, rebase).await.status, OpStatus::Stopped);
+    let main_side = repo.git(&["rev-parse", "main"]);
+    // Resolved to what HEAD has: the step has no changes left.
+    repo.write("clash.txt", "feature 2\n");
+    repo.git(&["add", "clash.txt"]);
+    let snap = looked_again(&h, id).await;
+    let p = snap.in_progress.expect("stopped");
+    assert!(p.empty, "{p:?}");
+    assert_eq!(p.commit.as_deref(), Some(main_side.as_str()));
+
+    // An edit made afterwards, to a file the step does not touch.
+    repo.write("notes.txt", "my own edit\n");
+    let snap = looked_again(&h, id).await;
+    assert!(!snap.in_progress.unwrap().empty);
+    let mark = h.last_log_id();
+    let asked = h.run(id, skip(&main_side)).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:?}");
+    assert_eq!(asked.dangers[0].kind, DangerKind::SkipDiscards);
+    assert_eq!(asked.dangers[0].detail.as_deref(), Some("notes.txt"));
+    assert!(h.writes_since(mark).is_empty());
+    assert_eq!(read(&repo, "notes.txt"), "my own edit\n");
+
+    let out = h
+        .run_confirmed(id, skip(&main_side), &[DangerKind::SkipDiscards])
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(out.snapshot.in_progress.is_none());
+    assert_eq!(
+        repo.git(&["rev-parse", "main"]),
+        repo.git(&["rev-parse", "feature"])
+    );
+    assert_eq!(read(&repo, "notes.txt"), "notes\n");
+}
+
+/// A cherry-pick's skip keeps changes it does not touch (git's own), so it asks nothing.
+#[tokio::test]
+async fn a_cherry_pick_skip_keeps_other_changes_without_asking() {
+    let repo = TestRepo::new();
+    repo.write("notes.txt", "notes\n");
+    clashing(&repo);
+    let one = repo.git(&["rev-parse", "feature~2"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(h.run(id, cherry_pick(&one)).await.status, OpStatus::Stopped);
+    repo.write("clash.txt", "main\n");
+    repo.git(&["add", "clash.txt"]);
+    repo.write("notes.txt", "my own edit\n");
+    let out = h.run(id, skip(&one)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(read(&repo, "notes.txt"), "my own edit\n");
 }
 
 #[tokio::test]

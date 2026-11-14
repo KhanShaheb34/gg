@@ -17,7 +17,7 @@ use crate::git::runner::{CmdKind, GitRunner};
 use crate::git::status::{Unmerged, read_conflicted};
 
 /// The state files asked for, in the order `rev-parse` prints their paths.
-const STATE_FILES: [&str; 7] = [
+const STATE_FILES: [&str; 8] = [
     "MERGE_HEAD",
     "CHERRY_PICK_HEAD",
     "REVERT_HEAD",
@@ -25,6 +25,7 @@ const STATE_FILES: [&str; 7] = [
     "rebase-apply",
     "MERGE_MSG",
     "sequencer",
+    "REBASE_HEAD",
 ];
 
 /// Where git keeps its state files for one worktree.
@@ -36,6 +37,7 @@ pub(crate) struct StateFiles {
     rebase_apply: PathBuf,
     merge_msg: PathBuf,
     sequencer: PathBuf,
+    rebase_head: PathBuf,
 }
 
 impl StateFiles {
@@ -106,14 +108,21 @@ impl StateFiles {
             InProgressKind::CherryPick => self.cherry_pick_head.clone(),
             InProgressKind::Revert => self.revert_head.clone(),
         };
-        let bytes = fs::read(path).ok()?;
-        let hash = String::from_utf8_lossy(&bytes)
-            .lines()
-            .next()?
-            .trim()
-            .to_owned();
-        let hex = hash.bytes().all(|b| b.is_ascii_hexdigit());
-        (hex && (hash.len() == 40 || hash.len() == 64)).then_some(hash)
+        full_hash_in(&path)
+    }
+
+    /// The commit a rebase, cherry-pick or revert (`kind`) is stopped on, not committed yet:
+    /// `REBASE_HEAD`, `CHERRY_PICK_HEAD` or `REVERT_HEAD`. `None` for a merge, when git keeps
+    /// none (a sequence whose current commit was committed by hand), or when a rebase stopped
+    /// after committing it (`edit`: `rebase-merge/amend`), which is not one to skip.
+    pub(crate) fn stopped_commit(&self, kind: InProgressKind) -> Option<String> {
+        match kind {
+            InProgressKind::Merge => None,
+            InProgressKind::Rebase if self.rebase_merge.join("amend").exists() => None,
+            InProgressKind::Rebase => full_hash_in(&self.rebase_head),
+            InProgressKind::CherryPick => full_hash_in(&self.cherry_pick_head),
+            InProgressKind::Revert => full_hash_in(&self.revert_head),
+        }
     }
 
     /// The branch a rebase works on (`head-name`, "refs/heads/<branch>"), if it is one.
@@ -141,6 +150,18 @@ impl StateFiles {
     }
 }
 
+/// The full hash on the first line of the file at `path`, if it has one.
+fn full_hash_in(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let hash = String::from_utf8_lossy(&bytes)
+        .lines()
+        .next()?
+        .trim()
+        .to_owned();
+    let hex = hash.bytes().all(|b| b.is_ascii_hexdigit());
+    (hex && (hash.len() == 40 || hash.len() == 64)).then_some(hash)
+}
+
 /// Where the state files of the worktree at `worktree` are (whether they exist or not).
 /// `None` if git cannot say (not a repository any more).
 pub(crate) async fn state_files(runner: &GitRunner, worktree: &Path) -> Result<Option<StateFiles>> {
@@ -164,8 +185,9 @@ pub(crate) async fn state_files(runner: &GitRunner, worktree: &Path) -> Result<O
             rebase_apply,
             merge_msg,
             sequencer,
+            rebase_head,
         ],
-    ) = <[PathBuf; 7]>::try_from(paths)
+    ) = <[PathBuf; 8]>::try_from(paths)
     else {
         return Ok(None);
     };
@@ -177,6 +199,7 @@ pub(crate) async fn state_files(runner: &GitRunner, worktree: &Path) -> Result<O
         rebase_apply,
         merge_msg,
         sequencer,
+        rebase_head,
     }))
 }
 
@@ -453,6 +476,15 @@ async fn name_of(runner: &GitRunner, worktree: &Path, hash: &str) -> Result<Stri
         .unwrap_or_else(|| hash.get(..8).unwrap_or(hash).to_owned()))
 }
 
+/// Whether the index and the tracked files of the worktree at `worktree` are as HEAD has
+/// them (`diff --quiet HEAD`, which writes nothing with optional locks off).
+async fn same_as_head(runner: &GitRunner, worktree: &Path) -> Result<bool> {
+    let out = runner
+        .run_unchecked(worktree, &["diff", "--quiet", "HEAD", "--"], CmdKind::Read)
+        .await?;
+    Ok(out.code == 0)
+}
+
 /// What git is stopped in, in the worktree at `worktree`, if anything (see
 /// [`StateFiles::kind`]).
 pub(crate) async fn read_kind(
@@ -552,6 +584,8 @@ async fn describe(
         InProgressKind::Rebase => files.rebase_head_name(),
         _ => None,
     };
+    let commit = files.stopped_commit(kind);
+    let empty = commit.is_some() && conflicted.is_empty() && same_as_head(runner, worktree).await?;
     Ok(Some(InProgress {
         kind,
         files: judged,
@@ -561,6 +595,8 @@ async fn describe(
         subject,
         incoming,
         rebasing,
+        commit,
+        empty,
     }))
 }
 

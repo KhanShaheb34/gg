@@ -5,7 +5,9 @@
   resolved (each opens in the editor; the list scrolls, fading at its bottom edge), and Abort,
   Open in editor and Continue. Continue is enabled once every file is resolved; until then it
   says why, and a quieter "Continue anyway…" asks first, naming the files that still have
-  markers and those git kept one side of (R31). The app never edits the files.
+  markers and those git kept one side of (R31). When the commit being applied has no changes
+  left (the core's `empty`: continuing would be refused), the banner says so and offers Skip
+  (that commit) in place of Continue (R40). The app never edits the files.
 
   A quieter form shows conflicts nothing is in progress for (left by applying a stash): the
   files and Open in editor only, and what clears them.
@@ -45,6 +47,8 @@
   const resolved = $derived(files.filter((f) => f.state === "resolved").length);
   /** Every file is resolved (and every one was looked at). */
   const ready = $derived(progress !== null && unnamed === 0 && resolved === files.length);
+  /** The commit being applied has no changes left: the way on is to skip it (R40). */
+  const empty = $derived(progress !== null && progress.empty && progress.commit !== null);
 
   const files_ = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
   const has = (n: number) => `${files_(n)} ${n === 1 ? "has" : "have"} conflicts`;
@@ -87,6 +91,7 @@
       return `Left by applying a stash or an earlier step. Resolve ${one ? "it" : "them"} in your editor. The banner goes once git sees no conflict: stage the ${one ? "file" : "files"} (git add), or reset to the current commit (mixed).`;
     }
     const n = progress.fileCount;
+    if (empty) return `This commit has no changes left (they are already here): skip it, or abort the ${progress.kind}.`;
     if (n === 0) return "Nothing is conflicted: ready to continue.";
     if (ready) return "All conflicts are resolved: continue stages the files and goes on.";
     if (resolved === 0) return `${has(n)}. Resolve ${n === 1 ? "it" : "them"} in your editor, then continue.`;
@@ -114,6 +119,13 @@
   /** The core asks to confirm, saying what goes back (R39): no dialog of its own. */
   function abort() {
     if (progress) runOp(view.repoId, { op: "abort", expectHead: snap.head }).catch(() => {}); // reported by runOp
+  }
+
+  /** Leaves out the commit the banner shows as empty; the core checks git is still stopped on it. */
+  function skip() {
+    if (progress?.commit) {
+      runOp(view.repoId, { op: "skip", expectHead: snap.head, commit: progress.commit }).catch(() => {}); // reported by runOp
+    }
   }
 
   function continueOp(force: boolean) {
@@ -188,7 +200,9 @@
           <button class="button" onclick={abort}>Abort…</button>
         {/if}
         <button class="button" onclick={() => void openInEditor(view.repoId, null)}>Open in editor</button>
-        {#if progress !== null}
+        {#if empty}
+          <button class="button primary" onclick={skip}>Skip this commit</button>
+        {:else if progress !== null}
           {#if !ready}
             <button class="button quiet" onclick={() => continueOp(true)}>Continue anyway…</button>
           {/if}

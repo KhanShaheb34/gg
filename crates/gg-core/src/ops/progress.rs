@@ -9,7 +9,7 @@
 use crate::dto::ConflictState;
 use crate::dto::{InProgressKind, OpHint, OpRequest};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::git::progress::{judge, read_kind};
+use crate::git::progress::{judge, read_kind, state_files};
 use crate::git::status::{paths, read_conflicted};
 use crate::ops::explain::{explain, recognised};
 use crate::ops::local::{current_branch, kind_name, stopped_message, stopped_without_conflicts};
@@ -237,7 +237,14 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
         });
     }
     let all = format!("{}\n{}", out.stderr, out.text());
-    if comes_out_empty(&all) && kind != InProgressKind::Merge {
+    let stopped_on = match state_files(&ctx.runner, &ctx.cwd).await? {
+        Some(files) => files.stopped_commit(still),
+        None => None,
+    };
+    if comes_out_empty(&all)
+        && kind != InProgressKind::Merge
+        && let Some(commit) = stopped_on
+    {
         return Ok(Step::Failed {
             message: format!(
                 "With the conflicts resolved this way the commit being applied has no \
@@ -245,7 +252,7 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
                  empty commit: skip this commit, or abort the {what}."
             ),
             detail,
-            hints: vec![OpHint::Skip],
+            hints: vec![OpHint::Skip { commit }],
         });
     }
     let message = recognised(args, &all).unwrap_or_else(|| stopped_without_conflicts(still));
@@ -253,6 +260,39 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
         message,
         detail,
         hints: Vec::new(),
+    })
+}
+
+/// Why a skip for `commit` cannot run, if it cannot: git is not stopped on that commit (it
+/// has moved on since the skip was offered, in a terminal say), so skipping would leave out
+/// another (R40).
+pub(crate) async fn skip_refused(ctx: &OpCtx<'_>, commit: &str) -> Result<Option<String>> {
+    let Some(files) = state_files(&ctx.runner, &ctx.cwd).await? else {
+        return Ok(None);
+    };
+    let Some(kind) = files.kind() else {
+        return Ok(None);
+    };
+    if kind == InProgressKind::Merge {
+        // Said by the skip itself: a merge has no commit to skip.
+        return Ok(None);
+    }
+    let short = |h: &str| h.get(..8).unwrap_or(h).to_owned();
+    Ok(match files.stopped_commit(kind) {
+        Some(now) if now == commit => None,
+        Some(now) => Some(format!(
+            "Nothing was skipped: git has moved on, and the {} is now stopped on {}, not on \
+             {}. Look at it again, and skip again if it still applies.",
+            kind_name(kind),
+            short(&now),
+            short(commit)
+        )),
+        None => Some(format!(
+            "Nothing was skipped: the {} is no longer stopped on {}, the commit the skip was \
+             for.",
+            kind_name(kind),
+            short(commit)
+        )),
     })
 }
 

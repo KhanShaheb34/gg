@@ -233,6 +233,14 @@ pub struct InProgress {
     pub incoming: Option<String>,
     /// Rebase only: the branch being rebased (git's `head-name`), if it is one.
     pub rebasing: Option<String>,
+    /// Rebase, cherry-pick or revert: the commit git stopped on, in full (`REBASE_HEAD`,
+    /// `CHERRY_PICK_HEAD`, `REVERT_HEAD`), which a skip leaves out (R40); `None` for a merge,
+    /// or when git keeps none.
+    pub commit: Option<String>,
+    /// The commit stopped on has no changes left: nothing is conflicted, and the index and
+    /// the tracked files are as HEAD has them (read-only). Continuing would make an empty
+    /// commit, which git refuses: the way on is to skip it, or abort.
+    pub empty: bool,
 }
 
 impl InProgress {
@@ -558,9 +566,12 @@ pub enum OpRequest {
     },
     /// Leaves out the commit a rebase, cherry-pick or revert is stopped on and goes on with
     /// the next (`<kind> --skip`): the way past a commit that came out empty. A merge has
-    /// none to skip.
+    /// none to skip. `commit`: the commit it is for (`InProgress.commit`, R40): refused if
+    /// git is stopped on another. A rebase skip puts every tracked file back as HEAD has it:
+    /// with other changes there, the `skip_discards` danger first.
     Skip {
         expect_head: HeadInfo,
+        commit: String,
     },
 }
 
@@ -592,6 +603,9 @@ pub enum DangerKind {
     DropStash,
     /// Aborting what git is stopped in puts back what it changed, the user's resolutions too.
     Abort,
+    /// Skipping a rebase's commit puts every tracked file back as HEAD has it: changes made
+    /// since it stopped go too.
+    SkipDiscards,
 }
 
 /// What would be lost, said plainly, for the confirmation.
@@ -605,7 +619,8 @@ pub struct Danger {
     /// `delete_remote_branch`, the remote-tracking commit (`null` without one), which is
     /// also the lease git checks; `hard_reset`, HEAD and the files it would discard;
     /// `delete_unmerged_branch`, the branch's tip; `drop_stash`, the stash's commit;
-    /// `abort`, what is stopped and HEAD. Confirming sends it back with its kind; if it no
+    /// `abort`, what is stopped and HEAD; `skip_discards`, HEAD and the files whose changes go.
+    /// Confirming sends it back with its kind; if it no
     /// longer matches, the core asks again, with the state as it is then.
     pub token: Option<String>,
 }
@@ -638,8 +653,11 @@ pub enum OpHint {
     ChoosePullMode {
         branch: String,
     },
-    /// Skip the commit being applied (`OpRequest::Skip`): continuing it came out empty.
-    Skip,
+    /// Skip the commit being applied (`OpRequest::Skip`), `commit`: continuing it came out
+    /// empty.
+    Skip {
+        commit: String,
+    },
 }
 
 /// How an operation ended. Serialized snake_case.
@@ -812,7 +830,7 @@ mod tests {
             json!({"op": "stash_branch", "stash": "h", "name": "n"}),
             json!({"op": "continue", "evenWithMarkers": true, "expectHead": {"branch": "main", "hash": null}}),
             json!({"op": "abort", "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "skip", "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "skip", "expectHead": {"branch": "main", "hash": null}, "commit": "h"}),
         ];
         for case in cases {
             let request: OpRequest =
@@ -1097,6 +1115,8 @@ mod tests {
                 subject: Some("fix".into()),
                 incoming: Some("0123abcd".into()),
                 rebasing: None,
+                commit: None,
+                empty: false,
             }),
             seq: 12,
         };
@@ -1117,7 +1137,8 @@ mod tests {
                 "inProgress": {"kind": "cherry-pick",
                                "files": [{"path": "a b.txt", "state": "resolved"}],
                                "fileCount": 1, "step": null, "total": null, "subject": "fix",
-                               "incoming": "0123abcd", "rebasing": null},
+                               "incoming": "0123abcd", "rebasing": null, "commit": null,
+                               "empty": false},
                 "seq": 12
             })
         );

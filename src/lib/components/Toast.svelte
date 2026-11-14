@@ -32,6 +32,11 @@
       if (op && op.id > toast.until.opId) dismissToast(toast.id);
     }
   });
+  // One whose offer depends on the repository's state goes once that no longer holds (a
+  // Skip once git has moved on: R40).
+  $effect(() => {
+    for (const toast of app.toasts) if (toast.holds && !toast.holds()) dismissToast(toast.id);
+  });
 
   /** Toasts whose folded detail is open. */
   let unfolded: Set<number> = $state(new Set());

@@ -196,9 +196,11 @@ pub fn abort() -> OpRequest {
     }
 }
 
-pub fn skip() -> OpRequest {
+/// Skip, for the commit `commit` git is stopped on.
+pub fn skip(commit: &str) -> OpRequest {
     OpRequest::Skip {
         expect_head: here(),
+        commit: commit.to_owned(),
     }
 }
 

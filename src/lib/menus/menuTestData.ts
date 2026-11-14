@@ -70,7 +70,7 @@ export const DETACHED = { head: { branch: null, hash: HEAD_HASH } } satisfies Pa
 export const UNBORN = { head: { branch: "main", hash: null }, totalRows: 0 } satisfies Partial<RepoSnapshot>;
 
 export function inProgress(kind: InProgress["kind"]): Partial<RepoSnapshot> {
-  return { inProgress: { kind, files: [{ path: "a.txt", state: "markers" }], fileCount: 1, step: null, total: null, subject: null, incoming: null, rebasing: null } };
+  return { inProgress: { kind, files: [{ path: "a.txt", state: "markers" }], fileCount: 1, step: null, total: null, subject: null, incoming: null, rebasing: null, commit: null, empty: false } };
 }
 
 export const RUNNING = {

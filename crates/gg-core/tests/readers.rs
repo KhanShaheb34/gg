@@ -867,6 +867,8 @@ fn stopped(
         subject: Some(subject.to_owned()),
         incoming: None,
         rebasing: None,
+        commit: None,
+        empty: false,
     })
 }
 
@@ -875,6 +877,14 @@ fn coming(state: Option<InProgress>, incoming: &str, rebasing: Option<&str>) -> 
     state.map(|s| InProgress {
         incoming: Some(incoming.to_owned()),
         rebasing: rebasing.map(str::to_owned),
+        ..s
+    })
+}
+
+/// `state`, stopped on commit `commit` (R40).
+fn on(state: Option<InProgress>, commit: &str) -> Option<InProgress> {
+    state.map(|s| InProgress {
+        commit: Some(commit.to_owned()),
         ..s
     })
 }
@@ -931,18 +941,22 @@ async fn rebase_in_progress_is_read() {
     let repo = TestRepo::new();
     clashing(&repo);
     repo.checkout("feature");
+    let one = repo.git(&["rev-parse", "feature~2"]);
     assert!(!repo.git_succeeds(&["rebase", "main"]));
     assert_eq!(
         in_progress(&repo).await,
-        coming(
-            stopped(
-                InProgressKind::Rebase,
-                &["clash.txt"],
-                Some((1, 3)),
-                "feat one"
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Rebase,
+                    &["clash.txt"],
+                    Some((1, 3)),
+                    "feat one"
+                ),
+                "main",
+                Some("feature")
             ),
-            "main",
-            Some("feature")
+            &one
         )
     );
 }
@@ -952,6 +966,10 @@ async fn rebase_reports_step_and_total() {
     let repo = TestRepo::new();
     clashing(&repo);
     repo.checkout("feature");
+    let (one, two) = (
+        repo.git(&["rev-parse", "feature~2"]),
+        repo.git(&["rev-parse", "feature~1"]),
+    );
     // The merge backend (rebase-merge/msgnum, end).
     assert!(!repo.git_succeeds(&["rebase", "main"]));
     repo.write("clash.txt", "resolved\n");
@@ -959,15 +977,18 @@ async fn rebase_reports_step_and_total() {
     assert!(!repo.git_succeeds(&["rebase", "--continue"]));
     assert_eq!(
         in_progress(&repo).await,
-        coming(
-            stopped(
-                InProgressKind::Rebase,
-                &["clash.txt"],
-                Some((2, 3)),
-                "feat two"
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Rebase,
+                    &["clash.txt"],
+                    Some((2, 3)),
+                    "feat two"
+                ),
+                "main",
+                Some("feature")
             ),
-            "main",
-            Some("feature")
+            &two
         )
     );
     repo.git(&["rebase", "--abort"]);
@@ -977,15 +998,18 @@ async fn rebase_reports_step_and_total() {
     assert!(!repo.git_succeeds(&["rebase", "--apply", "main"]));
     assert_eq!(
         in_progress(&repo).await,
-        coming(
-            stopped(
-                InProgressKind::Rebase,
-                &["clash.txt"],
-                Some((1, 3)),
-                "feat one"
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Rebase,
+                    &["clash.txt"],
+                    Some((1, 3)),
+                    "feat one"
+                ),
+                "main",
+                Some("feature")
             ),
-            "main",
-            Some("feature")
+            &one
         )
     );
     repo.write("clash.txt", "resolved\n");
@@ -1005,10 +1029,13 @@ async fn cherry_pick_in_progress_is_read() {
     let picked = repo.git(&["rev-parse", "feature~2"]);
     assert_eq!(
         in_progress(&repo).await,
-        coming(
-            stopped(InProgressKind::CherryPick, &["clash.txt"], None, "feat one"),
-            &picked[..8],
-            None
+        on(
+            coming(
+                stopped(InProgressKind::CherryPick, &["clash.txt"], None, "feat one"),
+                &picked[..8],
+                None
+            ),
+            &picked
         )
     );
 }
@@ -1022,15 +1049,18 @@ async fn revert_in_progress_is_read() {
     let reverted = repo.git(&["rev-parse", "feature~2"]);
     assert_eq!(
         in_progress(&repo).await,
-        coming(
-            stopped(
-                InProgressKind::Revert,
-                &["clash.txt"],
-                None,
-                "Revert \"feat one\""
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Revert,
+                    &["clash.txt"],
+                    None,
+                    "Revert \"feat one\""
+                ),
+                &reverted[..8],
+                None
             ),
-            &reverted[..8],
-            None
+            &reverted
         )
     );
 }

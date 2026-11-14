@@ -101,8 +101,11 @@ function report(repoId: number, outcome: OpOutcome): void {
   const detail = outcome.detail ?? undefined;
   // A notice that offers what to do next waits for the user, until the next operation there.
   const until = actions.length > 0 ? { repoId, opId: outcome.opId } : undefined;
+  // A Skip applies while git is stopped on the commit it is for (R40).
+  const skip = outcome.hints.find((h) => h.kind === "skip");
+  const holds = skip ? () => findRepoView(repoId)?.snapshot.inProgress?.commit === skip.commit : undefined;
   if (outcome.status === "done") {
-    notify({ kind: "info", message: outcome.message, detail, foldDetail: true, actions, persistent: !!until, until });
+    notify({ kind: "info", message: outcome.message, detail, foldDetail: true, actions, persistent: !!until, until, holds });
   } else if (outcome.status === "failed") {
     notify({
       kind: "error",
@@ -111,6 +114,7 @@ function report(repoId: number, outcome: OpOutcome): void {
       foldDetail: true,
       persistent: true,
       until,
+      holds,
       actions,
       // The notice stays: the log is read against it.
       link:
@@ -155,7 +159,12 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
     case "choose_pull_mode":
       return []; // a dialog asks instead (see report)
     case "skip":
-      return [{ label: "Skip this commit", run: () => followUp(repoId, { op: "skip", expectHead: headOf(repoId) }) }];
+      return [
+        {
+          label: "Skip this commit",
+          run: () => followUp(repoId, { op: "skip", expectHead: headOf(repoId), commit: hint.commit }),
+        },
+      ];
   }
 }
 

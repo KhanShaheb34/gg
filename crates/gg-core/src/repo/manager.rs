@@ -1619,6 +1619,8 @@ mod tests {
                 subject: None,
                 incoming: None,
                 rebasing: None,
+                commit: None,
+                empty: false,
             }),
             ..Default::default()
         };

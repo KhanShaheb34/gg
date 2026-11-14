@@ -567,10 +567,13 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             on_progress(|kind| progress::title("Abort", kind)),
             body(move |ctx, _| Box::pin(async move { progress::abort(ctx).await })),
         ),
-        OpRequest::Skip { .. } => (
-            on_progress(progress::skip_title),
-            body(move |ctx, _| Box::pin(async move { progress::skip(ctx).await })),
-        ),
+        OpRequest::Skip { commit, .. } => {
+            check_full_hash(&commit)?;
+            (
+                on_progress(progress::skip_title),
+                body(move |ctx, _| Box::pin(async move { progress::skip(ctx).await })),
+            )
+        }
     };
     Ok(Prepared { title, body })
 }
@@ -922,6 +925,11 @@ impl RepoManager {
         } = &request
             && to != branch
             && let Some(why) = network::not_its_upstream(&ctx, branch, remote, to).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
+        if let OpRequest::Skip { commit, .. } = &request
+            && let Some(why) = progress::skip_refused(&ctx, commit).await?
         {
             return Ok((title, Ran::Refused(why)));
         }

@@ -29,6 +29,7 @@
     delete_remote_branch: "Delete remote branch",
     drop_stash: "Drop stash",
     abort: "Abort",
+    skip_discards: "Skip and discard",
   };
 
   const primary = $derived(dangers.length === 1 ? VERB[dangers[0].kind] : "Go ahead");

@@ -343,3 +343,43 @@ test("a cherry-pick that comes out empty is skipped from its notice", async ({ g
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(head);
 });
+
+test("a commit with no changes left: the banner says so and offers Skip; the notice's Skip goes once git moves on (R40)", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  const hash = gg.git("conflicts", "rev-parse", "feature/x").trim();
+  const head = gg.git("conflicts", "rev-parse", "HEAD").trim();
+  expect((await runOp(page, { op: "cherry_pick", hash, mainline: null, noCommit: false })).status).toBe("stopped");
+  resolve(gg, "app.txt", "app from main\n");
+  resolve(gg, "style.css", "body { color: navy; }\n");
+  expect((await runOp(page, { op: "continue", evenWithMarkers: false })).status).toBe("failed");
+  const alert = page.getByRole("alert").filter({ hasText: "skip this commit, or abort the cherry-pick" });
+  await expect(alert.getByRole("button", { name: "Skip this commit" })).toBeVisible();
+
+  // The banner no longer says "ready to continue": it offers Skip in Continue's place.
+  await expect(banner(page)).toContainText(
+    "This commit has no changes left (they are already here): skip it, or abort the cherry-pick.",
+  );
+  await expect(continueButton(page)).toHaveCount(0);
+  await expect(banner(page).getByRole("button", { name: "Skip this commit" })).toBeVisible();
+
+  // Git moves on outside the app: the notice's Skip no longer applies, and goes.
+  gg.git("conflicts", "cherry-pick", "--abort");
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(banner(page)).toHaveCount(0);
+  await expect(alert).toHaveCount(0);
+
+  // Again, and Skip from the banner this time.
+  expect((await runOp(page, { op: "cherry_pick", hash, mainline: null, noCommit: false })).status).toBe("stopped");
+  resolve(gg, "app.txt", "app from main\n");
+  resolve(gg, "style.css", "body { color: navy; }\n");
+  gg.git("conflicts", "add", "app.txt", "style.css");
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await banner(page).getByRole("button", { name: "Skip this commit" }).click();
+  await expect(notice(page, "Skipped the commit; the cherry-pick is finished.")).toBeVisible();
+  await expect(banner(page)).toHaveCount(0);
+  expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(head);
+});

@@ -11,6 +11,7 @@ use crate::git::status::read_status;
 use crate::ops::OpCtx;
 use crate::ops::local::{current_branch, head_commit, kind_name};
 use crate::ops::network::{push_target, ref_commit};
+use crate::ops::progress::unmerged_paths;
 use crate::ops::stash;
 
 /// The dangers `request` would run into now.
@@ -36,6 +37,7 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
         }
         OpRequest::StashDrop { stash } => stash::dropped(ctx, stash).await?,
         OpRequest::Abort { .. } => aborted(ctx).await?.into_iter().collect(),
+        OpRequest::Skip { .. } => skip_discards(ctx).await?.into_iter().collect(),
         // The others carry none.
         _ => Vec::new(),
     })
@@ -344,6 +346,60 @@ async fn aborted(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
         message,
         detail: None,
         token: Some(format!("{what}\n{}", head_token(ctx).await?)),
+    }))
+}
+
+/// `skip_discards`, for a rebase only: `rebase --skip` puts every tracked file back as HEAD
+/// has it (a cherry-pick's or revert's skip keeps the changes it does not touch). So changes
+/// beyond the stopped step's conflicted files (an edit made after continuing came out empty,
+/// say) go with it: the message counts them, the detail lists them, and they are confirmed
+/// first (R40). Its token is HEAD and those files.
+async fn skip_discards(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
+    let kind = state_files(&ctx.runner, &ctx.cwd)
+        .await?
+        .and_then(|files| files.kind());
+    if kind != Some(InProgressKind::Rebase) {
+        return Ok(None);
+    }
+    let out = ctx
+        .read(&["diff", "--name-only", "-z", "HEAD", "--"])
+        .await?;
+    if out.code != 0 {
+        return Ok(None);
+    }
+    let unmerged = unmerged_paths(ctx).await?;
+    let text = out.text();
+    let files: Vec<&str> = text
+        .split('\0')
+        .filter(|f| !f.is_empty() && !unmerged.iter().any(|u| u == f))
+        .collect();
+    let message = match files.len() {
+        0 => return Ok(None),
+        1 => "Skipping this commit puts every tracked file back as HEAD has it (git does that \
+              for a rebase): the uncommitted changes to 1 file are discarded too."
+            .to_owned(),
+        n => format!(
+            "Skipping this commit puts every tracked file back as HEAD has it (git does that \
+             for a rebase): the uncommitted changes to {n} files are discarded too."
+        ),
+    };
+    let mut lines: Vec<String> = files
+        .iter()
+        .take(MAX_LOST_LISTED)
+        .map(|f| (*f).to_owned())
+        .collect();
+    if files.len() > MAX_LOST_LISTED {
+        lines.push(format!("and {} more", files.len() - MAX_LOST_LISTED));
+    }
+    Ok(Some(Danger {
+        kind: DangerKind::SkipDiscards,
+        message,
+        detail: Some(lines.join("\n")),
+        token: Some(format!(
+            "{}\n{:016x}",
+            head_token(ctx).await?,
+            fnv1a(files.join("\0").as_bytes())
+        )),
     }))
 }
 

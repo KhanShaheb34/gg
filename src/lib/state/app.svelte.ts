@@ -31,6 +31,8 @@ export type Toast = {
    * after `opId` runs on repository `repoId` (what its buttons offer may no longer hold).
    */
   until?: { repoId: number; opId: number };
+  /** With `persistent`: it also goes once this says what it offers no longer applies. */
+  holds?: () => boolean;
   actions?: ToastAction[];
   link?: ToastAction;
 };

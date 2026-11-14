@@ -73,6 +73,11 @@ export type InProgress = {
   // what comes in (R32): merge, the branch or ref merged; rebase, what it goes onto; cherry-pick/revert, the 8-char hash
   incoming: string | null;
   rebasing: string | null; // rebase only: the branch being rebased
+  // rebase, cherry-pick or revert: the commit git stopped on, in full (what a skip is for, R40)
+  commit: string | null;
+  // that commit has no changes left (nothing conflicted, everything as HEAD has it): continuing
+  // would be refused as empty; skip it, or abort
+  empty: boolean;
 };
 
 /**
@@ -207,7 +212,9 @@ export type OpRequest =
   | { op: "stash_branch"; stash: string; name: string }
   | { op: "continue"; evenWithMarkers: boolean; expectHead: HeadInfo } // R31: true = go ahead though files still have conflict markers
   | { op: "abort"; expectHead: HeadInfo } // always the abort danger first
-  | { op: "skip"; expectHead: HeadInfo }; // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge)
+  // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge): `commit`, else
+  // refused (R40); a rebase's skip with other uncommitted changes asks first (skip_discards)
+  | { op: "skip"; expectHead: HeadInfo; commit: string };
 
 export type DangerKind =
   | "force_push"
@@ -215,7 +222,8 @@ export type DangerKind =
   | "delete_unmerged_branch"
   | "delete_remote_branch"
   | "drop_stash"
-  | "abort";
+  | "abort"
+  | "skip_discards";
 /**
  * token: the state the message was worked out from (R39); confirming sends it back with the
  * kind (`Confirmed`), and the core asks again if the state has changed since.
@@ -229,7 +237,7 @@ export type OpHint =
   | { kind: "pull"; branch: string }
   | { kind: "force_push"; branch: string; remote: string; to: string | null } // where the rejected push went
   | { kind: "choose_pull_mode"; branch: string }
-  | { kind: "skip" }; // continuing came out empty: skip that commit
+  | { kind: "skip"; commit: string }; // continuing came out empty: skip that commit
 
 /** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
 export type OpOutcome = {

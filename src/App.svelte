@@ -44,6 +44,32 @@
   // Measured to the fraction of a pixel, so the graph's minimum holds exactly.
   let bodyRect = $state<DOMRectReadOnly>();
   let bannerRect = $state<DOMRectReadOnly>();
+
+  /**
+   * Calls `set` with the element's content box whenever it changes size, in the next
+   * animation frame rather than inside the ResizeObserver's delivery: the panels' sizes
+   * follow from it, and changing them while the observers deliver (the banner appearing over
+   * the details and the log) is a ResizeObserver loop.
+   */
+  function measured(node: HTMLElement, set: (rect: DOMRectReadOnly) => void) {
+    let frame = 0;
+    let latest: DOMRectReadOnly | null = null;
+    const observer = new ResizeObserver((entries) => {
+      latest = entries[entries.length - 1].contentRect;
+      frame ||= requestAnimationFrame(() => {
+        frame = 0;
+        if (latest) set(latest);
+      });
+    });
+    observer.observe(node);
+    set(node.getBoundingClientRect());
+    return {
+      destroy() {
+        observer.disconnect();
+        cancelAnimationFrame(frame);
+      },
+    };
+  }
   const bodyH = $derived(bodyRect?.height ?? Infinity);
   const bannerH = $derived(bannerRect?.height ?? 0);
   let detailsShown = $state(0);
@@ -138,10 +164,10 @@
             </div>
             <Toolbar view={repoView(active.repoId)} />
           </header>
-          <div class="repo-body" bind:contentRect={bodyRect}>
+          <div class="repo-body" use:measured={(r) => (bodyRect = r)}>
             <!-- The banner takes its height from the graph's top (the graph keeps its rows in place). -->
             <div class="graph-column">
-              <div class="banner-slot" bind:contentRect={bannerRect}>
+              <div class="banner-slot" use:measured={(r) => (bannerRect = r)}>
                 <ConflictBanner view={repoView(active.repoId)} compact={detailsShown > 0 || logPrefs.open} />
               </div>
               <div class="graph-area">

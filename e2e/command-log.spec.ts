@@ -401,3 +401,33 @@ test("show log for an operation no longer kept says so", async ({ gg }) => {
   await expect(panel(page)).toBeVisible();
   await expect(page.getByRole("status").or(page.getByRole("alert")).filter({ hasText: "That operation's commands are no longer in the log" })).toBeVisible();
 });
+
+test("the banner appearing over the details and the log lays out without a ResizeObserver loop", async ({ gg }) => {
+  const { page } = gg;
+  await page.addInitScript(() => {
+    const w = window as unknown as { __errors: string[] };
+    w.__errors = [];
+    addEventListener("error", (e) => w.__errors.push(e.message));
+  });
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  await grid(page).locator('[data-index="3"] .subject').click();
+  await toggle(page).click();
+  await expect(panel(page)).toBeVisible();
+  try {
+    gg.git("conflicts", "merge", "wide");
+  } catch {
+    // Stopped on conflicts.
+  }
+  await expect(page.getByTestId("conflict-banner")).toBeVisible();
+  for (const size of [{ width: 900, height: 560 }, { width: 1280, height: 800 }]) {
+    await page.setViewportSize(size);
+    await page.waitForTimeout(300);
+  }
+  const heights = await page.evaluate(() => ({
+    graph: document.querySelector(".graph-area")!.getBoundingClientRect().height,
+    errors: (window as unknown as { __errors: string[] }).__errors,
+  }));
+  expect(heights.errors).toEqual([]);
+  expect(heights.graph).toBeGreaterThanOrEqual(160);
+});

@@ -129,7 +129,8 @@ export function groupDigits(n: number): string {
  * only: the app never runs anything through a shell.
  */
 export function shellQuote(arg: string): string {
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg;
+  // Safe characters only, and not first a character zsh expands there (=word, ~user).
+  if (/^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(arg)) return arg;
   return `'${arg.replaceAll("'", "'\\''")}'`;
 }
 

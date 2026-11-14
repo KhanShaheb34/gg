@@ -129,6 +129,12 @@ describe("command log text", () => {
     expect(shellQuote("")).toBe("''");
     expect(shellQuote("it's")).toBe("'it'\\''s'");
     expect(shellQuote("$HOME")).toBe("'$HOME'");
+    // zsh expands a word starting with = (=git is git's path) and ~ (a home folder).
+    expect(shellQuote("=git")).toBe("'=git'");
+    expect(shellQuote("~ada")).toBe("'~ada'");
+    expect(shellQuote("--a=b")).toBe("--a=b");
+    expect(shellQuote("é.txt")).toBe("'é.txt'");
+    expect(shellQuote("a*b")).toBe("'a*b'");
     expect(commandLine(["commit", "-m", "Fix the thing"])).toBe("git commit -m 'Fix the thing'");
   });
 

@@ -1,8 +1,8 @@
 // What a dialog that names something (create branch or tag, rename, check out a remote
 // branch as…) does with its request: it stays open until the core has answered, so that a
 // name the core refuses shows under the field, the text kept, until the name is changed.
-// While the request is out it cannot be cancelled (it would run all the same); when it waits
-// behind other operations, the dialog says which one it waits for.
+// While the request is out it cannot be cancelled (it would run all the same); while the
+// operation that was running when it was sent still runs, the dialog says it waits for it.
 
 import { onDestroy } from "svelte";
 import { findRepoView } from "../../state/repo.svelte";
@@ -15,10 +15,8 @@ export class NamedSubmit {
   /** What the core said of the name last sent. */
   private refused: { name: string; message: string } | null = $state(null);
   private open = true;
-  /** Operations ahead of the request when it was sent (running and queued). */
-  private ahead = 0;
-  /** Operations seen running since it was sent. */
-  private seen = new Set<number>();
+  /** The operation running when the request was sent, if any: the one it waits behind. */
+  private behind: { id: number; title: string } | null = $state(null);
 
   /** Made while the dialog is set up: `close` closes it. */
   constructor(
@@ -34,22 +32,19 @@ export class NamedSubmit {
   }
 
   /**
-   * The title of the operation the request waits behind, while it waits; else null. Each
-   * operation seen running since the request went out is one of those ahead of it, until as
-   * many as there were have run: the one running then is the request's own.
+   * The title of the operation the request waits behind, while that one runs: the one that
+   * was running when the request was sent. Any other running since may be the request's own,
+   * so it is not named (the toolbar's busy pill counts the rest).
    */
   get waitingFor(): string | null {
     const op = this.running();
-    if (!this.pending || op === null) return null;
-    this.seen.add(op.id);
-    return this.seen.size <= this.ahead ? op.title : null;
+    return this.pending && op !== null && this.behind !== null && op.id === this.behind.id ? op.title : null;
   }
 
   /** Sends `request`, made with `name`; closes the dialog unless the core refused the name. */
   async submit(name: string, request: OpRequest): Promise<void> {
     const op = this.running();
-    this.ahead = op === null ? 0 : 1 + op.queued;
-    this.seen = new Set(op === null ? [] : [op.id]);
+    this.behind = op === null ? null : { id: op.id, title: op.title };
     this.pending = true;
     const message = await runNamed(this.close, () => this.open, this.repoId, request);
     this.pending = false;

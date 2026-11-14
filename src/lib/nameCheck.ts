@@ -7,28 +7,28 @@
 export function refNameProblem(name: string, existing: string[], what: "branch" | "tag" = "branch"): string | null {
   const why = formProblem(name);
   if (why) return why;
-  if (existing.includes(name)) return `A ${what} named “${name}” already exists`;
+  if (existing.includes(name)) return `A ${what} named “${name}” already exists.`;
   return null;
 }
 
-/** Why `name` is not a usable ref name, or null. In the core's order, with its words. */
+/** Why `name` is not a usable ref name, or null. In the core's order, with its words; full sentences. */
 function formProblem(name: string): string | null {
-  if (name === "") return "A name is needed";
-  if (name.startsWith("-")) return "It can’t start with “-”";
-  if (name === "HEAD") return "HEAD is git’s name for the current commit";
-  if (name === "@") return "“@” alone is git’s name for HEAD";
+  if (name === "") return "A name is needed.";
+  if (name.startsWith("-")) return "It can’t start with “-”.";
+  if (name === "HEAD") return "HEAD is git’s name for the current commit.";
+  if (name === "@") return "“@” alone is git’s name for HEAD.";
   const odd = /[\u0000-\u001f\u007f ]/.exec(name);
-  if (odd) return odd[0] === " " ? "It can’t contain spaces" : "It can’t contain control characters";
-  if (/[~^:?*[\\]/.test(name)) return "It can’t contain any of ~ ^ : ? * [ \\";
-  if (name.includes("..")) return "It can’t contain “..”";
-  if (name.includes("@{")) return "It can’t contain “@{”";
+  if (odd) return odd[0] === " " ? "It can’t contain spaces." : "It can’t contain control characters.";
+  if (/[~^:?*[\\]/.test(name)) return "It can’t contain any of ~ ^ : ? * [ \\.";
+  if (name.includes("..")) return "It can’t contain “..”.";
+  if (name.includes("@{")) return "It can’t contain “@{”.";
   if (name.startsWith("/") || name.endsWith("/") || name.includes("//")) {
-    return "It can’t start or end with “/” or have “//”";
+    return "It can’t start or end with “/” or have “//”.";
   }
-  if (name.endsWith(".")) return "It can’t end with “.”";
+  if (name.endsWith(".")) return "It can’t end with “.”.";
   for (const part of name.split("/")) {
-    if (part.startsWith(".")) return "No part of it can start with “.”";
-    if (part.endsWith(".lock")) return "No part of it can end with “.lock”";
+    if (part.startsWith(".")) return "No part of it can start with “.”.";
+    if (part.endsWith(".lock")) return "No part of it can end with “.lock”.";
   }
   return null;
 }

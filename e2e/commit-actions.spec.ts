@@ -147,22 +147,22 @@ test("invalid_name_disables_the_button_and_says_why", async ({ gg }) => {
 
   // Nothing typed yet: disabled, and the hint says what is missing.
   await expect(create).toBeDisabled();
-  await expect(d.getByText("A name is needed")).toBeVisible();
+  await expect(d.getByText("A name is needed.")).toBeVisible();
 
   await field.fill("has space");
   await expect(create).toBeDisabled();
-  await expect(d.getByText("It can’t contain spaces")).toBeVisible();
+  await expect(d.getByText("It can’t contain spaces.")).toBeVisible();
   await expect(field).toHaveAttribute("aria-invalid", "true");
   // Enter does not submit while the name is refused.
   await field.press("Enter");
   await expect(d).toBeVisible();
 
   await field.fill("main");
-  await expect(d.getByText("A branch named “main” already exists")).toBeVisible();
+  await expect(d.getByText("A branch named “main” already exists.")).toBeVisible();
   await expect(create).toBeDisabled();
 
   await field.fill("-x");
-  await expect(d.getByText("It can’t start with “-”")).toBeVisible();
+  await expect(d.getByText("It can’t start with “-”.")).toBeVisible();
 
   await field.fill("good-name");
   await expect(create).toBeEnabled();

@@ -43,22 +43,22 @@ describe("refNameProblem", () => {
   });
 
   it("says why, in plain words", () => {
-    expect(refNameProblem("", [])).toBe("A name is needed");
-    expect(refNameProblem("-f", [])).toBe("It can’t start with “-”");
-    expect(refNameProblem("has space", [])).toBe("It can’t contain spaces");
-    expect(refNameProblem("a..b", [])).toBe("It can’t contain “..”");
-    expect(refNameProblem("a~1", [])).toBe("It can’t contain any of ~ ^ : ? * [ \\");
-    expect(refNameProblem("x.lock", [])).toBe("No part of it can end with “.lock”");
-    expect(refNameProblem("HEAD", [])).toBe("HEAD is git’s name for the current commit");
+    expect(refNameProblem("", [])).toBe("A name is needed.");
+    expect(refNameProblem("-f", [])).toBe("It can’t start with “-”.");
+    expect(refNameProblem("has space", [])).toBe("It can’t contain spaces.");
+    expect(refNameProblem("a..b", [])).toBe("It can’t contain “..”.");
+    expect(refNameProblem("a~1", [])).toBe("It can’t contain any of ~ ^ : ? * [ \\.");
+    expect(refNameProblem("x.lock", [])).toBe("No part of it can end with “.lock”.");
+    expect(refNameProblem("HEAD", [])).toBe("HEAD is git’s name for the current commit.");
   });
 
   it("refuses a name that is taken, naming what has it", () => {
-    expect(refNameProblem("main", ["main", "dev"])).toBe("A branch named “main” already exists");
-    expect(refNameProblem("v1", ["v1"], "tag")).toBe("A tag named “v1” already exists");
+    expect(refNameProblem("main", ["main", "dev"])).toBe("A branch named “main” already exists.");
+    expect(refNameProblem("v1", ["v1"], "tag")).toBe("A tag named “v1” already exists.");
     expect(refNameProblem("Main", ["main"])).toBeNull();
   });
 
   it("puts a problem with the name itself before its being taken", () => {
-    expect(refNameProblem("a b", ["a b"])).toBe("It can’t contain spaces");
+    expect(refNameProblem("a b", ["a b"])).toBe("It can’t contain spaces.");
   });
 });

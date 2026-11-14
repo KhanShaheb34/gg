@@ -23,6 +23,9 @@ describe("branchMenu, local branch", () => {
     expect(find(items, "delete").disabledReason).toBe("The current branch cannot be deleted");
     expect(find(items, "merge").disabledReason).toBe("A branch cannot be merged into itself");
     expect(find(items, "rebase").disabledReason).toBe("A branch cannot be rebased onto itself");
+    // Not "Merge main into main…": the items say what they do in general.
+    expect(find(items, "merge").label).toBe("Merge into the current branch…");
+    expect(find(items, "rebase").label).toBe("Rebase the current branch onto this…");
   });
 
   it("a branch checked out in another worktree cannot be checked out, deleted or pulled here", () => {

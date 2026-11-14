@@ -281,7 +281,7 @@ for (const theme of ["light", "dark"] as const) {
 
     // The current branch: a disabled item with its reason.
     await grid.locator('[data-ref="main"]').first().click({ button: "right" });
-    await page.getByRole("menuitem", { name: "Merge main into main…" }).hover();
+    await page.getByRole("menuitem", { name: "Merge into the current branch…" }).hover();
     await shot("menu-branch-current");
     await page.keyboard.press("Escape");
 

@@ -46,10 +46,11 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
       disabledReason: firstReason(label.current ? "The current branch cannot be deleted" : undefined, elsewhere),
     }),
     SEPARATOR,
-    item("merge", `Merge ${name} into ${current}…`, {
+    // On the current branch both are disabled: said in general, not "Merge main into main…".
+    item("merge", label.current ? "Merge into the current branch…" : `Merge ${name} into ${current}…`, {
       disabledReason: firstReason(label.current ? "A branch cannot be merged into itself" : undefined, noCurrent, busy),
     }),
-    item("rebase", `Rebase ${current} onto ${name}…`, {
+    item("rebase", label.current ? "Rebase the current branch onto this…" : `Rebase ${current} onto ${name}…`, {
       disabledReason: firstReason(label.current ? "A branch cannot be rebased onto itself" : undefined, noCurrent, busy),
     }),
     SEPARATOR,

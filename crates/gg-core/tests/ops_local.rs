@@ -405,7 +405,7 @@ async fn merge_no_ff_creates_a_merge_commit_and_ff_does_not() {
     assert!(
         op_records(&h.log, &out)
             .iter()
-            .any(|r| r.args == ["merge", "--no-edit", "--no-ff", "a"])
+            .any(|r| r.args == ["merge", "--no-edit", "--no-ff", "--end-of-options", "a"])
     );
     // No remote: nothing to push to.
     assert!(out.hints.is_empty(), "{:?}", out.hints);
@@ -419,7 +419,7 @@ async fn merge_no_ff_creates_a_merge_commit_and_ff_does_not() {
     assert!(
         op_records(&h.log, &out)
             .iter()
-            .any(|r| r.args == ["merge", "--no-edit", "--ff", "b"])
+            .any(|r| r.args == ["merge", "--no-edit", "--ff", "--end-of-options", "b"])
     );
 }
 
@@ -499,11 +499,15 @@ async fn merge_squash_leaves_changes_staged() {
     assert!(!repo.git(&["diff", "--cached", "--name-only"]).is_empty());
     assert!(!in_git_dir(&repo, "MERGE_HEAD"));
     assert!(out.hints.is_empty());
-    assert!(
-        op_records(&h.log, &out)
-            .iter()
-            .any(|r| r.args == ["merge", "--no-edit", "--ff", "--squash", "feature"])
-    );
+    assert!(op_records(&h.log, &out).iter().any(|r| r.args
+        == [
+            "merge",
+            "--no-edit",
+            "--ff",
+            "--squash",
+            "--end-of-options",
+            "feature"
+        ]));
 }
 
 #[tokio::test]
@@ -913,7 +917,7 @@ async fn cherry_pick_applies_the_commit() {
     assert!(
         op_records(&h.log, &out)
             .iter()
-            .any(|r| r.args == ["cherry-pick", picked.as_str()])
+            .any(|r| r.args == ["cherry-pick", "--end-of-options", picked.as_str()])
     );
 }
 
@@ -929,11 +933,13 @@ async fn cherry_pick_without_committing_stages_the_changes() {
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
     assert!(!repo.git(&["diff", "--cached", "--name-only"]).is_empty());
-    assert!(
-        op_records(&h.log, &out)
-            .iter()
-            .any(|r| r.args == ["cherry-pick", "--no-commit", picked.as_str()])
-    );
+    assert!(op_records(&h.log, &out).iter().any(|r| r.args
+        == [
+            "cherry-pick",
+            "--no-commit",
+            "--end-of-options",
+            picked.as_str()
+        ]));
 }
 
 #[tokio::test]
@@ -990,11 +996,14 @@ async fn cherry_pick_merge_commit_without_mainline_explains() {
     let out = h.run(id, cherry_pick(&merge_commit, Some(1), false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(parents(&repo, "HEAD"), 1);
-    assert!(
-        op_records(&h.log, &out)
-            .iter()
-            .any(|r| r.args == ["cherry-pick", "-m", "1", merge_commit.as_str()])
-    );
+    assert!(op_records(&h.log, &out).iter().any(|r| r.args
+        == [
+            "cherry-pick",
+            "-m",
+            "1",
+            "--end-of-options",
+            merge_commit.as_str()
+        ]));
 
     let err =
         h.m.run_op(id, cherry_pick(&merge_commit, Some(0), false), &[])
@@ -1048,7 +1057,7 @@ async fn revert_undoes_the_commit() {
     assert!(
         op_records(&h.log, &out)
             .iter()
-            .any(|r| r.args == ["revert", "--no-edit", undone.as_str()])
+            .any(|r| r.args == ["revert", "--no-edit", "--end-of-options", undone.as_str()])
     );
 }
 
@@ -1130,7 +1139,7 @@ async fn soft_and_mixed_reset_run_without_confirmation() {
     assert!(
         op_records(&h.log, &out)
             .iter()
-            .any(|r| r.args == ["reset", "--soft", first.as_str()])
+            .any(|r| r.args == ["reset", "--soft", "--end-of-options", first.as_str(), "--"])
     );
 
     repo.git(&["reset", "-q", "--hard", &second]);
@@ -1219,7 +1228,7 @@ async fn hard_reset_needs_confirmation() {
     assert!(
         op_records(&h.log, &out)
             .iter()
-            .any(|r| r.args == ["reset", "--hard", first.as_str()])
+            .any(|r| r.args == ["reset", "--hard", "--end-of-options", first.as_str(), "--"])
     );
 }
 
@@ -1676,4 +1685,31 @@ async fn a_branch_deleted_underneath_fails_plainly_and_touches_nothing_else() {
         );
         assert!(!repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/renamed"]));
     }
+}
+
+/// A file named exactly like the commit a reset, checkout or cherry-pick names cannot make git
+/// take the hash for a path (branch review Minor 5): it goes after `--end-of-options`, and
+/// before `--` where git takes paths.
+#[tokio::test]
+async fn a_file_named_like_the_commit_is_no_ambiguity() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    repo.commit("two");
+    repo.write(&first, "a file named like the commit\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, reset(&first, ResetMode::Soft)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
+    let out = h
+        .run(
+            id,
+            OpRequest::CheckoutCommit {
+                hash: first.clone(),
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(current_branch(&repo), None);
 }

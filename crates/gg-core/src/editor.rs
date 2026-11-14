@@ -238,14 +238,51 @@ fn split_command(command: &str) -> Result<Vec<String>> {
     Ok(words)
 }
 
+/// The program a bare name (`code`, no folder in it) stands for: the first executable file
+/// of that name in an absolute entry of `path` (the given `PATH`, else the app's). A relative
+/// entry (`.`, `bin`, an empty one) is skipped: the editor runs in the worktree, where it
+/// would find a program of the repository's (branch review Minor 7). A name with a folder in
+/// it is the user's own choice, taken as it is. `None` if no entry has it.
+#[cfg(unix)]
+fn resolve_program(program: &OsString, path: Option<&OsString>) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let name = Path::new(program);
+    if name.components().count() != 1 || name.is_absolute() {
+        return Some(name.to_owned());
+    }
+    let path = path.cloned().or_else(|| std::env::var_os("PATH"))?;
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            candidate
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+}
+
 /// Starts `argv` in `cwd` with no input or output, in a process group of its own (so it
 /// outlives a terminal's Ctrl-C), and does not wait for it; a thread reaps it when it ends.
-/// `path` is the `PATH` to find the program with (the login shell's), if known.
+/// `path` is the `PATH` to find the program with (the login shell's), if known; only its
+/// absolute entries (see `resolve_program`).
 fn launch(argv: &[OsString], cwd: &Path, path: Option<OsString>) -> Result<()> {
     let Some((program, args)) = argv.split_first() else {
         return Err(CoreError::new(ErrorCode::BadRequest, "No editor to run."));
     };
-    let mut cmd = Command::new(program);
+    #[cfg(unix)]
+    let resolved = resolve_program(program, path.as_ref()).ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::Io,
+            format!(
+                "The program \u{201c}{}\u{201d} was not found, so nothing was opened. Set \
+                 the editor command in Settings.",
+                program.to_string_lossy()
+            ),
+        )
+    })?;
+    #[cfg(not(unix))]
+    let resolved = program;
+    let mut cmd = Command::new(resolved);
     cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -286,6 +323,35 @@ fn launch(argv: &[OsString], cwd: &Path, path: Option<OsString>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bare program name is never found through a relative `PATH` entry, which would
+    /// resolve inside the worktree the editor runs in (branch review Minor 7).
+    #[cfg(unix)]
+    #[test]
+    fn a_program_is_never_found_through_a_relative_path_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let tool = bin.join("my-editor");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let name = OsString::from("my-editor");
+
+        let relative = OsString::from("bin:.:");
+        assert_eq!(resolve_program(&name, Some(&relative)), None);
+        let absolute = std::env::join_paths([Path::new("bin"), bin.as_path()]).unwrap();
+        assert_eq!(resolve_program(&name, Some(&absolute)), Some(tool.clone()));
+        // A path the user gave is theirs.
+        let given = tool.clone().into_os_string();
+        assert_eq!(resolve_program(&given, Some(&relative)), Some(tool));
+        // Not executable: not it.
+        std::fs::write(bin.join("plain"), "x").unwrap();
+        assert_eq!(
+            resolve_program(&OsString::from("plain"), Some(&absolute)),
+            None
+        );
+    }
 
     #[test]
     fn commands_split_on_whitespace_with_simple_quotes() {

@@ -44,11 +44,15 @@ export function shown(name: string): string {
 export const SEPARATOR: MenuItem = { separator: true };
 
 /**
- * Why HEAD-changing items cannot run now: git is stopped in a merge, rebase, cherry-pick or
- * revert, and the core refuses them until it is continued or aborted (R17). Undefined if not.
+ * Why HEAD- or tree-changing items cannot run now, as the core refuses them: git is stopped
+ * in a merge, rebase, cherry-pick or revert, until it is continued or aborted (R17); or files
+ * still have conflicts nothing in progress explains (a stash pop's), until they are resolved
+ * and staged (R20'). Undefined if neither.
  */
 export function inProgressReason(snap: RepoSnapshot): string | undefined {
-  return snap.inProgress ? `A ${snap.inProgress.kind} is in progress` : undefined;
+  if (snap.inProgress) return `A ${snap.inProgress.kind} is in progress`;
+  if (snap.status.conflicted > 0) return "Files still have conflicts from an earlier step: resolve them first";
+  return undefined;
 }
 
 /** Why there is no current branch to merge or rebase into, or undefined when there is one. */

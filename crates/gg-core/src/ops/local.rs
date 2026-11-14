@@ -75,11 +75,12 @@ pub(crate) async fn checkout_remote(
     .await
 }
 
-/// `checkout --detach <hash>`.
+/// `checkout --detach --end-of-options <hash> --`: the hash after `--end-of-options`, and
+/// `--` after it, so that a file named like it cannot make it ambiguous.
 pub(crate) async fn checkout_commit(ctx: &OpCtx<'_>, hash: &str) -> Result<Step> {
     run(
         ctx,
-        &["checkout", "--detach", hash],
+        &["checkout", "--detach", "--end-of-options", hash, "--"],
         format!(
             "Checked out {}: HEAD is detached (no branch is checked out).",
             short(hash)
@@ -292,7 +293,7 @@ async fn unambiguous<'n>(ctx: &OpCtx<'_>, name: &'n str, full: &'n str) -> Resul
     })
 }
 
-/// `merge --no-edit [--no-ff | --ff] [--squash] [--no-commit] <target>`. `--squash` goes
+/// `merge --no-edit [--no-ff | --ff] [--squash] [--no-commit] --end-of-options <target>`. `--squash` goes
 /// with `--ff`: git refuses it with `--no-ff`, which `merge.ff` may set. `--no-commit` goes
 /// with `--no-ff`, else a fast-forward would commit after all. After a merge that
 /// committed on a branch, push is offered (see [`push_hint`]).
@@ -329,7 +330,7 @@ pub(crate) async fn merge(
     if no_commit {
         args.push("--no-commit");
     }
-    args.push(name);
+    args.extend(["--end-of-options", name]);
 
     let branch = current_branch(ctx).await?;
     let before = head_commit(ctx).await?;
@@ -511,7 +512,7 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
     Ok(autostash_note(Step::Done(done), &out))
 }
 
-/// `cherry-pick [-m N] [--no-commit] <hash>`.
+/// `cherry-pick [-m N] [--no-commit] --end-of-options <hash>`.
 pub(crate) async fn cherry_pick(
     ctx: &OpCtx<'_>,
     hash: &str,
@@ -526,7 +527,7 @@ pub(crate) async fn cherry_pick(
     if no_commit {
         args.push("--no-commit");
     }
-    args.push(hash);
+    args.extend(["--end-of-options", hash]);
     let into = current_branch(ctx).await?;
     let into = into.as_deref().unwrap_or("detached HEAD");
     if let Err(step) = git_may_stop(ctx, &args, false).await? {
@@ -542,14 +543,14 @@ pub(crate) async fn cherry_pick(
     }))
 }
 
-/// `revert --no-edit [-m N] <hash>`.
+/// `revert --no-edit [-m N] --end-of-options <hash>`.
 pub(crate) async fn revert(ctx: &OpCtx<'_>, hash: &str, mainline: Option<u32>) -> Result<Step> {
     let parent = mainline.map(|n| n.to_string());
     let mut args = vec!["revert", "--no-edit"];
     if let Some(n) = &parent {
         args.extend(["-m", n]);
     }
-    args.push(hash);
+    args.extend(["--end-of-options", hash]);
     if let Err(step) = git_may_stop(ctx, &args, false).await? {
         return Ok(step);
     }
@@ -559,8 +560,9 @@ pub(crate) async fn revert(ctx: &OpCtx<'_>, hash: &str, mainline: Option<u32>) -
     )))
 }
 
-/// `reset --soft|--mixed|--hard <hash>` (a hard one only once confirmed; see the
-/// `hard_reset` danger).
+/// `reset --soft|--mixed|--hard --end-of-options <hash> --` (a hard one only once confirmed;
+/// see the `hard_reset` danger): `--` after the hash, so that a file named like it does not
+/// make git refuse it as ambiguous.
 pub(crate) async fn reset(ctx: &OpCtx<'_>, hash: &str, mode: ResetMode) -> Result<Step> {
     let (flag, kept) = match mode {
         ResetMode::Soft => ("--soft", "the changes since are staged"),
@@ -574,7 +576,7 @@ pub(crate) async fn reset(ctx: &OpCtx<'_>, hash: &str, mode: ResetMode) -> Resul
     let what = branch.as_deref().unwrap_or("HEAD");
     run(
         ctx,
-        &["reset", flag, hash],
+        &["reset", flag, "--end-of-options", hash, "--"],
         format!("Reset {what} to {}: {kept}.", short(hash)),
     )
     .await

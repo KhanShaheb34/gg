@@ -583,6 +583,8 @@ async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
     h.m.set_op_delay(Duration::from_millis(300));
+    // HEAD as the UI shows it when the merge is asked for: main, before the checkout runs.
+    let on_main = head_at(repo.path());
 
     let first = tokio::spawn({
         let m = h.m.clone();
@@ -603,7 +605,7 @@ async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
         no_ff: true,
         squash: false,
         no_commit: false,
-        expect_head: head_at(repo.path()),
+        expect_head: on_main,
     };
     let feature = repo.git(&["rev-parse", "feature"]);
     let merge = h.run(id, asked_on_main).await;

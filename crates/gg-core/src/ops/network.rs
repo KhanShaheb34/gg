@@ -280,6 +280,20 @@ async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
     let Some(up) = upstream(ctx, branch).await? else {
         return Ok(no_upstream(branch));
     };
+    // From the repository's config, so checked like every other argument: never an option.
+    if up.remote.starts_with('-') || up.remote_ref.starts_with('-') {
+        return Ok(Step::Failed {
+            message: format!(
+                "The upstream configured for {branch} (branch.{branch}.remote and .merge) is not \
+                 a remote and branch git can be given."
+            ),
+            detail: format!(
+                "remote \u{201c}{}\u{201d}, branch \u{201c}{}\u{201d}\n",
+                up.remote, up.remote_ref
+            ),
+            hints: Vec::new(),
+        });
+    }
     let into = format!("refs/heads/{branch}");
     let refspec = format!("{}:{into}", up.remote_ref);
     let args = ["fetch", "--progress", up.remote.as_str(), refspec.as_str()];

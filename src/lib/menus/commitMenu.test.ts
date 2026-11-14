@@ -22,6 +22,15 @@ describe("commitMenu", () => {
     expect(disabled(items)).toEqual([]);
   });
 
+  it("disables what the core refuses while files still have conflicts nothing in progress explains (R20')", () => {
+    const conflicted = { status: { changed: 1, untracked: 0, conflicted: 1, conflictedPaths: ["a.txt"] } };
+    const items = commitMenu(row(), snap(conflicted));
+    expect(disabled(items)).toEqual(["checkout", "cherry_pick", "revert"]);
+    expect(find(items, "revert").disabledReason).toBe("Files still have conflicts from an earlier step: resolve them first");
+    // A reset is a way out: it stays.
+    expect(find(items, "reset").disabledReason).toBeUndefined();
+  });
+
   it("names the current branch in reset, and marks a hard reset as dangerous", () => {
     const items = commitMenu(row(), snap());
     expect(find(items, "reset").label).toBe("Reset main to here");

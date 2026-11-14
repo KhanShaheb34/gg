@@ -98,7 +98,7 @@ otherwise, whatever the UI sends:
 | Action | Why it is confirmed |
 | --- | --- |
 | Force push | It replaces the remote branch's commits; the confirmation lists the commits that would be lost there. It always uses `--force-with-lease` pinned to the remote commit you were shown: if the remote moved meanwhile, it asks again. |
-| Reset hard | Uncommitted changes to tracked files are discarded and cannot be got back. The confirmation lists them. |
+| Reset hard | Uncommitted changes to tracked files are discarded and cannot be got back, and an untracked file where the target commit has a file is overwritten. The confirmation lists both; other untracked files are kept. |
 | Delete a branch that is not merged | Its commits would be reachable from no branch (they stay in the reflog for a while). The confirmation says when they are safe in the current branch. |
 | Delete a branch on a remote | Other people's clones lose it at their next fetch. The delete is pinned to the remote commit you were shown: if someone pushed to it since your last fetch, it is refused. |
 | Delete a tag on a remote | Other people's clones lose it at their next fetch. |

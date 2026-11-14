@@ -347,3 +347,51 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
         assert!(out.snapshot.in_progress.is_none());
     }
 }
+
+/// O1: a hard reset overwrites an untracked file at a path the target commit tracks. The
+/// confirmation names it as overwritten (and the other untracked files as kept), and a file
+/// made there after the confirmation was shown makes the core ask again.
+#[tokio::test]
+async fn a_hard_reset_names_the_untracked_files_it_overwrites() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    repo.write("x.txt", "the commit's x\n");
+    let later = repo.commit_all("adds x");
+    repo.git(&["reset", "-q", "--hard", &first]);
+    repo.write("other.txt", "untracked, kept\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let asked = h.run(id, reset_hard(&later, here())).await;
+    let yes = confirmed(&asked);
+    let message = &asked.dangers[0].message;
+    assert!(!message.contains("will be overwritten"), "{message}");
+    assert!(message.contains("1 untracked file is kept"), "{message}");
+
+    // The user's own x.txt, made after the confirmation was shown.
+    repo.write("x.txt", "my own x\n");
+    let out = h.run_with(id, reset_hard(&later, here()), &yes).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    let danger = &out.dangers[0];
+    assert!(
+        danger
+            .message
+            .contains("1 untracked file will be overwritten by"),
+        "{}",
+        danger.message
+    );
+    assert!(danger.message.contains("x.txt"), "{}", danger.message);
+    assert!(
+        danger.message.contains("1 other untracked file is kept"),
+        "{}",
+        danger.message
+    );
+    assert_eq!(
+        danger.detail.as_deref(),
+        Some("x.txt (untracked, overwritten)")
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("x.txt")).unwrap(),
+        "my own x\n"
+    );
+}

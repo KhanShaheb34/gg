@@ -264,9 +264,11 @@ fn short_ref(full: &str) -> &str {
 const MAX_LOST_LISTED: usize = 20;
 
 /// `hard_reset`, always: it discards the uncommitted changes, which the message counts and
-/// the detail lists (MAX_LOST_LISTED files, then how many more); untracked files are kept,
-/// which it says too. Its token is HEAD (branch and commit) and the files that differ from
-/// it: confirmed for another branch, another commit or other changes, it is asked again.
+/// the detail lists (MAX_LOST_LISTED files, then how many more). Untracked files are kept,
+/// except those at a path the target commit tracks and HEAD does not: git overwrites them
+/// with the commit's version (O1), and the message and detail name them. Its token is HEAD
+/// (branch and commit) and the files it would discard or overwrite: confirmed for another
+/// branch, another commit or other files, it is asked again.
 async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
     let status = read_status(&ctx.runner, &ctx.cwd).await?;
     let to = crate::ops::local::short(hash);
@@ -277,35 +279,126 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
         1 => format!("A hard reset to {to} discards the uncommitted changes to 1 file."),
         n => format!("A hard reset to {to} discards the uncommitted changes to {n} files."),
     };
-    let kept = match status.untracked {
-        0 => "Untracked files are kept: git leaves them alone.".to_owned(),
-        1 => "1 untracked file is kept: git leaves untracked files alone.".to_owned(),
-        n => format!("{n} untracked files are kept: git leaves untracked files alone."),
+    let overwritten = overwritten_untracked(ctx, hash).await?;
+    let others = status.untracked.saturating_sub(overwritten.len() as u32);
+    let mut kept = match overwritten.len() {
+        0 => String::new(),
+        1 => format!(
+            "1 untracked file will be overwritten by {to}'s version, which tracks it: {}. ",
+            overwritten[0]
+        ),
+        n => format!(
+            "{n} untracked files will be overwritten by {to}'s versions, which tracks them \
+             (listed below). "
+        ),
     };
+    kept.push_str(&match (others, overwritten.is_empty()) {
+        (0, true) => "Untracked files are kept: git leaves them alone.".to_owned(),
+        (0, false) => "No other untracked file is touched.".to_owned(),
+        (1, true) => "1 untracked file is kept: git leaves untracked files alone.".to_owned(),
+        (1, false) => "1 other untracked file is kept.".to_owned(),
+        (n, true) => format!("{n} untracked files are kept: git leaves untracked files alone."),
+        (n, false) => format!("{n} other untracked files are kept."),
+    });
     // The tracked files that differ from HEAD, staged or not: what the reset puts back.
     let out = ctx
         .read(&["diff", "--name-only", "-z", "HEAD", "--"])
         .await?;
     let text = out.text();
-    let files: Vec<&str> = text.split('\0').filter(|f| !f.is_empty()).collect();
-    let detail = (out.code == 0 && !files.is_empty()).then(|| {
-        let mut lines: Vec<String> = files
-            .iter()
-            .take(MAX_LOST_LISTED)
-            .map(|f| (*f).to_owned())
-            .collect();
-        if files.len() > MAX_LOST_LISTED {
-            lines.push(format!("and {} more", files.len() - MAX_LOST_LISTED));
+    let files: Vec<&str> = if out.code == 0 {
+        text.split('\0').filter(|f| !f.is_empty()).collect()
+    } else {
+        Vec::new()
+    };
+    let mut lines: Vec<String> = files
+        .iter()
+        .take(MAX_LOST_LISTED)
+        .map(|f| (*f).to_owned())
+        .collect();
+    if files.len() > MAX_LOST_LISTED {
+        lines.push(format!("and {} more", files.len() - MAX_LOST_LISTED));
+    }
+    for (i, f) in overwritten.iter().enumerate() {
+        if i == MAX_LOST_LISTED {
+            lines.push(format!(
+                "and {} more untracked, overwritten",
+                overwritten.len() - MAX_LOST_LISTED
+            ));
+            break;
         }
-        lines.join("\n")
-    });
-    let token = format!("{}\n{:016x}", head_token(ctx).await?, fnv1a(&out.stdout));
+        lines.push(format!("{f} (untracked, overwritten)"));
+    }
+    let detail = (!lines.is_empty()).then(|| lines.join("\n"));
+    let token = format!(
+        "{}\n{:016x}\n{:016x}",
+        head_token(ctx).await?,
+        fnv1a(&out.stdout),
+        fnv1a(overwritten.join("\0").as_bytes())
+    );
     Ok(Danger {
         kind: DangerKind::HardReset,
         message: format!("{lost} {kept}"),
         detail,
         token: Some(token),
     })
+}
+
+/// Most paths given to one `git ls-files`, so the command line stays short.
+const PATHS_CHUNK: usize = 100;
+
+/// The untracked files a hard reset to `target` overwrites (read-only): paths the target
+/// tracks and HEAD does not (all its paths before the first commit), that are a file or a
+/// link in the worktree, and that are not in the index either (a staged new file counts as
+/// an uncommitted change instead). Sorted.
+async fn overwritten_untracked(ctx: &OpCtx<'_>, target: &str) -> Result<Vec<String>> {
+    let out = if head_commit(ctx).await?.is_some() {
+        ctx.read(&[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=A",
+            "HEAD",
+            target,
+            "--",
+        ])
+        .await?
+    } else {
+        ctx.read(&["ls-tree", "-r", "--name-only", "-z", target])
+            .await?
+    };
+    if out.code != 0 {
+        return Ok(Vec::new());
+    }
+    let text = out.text();
+    let present: Vec<&str> = text
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter(|p| {
+            std::fs::symlink_metadata(ctx.cwd.join(p))
+                .is_ok_and(|m| m.is_file() || m.file_type().is_symlink())
+        })
+        .collect();
+    let mut indexed = std::collections::HashSet::new();
+    for chunk in present.chunks(PATHS_CHUNK) {
+        let mut args = vec!["--literal-pathspecs", "ls-files", "-z", "--"];
+        args.extend(chunk.iter().copied());
+        let listed = ctx.read(&args).await?;
+        let listed_text = listed.text();
+        indexed.extend(
+            listed_text
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    let mut paths: Vec<String> = present
+        .into_iter()
+        .filter(|p| !indexed.contains(*p))
+        .map(str::to_owned)
+        .collect();
+    paths.sort();
+    Ok(paths)
 }
 
 /// `abort`, when git is stopped in something: aborting puts back what it changed, and the

@@ -33,7 +33,7 @@
     {
       mode: "soft",
       title: "Soft",
-      text: (what) => `Moves ${what} only. The changes of the commits after it stay, staged; so do yours.`,
+      text: (what) => `Moves ${what} only. The difference to where it was stays staged; so do your changes.`,
     },
     {
       mode: "mixed",

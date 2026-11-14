@@ -306,6 +306,8 @@ test("reset soft and mixed move the branch and keep the changes", async ({ gg })
   await expect(d.getByRole("heading")).toHaveText(`Reset main to ${target.slice(0, 8)}`);
   await expect(d.getByRole("radio", { name: /^Soft/ })).toBeChecked();
   await expect(d.getByRole("radio", { name: /^Soft/ })).toBeFocused();
+  // True whether or not the commit is behind the branch.
+  await expect(d.getByText("Moves main only. The difference to where it was stays staged; so do your changes.")).toBeVisible();
   await expect(d.getByRole("button", { name: "Reset" })).not.toHaveClass(/danger/);
   await page.keyboard.press("Enter");
 

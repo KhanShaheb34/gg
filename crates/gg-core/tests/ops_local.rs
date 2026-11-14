@@ -4,7 +4,7 @@
 use std::fs;
 use std::time::Duration;
 
-use gg_core::dto::{DangerKind, MergeTargetKind, OpHint, OpRequest, OpStatus, ResetMode};
+use gg_core::dto::{DangerKind, MergeTargetKind, OpHint, OpRequest, OpStatus, PullMode, ResetMode};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::{CmdKind, CommandLog, GitRunner};
 use gg_core::ops::{Step, explain};
@@ -1449,11 +1449,36 @@ async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
     let repo = TestRepo::new();
     unmerged_from_a_stash_pop(&repo);
     let side = repo.git(&["rev-parse", "side"]);
+    let stash = repo.git(&["rev-parse", "stash@{0}"]); // kept: the pop conflicted
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
     let mark = h.last_log_id();
 
     let requests = [
+        OpRequest::CheckoutCommit { hash: side.clone() },
+        OpRequest::CreateBranch {
+            name: "fresh".into(),
+            at: side.clone(),
+            checkout: true,
+        },
+        OpRequest::CheckoutRemote {
+            remote_branch: "origin/side".into(),
+            local_name: "side-copy".into(),
+        },
+        OpRequest::StashApply {
+            stash: stash.clone(),
+        },
+        OpRequest::StashPop {
+            stash: stash.clone(),
+        },
+        OpRequest::StashBranch {
+            stash: stash.clone(),
+            name: "from-stash".into(),
+        },
+        OpRequest::Pull {
+            branch: "main".into(),
+            mode: PullMode::Default,
+        },
         merge(MergeTargetKind::Branch, "side", false, true, false),
         merge_branch("side"),
         rebase("side"),
@@ -1485,6 +1510,28 @@ async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
         b"the user's own edit\n"
     );
     assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+}
+
+/// A hard reset is a way out of such conflicts: once confirmed it still runs.
+#[tokio::test]
+async fn unexplained_conflicts_do_not_stop_a_confirmed_hard_reset() {
+    let repo = TestRepo::new();
+    unmerged_from_a_stash_pop(&repo);
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let reset = OpRequest::Reset {
+        hash: head.clone(),
+        mode: ResetMode::Hard,
+    };
+    let out =
+        h.m.run_op(id, reset, &[DangerKind::HardReset])
+            .await
+            .unwrap();
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["ls-files", "--unmerged"]), "");
+    assert_eq!(fs::read(repo.path().join("notes")).unwrap(), b"two\n");
 }
 
 /// Names at most three of the conflicted files.

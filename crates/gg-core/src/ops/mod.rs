@@ -989,4 +989,69 @@ mod tests {
             "Abort the cherry-pick"
         );
     }
+
+    /// The second line behind the refusal of unexplained conflicts (Task 5 review, item 1b):
+    /// a squash merge reached directly, over unmerged entries it did not make, fails as git
+    /// says and is not undone with `reset --merge`, which would take the user's edit of the
+    /// conflicted file with it.
+    #[tokio::test]
+    async fn a_squash_over_conflicts_it_did_not_make_is_not_undone() {
+        use crate::dto::{MergeTarget, MergeTargetKind};
+        use crate::git::runner::{CommandLog, GitRunner};
+        use crate::testutil::TestRepo;
+
+        let repo = TestRepo::new();
+        repo.write("notes", "one\n");
+        repo.commit_all("notes");
+        repo.branch("side");
+        repo.checkout("side");
+        repo.write("side.txt", "side\n");
+        repo.commit_all("on side");
+        repo.checkout("main");
+        repo.write("notes", "stashed\n");
+        repo.git(&["stash", "push", "-q"]);
+        repo.write("notes", "two\n");
+        repo.commit_all("notes two");
+        assert!(
+            !repo.git_succeeds(&["stash", "pop", "-q"]),
+            "the pop conflicts"
+        );
+        repo.write("notes", "the user's own edit\n");
+
+        let log = CommandLog::new();
+        let runner = GitRunner::detect(log.clone())
+            .await
+            .expect("git is installed");
+        let m = RepoManager::new(runner, Arc::new(RecordingSink::default()));
+        let id = m.open(repo.path()).await.expect("opens").repo_id;
+        let r = m.get(id).expect("open");
+        let ctx = OpCtx {
+            repo: &r,
+            runner: r.runner.for_op(1),
+            cwd: r.worktree.clone(),
+            op_id: 1,
+            sink: m.sink.as_ref(),
+            net_limit: m.net_limit(),
+        };
+        let mark = log.since(0).last().map_or(0, |c| c.id);
+
+        let target = MergeTarget {
+            kind: MergeTargetKind::Branch,
+            name: "side".into(),
+        };
+        let step = local::merge(&ctx, &target, false, true, false)
+            .await
+            .unwrap();
+        assert!(matches!(step, Step::Failed { .. }), "{step:?}");
+        let resets: Vec<_> = log
+            .since(mark)
+            .into_iter()
+            .filter(|c| c.args.first().map(String::as_str) == Some("reset"))
+            .collect();
+        assert!(resets.is_empty(), "nothing undone: {resets:?}");
+        assert_eq!(
+            std::fs::read(repo.path().join("notes")).unwrap(),
+            b"the user's own edit\n"
+        );
+    }
 }

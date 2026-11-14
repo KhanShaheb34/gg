@@ -490,12 +490,22 @@ pub(crate) async fn delete_remote_branch(
     let Step::Failed { detail, .. } = step else {
         return Ok(step);
     };
-    Ok(Step::Failed {
-        message: format!(
+    // Without a lease commit it was never fetched here (M4): nothing of it has been seen.
+    let message = if lease.is_none_or(str::is_empty) {
+        format!(
+            "Branch \u{201c}{branch}\u{201d} on {remote} has not been fetched here, so it was \
+             not deleted (that would delete commits you have not seen). Fetch, look at what is \
+             on it, then decide again."
+        )
+    } else {
+        format!(
             "Branch \u{201c}{branch}\u{201d} on {remote} has changed since your last fetch, so \
              it was not deleted (that would have deleted commits you have not seen). Fetch, \
              look at what is new, then decide again."
-        ),
+        )
+    };
+    Ok(Step::Failed {
+        message,
         detail,
         hints: vec![OpHint::Fetch],
     })

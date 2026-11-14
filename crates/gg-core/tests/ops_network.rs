@@ -1968,3 +1968,32 @@ async fn fetching_into_the_branch_being_rebased_here_says_to_fetch_afterwards() 
         out.message
     );
 }
+
+/// M4: a remote branch never fetched here cannot be deleted from the app (its lease is "not
+/// there"); the refusal says it has not been fetched, not that it changed.
+#[tokio::test]
+async fn deleting_a_remote_branch_never_fetched_says_so() {
+    let (repo, origin, other) = with_remote();
+    other.git(&["checkout", "-q", "-b", "theirs"]);
+    let theirs = other.commit("their branch");
+    other.git(&["push", "-q", "origin", "theirs"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run_confirmed(
+            id,
+            delete_remote_branch("origin", "theirs"),
+            &[DangerKind::DeleteRemoteBranch],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        out.message,
+        "Branch \u{201c}theirs\u{201d} on origin has not been fetched here, so it was not \
+         deleted (that would delete commits you have not seen). Fetch, look at what is on it, \
+         then decide again."
+    );
+    assert_eq!(out.hints, [OpHint::Fetch]);
+    assert_eq!(rev(&origin, "refs/heads/theirs"), theirs, "nothing deleted");
+}

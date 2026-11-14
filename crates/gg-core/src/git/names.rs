@@ -40,7 +40,7 @@ fn problem(name: &str) -> Option<&'static str> {
         return Some("a name is needed");
     }
     if name.starts_with('-') {
-        return Some("it can't start with \u{201c}-\u{201d}");
+        return Some("it can't start with a hyphen");
     }
     if name == "HEAD" {
         return Some("HEAD is git's name for the current commit");
@@ -59,26 +59,26 @@ fn problem(name: &str) -> Option<&'static str> {
         .chars()
         .any(|c| matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
     {
-        return Some("it can't contain any of ~ ^ : ? * [ \\");
+        return Some("it can't contain any of: ~ ^ : ? * [ \\ or a space");
     }
     if name.contains("..") {
-        return Some("it can't contain \u{201c}..\u{201d}");
+        return Some("it can't contain two dots in a row");
     }
     if name.contains("@{") {
-        return Some("it can't contain \u{201c}@{\u{201d}");
+        return Some("it can't contain \u{201c}@{\u{201d} anywhere");
     }
     if name.starts_with('/') || name.ends_with('/') || name.contains("//") {
-        return Some("it can't start or end with \u{201c}/\u{201d} or have \u{201c}//\u{201d}");
+        return Some("it can't start or end with a slash, or have two in a row");
     }
     if name.ends_with('.') {
-        return Some("it can't end with \u{201c}.\u{201d}");
+        return Some("it can't end with a dot");
     }
     for part in name.split('/') {
         if part.starts_with('.') {
-            return Some("no part of it can start with \u{201c}.\u{201d}");
+            return Some("no part of it can start with a dot");
         }
         if part.ends_with(".lock") {
-            return Some("no part of it can end with \u{201c}.lock\u{201d}");
+            return Some("no part of it can end in \u{201c}.lock\u{201d}, git's own ending");
         }
     }
     None

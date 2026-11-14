@@ -44,11 +44,22 @@ describe("refNameProblem", () => {
 
   it("says why, in plain words", () => {
     expect(refNameProblem("", [])).toBe("A name is needed.");
-    expect(refNameProblem("-f", [])).toBe("It can’t start with “-”.");
+    expect(refNameProblem("-f", [])).toBe("It can’t start with a hyphen.");
     expect(refNameProblem("has space", [])).toBe("It can’t contain spaces.");
-    expect(refNameProblem("a..b", [])).toBe("It can’t contain “..”.");
-    expect(refNameProblem("a~1", [])).toBe("It can’t contain any of ~ ^ : ? * [ \\.");
-    expect(refNameProblem("x.lock", [])).toBe("No part of it can end with “.lock”.");
+    expect(refNameProblem("a..b", [])).toBe("It can’t contain two dots in a row.");
+    expect(refNameProblem("a~1", [])).toBe("It can’t contain any of: ~ ^ : ? * [ \\ or a space.");
+    expect(refNameProblem("x.lock", [])).toBe("No part of it can end in “.lock”, git’s own ending.");
+    expect(refNameProblem("x.", [])).toBe("It can’t end with a dot.");
+    expect(refNameProblem("a/.b", [])).toBe("No part of it can start with a dot.");
+    expect(refNameProblem("a//b", [])).toBe("It can’t start or end with a slash, or have two in a row.");
+    expect(refNameProblem("a@{b", [])).toBe("It can’t contain “@{” anywhere.");
+  });
+
+  it("never ends a problem with a quote before its full stop", () => {
+    for (const name of BAD) {
+      const why = refNameProblem(name, []) ?? "";
+      expect(why, JSON.stringify(name)).not.toMatch(/[”"]\.$/);
+    }
     expect(refNameProblem("HEAD", [])).toBe("HEAD is git’s name for the current commit.");
   });
 

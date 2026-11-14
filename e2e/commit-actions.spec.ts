@@ -162,7 +162,7 @@ test("invalid_name_disables_the_button_and_says_why", async ({ gg }) => {
   await expect(create).toBeDisabled();
 
   await field.fill("-x");
-  await expect(d.getByText("It can’t start with “-”.")).toBeVisible();
+  await expect(d.getByText("It can’t start with a hyphen.")).toBeVisible();
 
   await field.fill("good-name");
   await expect(create).toBeEnabled();

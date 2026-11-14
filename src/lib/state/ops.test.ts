@@ -276,12 +276,23 @@ describe("hint buttons", () => {
     expect(app.app.toasts[0].until).toBeUndefined();
   });
 
+  it("goes when the outcome of a later operation on that repository arrives (review item 4)", async () => {
+    const push = { kind: "push", branch: "main", remote: "origin", setUpstream: false } as const;
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 9, hints: [push] }));
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts).toHaveLength(1);
+    // Its snapshot never showed the later one running (it ended at once).
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 11, message: "Reset main." }));
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts.map((t) => t.message)).toEqual(["Reset main."]);
+  });
+
   it("names the branch on its buttons", async () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
       outcome({ hints: [{ kind: "push", branch: "feature/\u202ex", remote: "origin", setUpstream: false }] }),
     );
     await ops.runOp(1, RESET);
-    expect(app.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Push feature/‹U+202E›x"]);
+    expect(app.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Push feature/‹U+202E›x to origin"]);
   });
 
   async function buttonsFor(hints: OpHint[], status: OpOutcome["status"] = "done") {
@@ -293,7 +304,7 @@ describe("hint buttons", () => {
 
   it("push: pushes the branch the core named", async () => {
     const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin", setUpstream: true }]);
-    expect(push.label).toBe("Push main");
+    expect(push.label).toBe("Push main to origin");
     await push.run();
     expect(ipc.api.runOp).toHaveBeenCalledWith(
       1,

@@ -7,7 +7,7 @@ import PullDialog from "../components/dialogs/PullDialog.svelte";
 import { api, CoreError } from "../ipc";
 import { shown } from "../menus/common";
 import type { CoreErrorDto, Danger, DangerKind, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
-import { app, notify, reportError, showLog, type ToastAction } from "./app.svelte";
+import { app, dismissToast, notify, reportError, showLog, type ToastAction } from "./app.svelte";
 import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
 
@@ -94,6 +94,11 @@ function withTokens(request: OpRequest, dangers: Danger[]): OpRequest {
 }
 
 function report(repoId: number, outcome: OpOutcome): void {
+  // What earlier notices offered may no longer hold once a later operation ran there (R30):
+  // its snapshot may never have shown it running.
+  for (const t of app.toasts) {
+    if (t.until && t.until.repoId === repoId && outcome.opId > t.until.opId) dismissToast(t.id);
+  }
   const choose = outcome.hints.find((h) => h.kind === "choose_pull_mode");
   if (outcome.status === "failed" && choose) {
     const upstream = findRepoView(repoId)?.loadedLabel(choose.branch)?.upstream ?? null;
@@ -139,7 +144,7 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
     case "push": {
       const { branch, remote, setUpstream } = hint;
       const push: OpRequest = { op: "push", branch, remote, setUpstream, force: false, lease: null };
-      return [{ label: `Push ${shown(branch)}`, run: () => followUp(repoId, push) }];
+      return [{ label: `Push ${shown(branch)} to ${shown(remote)}`, run: () => followUp(repoId, push) }];
     }
     case "fetch":
       return [{ label: "Fetch", run: () => findRepoView(repoId)?.fetch() }];

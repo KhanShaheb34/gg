@@ -87,7 +87,7 @@ test("checkout_staging_offers_fast_forward_then_merge_then_push", async ({ gg })
   await expect(grid(page).locator('[data-index="0"] .subject')).toHaveText("Merge branch 'feature/login' into staging");
   await expect(label(page, "staging").locator(".ab")).toHaveText("↑3");
 
-  await merged.getByRole("button", { name: "Push staging", exact: true }).click();
+  await merged.getByRole("button", { name: "Push staging to origin", exact: true }).click();
   await expect(notice(page, "Pushed staging to origin.")).toBeVisible();
   // The counts follow without a refresh.
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
@@ -107,7 +107,7 @@ test("the merge notice's push waits for the user, is reached from the keyboard, 
   await pickOnLabel(page, "feature/login", "Merge feature/login into staging…");
   await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
   const merged = notice(page, "Merged feature/login into staging.");
-  const push = merged.getByRole("button", { name: "Push staging", exact: true });
+  const push = merged.getByRole("button", { name: "Push staging to origin", exact: true });
   await expect(push).toBeVisible();
 
   // Long after other notices have gone, it is still there.

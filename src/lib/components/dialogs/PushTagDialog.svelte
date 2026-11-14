@@ -1,17 +1,17 @@
 <!--
-  Push a tag to a remote: the only one, or origin, chosen to begin with. (The menu item is
-  disabled when there is no remote.)
+  Push a tag to a remote: the only one, or origin, chosen to begin with; among several without
+  origin, none until one is chosen (R29). (The menu item is disabled when there is no remote.)
 -->
 <script lang="ts">
   import { defaultRemote, shown } from "../../menus/common";
   import Dialog from "../Dialog.svelte";
+  import RemoteSelect from "./RemoteSelect.svelte";
   import { closeAndRun } from "./run";
 
   type Props = { repoId: number; name: string; remotes: string[]; close: () => void };
 
   let { repoId, name, remotes, close }: Props = $props();
 
-  const uid = Math.random().toString(36).slice(2, 8);
   // svelte-ignore state_referenced_locally
   let remote = $state(defaultRemote(remotes));
 
@@ -22,14 +22,5 @@
 
 <Dialog title="Push tag {shown(name)}" primary="Push tag" valid={remote !== ""} onSubmit={submit} onCancel={close}>
   <p class="dialog-text">Sends the tag to the remote, so that others get it when they fetch.</p>
-  <div class="field">
-    <label class="field-label" for="push-remote-{uid}">Remote</label>
-    <div class="select-wrap">
-      <select id="push-remote-{uid}" class="select" bind:value={remote}>
-        {#each remotes as r (r)}
-          <option value={r}>{shown(r)}</option>
-        {/each}
-      </select>
-    </div>
-  </div>
+  <RemoteSelect {remotes} bind:value={remote} />
 </Dialog>

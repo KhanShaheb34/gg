@@ -97,10 +97,14 @@ export function remoteOf(name: string, remotes: string[]): string | null {
 
 /**
  * The remote a dialog chooses to begin with: `preferred` (a branch's upstream's) if it is
- * one, else origin, else the first; "" only when there is none. Never nothing chosen while
- * there is a remote, so the dialog can go ahead at once.
+ * one, else origin, else the only one. Among several remotes none of which is origin,
+ * nothing ("") is chosen: the user picks one before the dialog can go ahead (R29).
  */
 export function defaultRemote(remotes: string[], preferred: string | null = null): string {
   if (preferred !== null && remotes.includes(preferred)) return preferred;
-  return remotes.includes("origin") ? "origin" : (remotes[0] ?? "");
+  if (remotes.includes("origin")) return "origin";
+  return remotes.length === 1 ? remotes[0] : "";
 }
+
+/** Said under a remote list while nothing is chosen in it (R29). */
+export const CHOOSE_REMOTE = "Choose the remote.";

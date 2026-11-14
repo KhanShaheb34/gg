@@ -1,18 +1,19 @@
 <!--
   Delete a tag here and, if asked, on a remote too (the remote goes first: if it cannot be
   reached, nothing changes). With one remote the choice names it; with several, a list
-  (origin chosen to begin with). Without remotes, only the local tag is deleted.
+  (origin chosen to begin with; without origin, none until one is chosen: R29). Without
+  remotes, only the local tag is deleted.
 -->
 <script lang="ts">
   import { defaultRemote, shown } from "../../menus/common";
   import Dialog from "../Dialog.svelte";
+  import RemoteSelect from "./RemoteSelect.svelte";
   import { closeAndRun } from "./run";
 
   type Props = { repoId: number; name: string; remotes: string[]; close: () => void };
 
   let { repoId, name, remotes, close }: Props = $props();
 
-  const uid = Math.random().toString(36).slice(2, 8);
   let alsoRemote = $state(false);
   // svelte-ignore state_referenced_locally
   let remote = $state(defaultRemote(remotes));
@@ -22,7 +23,14 @@
   }
 </script>
 
-<Dialog title="Delete tag {shown(name)}" primary="Delete tag" danger onSubmit={submit} onCancel={close}>
+<Dialog
+  title="Delete tag {shown(name)}"
+  primary="Delete tag"
+  danger
+  valid={!alsoRemote || remote !== ""}
+  onSubmit={submit}
+  onCancel={close}
+>
   <p class="dialog-text">The tag is deleted from this repository. The commit it marks stays.</p>
   {#if remotes.length > 0}
     <label class="check-row">
@@ -33,15 +41,8 @@
       </span>
     </label>
     {#if remotes.length > 1}
-      <div class="field remote">
-        <label class="field-label" for="delete-remote-{uid}">Remote</label>
-        <div class="select-wrap">
-          <select id="delete-remote-{uid}" class="select" bind:value={remote} disabled={!alsoRemote}>
-            {#each remotes as r (r)}
-              <option value={r}>{shown(r)}</option>
-            {/each}
-          </select>
-        </div>
+      <div class="remote">
+        <RemoteSelect {remotes} bind:value={remote} disabled={!alsoRemote} />
       </div>
     {/if}
   {/if}
@@ -52,7 +53,7 @@
     margin-left: 23px;
   }
 
-  .remote:has(select:disabled) {
+  .remote :global(.field:has(select:disabled)) {
     opacity: 0.55;
   }
 </style>

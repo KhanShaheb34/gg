@@ -1,6 +1,6 @@
 <!--
   Push a local branch: to which remote (its upstream's to begin with, else origin, else the
-  first), where on it that goes, said plainly ("origin/feature": the upstream when it is on
+  only one; among several without origin, none until one is chosen: R29), where on it that goes, said plainly ("origin/feature": the upstream when it is on
   that remote, else the branch of the same name), whether that becomes its upstream, and
   force (with lease), off to begin with. A branch without an upstream always gets this one
   (the core sets it), so the choice only matters when pushing to another remote than the
@@ -10,6 +10,7 @@
 <script lang="ts">
   import { defaultRemote, remoteOf, shown } from "../../menus/common";
   import Dialog from "../Dialog.svelte";
+  import RemoteSelect from "./RemoteSelect.svelte";
   import { closeAndRun } from "./run";
 
   type Props = {
@@ -23,7 +24,6 @@
 
   let { repoId, branch, upstream, remotes, close }: Props = $props();
 
-  const uid = Math.random().toString(36).slice(2, 8);
   // svelte-ignore state_referenced_locally
   const upstreamRemote = upstream === null ? null : remoteOf(upstream, remotes);
   // svelte-ignore state_referenced_locally
@@ -58,20 +58,15 @@
   onSubmit={submit}
   onCancel={close}
 >
-  <div class="field first">
-    <label class="field-label" for="push-remote-{uid}">Remote</label>
-    <div class="select-wrap">
-      <select id="push-remote-{uid}" class="select" bind:value={remote}>
-        {#each remotes as r (r)}
-          <option value={r}>{shown(r)}</option>
-        {/each}
-      </select>
+  <div class="first">
+    <RemoteSelect {remotes} bind:value={remote} />
+  </div>
+  {#if remote !== ""}
+    <div class="dialog-target to">
+      <span class="dialog-target-label">To</span>
+      <span class="dialog-ref">{shown(target)}</span>
     </div>
-  </div>
-  <div class="dialog-target to">
-    <span class="dialog-target-label">To</span>
-    <span class="dialog-ref">{shown(target)}</span>
-  </div>
+  {/if}
   <label class="check-row">
     <input
       class="checkbox"

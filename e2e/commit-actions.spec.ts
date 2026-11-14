@@ -502,7 +502,7 @@ test("push a tag with several remotes: origin is chosen, another can be", async 
   expect(gg.git("small", "ls-remote", "--tags", "backup").trim()).toContain("refs/tags/v1");
 });
 
-test("several remotes, none named origin: the first is chosen, so the dialogs can go ahead at once", async ({ gg }) => {
+test("several remotes, none named origin: nothing is chosen until the user picks one (R29)", async ({ gg }) => {
   const { page } = gg;
   const dir = gg.repoPath("small");
   gg.git("small", "remote", "rename", "origin", "upstream");
@@ -513,15 +513,33 @@ test("several remotes, none named origin: the first is chosen, so the dialogs ca
   await grid(page).evaluate((el) => (el.scrollTop = el.scrollHeight));
 
   await pickOnLabel(page, "v1", "Push…");
-  await expect(dialog(page).getByRole("combobox", { name: "Remote" })).toHaveValue("backup");
+  const remote = dialog(page).getByRole("combobox", { name: "Remote" });
+  await expect(remote).toHaveValue("");
+  await expect(dialog(page).getByText("Choose the remote.")).toBeVisible();
+  await expect(dialog(page).getByRole("button", { name: "Push tag" })).toBeDisabled();
+  await remote.selectOption("backup");
+  await expect(dialog(page).getByText("Choose the remote.")).toHaveCount(0);
   await expect(dialog(page).getByRole("button", { name: "Push tag" })).toBeEnabled();
   await page.keyboard.press("Escape");
 
   await pickOnLabel(page, "v1", "Delete…");
   const d = page.getByRole("alertdialog");
+  await expect(d.getByRole("button", { name: "Delete tag" })).toBeEnabled();
   await d.getByRole("checkbox", { name: "Also delete it on a remote" }).check();
-  await expect(d.getByRole("combobox", { name: "Remote" })).toHaveValue("backup");
+  await expect(d.getByRole("combobox", { name: "Remote" })).toHaveValue("");
+  await expect(d.getByRole("button", { name: "Delete tag" })).toBeDisabled();
+  await d.getByRole("combobox", { name: "Remote" }).selectOption("upstream");
+  await expect(d.getByRole("button", { name: "Delete tag" })).toBeEnabled();
   await page.keyboard.press("Escape");
+
+  // A branch without an upstream: nothing chosen either.
+  await grid(page).evaluate((el) => (el.scrollTop = 0));
+  await pickOnLabel(page, "feature/login", "Push…");
+  await expect(remote).toHaveValue("");
+  await expect(dialog(page).getByRole("button", { name: "Push", exact: true })).toBeDisabled();
+  await remote.selectOption("backup");
+  await expect(dialog(page).getByText("backup/feature/login")).toBeVisible();
+  await expect(dialog(page).getByRole("button", { name: "Push", exact: true })).toBeEnabled();
 });
 
 test("delete a tag in a repository without remotes: no remote to choose", async ({ gg }) => {

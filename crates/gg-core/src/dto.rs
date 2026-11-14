@@ -615,9 +615,10 @@ pub struct Danger {
     pub kind: DangerKind,
     pub message: String,
     pub detail: Option<String>,
-    /// The state the message was worked out from (R39): `force_push` and
-    /// `delete_remote_branch`, the remote-tracking commit (`null` without one), which is
-    /// also the lease git checks; `hard_reset`, HEAD and the files it would discard;
+    /// The state the message was worked out from (R39): `force_push`, the remote-tracking
+    /// commit (empty without one), which is the lease git checks, and the local tip pushed,
+    /// on two lines; `delete_remote_branch`, the remote-tracking commit (`null` without one),
+    /// which is also the lease; `hard_reset`, HEAD and the files it would discard;
     /// `delete_unmerged_branch`, the branch's tip; `drop_stash`, the stash's commit;
     /// `abort`, what is stopped and HEAD; `skip_discards`, HEAD and the files whose changes go.
     /// Confirming sends it back with its kind; if it no

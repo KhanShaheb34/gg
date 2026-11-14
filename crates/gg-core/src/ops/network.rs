@@ -165,8 +165,9 @@ fn pushed_nothing(out: &GitOutput) -> bool {
 /// (its upstream there; see [`push_target`]). A branch without an upstream gets one (the
 /// branch pushed to): a pushed branch should know where it was pushed. An existing upstream
 /// is never changed. `force` only once confirmed with a `lease` that is still the
-/// remote-tracking commit (see the `force_push` danger); git then refuses unless the remote
-/// branch is exactly there (no lease: unless it does not exist).
+/// remote-tracking commit and a `tip` that is still the local branch's (see the `force_push`
+/// danger); git then refuses unless the remote branch is exactly there (an empty lease:
+/// unless it does not exist), and `tip` is what is pushed.
 pub(crate) async fn push(
     ctx: &OpCtx<'_>,
     branch: &str,
@@ -174,10 +175,17 @@ pub(crate) async fn push(
     to: Option<&str>,
     force: bool,
     lease: Option<&str>,
+    tip: Option<&str>,
 ) -> Result<Step> {
     let set_upstream = upstream(ctx, branch).await?.is_none();
     let target = push_target(branch, remote, to);
-    let refspec = format!("refs/heads/{branch}:{}", target.remote_ref);
+    // A force push sends the tip that was confirmed (M1), unless it sets the upstream, which
+    // takes the branch's name (the tip was checked in this turn all the same).
+    let source = match tip {
+        Some(tip) if force && !set_upstream => tip.to_owned(),
+        _ => format!("refs/heads/{branch}"),
+    };
+    let refspec = format!("{source}:{}", target.remote_ref);
     let lease_arg = format!(
         "--force-with-lease={}:{}",
         target.remote_ref,

@@ -128,8 +128,10 @@ const MAX_COMMITS_LISTED: &str = "10";
 /// `force_push`, always: it replaces the push's target on the remote (see
 /// [`push_target`]) with the local branch. The message counts the commits there that the
 /// local branch lacks, as of the last fetch, which a force push discards (the detail lists
-/// them). Its token is that remote-tracking commit: the push runs only if it is confirmed
-/// with that token, and git refuses unless the remote branch is still there.
+/// them). Its token is that remote-tracking commit (empty when there is none) and the local
+/// branch's tip, on two lines (M1): the push runs only if it is confirmed with both, pushes
+/// that tip, and leases the remote branch on that commit, so git refuses unless it is still
+/// there. A local branch moved since (a queued reset) is asked about again.
 async fn force_push(
     ctx: &OpCtx<'_>,
     branch: &str,
@@ -140,7 +142,14 @@ async fn force_push(
     let tracking = target.tracking;
     let local = format!("refs/heads/{branch}");
     let shown = target.short;
-    let Some(token) = ref_commit(ctx, &tracking).await? else {
+    let tip = ref_commit(ctx, &local).await?;
+    let seen = ref_commit(ctx, &tracking).await?;
+    let token = Some(format!(
+        "{}\n{}",
+        seen.as_deref().unwrap_or(""),
+        tip.as_deref().unwrap_or("")
+    ));
+    let Some(seen) = seen else {
         let there = target
             .remote_ref
             .strip_prefix("refs/heads/")
@@ -153,13 +162,14 @@ async fn force_push(
                  push is refused."
             ),
             detail: None,
-            token: None,
+            token,
         });
     };
-    // From the token's commit, not the ref: a fetch could move it between these reads.
-    let mut only_there = vec![token.as_str()];
-    if verifies(ctx, &local).await? {
-        only_there.extend(["--not", local.as_str()]);
+    // From the token's commits, not the refs: a fetch or a reset could move them between
+    // these reads.
+    let mut only_there = vec![seen.as_str()];
+    if let Some(tip) = &tip {
+        only_there.extend(["--not", tip.as_str()]);
     }
     let mut count = vec!["rev-list", "--count"];
     count.extend(&only_there);
@@ -197,7 +207,7 @@ async fn force_push(
         kind: DangerKind::ForcePush,
         message,
         detail,
-        token: Some(token),
+        token,
     })
 }
 

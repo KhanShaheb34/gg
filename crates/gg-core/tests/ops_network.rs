@@ -267,10 +267,15 @@ async fn force_push_needs_confirmation_and_uses_lease() {
         h.writes_since(mark)
     );
     assert_ne!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
-    // The token is the remote-tracking commit the count was made from: the count and the
-    // list name that commit, not the ref, which could move between the reads.
+    // The token is the remote-tracking commit the count was made from and the local tip
+    // (M1): the count and the list name those commits, not the refs, which could move
+    // between the reads.
     let token = rev(&repo, "refs/remotes/origin/main");
-    assert_eq!(out.dangers[0].token.as_deref(), Some(token.as_str()));
+    let local = rev(&repo, "main");
+    assert_eq!(
+        out.dangers[0].token.as_deref(),
+        Some(format!("{token}\n{local}").as_str())
+    );
     let reads: Vec<Vec<String>> = h
         .log
         .since(mark)
@@ -307,6 +312,11 @@ async fn force_push_needs_confirmation_and_uses_lease() {
     assert_eq!(pushes.len(), 1, "{pushes:?}");
     let lease = format!("--force-with-lease=refs/heads/main:{token}");
     assert!(pushes[0].contains(&lease), "{pushes:?}");
+    // What is pushed is the tip that was confirmed.
+    assert!(
+        pushes[0].contains(&format!("{local}:refs/heads/main")),
+        "{pushes:?}"
+    );
     assert!(
         pushes[0]
             .iter()
@@ -368,7 +378,8 @@ async fn confirming_with_an_old_lease_asks_again() {
     assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
     assert!(h.writes_since(mark).is_empty(), "nothing ran");
     assert_eq!(rev(&origin, "refs/heads/main"), unseen, "nothing discarded");
-    assert_eq!(out.dangers[0].token.as_deref(), Some(unseen.as_str()));
+    let now = out.dangers[0].token.clone().expect("a token");
+    assert_eq!(now.lines().next(), Some(unseen.as_str()));
     assert!(out.dangers[0].message.contains("2 commits"), "{out:?}");
     assert!(
         out.dangers[0]
@@ -380,10 +391,38 @@ async fn confirming_with_an_old_lease_asks_again() {
     );
 
     let out = h
-        .run_with(id, force_push("main", "origin"), &with_lease(Some(&unseen)))
+        .run_with(id, force_push("main", "origin"), &with_lease(Some(&now)))
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
+}
+
+/// M1: the confirmation counted what the remote would lose against the local tip it saw. If
+/// the local branch moves before the confirmation arrives (a queued reset, a terminal), the
+/// core asks again with the new count, and nothing is pushed.
+#[tokio::test]
+async fn a_force_push_confirmed_before_the_local_branch_moved_is_asked_again() {
+    let (repo, origin, other) = with_remote();
+    diverged_from_remote(&repo, &other);
+    repo.commit("mine two");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let asked = h.run(id, force_push("main", "origin")).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation);
+    let token = asked.dangers[0].token.clone().unwrap();
+
+    // The local branch goes back a commit before the confirmation arrives.
+    repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    let there = rev(&origin, "refs/heads/main");
+    let mark = h.last_log_id();
+    let out = h
+        .run_with(id, force_push("main", "origin"), &with_lease(Some(&token)))
+        .await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert!(h.writes_since(mark).is_empty(), "nothing pushed");
+    assert_eq!(rev(&origin, "refs/heads/main"), there);
+    assert_ne!(out.dangers[0].token.as_deref(), Some(token.as_str()));
 }
 
 /// Without a remote-tracking branch the token is null and the lease is "the branch must
@@ -398,7 +437,11 @@ async fn force_push_without_a_tracking_branch() {
     repo.git(&["branch", "fresh"]);
     let out = h.run(id, force_push("fresh", "origin")).await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation);
-    assert_eq!(out.dangers[0].token, None);
+    // Nothing fetched: no remote commit in the token, only the local tip.
+    assert_eq!(
+        out.dangers[0].token.as_deref(),
+        Some(format!("\n{}", rev(&repo, "fresh")).as_str())
+    );
     let out = h
         .run_confirmed(id, force_push("fresh", "origin"), &[DangerKind::ForcePush])
         .await;
@@ -533,10 +576,11 @@ async fn force_push_to_the_upstream_picked_in_the_dialog() {
     assert_eq!(out.title, "Force push feat to origin/feature");
     assert!(out.dangers[0].message.contains("origin/feature"), "{out:?}");
     let token = out.dangers[0].token.clone().unwrap();
-    assert_eq!(token, rev(&repo, "refs/remotes/origin/feature"));
+    let seen = rev(&repo, "refs/remotes/origin/feature");
+    assert_eq!(token, format!("{seen}\n{}", rev(&repo, "feat")));
     let out = h.run_with(id, force, &with_lease(Some(&token))).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
-    let lease = format!("--force-with-lease=refs/heads/feature:{token}");
+    let lease = format!("--force-with-lease=refs/heads/feature:{seen}");
     assert!(op_args(&h, &out).iter().any(|a| a.contains(&lease)));
     assert_eq!(rev(&origin, "refs/heads/feature"), rev(&repo, "feat"));
     assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/feat"]));

@@ -462,9 +462,15 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 fixed(title),
                 body(move |ctx, dangers| {
                     Box::pin(async move {
-                        // Confirmed with the token the user saw: that is the lease (R11).
-                        let lease = token_of(dangers, DangerKind::ForcePush);
-                        network::push(ctx, &branch, &remote, to.as_deref(), force, lease).await
+                        // Confirmed with the token the user saw: the remote commit it leases on
+                        // (R11) and the local tip it pushes (M1).
+                        let token = token_of(dangers, DangerKind::ForcePush);
+                        let (lease, tip) = token
+                            .and_then(|t| t.split_once('\n'))
+                            .map_or((None, None), |(l, t)| {
+                                (Some(l), Some(t).filter(|t| !t.is_empty()))
+                            });
+                        network::push(ctx, &branch, &remote, to.as_deref(), force, lease, tip).await
                     })
                 }),
             )

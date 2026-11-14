@@ -42,7 +42,11 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
       ? scroller.querySelector<HTMLElement>(`.ref[data-ref="${CSS.escape(name.slice(7))}"] .remotes`)
       : null);
   const rowWith = (subject: string) =>
-    [...scroller.querySelectorAll<HTMLElement>('[role="row"]')].find((r) => text(r.querySelector(".subject")) === subject);
+    [...scroller.querySelectorAll<HTMLElement>('[role="row"]')].find((r) => {
+      const shown = text(r.querySelector(".subject"));
+      // "Uncommitted changes (2)": the count follows the subject.
+      return shown === subject || shown.startsWith(`${subject} (`);
+    });
   const menu = () => document.querySelector<HTMLElement>('[data-testid="context-menu"]');
   const dialog = () => document.querySelector<HTMLElement>('[role="dialog"], [role="alertdialog"]');
   const notices = () => [...document.querySelectorAll<HTMLElement>(".toast")];
@@ -357,9 +361,16 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
   // --- The command log -------------------------------------------------------------------------
   await step("command log by shortcut, Show log from a failure", async () => {
     const mac = navigator.platform.toLowerCase().includes("mac");
+    const logPanel = () => document.querySelector<HTMLElement>('[data-testid="command-log"]');
+    // The panel is remembered open or closed across launches: closed first, then the shortcut.
+    if (logPanel()) document.querySelector<HTMLButtonElement>('button[aria-label="Close command log"]')?.click();
+    await until("the log closed", () => !logPanel());
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "L", shiftKey: true, metaKey: mac, ctrlKey: !mac, bubbles: true }));
-    const log = await until("the log panel", () => document.querySelector<HTMLElement>('[data-testid="command-log"]'));
-    const ops = await until("its operations", () => (log.querySelectorAll(".op").length >= 10 ? log.querySelectorAll(".op") : null));
+    await until("the log panel", logPanel);
+    const ops = await until("its operations", () => {
+      const all = logPanel()?.querySelectorAll(".op");
+      return all && all.length >= 10 ? all : null;
+    });
     await shot("log-open");
     // A failure: checking out staging with the uncommitted change in the way.
     await menuOn(() => label("staging"), "the staging label");
@@ -368,7 +379,7 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
     const n = await notice(/would be overwritten|in the way|changes/i);
     const show = await until("Show log", () => [...n.querySelectorAll<HTMLButtonElement>("button")].find((b) => text(b) === "Show log"));
     show.click();
-    await until("the highlighted entry", () => log.querySelector(".op.target"));
+    await until("the highlighted entry", () => logPanel()?.querySelector(".op.target"));
     await shot("log-show-failure");
     return `${ops.length} operations listed`;
   });

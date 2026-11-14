@@ -12,9 +12,9 @@ use crate::ops::explain::{NO_BRANCH, nothing_to_do};
 use crate::ops::progress::unmerged_paths;
 use crate::ops::{OpCtx, Step, explain, network};
 
-/// The first 7 characters of `hash`, for messages.
+/// The first 8 characters of `hash`, for messages (as the UI shows hashes).
 pub(crate) fn short(hash: &str) -> &str {
-    hash.get(..7).unwrap_or(hash)
+    hash.get(..8).unwrap_or(hash)
 }
 
 /// Runs `args`; done with `done` if git exits 0, else as [`explain`] says.

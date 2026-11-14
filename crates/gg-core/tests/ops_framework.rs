@@ -266,7 +266,7 @@ async fn commit_fields_take_only_full_hashes() {
         "main..t".to_owned(),
         "HEAD".to_owned(),
         "t".to_owned(),
-        head[..7].to_owned(),
+        head[..8].to_owned(),
         head.to_uppercase(),
         format!("{head}^"),
         format!("{head}0"),

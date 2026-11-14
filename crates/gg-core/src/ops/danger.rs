@@ -169,7 +169,13 @@ async fn force_push(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<Dange
     let detail = if n == 0 {
         None
     } else {
-        let mut log = vec!["log", "--format=%h %s", "-n", MAX_COMMITS_LISTED];
+        let mut log = vec![
+            "log",
+            "--abbrev=8",
+            "--format=%h %s",
+            "-n",
+            MAX_COMMITS_LISTED,
+        ];
         log.extend(&only_there);
         let listed = ctx.read(&log).await?.text();
         Some(listed).filter(|l| !l.trim().is_empty())
@@ -243,7 +249,7 @@ const MAX_LOST_LISTED: usize = 20;
 /// which it says too.
 async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
     let status = read_status(&ctx.runner, &ctx.cwd).await?;
-    let to = hash.get(..7).unwrap_or(hash);
+    let to = crate::ops::local::short(hash);
     let lost = match status.changed {
         0 => format!(
             "A hard reset to {to} moves HEAD there; there are no uncommitted changes to lose."

@@ -23,7 +23,7 @@ const item = (page: Page, name: string) => page.getByRole("menuitem", { name, ex
 const dialog = (page: Page) => page.getByRole("dialog");
 const notices = (page: Page) => page.getByRole("region", { name: "Notifications" }).locator(".toast");
 const notice = (page: Page, text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
-const short = (hash: string) => hash.slice(0, 7);
+const short = (hash: string) => hash.slice(0, 8);
 /** A red button takes no click just after its dialog opens (see Dialog): wait that out. */
 const armed = (page: Page) => page.waitForTimeout(450);
 
@@ -130,7 +130,7 @@ test("create a tag: lightweight without a message, annotated with one", async ({
   await expect(d.getByText("Annotated: it records the message, who made it and when")).toBeVisible();
   // Enter in the message is a new line; Cmd/Ctrl+Enter creates.
   await d.getByRole("textbox", { name: "Message" }).press("ControlOrMeta+Enter");
-  await expect(notice(page, /Created tag v3 at [0-9a-f]{7}\./)).toBeVisible();
+  await expect(notice(page, /Created tag v3 at [0-9a-f]{8}\./)).toBeVisible();
   await expect(rowOf(page, "Add part 19").locator('[data-ref="v3"]')).toBeVisible();
   expect(gg.git("small", "cat-file", "-t", "refs/tags/v3").trim()).toBe("tag");
   expect(gg.git("small", "tag", "-l", "--format=%(contents)", "v3").trim()).toBe("Release three\n\nWith notes.");
@@ -240,7 +240,7 @@ test("cherry-pick a merge commit: the parent is chosen, each shown by short hash
   await expect(two).not.toBeChecked();
   await d.getByRole("button", { name: "Cherry-pick" }).click();
 
-  await expect(notice(page, /Cherry-picked [0-9a-f]{7} onto main\./)).toBeVisible();
+  await expect(notice(page, /Cherry-picked [0-9a-f]{8} onto main\./)).toBeVisible();
   await expect(topSubject(page)).toHaveText("Merge branch 'feature' into integration");
   expect(gg.git("picks", "show", "--name-only", "--format=", "HEAD").trim()).toBe("feature.txt");
 });

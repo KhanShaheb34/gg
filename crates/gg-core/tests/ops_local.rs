@@ -892,7 +892,7 @@ async fn cherry_pick_applies_the_commit() {
 
     let out = h.run(id, cherry_pick(&picked, None, false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
-    assert_eq!(out.title, format!("Cherry-pick {}", &picked[..7]));
+    assert_eq!(out.title, format!("Cherry-pick {}", &picked[..8]));
     assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), before);
     assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "on feature");
     assert!(

@@ -419,7 +419,7 @@
     view.select(hit.row.hash, hit.index);
     scroller.focus({ preventScroll: true });
     const { items, onPick } = menuAt(e.target as Element, hit.row);
-    openMenu({ x: e.clientX, y: e.clientY }, items, onPick);
+    openMenu({ x: e.clientX, y: e.clientY }, items, onPick, { repoId: view.repoId });
   }
 
   /** The menu key or Shift+F10: the selected row's menu, below the start of its description. */
@@ -438,7 +438,7 @@
     if (!el) return;
     const r = el.getBoundingClientRect();
     const { items, onPick } = menuAt(el, row);
-    openMenu({ x: r.left + 4, y: r.bottom }, items, onPick, { keyboard: true });
+    openMenu({ x: r.left + 4, y: r.bottom }, items, onPick, { keyboard: true, repoId: view.repoId });
   }
 
   function onKeydown(e: KeyboardEvent) {

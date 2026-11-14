@@ -228,6 +228,23 @@ test("the menu closes on scroll, an outside click and the window losing focus, a
   expect(shown.y + shown.height).toBeLessThanOrEqual(viewport.height);
 });
 
+test("the menu closes when its repository changes under it", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await rowOf(page, "Add part 18").locator(".subject").click({ button: "right" });
+  await expect(menu(page)).toBeVisible();
+  gg.git("small", "commit", "-q", "--allow-empty", "-m", "Made elsewhere"); // the graph reloads
+  await expect(rowOf(page, "Made elsewhere")).toBeVisible();
+  await expect(menus(page)).toHaveCount(0);
+
+  // An operation that starts and ends closes it too.
+  await rowOf(page, "Add part 18").locator(".subject").click({ button: "right" });
+  await expect(menu(page)).toBeVisible();
+  await runOp(page, { op: "checkout_commit", hash: gg.git("small", "rev-parse", "HEAD~1").trim() });
+  await expect(menus(page)).toHaveCount(0);
+});
+
 test("a dangerous request asks first: Cancel has the focus and runs nothing; confirming runs it", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

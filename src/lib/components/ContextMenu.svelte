@@ -1,7 +1,9 @@
 <!--
   The context menu (openMenu in state/overlays): one panel at the pointer, kept inside the
   window, and a panel per open submenu beside its item. It closes on Escape, a click or
-  scroll elsewhere, or the window losing focus; focus then goes back where it was.
+  scroll elsewhere, the window losing focus, or its repository changing under it (new rows,
+  an operation starting or ending): its items may no longer apply. Focus then goes back
+  where it was.
 
   Keys act on the deepest open panel: arrows, Home and End move; typing jumps to the next
   item starting with what was typed; Enter or Space picks; ArrowRight opens a submenu and
@@ -12,6 +14,7 @@
   import { tick } from "svelte";
   import type { MenuItem } from "../menus/types";
   import { closeMenu, overlays } from "../state/overlays.svelte";
+  import { findRepoView } from "../state/repo.svelte";
 
   type Item = Extract<MenuItem, { id: string }>;
   /** Where a panel goes, worked out once its size is known. */
@@ -65,6 +68,22 @@
       },
     ];
     void tick().then(() => focusActive());
+  });
+
+  /** What the menu's items were made from: its repository's rows and running operation. */
+  function stateOf(repoId: number | null): string | null {
+    const snap = repoId === null ? undefined : findRepoView(repoId)?.snapshot;
+    return snap ? `${snap.generation}/${snap.op?.id ?? 0}/${snap.inProgress?.kind ?? ""}` : null;
+  }
+
+  // The repository changed under the open menu: close it.
+  let openedOn: { id: number; state: string | null } | null = null;
+  $effect(() => {
+    const menu = overlays.menu;
+    if (!menu) return;
+    const state = stateOf(menu.repoId);
+    if (openedOn?.id !== menu.id) openedOn = { id: menu.id, state };
+    else if (state !== openedOn.state) closeMenu();
   });
 
   // The reason of the deepest active item that cannot apply, beside its panel.

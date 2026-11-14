@@ -17,6 +17,8 @@ export type OpenMenu = {
   returnFocus: HTMLElement | null;
   /** Opened from the keyboard: its first item is active at once. */
   keyboard: boolean;
+  /** The repository its items act on: the menu closes when that changes under it. */
+  repoId: number | null;
 };
 
 export type OpenDialog = {
@@ -45,13 +47,14 @@ let nextId = 1;
  * Opens a menu of `items` at the pointer (`at`, viewport px; it is kept inside the window).
  * Picking an item closes the menu, puts focus back where it was, then calls `onPick` with
  * the item's id. Opening another menu replaces this one. `keyboard`: opened from the
- * keyboard (the menu key), so its first item is made active.
+ * keyboard (the menu key), so its first item is made active. `repoId`: the repository its
+ * items act on; the menu closes when its rows change or an operation starts or ends there.
  */
 export function openMenu(
   at: { x: number; y: number },
   items: MenuItem[],
   onPick: (id: string) => void,
-  { keyboard = false }: { keyboard?: boolean } = {},
+  { keyboard = false, repoId = null }: { keyboard?: boolean; repoId?: number | null } = {},
 ): void {
   const focused = document.activeElement;
   overlays.menu = {
@@ -62,6 +65,7 @@ export function openMenu(
     onPick,
     returnFocus: focused instanceof HTMLElement && focused !== document.body ? focused : null,
     keyboard,
+    repoId,
   };
 }
 

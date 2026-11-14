@@ -78,12 +78,15 @@
 
   // An operation starting or ending closes the menu; new rows close it if its target went.
   let openedOn: { id: number; state: { generation: number; op: number } | null } | null = null;
+  /** The generation of rows the open menu has found its target still in (tests wait for it). */
+  let checkedGeneration: number | null = $state(null);
   $effect(() => {
     const menu = overlays.menu;
     if (!menu) return;
     const state = stateOf(menu.repoId);
     if (openedOn?.id !== menu.id) {
       openedOn = { id: menu.id, state };
+      checkedGeneration = state?.generation ?? null;
       return;
     }
     const before = openedOn.state;
@@ -93,9 +96,15 @@
       return;
     }
     if (state.op !== before.op) closeMenu();
-    else if (state.generation !== before.generation && menu.alive) {
+    else if (state.generation !== before.generation) {
+      if (!menu.alive) {
+        checkedGeneration = state.generation;
+        return;
+      }
       void menu.alive().then((alive) => {
-        if (!alive && overlays.menu?.id === menu.id) closeMenu();
+        if (overlays.menu?.id !== menu.id) return;
+        if (alive) checkedGeneration = state.generation;
+        else closeMenu();
       });
     }
   });
@@ -328,6 +337,7 @@
     tabindex="-1"
     aria-label={l === 0 ? "Actions" : undefined}
     data-testid="context-menu"
+    data-checked-generation={l === 0 ? checkedGeneration : undefined}
     bind:this={panels[l]}
     use:place={level.anchor}
     onpointerleave={() => onLeave(l)}

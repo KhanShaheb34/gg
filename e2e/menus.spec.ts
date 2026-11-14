@@ -20,6 +20,15 @@ const grid = (page: Page) => page.getByRole("grid", { name: "Commits" });
 const rowOf = (page: Page, subject: string) => grid(page).locator('[role="row"]', { hasText: subject });
 const menus = (page: Page) => page.getByRole("menu");
 const menu = (page: Page) => menus(page).first();
+/** The generation of the rows the active tab shows. */
+function generation(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    return findRepoView(app.activeRepoId!)!.snapshot.generation;
+  });
+}
+
 const item = (page: Page, name: string | RegExp) => page.getByRole("menuitem", { name, exact: typeof name === "string" });
 
 /** The names of the root menu's items, in order. */
@@ -302,7 +311,10 @@ test("the menu stays open while the graph refreshes, and closes when an operatio
   await expect(menu(page)).toBeVisible();
   gg.git("small", "commit", "-q", "--allow-empty", "-m", "Made elsewhere"); // the graph reloads
   await expect(rowOf(page, "Made elsewhere")).toBeVisible();
-  await page.waitForTimeout(300);
+  // Once the menu has looked at the new rows, it is still open.
+  await expect
+    .poll(async () => (await menu(page).getAttribute("data-checked-generation")) === String(await generation(page)))
+    .toBe(true);
   await expect(menus(page)).toHaveCount(1);
   await page.keyboard.press("Escape");
 

@@ -31,11 +31,17 @@ repository, and shows git's own message when it fails.
   error the app shows from git.
 - A conflict banner above the graph shows when git stops in a merge, rebase, cherry-pick or
   revert (started in the app or in a terminal): what is coming in, each conflicted file
-  ("Conflict markers", "Git kept one side", "Resolved"; a file opens in your editor from
-  there), Abort…, Open in editor and Continue…. Continue is enabled once every file is
-  resolved; "Continue anyway…" goes ahead after listing what is not. The app never edits a
-  conflicted file. A continue that comes out empty (the commit's changes are already there)
-  offers "Skip this commit" on its notice (rebase, cherry-pick, revert).
+  ("Conflict markers", "Check this file" for one with no markers to go by, "Resolved"; a file
+  opens in your editor from there), Abort…, Open in editor and Continue…. Continue is enabled
+  once every file is resolved; "Continue anyway…" goes ahead after listing what is not. The
+  app never edits a conflicted file. When the commit being applied has no changes left (they
+  are already there), the banner and the notice of the continue offer "Skip this commit"
+  instead (rebase, cherry-pick, revert). Skip leaves out that commit only: if git has moved
+  on to another, it is refused. Skipping a rebase's commit puts every tracked file back as
+  HEAD has it, so with other uncommitted changes it asks first, listing them.
+- Opening a folder of another worktree of a repository already open shows that
+  repository's tab, which keeps working in its own worktree; a notice names the folder, and
+  the tab's tooltip shows it. (Switching worktrees comes later.)
 - git is looked up on your login shell's `PATH` (read when the app starts), falling back
   to the app's own `PATH`, so a git your shell finds is the one used even when the app is
   started from the Finder.
@@ -59,13 +65,26 @@ on the selected row) for its menu. Items that cannot run say why when you point 
   Double-clicking a local branch's label checks it out too.
 - **Merge** offers "Create a merge commit even if fast-forward is possible" (remembered per
   repository), "Squash the commits" and "No commit". After a merge, the notice offers
-  **Push** the merged branch; a push the remote rejects offers Fetch, Pull and a separate
-  Force push…. So the staging routine is: check out `staging`, merge your branch into it,
-  push — three clicks from the graph.
+  **Push** *branch* **to** *remote/branch*; a push the remote rejects offers Fetch, Pull and
+  a separate Force push…. So the staging routine is: check out `staging`, merge your branch
+  into it, push — three clicks from the graph.
+- **Push** goes to the branch of the same name on the remote, like git's own default
+  (`push.default=simple`). A branch whose upstream has another name (made with
+  `git switch -c feature origin/main`, say) is pushed there only if you pick it in the Push
+  dialog, which names where the push goes; the merge notice then offers no one-click push.
+  A branch without an upstream gets the branch pushed to as its upstream; an existing
+  upstream is never changed.
 - **Pull** on a branch that has diverged from its upstream asks whether to merge or rebase.
 - Actions on one repository run one at a time, in the order asked; a second waits (the
   toolbar shows what runs and how many wait). A busy indicator shows when one takes more
-  than 150 ms.
+  than 150 ms. An action on the current branch (reset, merge, rebase, cherry-pick, revert,
+  pull, continue, abort, skip) runs only on the branch it was asked for: if another branch
+  was checked out meanwhile (by an action queued before it, or in a terminal), it is refused
+  with a plain notice and nothing changes.
+- **Stop** appears beside the busy indicator once an action has run for 5 seconds (a hook
+  that hangs, say): it ends the git command and everything it started, and the action fails
+  as "Stopped.". git runs without a terminal and without input, so it never waits for a
+  password or a prompt there.
 - Names (branches, tags) are checked as you type and again by the core: a name git would
   refuse, one that is taken, or one starting with `-` is refused before git runs.
 - Network actions (push, pull, fetch into a branch, deleting on a remote) stop after 120 s
@@ -79,14 +98,23 @@ otherwise, whatever the UI sends:
 | Action | Why it is confirmed |
 | --- | --- |
 | Force push | It replaces the remote branch's commits; the confirmation lists the commits that would be lost there. It always uses `--force-with-lease` pinned to the remote commit you were shown: if the remote moved meanwhile, it asks again. |
-| Reset hard | Uncommitted changes to tracked files are discarded and cannot be got back. |
+| Reset hard | Uncommitted changes to tracked files are discarded and cannot be got back. The confirmation lists them. |
 | Delete a branch that is not merged | Its commits would be reachable from no branch (they stay in the reflog for a while). The confirmation says when they are safe in the current branch. |
-| Delete a branch or tag on a remote | Other people's clones lose it at their next fetch. |
+| Delete a branch on a remote | Other people's clones lose it at their next fetch. The delete is pinned to the remote commit you were shown: if someone pushed to it since your last fetch, it is refused. |
+| Delete a tag on a remote | Other people's clones lose it at their next fetch. |
 | Drop a stash | Its changes are gone from the stash list. |
+| Abort a merge, rebase, cherry-pick or revert | The changes made to resolve its conflicts are lost. |
+| Skip a rebase's commit with other changes | git puts every tracked file back: those changes go too. |
+
+Each confirmation is for what it showed: if the branch, the commit or the files it is about
+changed before the action ran, it asks again with them as they are now (or, for another
+branch checked out, refuses).
 
 While git is stopped in a merge, rebase, cherry-pick or revert, actions that would start
-another one, check out something else or apply a stash are refused with a plain reason;
-reset stays allowed (it is a way out).
+another one, check out something else, apply a stash or save one are refused with a plain
+reason; reset stays allowed (it is a way out). The same actions are refused (and their
+menu items disabled, saying why) while files still have conflicts from an earlier step,
+such as a stash that did not apply cleanly.
 
 ### Keyboard shortcuts
 

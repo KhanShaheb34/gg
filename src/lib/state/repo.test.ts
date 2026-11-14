@@ -899,3 +899,26 @@ describe("RepoView fetch and refresh", () => {
     expect(view.snapshot.fetch.lastError).toBe("fatal: offline");
   });
 });
+
+describe("RepoView.recheck", () => {
+  it("looks at the repository again at most once a second", async () => {
+    vi.useFakeTimers({ toFake: ["performance"] });
+    try {
+      vi.mocked(ipc.api.refresh).mockImplementation(async () => snapshot());
+      const view = await openView(0);
+      view.recheck();
+      view.recheck();
+      await settle();
+      expect(ipc.api.refresh).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(999);
+      view.recheck();
+      expect(ipc.api.refresh).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(2);
+      view.recheck();
+      await settle();
+      expect(ipc.api.refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

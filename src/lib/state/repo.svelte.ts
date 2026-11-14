@@ -24,6 +24,8 @@ const MAX_SWAP_ATTEMPTS = 3;
 const RESTORE_HOLD_MS = 2000;
 /** The least time a refresh shows as running, so that a quick one is still seen. */
 const MIN_REFRESH_MS = 400;
+/** Least time between two looks the conflict banner asks for (`recheck`). */
+const RECHECK_MS = 1000;
 /** How long a fetch shows as starting when the core does not report it running. */
 const FETCH_START_MS = 3000;
 
@@ -145,6 +147,8 @@ export class RepoView {
   /** When the fetch asked for here was asked for (ms since the epoch), while it is watched. */
   private fetchAskedAt = 0;
   private fetchWatched = false;
+  /** When `recheck` last looked (performance.now()). */
+  private lastRecheck = -Infinity;
 
   constructor(repoId: number, initial?: RepoSnapshot) {
     this.repoId = repoId;
@@ -377,7 +381,19 @@ export class RepoView {
   private syncing = false;
   private syncAgain = false;
 
-  /**
+    /**
+   * Looks at the repository again (as `sync`), at most once every RECHECK_MS: for a change
+   * no watcher reports, such as a conflicted file resolved in an editor, when the user comes
+   * back to the conflict banner.
+   */
+  recheck(): void {
+    const now = performance.now();
+    if (now - this.lastRecheck < RECHECK_MS) return;
+    this.lastRecheck = now;
+    void this.sync();
+  }
+
+/**
    * Re-reads the repository without showing progress, as when the window comes back: the
    * working tree may have changed meanwhile, and only the git dir is watched. Errors are
    * not shown; the next refresh the user asks for says. Overlapping calls coalesce.

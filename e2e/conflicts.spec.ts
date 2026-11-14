@@ -1,0 +1,266 @@
+// What git stopped in (spec §5.6): the banner above the graph, its files, Abort, Open in
+// editor and Continue, end to end against the real core. The devserver records editor
+// launches instead of starting an editor (fixtures: `editorLaunches`).
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+import type { Page } from "@playwright/test";
+import { expect, type GG, test } from "./fixtures";
+import type { OpOutcome, OpRequest } from "../src/lib/types";
+
+async function open(page: Page, dir: string) {
+  page.once("dialog", (dialog) => dialog.accept(dir));
+  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
+}
+
+const grid = (page: Page) => page.getByRole("grid", { name: "Commits" });
+const banner = (page: Page) => page.getByTestId("conflict-banner");
+const item = (page: Page, name: string) => page.getByRole("menuitem", { name, exact: true });
+const dialog = (page: Page) => page.getByRole("dialog");
+const notice = (page: Page, text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
+const fileButton = (page: Page, file: string) => banner(page).getByRole("button", { name: file, exact: true });
+const continueButton = (page: Page) => banner(page).getByRole("button", { name: "Continue…" });
+/** A red button takes no click just after its dialog opens (see Dialog): wait that out. */
+const armed = (page: Page) => page.waitForTimeout(450);
+
+/** Runs `request` through the app's own runOp, in the active tab. */
+function runOp(page: Page, request: OpRequest): Promise<OpOutcome> {
+  return page.evaluate(async (req) => {
+    const ops = await import("/src/lib/state/ops.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    return ops.runOp(app.activeRepoId!, req);
+  }, request);
+}
+
+/** Runs git in the fixture, where it may fail (a merge that stops on conflicts exits 1). */
+function gitMayFail(gg: GG, ...args: string[]): void {
+  try {
+    gg.git("conflicts", ...args);
+  } catch {
+    // Stopped on conflicts.
+  }
+}
+
+/** Writes `content` to `file` of the fixture, as an editor would. */
+function resolve(gg: GG, file: string, content = "resolved\n"): void {
+  writeFileSync(path.join(gg.repoPath("conflicts"), file), content);
+}
+
+const MERGE_FEATURE: OpRequest = {
+  op: "merge",
+  target: { kind: "branch", name: "feature/x" },
+  noFf: true,
+  squash: false,
+  noCommit: false,
+};
+
+test("merge_conflict_shows_banner_with_files", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  await expect(banner(page)).toHaveCount(0);
+
+  await grid(page).locator('[data-ref="feature/x"] .name').click({ button: "right" });
+  await item(page, "Merge feature/x into main…").click();
+  await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
+
+  await expect(banner(page)).toBeVisible();
+  await expect(banner(page).getByRole("heading")).toHaveText("Merging into main");
+  await expect(banner(page)).toContainText("Merge branch 'feature/x'");
+  await expect(banner(page)).toContainText("2 files have conflicts");
+  await expect(fileButton(page, "app.txt")).toBeVisible();
+  await expect(fileButton(page, "style.css")).toBeVisible();
+  await expect(banner(page).getByRole("button", { name: "Abort…" })).toBeEnabled();
+  await expect(banner(page).getByRole("button", { name: "Open in editor" })).toBeEnabled();
+  await expect(continueButton(page)).toBeDisabled();
+  await expect(continueButton(page)).toHaveAccessibleDescription("Resolve the conflicts in 2 files first.");
+  // A stop is no failure: no error notice.
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("continue_disabled_until_resolved_then_finishes", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  expect((await runOp(page, MERGE_FEATURE)).status).toBe("stopped");
+  await expect(continueButton(page)).toBeDisabled();
+
+  // One resolved, outside the app: the banner learns it when the pointer comes to it.
+  resolve(gg, "app.txt");
+  await banner(page).hover({ position: { x: 20, y: 10 } });
+  await expect(banner(page).getByRole("listitem").filter({ hasText: "app.txt" })).toContainText("Resolved");
+  await expect(banner(page)).toContainText("1 of 2 files resolved");
+  await expect(continueButton(page)).toBeDisabled();
+  await expect(continueButton(page)).toHaveAccessibleDescription("Resolve the conflicts in 1 file first.");
+
+  resolve(gg, "style.css");
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(1100); // the banner looks again at most once a second
+  await continueButton(page).hover();
+  await expect(continueButton(page)).toBeEnabled();
+  await expect(banner(page)).toContainText("All conflicts are resolved");
+
+  await continueButton(page).click();
+  const confirm = dialog(page);
+  await expect(confirm.getByRole("heading")).toHaveText("Continue the merge");
+  await expect(confirm.getByRole("listitem")).toHaveText(["app.txt", "style.css"]);
+  await confirm.getByRole("button", { name: "Stage and continue" }).click();
+
+  await expect(notice(page, "Finished the merge: it is committed.")).toBeVisible();
+  await expect(banner(page)).toHaveCount(0);
+  expect(gg.git("conflicts", "log", "-1", "--format=%s").trim()).toBe("Merge branch 'feature/x'");
+  expect(gg.git("conflicts", "show", "HEAD:app.txt")).toBe("resolved\n");
+});
+
+test("abort_returns_to_before", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  const before = gg.git("conflicts", "rev-parse", "HEAD").trim();
+  expect((await runOp(page, MERGE_FEATURE)).status).toBe("stopped");
+  resolve(gg, "app.txt");
+
+  await banner(page).getByRole("button", { name: "Abort…" }).click();
+  const confirm = page.getByRole("alertdialog");
+  await expect(confirm.getByRole("heading")).toHaveText("Abort the merge?");
+  await expect(confirm).toContainText("main goes back to where it was before the merge");
+  await armed(page);
+  await confirm.getByRole("button", { name: "Abort merge" }).click();
+
+  await expect(notice(page, "Aborted the merge: main is back as it was before it.")).toBeVisible();
+  await expect(banner(page)).toHaveCount(0);
+  expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(before);
+  expect(gg.git("conflicts", "status", "--porcelain").trim()).toBe("");
+});
+
+test("rebase_banner_shows_steps_and_continues_through_two_stops", async ({ gg }) => {
+  const { page } = gg;
+  gg.git("conflicts", "switch", "-q", "topic");
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+
+  await grid(page).locator('[data-ref="main"] .name').click({ button: "right" });
+  await item(page, "Rebase topic onto main…").click();
+  await dialog(page).getByRole("button", { name: "Rebase", exact: true }).click();
+
+  await expect(banner(page).getByRole("heading")).toHaveText("Rebasing, step 2 of 5");
+  await expect(banner(page)).toContainText("Topic two");
+  await expect(fileButton(page, "app.txt")).toBeVisible();
+  resolve(gg, "app.txt");
+  await banner(page).hover({ position: { x: 20, y: 10 } });
+  await continueButton(page).click();
+  await expect(dialog(page)).toContainText("then the rebase goes on with the next commit");
+  await dialog(page).getByRole("button", { name: "Stage and continue" }).click();
+
+  await expect(banner(page).getByRole("heading")).toHaveText("Rebasing, step 4 of 5");
+  await expect(banner(page)).toContainText("Topic four");
+  await expect(fileButton(page, "style.css")).toBeVisible();
+  await expect(continueButton(page)).toBeDisabled();
+  resolve(gg, "style.css");
+  await page.waitForTimeout(1100);
+  await banner(page).hover({ position: { x: 20, y: 10 } });
+  await continueButton(page).click();
+  await dialog(page).getByRole("button", { name: "Stage and continue" }).click();
+
+  await expect(notice(page, "Finished rebasing topic.")).toBeVisible();
+  await expect(banner(page)).toHaveCount(0);
+  expect(gg.git("conflicts", "log", "--format=%s", "-6").trim().split("\n")).toEqual([
+    "Topic five",
+    "Topic four",
+    "Topic three",
+    "Topic two",
+    "Topic one",
+    "Rework on main",
+  ]);
+});
+
+test("state_started_outside_appears", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  gitMayFail(gg, "merge", "wide");
+  await expect(banner(page).getByRole("heading")).toHaveText("Merging into main");
+  await expect(banner(page)).toContainText("12 files have conflicts");
+  await expect(fileButton(page, "src/module-01.ts")).toBeVisible();
+  // Past six files, the list scrolls inside the banner.
+  const list = banner(page).getByRole("list");
+  expect(await list.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+
+  gg.git("conflicts", "merge", "--abort");
+  await expect(banner(page)).toHaveCount(0);
+});
+
+test("banner_does_not_move_the_graph", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  await grid(page).evaluate((el) => (el.scrollTop = 10 * 26 + 7));
+  await page.waitForTimeout(200);
+  const where = () =>
+    grid(page).evaluate((el) => {
+      const top = el.getBoundingClientRect().top;
+      const rows = [...el.querySelectorAll<HTMLElement>('[role="row"][data-index]')];
+      const first = rows
+        .filter((r) => r.getBoundingClientRect().bottom > top + 30)
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+      return { scrollTop: el.scrollTop, first: first?.querySelector(".subject")?.textContent ?? "" };
+    });
+  const before = await where();
+  expect(before.first).toMatch(/^Earlier work/);
+
+  gitMayFail(gg, "merge", "feature/x");
+  await expect(banner(page)).toBeVisible();
+  await page.waitForTimeout(300);
+  const during = await where();
+  // The uncommitted row came in on top; the rows that were in view stay where they were.
+  expect(during.first).toBe(before.first);
+
+  gg.git("conflicts", "merge", "--abort");
+  await expect(banner(page)).toHaveCount(0);
+  await page.waitForTimeout(300);
+  expect((await where()).first).toBe(before.first);
+});
+
+test("open_in_editor_calls_the_core", async ({ gg }) => {
+  const { page } = gg;
+  const dir = gg.repoPath("conflicts");
+  await page.goto("/");
+  await open(page, dir);
+  expect((await runOp(page, MERGE_FEATURE)).status).toBe("stopped");
+
+  await fileButton(page, "style.css").click();
+  await expect.poll(() => gg.editorLaunches().length).toBe(1);
+  expect(gg.editorLaunches()[0].at(-1)).toBe(path.join(dir, "style.css"));
+
+  await banner(page).getByRole("button", { name: "Open in editor" }).click();
+  await expect.poll(() => gg.editorLaunches().length).toBe(2);
+  expect(gg.editorLaunches()[1].at(-1)).toBe(dir);
+  // The app never touches the files itself.
+  expect(gg.git("conflicts", "diff", "--name-only", "--diff-filter=U").trim().split("\n")).toEqual([
+    "app.txt",
+    "style.css",
+  ]);
+});
+
+test("conflicts left by a stash show a quieter banner until they are staged", async ({ gg }) => {
+  const { page } = gg;
+  resolve(gg, "app.txt", "stashed change\n");
+  gg.git("conflicts", "stash", "push", "-q");
+  resolve(gg, "app.txt", "committed change\n");
+  gg.git("conflicts", "commit", "-qam", "Change the app");
+  gitMayFail(gg, "stash", "pop");
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+
+  await expect(banner(page).getByRole("heading")).toHaveText("1 file has conflicts");
+  await expect(banner(page)).toContainText("Left by applying a stash or an earlier step");
+  await expect(fileButton(page, "app.txt")).toBeVisible();
+  await expect(banner(page).getByRole("button", { name: "Open in editor" })).toBeVisible();
+  await expect(banner(page).getByRole("button", { name: "Continue…" })).toHaveCount(0);
+  await expect(banner(page).getByRole("button", { name: "Abort…" })).toHaveCount(0);
+
+  resolve(gg, "app.txt", "both\n");
+  gg.git("conflicts", "add", "app.txt");
+  await expect(banner(page)).toHaveCount(0);
+});

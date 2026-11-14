@@ -238,6 +238,55 @@ const REPOS: Record<string, RepoScript> = {
     commit({ "greeting.txt": "hello from main\n" }, "Greet from main");
   },
   /**
+   * Conflicts (spec §5.6). 40 commits of history first ("Earlier work 1".."40", so the graph
+   * scrolls), then "Base" with `app.txt`, `style.css` and `src/module-01.ts`..`12.ts`.
+   * From Base: `feature/x` changes `app.txt` and `style.css` ("Rework the feature");
+   * `wide` changes every module ("Rename across modules"); `topic` has five commits, "Topic
+   * one".."Topic five", of which two and four change `app.txt` and `style.css`. `main` then
+   * changes all of those files ("Rework on main"): merging `feature/x` into main conflicts in
+   * 2 files, `wide` in 12, and rebasing `topic` onto main stops at steps 2 and 4. `main` is
+   * checked out; the repository has an identity for the commits git makes.
+   */
+  conflicts(git, write) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    for (let i = 1; i <= 40; i++) {
+      write("history.txt", `step ${i}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", `Earlier work ${i}`);
+    }
+    const modules = Array.from({ length: 12 }, (_, i) => `src/module-${String(i + 1).padStart(2, "0")}.ts`);
+    const commit = (files: Record<string, string>, subject: string) => {
+      for (const [file, content] of Object.entries(files)) write(file, content);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit(
+      { "app.txt": "app base\n", "style.css": "body {}\n", ...Object.fromEntries(modules.map((m) => [m, "base\n"])) },
+      "Base",
+    );
+    git("switch", "-q", "-c", "feature/x");
+    commit({ "app.txt": "app from feature\n", "style.css": "body { color: teal; }\n" }, "Rework the feature");
+    git("switch", "-q", "-c", "wide", "main");
+    commit(Object.fromEntries(modules.map((m) => [m, "renamed on wide\n"])), "Rename across modules");
+    git("switch", "-q", "-c", "topic", "main");
+    commit({ "topic-1.txt": "one\n" }, "Topic one");
+    commit({ "app.txt": "app from topic\n" }, "Topic two");
+    commit({ "topic-3.txt": "three\n" }, "Topic three");
+    commit({ "style.css": "body { color: plum; }\n" }, "Topic four");
+    commit({ "topic-5.txt": "five\n" }, "Topic five");
+    git("switch", "-q", "main");
+    commit(
+      {
+        "app.txt": "app from main\n",
+        "style.css": "body { color: navy; }\n",
+        ...Object.fromEntries(modules.map((m) => [m, "changed on main\n"])),
+      },
+      "Rework on main",
+    );
+  },
+  /**
    * The staging routine (spec §5.3), with a bare `origin` beside it (`routine-origin.git`)
    * and a second clone of that (`routine-other`, see `otherClone`) that pushes to it, to move
    * the remote. Oldest first: "Initial commit" on `main`; "Prepare staging" on `staging`;

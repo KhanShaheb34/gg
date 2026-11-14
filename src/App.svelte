@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import CommitDetails from "./lib/components/CommitDetails.svelte";
+  import ConflictBanner from "./lib/components/ConflictBanner.svelte";
   import ContextMenu from "./lib/components/ContextMenu.svelte";
   import Mark from "./lib/components/Mark.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
@@ -118,8 +119,12 @@
             <Toolbar view={repoView(active.repoId)} />
           </header>
           <div class="repo-body">
-            <div class="graph-area">
-              <GraphView view={repoView(active.repoId)} />
+            <!-- The banner takes its height from the graph's top (the graph keeps its rows in place). -->
+            <div class="graph-column">
+              <ConflictBanner view={repoView(active.repoId)} />
+              <div class="graph-area">
+                <GraphView view={repoView(active.repoId)} />
+              </div>
             </div>
             <CommitDetails view={repoView(active.repoId)} />
           </div>
@@ -234,10 +239,17 @@
     min-height: 0;
   }
 
+  .graph-column {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    /* The panel never takes the graph (with the banner) below this (CommitDetails' MIN_GRAPH_H). */
+    min-height: 160px;
+  }
+
   .graph-area {
     flex: 1 1 0;
-    /* The panel never takes the graph below this (CommitDetails' MIN_GRAPH_H). */
-    min-height: 160px;
+    min-height: 0;
   }
 
   .drop {

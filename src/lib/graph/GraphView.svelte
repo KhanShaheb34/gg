@@ -254,8 +254,16 @@
     schedule();
   }
 
+  /** Where the graph's top edge was on screen at the last resize, px. */
+  let edgeTop: number | null = null;
+
   function onResize(height: number) {
     const before = viewportH;
+    // The top edge moved (the conflict banner came or went above): the rows stay where they
+    // are in the history; nothing scrolls.
+    const top = scroller.getBoundingClientRect().top;
+    const fromTop = edgeTop !== null && top !== edgeTop;
+    edgeTop = top;
     viewportH = Math.max(0, height - HEADER_H);
     view.viewportH = viewportH;
     // The pool grows as needed and is kept when the viewport shrinks (the details panel
@@ -264,7 +272,7 @@
     const n = neededSlots(viewportH);
     if (n > slots.length) slots = [...slots, ...Array.from({ length: n - slots.length }, () => new Slot())];
     else if (2 * n < slots.length) slots = slots.slice(0, n);
-    keepSelectionInView(before);
+    if (!fromTop) keepSelectionInView(before);
     frame(performance.now(), true);
   }
 

@@ -915,8 +915,11 @@ async fn editor_launches_can_be_recorded_to_a_file() {
 async fn credentials_in_urls_never_reach_the_ui() {
     use std::os::unix::fs::PermissionsExt;
     const SECRET: &str = "s3cr3t-t0ken";
-    let say =
-        format!("echo \"could not reach https://user:{SECRET}@example.invalid/x.git\" >&2; exit 1");
+    // The line stays git's latest for a moment, so it goes out as a progress event (those are
+    // the latest line, at most ten a second).
+    let say = format!(
+        "echo \"could not reach https://user:{SECRET}@example.invalid/x.git\" >&2; sleep 0.3; exit 1"
+    );
     let repo = TestRepo::new();
     repo.commit("one");
     let _origin = repo.clone_as_remote();

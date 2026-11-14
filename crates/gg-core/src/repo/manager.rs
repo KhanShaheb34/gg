@@ -258,13 +258,14 @@ impl Slot {
     }
 
     /// The served state's snapshot, except that `viewOptions` are the newest ones asked for,
-    /// even while the reload they started is still loading, and `inProgress` is the newest
-    /// read (it does not depend on the rows).
+    /// even while the reload they started is still loading, and `inProgress` and `status` are
+    /// the newest read (read together, they must agree; neither depends on the rows).
     fn snapshot(&self, id: &RepoIdentity, loading: bool) -> RepoSnapshot {
         let mut snapshot = self.current.snapshot(id, loading, &self.fetch);
         if let Some(pending) = &self.pending {
             snapshot.view_options = pending.view().clone();
             snapshot.in_progress.clone_from(&pending.info().in_progress);
+            snapshot.status.clone_from(&pending.info().status);
         }
         snapshot.op.clone_from(&self.op);
         snapshot.seq = self.emit_seq;
@@ -1309,10 +1310,10 @@ impl RepoManager {
                 true
             } else if let Some(pending) = slot.pending.as_mut() {
                 // Not served yet: nothing visible changes until it replaces `current`, except
-                // the in-progress state, which the snapshot takes from it.
-                let before = pending.info().in_progress.clone();
+                // the in-progress state and the status, which the snapshot takes from it.
+                let before = TreeState::of(pending.info());
                 pending.update(info, view);
-                pending.info().in_progress != before
+                TreeState::of(pending.info()) != before
             } else {
                 let update = slot.current.update(info, view);
                 if update == Update::Rows {
@@ -1594,6 +1595,64 @@ mod tests {
             "Live updates are unavailable for this repository: Could not watch x."
         );
         assert_eq!(payload["error"]["detail"], "os said no");
+    }
+
+    /// While a reload is pending, the snapshot takes what git is stopped in from it, and the
+    /// working tree's status with it: the two are read together and must agree (a merge
+    /// ended outside the app must not leave the old conflict count to show as leftovers).
+    #[test]
+    fn a_pending_reload_gives_the_snapshot_its_status_and_in_progress_together() {
+        use crate::dto::{InProgress, InProgressKind, WorktreeStatus};
+        let stopped = RepoInfo {
+            status: WorktreeStatus {
+                changed: 2,
+                conflicted: 2,
+                conflicted_paths: vec!["a.txt".into(), "b.txt".into()],
+                ..Default::default()
+            },
+            in_progress: Some(InProgress {
+                kind: InProgressKind::Merge,
+                files: Vec::new(),
+                file_count: 2,
+                step: None,
+                total: None,
+                subject: None,
+                incoming: None,
+                rebasing: None,
+            }),
+            ..Default::default()
+        };
+        let done = RepoInfo {
+            status: WorktreeStatus::default(),
+            in_progress: None,
+            ..Default::default()
+        };
+        let view = ViewOptions {
+            branches: None,
+            show_remotes: true,
+            show_tags: true,
+            show_stashes: true,
+        };
+        let slot = Slot {
+            current: RepoState::new(stopped, view.clone(), 1),
+            pending: Some(RepoState::new(done, view, 0)),
+            load_id: 1,
+            load_failed: false,
+            fetch: FetchState::default(),
+            closed: false,
+            op: None,
+            held_status: None,
+            emit_seq: 0,
+        };
+        let id = RepoIdentity {
+            repo_id: 1,
+            name: "r".into(),
+            root_path: "/r".into(),
+            active_worktree: "/r".into(),
+        };
+        let snap = slot.snapshot(&id, true);
+        assert_eq!(snap.in_progress, None);
+        assert_eq!(snap.status, WorktreeStatus::default());
     }
 
     /// A load that ends without finishing (a panic, an abort) while it is still the newest

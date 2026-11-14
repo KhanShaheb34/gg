@@ -489,3 +489,40 @@ test("a dialog whose request waits behind another: a name dialog says so and can
   await expect(busy).toContainText("+1");
   await expect(notice(page, /Reverted [0-9a-f]+: a new commit undoes its changes\./)).toBeVisible({ timeout: 10_000 });
 });
+
+test("a dialog closing under another leaves the focus in the one above; a covered dialog takes no input", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("picks"));
+  const dir = gg.repoPath("small");
+  await open(page, dir);
+  writeFileSync(path.join(dir, ".git/hooks/post-checkout"), "#!/bin/sh\nsleep 2\n", { mode: 0o755 });
+
+  await startOp(page, { op: "checkout_branch", branch: "fix/typo", fastForward: false });
+  await expect(page.getByTestId("busy")).toContainText("fix/typo");
+  await pickOnRow(page, "Add part 3", "Create branch here…");
+  await page.keyboard.type("under");
+  await page.keyboard.press("Enter");
+  const below = dialog(page);
+  await expect(below.getByText(/Waiting for/)).toBeVisible();
+
+  // Another repository asks for a confirmation meanwhile: it opens on top, with the focus.
+  await page.evaluate(async () => {
+    const ops = await import("/src/lib/state/ops.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    const picks = app.tabs.find((t) => t.path.endsWith("/picks"))!.repoId;
+    void ops.runOp(picks, { op: "delete_branch", branch: "topic" }).catch(() => {});
+  });
+  const above = page.getByRole("alertdialog");
+  await expect(above.getByRole("button", { name: "Cancel" })).toBeFocused();
+  expect(await below.evaluate((d) => d.closest("[inert]") !== null)).toBe(true);
+
+  // The dialog below closes when its request is done; the focus stays above.
+  await expect(below).toHaveCount(0, { timeout: 10_000 });
+  await expect(above.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(above).toHaveCount(0);
+  expect(gg.git("picks", "branch", "--list", "topic").trim()).toBe("topic");
+});

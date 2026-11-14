@@ -1,7 +1,7 @@
 <!--
   The frame of every modal dialog: a title, the dialog's own content, and Cancel and a
   primary button. Modal: the window behind is dimmed and takes no input; Tab stays inside;
-  focus goes back where it was when the dialog closes. Escape (and Cancel) cancel, unless
+  focus goes back where it was when the dialog closes (if it was in the dialog). Escape (and Cancel) cancel, unless
   `cancellable` is false (a request the dialog waits on is out); Enter
   submits, unless focus is on Cancel or in a multi-line field (Cmd/Ctrl+Enter submits
   there), or the primary button is disabled (`valid` false). A dangerous primary button is
@@ -110,7 +110,10 @@
     const first = field ?? (danger || !valid ? cancelButton : primaryButton);
     first.focus();
     return () => {
-      if (before instanceof HTMLElement && before.isConnected && before !== document.body) {
+      // Only if the focus was here: a dialog closing under another leaves the focus above.
+      const now = document.activeElement;
+      const here = now === null || now === document.body || box.contains(now);
+      if (here && before instanceof HTMLElement && before.isConnected && before !== document.body) {
         before.focus({ preventScroll: true });
       }
     };

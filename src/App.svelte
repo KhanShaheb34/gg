@@ -139,11 +139,18 @@
   <Toast />
   <ContextMenu />
   {#each overlays.dialogs as dialog (dialog.id)}
-    <dialog.component {...dialog.props} />
+    <!-- Only the top dialog takes input; those under it are inert. -->
+    <div class="dialog-layer" inert={dialog !== overlays.dialog}>
+      <dialog.component {...dialog.props} />
+    </div>
   {/each}
 </div>
 
 <style>
+  .dialog-layer {
+    display: contents;
+  }
+
   .shell {
     display: flex;
     flex-direction: column;

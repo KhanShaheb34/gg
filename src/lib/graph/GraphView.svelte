@@ -293,14 +293,16 @@
   }
 
   /**
-   * The row an event happened on (a click, a hover, a context menu): its index and its
-   * commit, or null when the event is not on a loaded row.
+   * The row an event happened on (a click, a hover, a context menu): its index and the commit
+   * it shows, or null when the event is not on a row showing one. What the row shows, not what
+   * the cache holds at its index: new rows can be in the cache a moment before they are drawn,
+   * and a menu must act on what was under the pointer.
    */
   export function rowAt(event: Event): { index: number; row: CommitRow } | null {
     const el = (event.target as Element | null)?.closest?.<HTMLElement>('[role="row"][data-index]');
     if (!el) return null;
     const index = Number(el.dataset.index);
-    const row = view.cache.get(index);
+    const row = slots.find((s) => s.index === index)?.row;
     return row ? { index, row } : null;
   }
 

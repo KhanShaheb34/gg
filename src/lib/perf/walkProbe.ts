@@ -35,12 +35,17 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
   let passed = 0;
   let failed = 0;
 
-  const label = (name: string) => scroller.querySelector<HTMLElement>(`.ref[data-ref="${CSS.escape(name)}"]`);
+  // A remote branch at the same commit as its local one is the remote half of that label.
+  const label = (name: string) =>
+    scroller.querySelector<HTMLElement>(`.ref[data-ref="${CSS.escape(name)}"]`) ??
+    (name.startsWith("origin/")
+      ? scroller.querySelector<HTMLElement>(`.ref[data-ref="${CSS.escape(name.slice(7))}"] .remotes`)
+      : null);
   const rowWith = (subject: string) =>
     [...scroller.querySelectorAll<HTMLElement>('[role="row"]')].find((r) => text(r.querySelector(".subject")) === subject);
   const menu = () => document.querySelector<HTMLElement>('[data-testid="context-menu"]');
   const dialog = () => document.querySelector<HTMLElement>('[role="dialog"], [role="alertdialog"]');
-  const notices = () => [...document.querySelectorAll<HTMLElement>('[role="status"], [role="alert"]')];
+  const notices = () => [...document.querySelectorAll<HTMLElement>(".toast")];
   const banner = () => document.querySelector<HTMLElement>('[data-testid="conflict-banner"]');
 
   function rightClick(el: HTMLElement): void {
@@ -58,7 +63,10 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
   }
   async function pick(name: RegExp): Promise<void> {
     const item = await until(`menu item ${name}`, () =>
-      [...(menu()?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])].find((el) => name.test(text(el))),
+      // Every open panel: a submenu is a panel of its own.
+      [...document.querySelectorAll<HTMLElement>('[data-testid="context-menu"] [role="menuitem"]')].find((el) =>
+        name.test(text(el)),
+      ),
     );
     if (item.getAttribute("aria-disabled") === "true") throw new Error(`"${text(item)}" is disabled: ${item.title}`);
     item.click();
@@ -109,7 +117,9 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
     } catch (e) {
       failed++;
       await mark(`walk ${name}`, 0);
-      await mark(`walk-note ${name}: ${e instanceof Error ? e.message : String(e)}`);
+      const head = view.snapshot.head.branch ?? "detached";
+      const shown = notices().map(text).join(" | ");
+      await mark(`walk-note ${name}: ${e instanceof Error ? e.message : String(e)} (HEAD ${head}; notices: ${shown})`);
       // Leave nothing open for the next step.
       for (let i = 0; i < 3 && (dialog() || menu()); i++) {
         document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -186,7 +196,7 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
   });
   await step("reset soft", async () => {
     await menuOn(commitRow("Prepare staging"), "a commit");
-    await pick(/^Reset staging to here$/);
+    await pick(/^Reset \S+ to here$/);
     await pick(/^Soft/);
     await primary();
     return text(await notice(/Reset|reset/));
@@ -194,7 +204,7 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
   await step("reset hard needs the red confirmation", async () => {
     await need("dirty");
     await menuOn(commitRow("Prepare staging"), "a commit");
-    await pick(/^Reset staging to here$/);
+    await pick(/^Reset \S+ to here$/);
     await pick(/^Hard/);
     await primary();
     await until("the red confirmation", () => document.querySelector('[role="alertdialog"]'));

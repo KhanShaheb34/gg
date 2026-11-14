@@ -971,6 +971,52 @@ async fn checkout_with_fast_forward() {
     assert!(out.message.contains("no upstream"), "{}", out.message);
 }
 
+/// Checking out with a fast-forward when an uncommitted change is in the fast-forward's way:
+/// checked out, not moved, the change kept, and the message says why.
+#[tokio::test]
+async fn checkout_with_fast_forward_and_a_change_in_the_way_loses_nothing() {
+    let (repo, _origin, other) = with_remote();
+    repo.write("shared.txt", "base\n");
+    repo.commit_all("shared");
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.branch("topic");
+    repo.git(&["push", "-q", "-u", "origin", "topic"]);
+    other.git(&["fetch", "-q", "origin"]);
+    other.git(&["checkout", "-q", "-b", "topic", "origin/topic"]);
+    other.write("shared.txt", "theirs\n");
+    other.commit_all("theirs on topic");
+    other.git(&["push", "-q", "origin", "topic"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    let before = rev(&repo, "topic");
+    // On main, the same file as on topic before theirs: switching keeps the change.
+    repo.write("shared.txt", "my unsaved work\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            OpRequest::CheckoutBranch {
+                branch: "topic".into(),
+                fast_forward: true,
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(current_branch(&repo).as_deref(), Some("topic"));
+    assert_eq!(rev(&repo, "HEAD"), before, "not moved");
+    assert!(
+        out.message.contains("could not be fast-forwarded"),
+        "{}",
+        out.message
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
+        "my unsaved work\n"
+    );
+    assert!(!in_git_dir(&repo, "MERGE_HEAD"));
+}
+
 // ---- failures of the network itself ----
 
 /// A port on 127.0.0.1 that nothing listens on (bound, then closed).
@@ -1177,6 +1223,52 @@ async fn merge_outcome_hints_push() {
     let out = h.run(id, push(&branch, &remote, set_upstream, false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
+}
+
+/// A squash or a no-commit merge commits nothing: nothing new to push, so no push is offered.
+#[tokio::test]
+async fn squash_and_no_commit_merges_offer_no_push() {
+    let (repo, _origin, _other) = with_remote();
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("feature.txt", "feature\n");
+    repo.commit_all("on feature");
+    repo.checkout("main");
+    repo.commit("on main");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h
+        .run(
+            id,
+            merge(
+                gg_core::dto::MergeTargetKind::Branch,
+                "feature",
+                true,
+                true,
+                false,
+            ),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(out.hints.is_empty(), "squash: {:?}", out.hints);
+    repo.git(&["reset", "-q", "--hard"]);
+
+    let out = h
+        .run(
+            id,
+            merge(
+                gg_core::dto::MergeTargetKind::Branch,
+                "feature",
+                true,
+                false,
+                true,
+            ),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(out.hints.is_empty(), "no commit: {:?}", out.hints);
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
 }
 
 /// Before the first commit nothing can be pushed or pulled: plain failures, no hang.

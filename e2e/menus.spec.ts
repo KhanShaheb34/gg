@@ -329,6 +329,24 @@ test("a failed operation shows git's text folded below its message, with a link 
   await notice.getByRole("button", { name: "Git output" }).click();
   await expect(notice.locator(".output")).toContainText("docs/typo1.md");
   await expect(notice.getByRole("button", { name: "Show log" })).toBeVisible();
+  // Showing the log keeps the notice: it is what the log is read against.
+  await notice.getByRole("button", { name: "Show log" }).click();
+  await expect(notice).toBeVisible();
+});
+
+test("a notice stays while keyboard focus is on it, and leaves after it moves away", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  const hash = gg.git("small", "rev-parse", "HEAD").trim();
+  await runOp(page, { op: "create_tag", name: "held", hash, message: null });
+  const notice = page.getByRole("status").filter({ hasText: "Created tag held" });
+  await notice.getByRole("button", { name: "Dismiss notification" }).focus();
+  await page.mouse.move(10, 400); // not hovering it
+  await page.waitForTimeout(4_500); // past an info notice's 4 s
+  await expect(notice).toBeVisible();
+  await grid(page).focus();
+  await expect(notice).toHaveCount(0, { timeout: 6_000 });
 });
 
 test("the toolbar shows the running operation and how many wait behind it", async ({ gg }) => {

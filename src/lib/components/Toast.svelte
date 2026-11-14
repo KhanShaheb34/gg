@@ -1,15 +1,25 @@
 <!--
   The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s (10 s too
-  for any with buttons); hovering the stack holds them all. A persistent one stays until
+  for any with buttons); hovering the stack, or keyboard focus inside it, holds them all. A persistent one stays until
   dismissed. Its buttons follow the message; a folded detail (git's own text) opens below.
 -->
 <script lang="ts">
+  import { visibleText } from "../format";
   import { app, dismissToast, type Toast, type ToastAction } from "../state/app.svelte";
 
   const LIFETIME_MS = { info: 4_000, error: 10_000 } as const;
   const WITH_BUTTONS_MS = 10_000;
 
-  let held = $state(false);
+  let hovered = $state(false);
+  let focused = $state(false);
+  const held = $derived(hovered || focused);
+  let stack: HTMLDivElement;
+
+  // A focused toast that goes (dismissed) takes the focus with it, without a focusout.
+  $effect(() => {
+    void app.toasts.length;
+    if (focused && !stack.contains(document.activeElement)) focused = false;
+  });
   /** Toasts whose folded detail is open. */
   let unfolded: Set<number> = $state(new Set());
 
@@ -50,10 +60,13 @@
 
 <div
   class="stack"
+  bind:this={stack}
   role="region"
   aria-label="Notifications"
-  onmouseenter={() => (held = true)}
-  onmouseleave={() => (held = false)}
+  onmouseenter={() => (hovered = true)}
+  onmouseleave={() => (hovered = false)}
+  onfocusin={() => (focused = true)}
+  onfocusout={(e) => (focused = e.currentTarget.contains(e.relatedTarget as Node | null))}
 >
   {#each app.toasts as toast (toast.id)}
     <div class="toast {toast.kind}" role={toast.kind === "error" ? "alert" : "status"} use:expire={toast}>
@@ -75,13 +88,13 @@
       <div class="body selectable">
         <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
              what is around it. -->
-        <p class="message"><bdi>{toast.message}</bdi></p>
+        <p class="message"><bdi>{visibleText(toast.message)}</bdi></p>
         {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}
         {#if toast.actions?.length || toast.link || (toast.detail && toast.foldDetail)}
           <div class="row">
-            {#each toast.actions ?? [] as action (action.label)}
+            {#each toast.actions ?? [] as action, i (i)}
               <button class="action" class:danger={action.danger} onclick={() => press(toast, action)}
                 >{action.label}</button
               >

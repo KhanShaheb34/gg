@@ -222,6 +222,7 @@ describe("runOp", () => {
       persistent: true,
     });
     expect(notice.link?.label).toBe("Show log");
+    expect(notice.link?.keepOpen).toBe(true);
     await notice.link!.run();
     expect(app.app.logRequest).toEqual({ repoId: 1, from: 41 });
   });

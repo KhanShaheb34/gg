@@ -103,7 +103,11 @@ function report(repoId: number, outcome: OpOutcome): void {
       foldDetail: true,
       persistent: true,
       actions,
-      link: outcome.logFrom > 0 ? { label: "Show log", run: () => showLog(repoId, outcome.logFrom) } : undefined,
+      // The notice stays: the log is read against it.
+      link:
+        outcome.logFrom > 0
+          ? { label: "Show log", keepOpen: true, run: () => showLog(repoId, outcome.logFrom) }
+          : undefined,
     });
   }
 }

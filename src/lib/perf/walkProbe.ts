@@ -58,12 +58,35 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
       new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + 6, clientY: r.top + r.height / 2 }),
     );
   }
+  /** What an element the walk right-clicks shows: a label's name, else its row's subject. */
+  const shows = (el: HTMLElement) =>
+    el.closest<HTMLElement>(".ref")?.dataset.ref ?? text(el.closest('[role="row"]')?.querySelector(".subject"));
+  /**
+   * Opens the menu of what `el` finds. Scrolling it into view can redraw the rows: the
+   * element found before the frame may by then show another commit or label (its slot reused
+   * for another row). So it is looked up again after the frame and right-clicked only once it
+   * shows the same name it did; and the menu must open on that same name (R43).
+   */
   async function menuOn(el: () => HTMLElement | null | undefined, what: string): Promise<void> {
-    const target = await until(what, el);
-    target.scrollIntoView({ block: "center" });
-    await frame();
-    rightClick(target);
-    await until("its menu", menu);
+    const first = await until(what, el);
+    const name = shows(first);
+    first.scrollIntoView({ block: "center" });
+    for (let attempt = 0; ; attempt++) {
+      await frame();
+      await frame();
+      const target = await until(what, el);
+      if (shows(target) !== name) {
+        if (attempt >= 20) throw new Error(`${what} shows ${shows(target)}, not ${name}`);
+        continue;
+      }
+      rightClick(target);
+      await until("its menu", menu);
+      // The element still shows what was meant once the menu is open: it is that one's menu.
+      if (shows(target) === name && target.isConnected) return;
+      document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await until("the menu closed", () => !menu());
+      if (attempt >= 20) throw new Error(`${what} changed under its menu`);
+    }
   }
   async function pick(name: RegExp): Promise<void> {
     const item = await until(`menu item ${name}`, () =>
@@ -338,9 +361,9 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
     const done = text(await notice(/Finished rebasing|rebas/i));
     await dismissAll();
     await menuOn(() => label("main"), "the main label");
-    const target = label("main");
+    // The menu's items name the branch meant: main's has "Check out" and merges main in.
     const items = [...document.querySelectorAll('[data-testid="context-menu"] [role="menuitem"]')].map(text);
-    await mark(`walk-note main menu: row ${target?.closest<HTMLElement>("[data-index]")?.dataset.index} slot ${target?.dataset.slot}: ${items.join(", ")}`);
+    if (!items.some((i) => /^Merge main into /.test(i))) throw new Error(`not main's menu: ${items.join(", ")}`);
     await pick(/^Check out$/);
     await until("HEAD on main", () => view.snapshot.head.branch === "main");
     return done;

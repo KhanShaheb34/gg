@@ -1,6 +1,5 @@
 // What a context menu holds for a target, and what picking one of its items does: copy items
-// and the commit, tag and branch actions work here; stash actions are wired in with their
-// dialogs (Task 9). What an item acts on is taken from the target as it was when the menu
+// and the commit, tag, branch and stash actions. What an item acts on is taken from the target as it was when the menu
 // opened (hashes and names, never row positions: the graph may have changed underneath since).
 
 import CheckoutRemoteDialog from "../components/dialogs/CheckoutRemoteDialog.svelte";
@@ -17,6 +16,8 @@ import RebaseDialog from "../components/dialogs/RebaseDialog.svelte";
 import RenameBranchDialog from "../components/dialogs/RenameBranchDialog.svelte";
 import ResetDialog from "../components/dialogs/ResetDialog.svelte";
 import RevertDialog from "../components/dialogs/RevertDialog.svelte";
+import StashBranchDialog from "../components/dialogs/StashBranchDialog.svelte";
+import StashSaveDialog from "../components/dialogs/StashSaveDialog.svelte";
 import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
 import { runOp } from "../state/ops.svelte";
@@ -50,6 +51,11 @@ export function pick(id: string, target: MenuTarget, snap: RepoSnapshot): void {
   if (label?.kind === "branch" && pickBranch(id, label, snap)) return;
   if (label?.kind === "remote" && pickRemote(id, label.name, snap)) return;
   if (label === null && row.kind === "commit" && pickCommit(id, row, snap)) return;
+  if ((row.kind === "stash" || label?.kind === "stash") && pickStash(id, row, snap)) return;
+  if (row.kind === "uncommitted" && id === "stash.save") {
+    show(StashSaveDialog, { repoId: snap.repoId, untracked: snap.status.untracked });
+    return;
+  }
   switch (id) {
     case "copy.hash":
       void copy(row.hash, "hash");
@@ -110,6 +116,29 @@ function pickCommit(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
     case "reset.mixed":
     case "reset.hard":
       show(ResetDialog, { repoId, hash, subject, branch, mode: id.slice("reset.".length) as "soft" | "mixed" | "hard" });
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Stash item `id` on the stash of `row` (its commit); false if `id` is not one. */
+function pickStash(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
+  const repoId = snap.repoId;
+  const stash = row.hash;
+  switch (id) {
+    case "stash.apply":
+      run(repoId, { op: "stash_apply", stash });
+      return true;
+    case "stash.pop":
+      run(repoId, { op: "stash_pop", stash });
+      return true;
+    case "stash.drop":
+      // The core asks to confirm, naming the stash: no dialog of its own.
+      run(repoId, { op: "stash_drop", stash });
+      return true;
+    case "stash.branch":
+      show(StashBranchDialog, { repoId, stash, subject: row.subject, branches: snap.branches });
       return true;
     default:
       return false;

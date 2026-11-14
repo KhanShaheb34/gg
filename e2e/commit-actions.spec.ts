@@ -277,7 +277,7 @@ test("cherry_pick_conflict_shows_no_error_toast", async ({ gg }) => {
   await dialog(page).getByRole("button", { name: "Cherry-pick" }).click();
   await expect(dialog(page)).toHaveCount(0);
 
-  await expect.poll(() => inProgress(page)).toMatchObject({ kind: "cherry-pick", conflicted: ["greeting.txt"] });
+  await expect.poll(() => inProgress(page)).toMatchObject({ kind: "cherry-pick", files: [{ path: "greeting.txt", state: "markers" }] });
   await expect(notices(page)).toHaveCount(0);
 });
 

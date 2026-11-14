@@ -212,7 +212,7 @@
         toast("info", "That commit is not shown in the graph.");
         return;
       }
-      await view.selectRow(index, true);
+      await view.selectRow(index, true, { hash: target });
       focusGraph(panel?.parentElement);
       return;
     }

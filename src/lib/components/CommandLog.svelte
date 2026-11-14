@@ -28,6 +28,7 @@
     focusCameFrom,
     logPrefs,
     saveLogPrefs,
+    stoppedOps,
     takeLogAutofocus,
     type OpEntry,
   } from "../state/commandLog.svelte";
@@ -42,9 +43,14 @@
     room: number;
     /** Closes the panel (Escape, its close button). */
     onclose: () => void;
+    /**
+     * A commit is selected but the window is too short for its details beside the log
+     * (detailsRoom): the header says so, and how to get them back.
+     */
+    detailsHidden?: boolean;
   };
 
-  let { repoId, hostH, room, onclose }: Props = $props();
+  let { repoId, hostH, room, onclose, detailsHidden = false }: Props = $props();
 
   const mac = isMac();
   const KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
@@ -111,6 +117,8 @@
   let target = $state<string | null>(null);
 
   const failed = (r: CommandRecord) => r.exitCode !== 0;
+  /** The operation ended stopped on conflicts: a git command of it exiting non-zero is how. */
+  const stopped = (opId: number | null) => opId !== null && stoppedOps.ids.has(opId);
   const hasOutput = (r: CommandRecord) => r.stdout !== "" || r.stderr !== "";
 
   // --- Scrolling: newest last, the bottom followed while the user is there -------------------
@@ -327,7 +335,7 @@
       <span class="time">{clockTime(r.startedAtMs)}</span>
       <span class="line"><bdi>{visibleText(line)}</bdi></span>
       <span class="dur">{formatDuration(r.durationMs)}</span>
-      <span class="exit" class:bad={failed(r)}>{failed(r) ? `exit ${r.exitCode}` : "ok"}</span>
+      <span class="exit" class:bad={failed(r) && !stopped(r.opId)}>{failed(r) ? `exit ${r.exitCode}` : "ok"}</span>
     </button>
     <button
       class="copy"
@@ -384,6 +392,9 @@
     <h2 class="title">Command log</h2>
     <span class="count">{logPrefs.reads ? "All commands" : "Operations"}</span>
     <span class="spacer"></span>
+    {#if detailsHidden}
+      <span class="hidden-details" data-testid="details-hidden">Details hidden: make the window taller, or close the log</span>
+    {/if}
     <label class="toggle">
       <input type="checkbox" class="checkbox" checked={logPrefs.reads} onchange={(e) => setReads(e.currentTarget.checked)} />
       <span>Background reads</span>
@@ -429,7 +440,11 @@
                 <span class="op-title"><bdi>{visibleText(item.title ?? "Operation")}</bdi></span>
                 <span class="meta">{commands(item.records.length)}</span>
                 <span class="dur">{formatDuration(opSpan(item))}</span>
-                <span class="exit" class:bad={exit !== null}>{exit !== null ? `exit ${exit}` : ""}</span>
+                {#if stopped(item.opId)}
+                  <span class="exit stopped">stopped on conflicts</span>
+                {:else}
+                  <span class="exit" class:bad={exit !== null}>{exit !== null ? `exit ${exit}` : ""}</span>
+                {/if}
               </button>
               {#if open}
                 <div class="op-cmds">
@@ -479,6 +494,15 @@
 
   .count {
     color: var(--text-faint);
+  }
+
+  .hidden-details {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .spacer {
@@ -687,6 +711,11 @@
 
   .exit.bad {
     color: var(--danger);
+    font-weight: 600;
+  }
+
+  .exit.stopped {
+    color: var(--warning);
     font-weight: 600;
   }
 

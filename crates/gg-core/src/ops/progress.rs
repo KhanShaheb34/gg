@@ -116,8 +116,8 @@ pub(crate) async fn unresolved_conflicts(ctx: &OpCtx<'_>) -> Result<Option<Strin
     }
     if !undecided.is_empty() {
         why.push(format!(
-            "In some files git kept one side, as they are binary or were deleted on one side \
-             ({}).",
+            "Some files have no conflict markers to go by: binary, deleted on one side, or too \
+             large to read here ({}).",
             named(&undecided)
         ));
     }

@@ -186,6 +186,8 @@
                 hostH={bodyH}
                 room={panelRoom(bodyH, bannerH, detailsShown)}
                 onclose={() => setLogOpen(false)}
+                detailsHidden={repoView(active.repoId).selectedHash !== null &&
+                  detailsRoom(panelRoom(bodyH, bannerH, 0), true) === 0}
               />
             {/if}
           </div>

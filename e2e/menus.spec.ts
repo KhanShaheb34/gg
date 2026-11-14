@@ -527,27 +527,46 @@ test("the toolbar shows the running operation and how many wait behind it", asyn
   expect(gg.git("small", "branch", "--show-current").trim()).toBe("main");
 });
 
-test("an operation that ends at once shows no busy indicator", async ({ gg }) => {
+test("the busy indicator shows only once an operation has run for 150 ms (R23), quick or slow", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
-  await open(page, gg.repoPath("small"));
-  // Watch for the indicator appearing at all while a quick operation runs.
+  const dir = gg.repoPath("small");
+  await open(page, dir);
+  // When the indicator first appears, page time.
   await page.evaluate(() => {
-    const w = window as unknown as { busySeen: boolean };
-    w.busySeen = false;
+    const w = window as unknown as { busyAt: number | null };
+    w.busyAt = null;
     new MutationObserver(() => {
-      if (document.querySelector('[data-testid="busy"]')) w.busySeen = true;
+      if (w.busyAt === null && document.querySelector('[data-testid="busy"]')) w.busyAt = performance.now();
     }).observe(document.body, { childList: true, subtree: true });
   });
+  /** Runs `request` from the page; when it was sent and when the indicator showed, if it did. */
+  const timed = (request: Parameters<typeof runOp>[1]) =>
+    page.evaluate(async (req) => {
+      const w = window as unknown as { busyAt: number | null };
+      w.busyAt = null;
+      const ops = await import("/src/lib/state/ops.svelte.ts");
+      const { app } = await import("/src/lib/state/app.svelte.ts");
+      const sent = performance.now();
+      const out = await ops.runOp(app.activeRepoId!, req as never);
+      const ended = performance.now();
+      await new Promise((r) => setTimeout(r, 300));
+      return { status: out.status, sent, ended, busyAt: w.busyAt };
+    }, request);
+
+  // A quick one: if it showed at all (a loaded machine), it was not before 150 ms.
   const hash = gg.git("small", "rev-parse", "HEAD").trim();
-  const started = Date.now();
-  expect((await runOp(page, { op: "create_tag", name: "quick", hash, message: null })).status).toBe("done");
-  const took = Date.now() - started;
-  await page.waitForTimeout(300);
-  // The indicator waits 150 ms (R23): an operation that took less never shows it. (On a
-  // loaded machine even this one can take longer, and then showing it is right.)
-  const seen = await page.evaluate(() => (window as unknown as { busySeen: boolean }).busySeen);
-  if (took < 140) expect(seen).toBe(false);
+  const quick = await timed({ op: "create_tag", name: "quick", hash, message: null });
+  expect(quick.status).toBe("done");
+  if (quick.busyAt === null) expect(quick.ended - quick.sent).toBeLessThan(10_000);
+  else expect(quick.busyAt - quick.sent).toBeGreaterThanOrEqual(150);
+
+  // A slow one (its hook takes a second): it shows, and not before 150 ms.
+  writeFileSync(path.join(dir, ".git/hooks/post-checkout"), "#!/bin/sh\nsleep 1\n", { mode: 0o755 });
+  const slow = await timed({ op: "checkout_branch", branch: "fix/typo", fastForward: false });
+  expect(slow.status).toBe("done");
+  expect(slow.busyAt).not.toBeNull();
+  expect(slow.busyAt! - slow.sent).toBeGreaterThanOrEqual(150);
 });
 
 test("the command log taking in new commands does not close an open menu", async ({ gg }) => {

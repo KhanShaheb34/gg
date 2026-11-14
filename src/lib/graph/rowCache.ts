@@ -43,6 +43,11 @@ export class RowCache {
     this.totalRows = totalRows;
   }
 
+  /** The generation whose rows these are. */
+  get rowsGeneration(): number {
+    return this.generation;
+  }
+
   /** Row `index`, if loaded. */
   get(index: number): CommitRow | undefined {
     const page = Math.floor(index / this.pageSize);

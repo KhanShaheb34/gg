@@ -245,6 +245,71 @@ describe("RepoView.applySnapshot", () => {
     expect(view.selectedIndex).toBe(600);
   });
 
+  it("selectRow for a commit (go to parent) finds it by its hash in the rows that replace them", async () => {
+    const view = await openView(0);
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const getRows = vi.mocked(ipc.api.getRows).getMockImplementation()!;
+    vi.mocked(ipc.api.getRows).mockImplementation(async (...args) => {
+      if (args[1] === 1) await held;
+      return getRows(...args);
+    });
+    const pending = view.selectRow(600, true, { hash: "c600" });
+    // A commit arrives on top meanwhile: c600 is now row 601, and row 600 another commit.
+    commitOnTop(1);
+    release();
+    await pending;
+    await view.applySnapshot(snapshot());
+    await vi.waitFor(() => expect(view.selectedHash).toBe("c600"));
+    expect(view.selectedIndex).toBe(601);
+  });
+
+  it("selectRow for a commit that the new rows do not show where it was: dropped, never another commit", async () => {
+    const view = await openView(0);
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const getRows = vi.mocked(ipc.api.getRows).getMockImplementation()!;
+    vi.mocked(ipc.api.getRows).mockImplementation(async (...args) => {
+      if (args[1] === 1) await held;
+      return getRows(...args);
+    });
+    const pending = view.selectRow(600, true, { hash: "c600" });
+    core.generation++;
+    core.hashes = core.hashes.map((h) => `${h}'`);
+    release();
+    await pending;
+    await view.applySnapshot(snapshot());
+    await settle();
+    expect(view.selectedHash).toBeNull();
+  });
+
+  it("selectRow for a search hit is dropped once the rows it was found in are replaced", async () => {
+    const view = await openView(0);
+    const old = view.snapshot.generation;
+    commitOnTop(1);
+    await view.applySnapshot(snapshot());
+    await view.selectRow(600, true, { generation: old });
+    expect(view.selectedHash).toBeNull();
+  });
+
+  it("a selectRow whose row failed to load is dropped: a later load does not select it", async () => {
+    const view = await openView(0);
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const getRows = vi.mocked(ipc.api.getRows).getMockImplementation()!;
+    vi.mocked(ipc.api.getRows).mockImplementation(async (...args) => {
+      if (args[2] <= 900 && 900 < args[2] + args[3]) throw new ipc.CoreError({ code: "io", message: "Could not read", detail: null });
+      return getRows(...args);
+    });
+    await view.selectRow(900).catch(() => {});
+    expect(view.selectedHash).toBeNull();
+    vi.mocked(ipc.api.getRows).mockImplementation(getRows);
+    await view.cache.ensure(900, 900);
+    await settle();
+    expect(view.selectedHash).toBeNull();
+    expect(warned).toHaveBeenCalled();
+    warned.mockRestore();
+  });
+
   it("a row selected while new rows are loading keeps its place in them (index, not only hash)", async () => {
     const view = await openView(0);
     let release: () => void = () => {};

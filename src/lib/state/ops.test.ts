@@ -210,6 +210,16 @@ describe("runOp", () => {
     expect(vi.mocked(ipc.api.runOp).mock.calls[1]).toEqual([1, drop, [{ kind: "drop_stash", token: "d".repeat(40) }]]);
   });
 
+  it("an operation that stopped on conflicts is marked so for the log (shown amber, not failed)", async () => {
+    const { stoppedOps } = await import("./commandLog.svelte");
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 77, status: "stopped" }));
+    await ops.runOp(1, RESET);
+    expect(stoppedOps.ids.has(77)).toBe(true);
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 78, status: "failed" }));
+    await ops.runOp(1, RESET);
+    expect(stoppedOps.ids.has(78)).toBe(false);
+  });
+
   it("a request refused because HEAD moved since it was asked for shows the core's plain line", async () => {
     const message = "Nothing was done: it was asked for on main, but feature is checked out now. Look at it again, and ask again if it still applies.";
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ status: "failed", message }));

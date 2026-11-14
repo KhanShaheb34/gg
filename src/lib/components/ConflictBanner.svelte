@@ -102,12 +102,13 @@
 
   const STATE_WORDS: Record<ConflictFile["state"], string> = {
     markers: "Conflict markers",
-    undecided: "Git kept one side",
+    undecided: "Check this file",
     resolved: "Resolved",
   };
   const STATE_TIPS: Record<ConflictFile["state"], string> = {
     markers: "The file still has conflict markers",
-    undecided: "Binary, or deleted or added on one side: git kept one side and left no markers. Only you can say it is right.",
+    undecided:
+      "No conflict markers to go by: binary, deleted or added on one side (git kept one side), or too large to read here. Only you can say it is right.",
     resolved: "No conflict markers left",
   };
 

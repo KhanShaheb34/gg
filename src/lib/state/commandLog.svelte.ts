@@ -169,6 +169,20 @@ export class CommandLogStore {
 /** The panel's data, one per window. */
 export const commandLog = new CommandLogStore();
 
+/**
+ * Operations that ended stopped on conflicts (their outcome said so): the log shows them as
+ * stopped, in amber, not as failed, though a command of theirs (`git merge`) exits non-zero.
+ */
+export const stoppedOps = $state<{ ids: Set<number> }>({ ids: new Set() });
+
+/** Notes that operation `opId` ended stopped on conflicts. A few hundred are kept. */
+export function markStopped(opId: number): void {
+  const ids = new Set(stoppedOps.ids);
+  ids.add(opId);
+  if (ids.size > 500) ids.delete(ids.values().next().value!);
+  stoppedOps.ids = ids;
+}
+
 // --- Preferences --------------------------------------------------------------------------
 
 const PREFS_KEY = "gg.log.v1";

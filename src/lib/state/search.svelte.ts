@@ -21,8 +21,11 @@ export interface SearchHost {
   readonly selectedIndex: number | null;
   /** Whether the view has been disposed of. */
   readonly disposed: boolean;
-  /** Scrolls row `index` into view (in the middle, with `center`) and selects it. */
-  selectRow(index: number, center?: boolean): Promise<void>;
+  /**
+   * Scrolls row `index` into view (in the middle, with `center`) and selects it, unless the
+   * rows are no longer those of `of.generation`.
+   */
+  selectRow(index: number, center?: boolean, of?: { generation?: number }): Promise<void>;
   /** Shows `e` to the user as "<message>". */
   notice(e: unknown, message: string): void;
 }
@@ -132,7 +135,7 @@ export class SearchState {
     this.generation = generation;
     this.lookupDone();
     this.lookUpBodies(token, query, hits.length === 0);
-    if (hits.length > 0) await this.host.selectRow(hits[0], true);
+    if (hits.length > 0) await this.host.selectRow(hits[0], true, { generation });
   }
 
   /** Selects the next hit after the selection, wrapping around. */
@@ -166,7 +169,7 @@ export class SearchState {
     if (row === null) return;
     this.steppingTo = row;
     try {
-      await h.selectRow(row, true);
+      await h.selectRow(row, true, { generation: this.generation });
     } finally {
       if (this.steppingTo === row) this.steppingTo = null;
     }
@@ -219,7 +222,9 @@ export class SearchState {
         const merged = new Set([...this.hits, ...found.rows]);
         if (merged.size === this.hits.length) return;
         this.hits = [...merged].sort((a, b) => a - b);
-        if (selectFirst && this.hits.length === found.rows.length) void this.host.selectRow(this.hits[0], true);
+        if (selectFirst && this.hits.length === found.rows.length) {
+          void this.host.selectRow(this.hits[0], true, { generation: found.generation });
+        }
       },
       () => {
         // Body hits only add to the others; without them the search still works.

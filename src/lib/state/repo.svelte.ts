@@ -147,8 +147,14 @@ export class RepoView {
   /** When the fetch asked for here was asked for (ms since the epoch), while it is watched. */
   private fetchAskedAt = 0;
   private fetchWatched = false;
-  /** The row `selectRow` will select once it has loaded; any other selection drops it. */
-  private wanted: number | null = null;
+  /**
+   * The row `selectRow` will select once it has loaded; any other selection drops it. With
+   * `hash`, that commit wherever it is; else the row at `index`, of `generation` if set.
+   * `madeIn`: the generation of the rows it was asked in.
+   */
+  private wanted: { index: number; hash: string | null; generation: number | null; madeIn: number } | null = null;
+  /** Page loads that failed so far (see `selectRow`). */
+  private rowFailures = 0;
   /** When `recheck` last looked (performance.now()). */
   private lastRecheck = -Infinity;
 
@@ -195,24 +201,46 @@ export class RepoView {
 
   /**
    * Scrolls row `index` into view and selects it once its row is loaded (a click on a row
-   * still loading, a key, a search hit), unless another row was selected meanwhile.
+   * still loading, a key, a search hit), unless another row was selected meanwhile. `of`:
+   * what the caller means, when it knows: the commit (`hash`: "go to parent"), found again by
+   * its hash if the rows are replaced meanwhile, else dropped; the rows (`generation`: a
+   * search hit), dropped if they are replaced. Without either, the index is all there is (a
+   * click on a row still loading) and it stands in the rows that replace them. A wish whose
+   * row did not load (its page failed) is dropped, so a later load cannot select it.
    */
-  async selectRow(index: number, center = false): Promise<void> {
+  async selectRow(index: number, center = false, of: { hash?: string; generation?: number } = {}): Promise<void> {
     this.scrollToRow(index, center);
-    this.wanted = index;
-    if (!this.cache.get(index)) await this.cache.ensure(index, index);
+    const cache = this.cache;
+    const wish = { index, hash: of.hash ?? null, generation: of.generation ?? null, madeIn: cache.rowsGeneration };
+    this.wanted = wish;
+    const failures = this.rowFailures;
+    if (!cache.get(index)) await cache.ensure(index, index);
     this.selectWanted();
+    // Not loaded because loading failed (not because the rows changed meanwhile): dropped.
+    if (this.wanted === wish && this.rowFailures > failures && !this.cache.get(index)) this.wanted = null;
   }
 
   /**
    * Selects the row `selectRow` asked for once it is loaded: when its page arrives, or in the
    * rows that replaced the ones it was asked in (the first rows of a repository being
-   * opened, say).
+   * opened, say; see `selectRow` for when it is dropped instead).
    */
   private selectWanted(): void {
-    const index = this.wanted;
-    const row = index === null ? undefined : this.cache.get(index);
-    if (row) this.select(row.hash, index);
+    const wish = this.wanted;
+    if (wish === null) return;
+    const replaced = this.cache.rowsGeneration !== wish.madeIn;
+    if (wish.hash !== null) {
+      const row = this.cache.byHash(wish.hash);
+      if (row) this.select(row.hash, row.index);
+      else if (replaced) this.wanted = null;
+      return;
+    }
+    if (wish.generation !== null && this.cache.rowsGeneration !== wish.generation) {
+      this.wanted = null;
+      return;
+    }
+    const row = this.cache.get(wish.index);
+    if (row) this.select(row.hash, wish.index);
   }
 
   // --- View options -------------------------------------------------------------------------
@@ -542,7 +570,7 @@ export class RepoView {
     await Promise.all([
       next.ensure(first, first + SWAP_PREFETCH_ROWS),
       selectedIndex === null ? null : next.ensure(selectedIndex, selectedIndex),
-      this.wanted === null ? null : next.ensure(this.wanted, this.wanted),
+      this.wanted === null ? null : next.ensure(this.wanted.index, this.wanted.index),
     ]);
     if (token !== this.applyToken || this.disposed) return;
 
@@ -677,7 +705,10 @@ export class RepoView {
       this.selectWanted();
       this.onChange?.();
     };
-    cache.onError = (e) => console.warn(`could not load rows of repository ${this.repoId}`, e);
+    cache.onError = (e) => {
+      this.rowFailures++;
+      console.warn(`could not load rows of repository ${this.repoId}`, e);
+    };
     return cache;
   }
 

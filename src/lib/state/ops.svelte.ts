@@ -8,6 +8,7 @@ import { api, CoreError } from "../ipc";
 import { shown } from "../menus/common";
 import type { Confirmed, CoreErrorDto, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 import { app, dismissToast, notify, reportError, showLog, type ToastAction } from "./app.svelte";
+import { markStopped } from "./commandLog.svelte";
 import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
 
@@ -86,6 +87,7 @@ function confirm(repoId: number, outcome: OpOutcome, again: boolean): Promise<bo
 }
 
 function report(repoId: number, outcome: OpOutcome): void {
+  if (outcome.status === "stopped") markStopped(outcome.opId);
   // What earlier notices offered may no longer hold once a later operation ran there (R30):
   // its snapshot may never have shown it running.
   for (const t of app.toasts) {

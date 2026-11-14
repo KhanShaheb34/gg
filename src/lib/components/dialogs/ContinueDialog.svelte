@@ -72,7 +72,8 @@
     {/if}
     {#if undecided.length > 0}
       <p class="dialog-text lead">
-        In {undecided.length === 1 ? "this file" : "these files"} git kept one side (binary, or deleted on one side): continuing takes
+        {undecided.length === 1 ? "This file has" : "These files have"} no conflict markers to go by (binary, deleted on one side, or too
+        large to read here): continuing takes
         what is in your folder now:
       </p>
       {@render list(undecided, 0)}

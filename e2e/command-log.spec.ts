@@ -61,7 +61,7 @@ test("operation_appears_with_its_commands_and_output", async ({ gg }) => {
   await expect(head).toContainText("Merge feature/ui into main");
   await expect(head).toHaveAttribute("aria-expanded", "true");
   // Its command, quoted as a shell would need it, with how long it took and its exit code.
-  const merge = op.locator(".cmd", { hasText: "git merge --no-edit --no-ff feature/ui" });
+  const merge = op.locator(".cmd", { hasText: "git merge --no-edit --no-ff --end-of-options feature/ui" });
   await expect(merge).toBeVisible();
   await expect(merge.locator(".exit")).toHaveText("ok");
   await expect(merge.locator(".dur")).toHaveText(/^\d+(\.\d)? (ms|s)$/);
@@ -79,7 +79,7 @@ test("operation_appears_with_its_commands_and_output", async ({ gg }) => {
   await merge.hover();
   await merge.getByRole("button", { name: "Copy command line" }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-    "git merge --no-edit --no-ff feature/ui",
+    "git merge --no-edit --no-ff --end-of-options feature/ui",
   );
 
   // A new operation comes in while the panel is open, newest last.
@@ -303,6 +303,11 @@ test("show_log_in_a_small_window_shows_the_operation_above_the_details", async (
     }).length;
   });
   expect(visibleRows).toBeGreaterThanOrEqual(2);
+  // The details went to make room; the log says so, and how to get them back.
+  expect((await page.getByTestId("commit-details").boundingBox())?.height ?? 0).toBeLessThan(2);
+  await expect(panel(page).getByTestId("details-hidden")).toHaveText(
+    "Details hidden: make the window taller, or close the log",
+  );
   if (process.env.GG_SCREENS === "1") {
     for (const scheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme: scheme });
@@ -421,4 +426,29 @@ test("the banner appearing over the details and the log lays out without a Resiz
   }));
   expect(heights.errors).toEqual([]);
   expect(heights.graph).toBeGreaterThanOrEqual(160);
+});
+
+test("a merge that stopped on conflicts shows in the log as stopped, in amber, not as failed (task 11 review, minor 3)", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("conflicts"));
+  const out = await runOp(page, {
+    op: "merge",
+    target: { kind: "branch", name: "feature/x" },
+    noFf: true,
+    squash: false,
+    noCommit: false,
+  });
+  expect(out.status).toBe("stopped");
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+L");
+  await expect(panel(page)).toBeVisible();
+  const op = entries(page).locator(`[data-op="${out.opId}"]`);
+  await expect(op.locator(".op-head .exit")).toHaveText("stopped on conflicts");
+  await expect(op.locator(".op-head .exit")).toHaveClass(/stopped/);
+  const merge = op.locator(".cmd").filter({ hasText: "git merge" });
+  await expect(merge.locator(".exit")).toHaveText("exit 1");
+  await expect(merge.locator(".exit")).not.toHaveClass(/bad/);
 });

@@ -565,9 +565,14 @@ for (const theme of ["light", "dark"] as const) {
     await banner.hover({ position: { x: 30, y: 10 } });
     await expect(banner).toContainText("1 of 2 files resolved");
     await snap("banner-merge-partly");
+    await banner.getByRole("button", { name: "Continue anyway…" }).click();
+    await expect(dialog).toBeVisible();
+    await snap("dialog-continue-anyway");
+    await page.keyboard.press("Escape");
     // Resolved: ready, and Continue's question.
     resolve("style.css");
     await page.waitForTimeout(1100);
+    await page.mouse.move(0, 300);
     await banner.hover({ position: { x: 30, y: 10 } });
     await expect(banner).toContainText("All conflicts are resolved");
     await snap("banner-merge-resolved");
@@ -633,5 +638,97 @@ for (const theme of ["light", "dark"] as const) {
     await page.keyboard.type("layout-trial");
     await snap("dialog-stash-branch");
     await page.keyboard.press("Escape");
+  });
+}
+
+// The command log (Task 10): closed, open, a failed operation reached from its notice, the
+// background reads, at 1280×800 and 900×560.
+for (const theme of ["light", "dark"] as const) {
+  for (const size of [
+    { name: "", width: 1280, height: 800 },
+    { name: "small-", width: 900, height: 560 },
+  ]) {
+    test(`command log, ${size.width}x${size.height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width: size.width, height: size.height });
+      await page.emulateMedia({ colorScheme: theme });
+      const dir = gg.repoPath("branchy");
+      gg.git("branchy", "config", "user.name", "Ada Lovelace");
+      gg.git("branchy", "config", "user.email", "ada@example.com");
+      await page.goto("/");
+      await open(page, dir);
+      const grid = page.getByRole("grid", { name: "Commits" });
+      await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      const shot = async (name: string) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${size.name}${name}-${theme}.png`) });
+      };
+      const panel = page.getByRole("region", { name: "Command log" });
+
+      await runOp(page, { op: "merge", target: { kind: "branch", name: "feature/ui" }, noFf: true, squash: false, noCommit: false });
+      await runOp(page, { op: "create_branch", name: "release/1.1", at: gg.git("branchy", "rev-parse", "HEAD").trim(), checkout: false });
+      const dismiss = page.locator("[data-notices]").getByRole("button", { name: "Dismiss notification" });
+      while ((await dismiss.count()) > 0) await dismiss.first().click();
+      await grid.locator('[role="row"]', { hasText: "Plugin sandboxing" }).click();
+      await park(page);
+      await shot("log-closed");
+
+      await page.getByRole("button", { name: "Command log", exact: true }).click();
+      await expect(panel.locator(".op")).toHaveCount(2);
+      const merge = panel.locator(".cmd", { hasText: "git merge" });
+      await merge.getByRole("button", { name: /git merge/ }).click();
+      await park(page);
+      await shot("log-open");
+
+      // A failed checkout: its notice's Show log goes to it, highlighted, its output open.
+      const differing = gg.git("branchy", "diff", "--name-only", "main", "develop").trim().split("\n")[0];
+      writeFileSync(path.join(dir, differing), "in the way\n");
+      const failed = await runOp(page, { op: "checkout_branch", branch: "develop", fastForward: false });
+      await page.getByRole("alert").filter({ hasText: failed.message }).getByRole("button", { name: "Show log" }).click();
+      await expect(panel.locator(".op.target")).toBeVisible();
+      await park(page);
+      await shot("log-failed");
+
+      await panel.getByRole("checkbox", { name: "Background reads" }).check();
+      await expect(panel.locator(".cmd.read").first()).toBeVisible();
+      while ((await dismiss.count()) > 0) await dismiss.first().click();
+      await park(page);
+      await shot("log-reads");
+      await panel.getByRole("checkbox", { name: "Background reads" }).uncheck();
+      await page.getByRole("button", { name: "Command log", exact: true }).click();
+    });
+  }
+}
+
+// Task 9 review item 2: the smallest window, the many-files banner, the details panel as tall as
+// it goes: the graph keeps its rows.
+for (const theme of ["light", "dark"] as const) {
+  test(`small window, banner and tall details, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.setViewportSize({ width: 900, height: 560 });
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    await open(page, gg.repoPath("conflicts"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    try {
+      gg.git("conflicts", "merge", "wide");
+    } catch {
+      // Stopped on conflicts.
+    }
+    await expect(page.getByTestId("conflict-banner")).toContainText("12 files have conflicts");
+    await grid.locator('[role="row"]', { hasText: "Earlier work 39" }).click();
+    const details = page.getByTestId("commit-details");
+    const splitter = details.getByRole("separator", { name: "Resize details panel" });
+    const box = (await splitter.boundingBox())!;
+    await page.mouse.move(box.x + 100, box.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 100, 0, { steps: 4 });
+    await page.mouse.up();
+    await park(page);
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: path.join(OUT, `small-banner-details-${theme}.png`) });
+    // The details panel's height goes back to its default for the next test run.
+    await page.evaluate(() => localStorage.removeItem("gg.details.v1"));
   });
 }

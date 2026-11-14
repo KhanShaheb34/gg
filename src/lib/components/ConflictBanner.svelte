@@ -397,8 +397,8 @@
   }
 
   .files-wrap.more .files {
-    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
-    mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
   }
 
   .file-row {

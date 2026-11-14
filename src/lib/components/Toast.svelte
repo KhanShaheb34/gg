@@ -157,7 +157,8 @@
   .stack {
     position: fixed;
     right: 16px;
-    bottom: 16px;
+    /* Above the command log while it is open (it sets --log-h), so it never hides the entry a notice's Show log went to. */
+    bottom: calc(16px + var(--log-h, 0px));
     z-index: 50;
     display: flex;
     flex-direction: column;

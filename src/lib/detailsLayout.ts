@@ -48,9 +48,11 @@ export function panelHeight(wanted: number, min: number, room: number): number {
 }
 
 /**
- * Room for the details panel out of `avail` (what the graph leaves): with the log open, the
- * log keeps its minimum, or half of `avail` when that is less than twice it.
+ * Room for the details panel out of `avail` (what the graph leaves). With the log open the
+ * two share it: the details take at most 55 % (never less than their minimum), and the log
+ * keeps its minimum, or half of `avail` when that is less than twice it.
  */
 export function detailsRoom(avail: number, logOpen: boolean): number {
-  return logOpen ? avail - Math.min(LOG_MIN_H, avail / 2) : avail;
+  if (!logOpen) return avail;
+  return Math.min(avail - Math.min(LOG_MIN_H, avail / 2), Math.max(DETAILS_MIN_H, Math.round(avail * 0.55)));
 }

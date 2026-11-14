@@ -45,9 +45,11 @@ describe("bottom panels", () => {
     expect(panelHeight(280, 120, 90)).toBe(90);
   });
 
-  it("keep the log its minimum beside the details, or half when room is short", () => {
+  it("share the room with the log: the details take at most 55 %, the log keeps its minimum", () => {
     expect(detailsRoom(400, false)).toBe(400);
-    expect(detailsRoom(400, true)).toBe(400 - LOG_MIN_H);
+    expect(detailsRoom(1000, true)).toBe(550);
+    expect(detailsRoom(300, true)).toBe(165);
+    expect(detailsRoom(200, true)).toBe(200 - LOG_MIN_H);
     expect(detailsRoom(90, true)).toBe(45);
     expect(detailsRoom(0, true)).toBe(0);
   });

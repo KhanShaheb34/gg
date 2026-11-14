@@ -81,6 +81,13 @@
     },
   };
 
+  // Notices stand above the panel while it is open (Toast.svelte reads --log-h).
+  $effect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--log-h", `${height}px`);
+    return () => root.style.removeProperty("--log-h");
+  });
+
   function setReads(reads: boolean) {
     logPrefs.reads = reads;
     saveLogPrefs();
@@ -500,6 +507,8 @@
   }
 
   .entries {
+    margin: 0;
+    padding: 0;
     list-style: none;
   }
 
@@ -596,6 +605,8 @@
     min-width: 0;
     overflow: hidden;
     font-family: var(--font-mono);
+    /* "--" stays two hyphens. */
+    font-variant-ligatures: none;
     font-size: var(--fs-xs);
     white-space: pre;
     text-overflow: ellipsis;
@@ -701,6 +712,7 @@
     margin: 2px 0 0;
     overflow-x: auto;
     font-family: var(--font-mono);
+    font-variant-ligatures: none;
     font-size: var(--fs-xs);
     line-height: 1.5;
     white-space: pre;

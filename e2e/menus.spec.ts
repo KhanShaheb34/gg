@@ -473,7 +473,7 @@ test("the toolbar shows the running operation and how many wait behind it", asyn
   await open(page, dir);
   // Each checkout runs this hook, which takes a while.
   const hook = path.join(dir, ".git/hooks/post-checkout");
-  writeFileSync(hook, "#!/bin/sh\nsleep 1\n");
+  writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
   chmodSync(hook, 0o755);
 
   const busy = page.getByTestId("busy");

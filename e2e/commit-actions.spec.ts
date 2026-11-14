@@ -333,6 +333,13 @@ test("hard_reset_asks_twice_and_cancel_changes_nothing", async ({ gg }) => {
   const dir = gg.repoPath("small");
   await open(page, dir);
   writeFileSync(path.join(dir, "src/part1.txt"), "changed\n");
+  // The graph shows the change first (the window coming back reads the working tree): a
+  // menu closes when its rows change under it.
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(grid(page).locator('[role="row"]', { hasText: "Uncommitted changes (1)" })).toBeVisible();
   const head = gg.git("small", "rev-parse", "HEAD").trim();
   const target = gg.git("small", "rev-parse", "HEAD~1").trim();
 

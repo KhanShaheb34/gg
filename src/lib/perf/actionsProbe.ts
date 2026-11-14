@@ -4,7 +4,8 @@
 // change is in the DOM (the frame that paints it):
 //   - right-click on a row -> its menu painted (action-menu-*);
 //   - "Create branch here…" picked -> its dialog painted (action-dialog-*);
-//   - Enter in that dialog -> the dialog gone, painted (action-confirm-*: the click feedback);
+//   - Enter in that dialog -> it shows it is creating, painted (action-confirm-*: the
+//     feedback), and -> it is gone (action-closed-*: the operation and its refresh);
 //   - the operation's outcome received -> the new branch's label painted in the graph
 //     (action-graph-*), and Enter -> label (action-total-*);
 //   - the toolbar's busy indicator, if it showed (it shows only after 150 ms by design, R23).
@@ -56,11 +57,19 @@ function escape(): void {
   );
 }
 
-export type ActionTimes = { menu: number[]; dialog: number[]; confirm: number[]; graph: number[]; total: number[]; busy: number };
+export type ActionTimes = {
+  menu: number[];
+  dialog: number[];
+  confirm: number[];
+  closed: number[];
+  graph: number[];
+  total: number[];
+  busy: number;
+};
 
 /** Runs `count` rounds against the graph in `scroller`. */
 export async function runActionsProbe(scroller: HTMLElement, count = 10): Promise<ActionTimes> {
-  const times: ActionTimes = { menu: [], dialog: [], confirm: [], graph: [], total: [], busy: 0 };
+  const times: ActionTimes = { menu: [], dialog: [], confirm: [], closed: [], graph: [], total: [], busy: 0 };
   // When each outcome arrived (the operation's end, as the page learns it).
   let outcomeAt = 0;
   const runOp = api.runOp.bind(api);
@@ -105,15 +114,22 @@ export async function runActionsProbe(scroller: HTMLElement, count = 10): Promis
       let busySeen = false;
       started = performance.now();
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      // The feedback: the dialog shows it is creating (its field turns read-only, the button
+      // says "Creating…"; R27: it stays open while a bad name could still come back), or it
+      // has closed.
+      let feedback: number | null = null;
       const closed = await paintedWhen(() => {
         busySeen ||= document.querySelector('[data-testid="busy"]') !== null;
-        return dialog() === null;
+        const open = dialog();
+        if (feedback === null && (open === null || input.readOnly)) feedback = performance.now();
+        return open === null;
       });
-      if (closed === null) {
+      if (closed === null || feedback === null) {
         escape();
         break;
       }
-      times.confirm.push(closed - started);
+      times.confirm.push(feedback - started);
+      times.closed.push(closed - started);
       const labelled = await paintedWhen(() => {
         busySeen ||= document.querySelector('[data-testid="busy"]') !== null;
         return [...scroller.querySelectorAll(".ref")].some((el) => el.textContent?.trim() === name);
@@ -135,7 +151,7 @@ export async function runActionsProbe(scroller: HTMLElement, count = 10): Promis
 /** The marks for `times`: per measure its count, p50, p95 and max. */
 export function actionMarks(times: ActionTimes): [string, number][] {
   const marks: [string, number][] = [];
-  for (const key of ["menu", "dialog", "confirm", "graph", "total"] as const) {
+  for (const key of ["menu", "dialog", "confirm", "closed", "graph", "total"] as const) {
     const xs = times[key];
     marks.push(
       [`action-${key}-n`, xs.length],

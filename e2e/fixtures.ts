@@ -202,7 +202,36 @@ const REPOS: Record<string, RepoScript> = {
       `Generate the module scaffolding\n\nEvery package gets a src folder with typed exports, so the\nbuild can check them before bundling.\n\n${body}\n\nSee https://example.com/docs/modules for the layout.`,
     );
   },
-  /** A repository without commits. */
+  /**
+   * For cherry-picks, oldest first: "Initial commit" (greeting.txt "hello"); on `topic`, "Add
+   * topic notes" (topic.txt) and "Greet from topic" (greeting.txt changed); on `integration`,
+   * "Prepare integration" and "Merge branch 'feature' into integration", which brings in
+   * "Build the feature" (feature.txt) from `feature`; on `main` (checked out), "Greet from
+   * main", which changes greeting.txt otherwise: picking "Greet from topic" conflicts. The
+   * repository has an identity for the commits the app makes.
+   */
+  picks(git, write) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const commit = (files: Record<string, string>, subject: string) => {
+      for (const [file, content] of Object.entries(files)) write(file, content);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit({ "greeting.txt": "hello\n", "README.md": "picks\n" }, "Initial commit");
+    git("switch", "-q", "-c", "topic");
+    commit({ "topic.txt": "topic notes\n" }, "Add topic notes");
+    commit({ "greeting.txt": "hello from topic\n" }, "Greet from topic");
+    git("switch", "-q", "-c", "integration", "main");
+    commit({ "integration.txt": "base\n" }, "Prepare integration");
+    git("switch", "-q", "-c", "feature", "main");
+    commit({ "feature.txt": "feature\n" }, "Build the feature");
+    git("switch", "-q", "integration");
+    git("merge", "-q", "--no-ff", "-m", "Merge branch 'feature' into integration", "feature");
+    git("switch", "-q", "main");
+    commit({ "greeting.txt": "hello from main\n" }, "Greet from main");
+  },
   /** A shallow clone (depth 2) of three commits, "One" to "Three": "Two" is where its history is cut. */
   shallow(git, _write, dir) {
     const source = makeRepo(
@@ -221,6 +250,7 @@ const REPOS: Record<string, RepoScript> = {
     git("fetch", "-q", "--depth", "2", `file://${source}`, "main");
     git("reset", "-q", "--hard", "FETCH_HEAD");
   },
+  /** A repository without commits. */
   empty(git) {
     git("init", "-q", "-b", "main");
   },

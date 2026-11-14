@@ -1,9 +1,22 @@
-// What a context menu holds for a target, and what picking one of its items does. Copy items
-// work here; the other actions are wired in as their dialogs are built (Tasks 7–9).
+// What a context menu holds for a target, and what picking one of its items does: copy items
+// and the commit and tag actions work here; branch and stash actions are wired in as their
+// dialogs are built (Tasks 8–9). What an item acts on is taken from the target as it was
+// when the menu opened (hashes and names, never row positions: the graph may have changed
+// underneath since).
 
+import type { Component } from "svelte";
+import CherryPickDialog from "../components/dialogs/CherryPickDialog.svelte";
+import CreateBranchDialog from "../components/dialogs/CreateBranchDialog.svelte";
+import CreateTagDialog from "../components/dialogs/CreateTagDialog.svelte";
+import DeleteTagDialog from "../components/dialogs/DeleteTagDialog.svelte";
+import PushTagDialog from "../components/dialogs/PushTagDialog.svelte";
+import ResetDialog from "../components/dialogs/ResetDialog.svelte";
+import RevertDialog from "../components/dialogs/RevertDialog.svelte";
 import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
-import type { RepoSnapshot } from "../types";
+import { runOp } from "../state/ops.svelte";
+import { closeDialog, openDialog } from "../state/overlays.svelte";
+import type { CommitRow, RepoSnapshot } from "../types";
 import { branchMenu } from "./branchMenu";
 import { commitMenu } from "./commitMenu";
 import { stashMenu, uncommittedMenu } from "./stashMenu";
@@ -25,6 +38,9 @@ const KIND_NAMES = { branch: "branch name", remote: "branch name", tag: "tag nam
 /** Does what item `id` of `target`'s menu stands for. */
 export function pick(id: string, target: MenuTarget, snap: RepoSnapshot): void {
   const { row, label } = target;
+  // Labels share some ids with commits ("checkout", "push", "delete"): theirs go first.
+  if (label?.kind === "tag" && pickTag(id, label.name, snap)) return;
+  if (label === null && row.kind === "commit" && pickCommit(id, row, snap)) return;
   switch (id) {
     case "copy.hash":
       void copy(row.hash, "hash");
@@ -37,6 +53,60 @@ export function pick(id: string, target: MenuTarget, snap: RepoSnapshot): void {
       return;
     default:
       toast("info", "This action is not available yet");
+  }
+}
+
+/** Opens `component` as a dialog with `props` and a `close` that closes it. */
+function show<P extends Record<string, unknown>>(
+  component: Component<P & { close: () => void }>,
+  props: P,
+): void {
+  const id = openDialog(component, { ...props, close: () => closeDialog(id) });
+}
+
+/** Commit item `id` on `row`; false if `id` is not one. */
+function pickCommit(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
+  const repoId = snap.repoId;
+  const { hash, subject, parents } = row;
+  const branch = snap.head.branch;
+  switch (id) {
+    case "checkout":
+      runOp(repoId, { op: "checkout_commit", hash }).catch(() => {}); // reported by runOp
+      return true;
+    case "branch.create":
+      show(CreateBranchDialog, { repoId, hash, subject, branches: snap.branches });
+      return true;
+    case "tag.create":
+      show(CreateTagDialog, { repoId, hash, subject });
+      return true;
+    case "cherry_pick":
+      show(CherryPickDialog, { repoId, hash, subject, parents, branch });
+      return true;
+    case "revert":
+      show(RevertDialog, { repoId, hash, subject, parents, branch });
+      return true;
+    case "reset.soft":
+    case "reset.mixed":
+    case "reset.hard":
+      show(ResetDialog, { repoId, hash, subject, branch, mode: id.slice("reset.".length) as "soft" | "mixed" | "hard" });
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Tag item `id` on tag `name`; false if `id` is not one. */
+function pickTag(id: string, name: string, snap: RepoSnapshot): boolean {
+  const repoId = snap.repoId;
+  switch (id) {
+    case "push":
+      show(PushTagDialog, { repoId, name, remotes: snap.remotes });
+      return true;
+    case "delete":
+      show(DeleteTagDialog, { repoId, name, remotes: snap.remotes });
+      return true;
+    default:
+      return false;
   }
 }
 

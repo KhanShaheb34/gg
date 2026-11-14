@@ -340,6 +340,7 @@ test("hard_reset_asks_twice_and_cancel_changes_nothing", async ({ gg }) => {
   await pickOnRow(page, "Add part 18", "Hard: discard all changes", "Reset main to here");
   const d = page.getByRole("alertdialog");
   await expect(d.getByRole("radio", { name: /^Hard/ })).toBeChecked();
+  await expect(d.getByRole("radio", { name: /^Hard/ })).toBeFocused();
   const reset = d.getByRole("button", { name: "Reset", exact: true });
   await expect(reset).toHaveClass(/danger/);
   await expect(reset).not.toBeFocused();

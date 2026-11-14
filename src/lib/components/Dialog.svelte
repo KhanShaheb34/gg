@@ -94,9 +94,12 @@
 
   onMount(() => {
     const before = document.activeElement;
-    const field = box.querySelector<HTMLElement>(
-      "[data-autofocus], input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled])",
-    );
+    // A marked field first (a list matches in document order, so it is asked for alone).
+    const field =
+      box.querySelector<HTMLElement>("[data-autofocus]") ??
+      box.querySelector<HTMLElement>(
+        "input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled])",
+      );
     const first = field ?? (danger || !valid ? cancelButton : primaryButton);
     first.focus();
     return () => {

@@ -111,7 +111,14 @@ async fn continue_stages_resolved_files_and_finishes_the_merge() {
     repo.write("a.txt", "untracked\n");
     repo.write("notes.txt", "edited, not part of the merge\n");
 
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.title, "Continue the merge");
     assert_eq!(out.snapshot.in_progress, None);
@@ -149,11 +156,9 @@ async fn continue_stages_resolved_files_and_finishes_the_merge() {
     );
 }
 
-/// Continue never stages a file that still has conflict markers: it is refused, and nothing
-/// is staged.
-#[tokio::test]
-async fn continue_is_refused_while_a_file_has_conflict_markers() {
-    let repo = TestRepo::new();
+/// `main` and `feature` both change `clash.txt` and `other.txt`; the merge of `feature`
+/// stopped on both. Returns the harness and the repository's id.
+async fn merge_stopped_on_two_files(repo: &TestRepo) -> (Harness, u32) {
     for name in ["clash.txt", "other.txt"] {
         repo.write(name, "base\n");
     }
@@ -175,9 +180,26 @@ async fn continue_is_refused_while_a_file_has_conflict_markers() {
         h.run(id, merge_branch("feature")).await.status,
         OpStatus::Stopped
     );
+    (h, id)
+}
+
+/// Continue never stages a file that still has conflict markers unless told to: it is
+/// refused, and nothing is staged. The refusal comes with the repository read again (R33):
+/// the file resolved meanwhile (nothing git watches changed) shows as resolved.
+#[tokio::test]
+async fn continue_is_refused_while_a_file_has_conflict_markers() {
+    let repo = TestRepo::new();
+    let (h, id) = merge_stopped_on_two_files(&repo).await;
     repo.write("clash.txt", "resolved\n");
 
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message.contains("other.txt") && out.message.contains("conflict markers"),
@@ -191,6 +213,33 @@ async fn continue_is_refused_while_a_file_has_conflict_markers() {
         "clash.txt\nother.txt",
         "nothing staged"
     );
+}
+
+/// R31: told to, continue stages files with conflict markers as they are (a line that only
+/// looks like a marker must never trap the user).
+#[tokio::test]
+async fn continue_even_with_markers_stages_them_as_they_are() {
+    let repo = TestRepo::new();
+    let (h, id) = merge_stopped_on_two_files(&repo).await;
+    repo.write("clash.txt", "resolved\n");
+    repo.write("other.txt", "kept\n=======\nas written\n");
+
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: true,
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(!in_git_dir(&repo, "MERGE_HEAD"), "the merge is committed");
+    assert_eq!(out.snapshot.in_progress, None);
+    assert_eq!(
+        repo.git(&["show", "HEAD:other.txt"]),
+        "kept\n=======\nas written"
+    );
+    assert_eq!(repo.git(&["show", "HEAD:clash.txt"]), "resolved");
 }
 
 #[tokio::test]
@@ -216,7 +265,14 @@ async fn continue_commits_a_merge_stopped_without_conflicts() {
     assert_eq!(progress.kind, InProgressKind::Merge);
     assert!(progress.conflicted.is_empty());
 
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(args_of(&h, &out), [vec!["merge", "--continue"]]);
     assert_eq!(out.snapshot.in_progress, None);
@@ -243,7 +299,14 @@ async fn continue_rebase_that_stops_again_returns_stopped() {
     );
 
     repo.write("clash.txt", "resolved one\n");
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
     assert_eq!(out.title, "Continue the rebase");
     assert!(out.message.contains("conflicts"), "{}", out.message);
@@ -266,11 +329,25 @@ async fn continue_rebase_that_stops_again_returns_stopped() {
 
     repo.write("clash.txt", "resolved two\n");
     assert_eq!(
-        h.run(id, OpRequest::Continue).await.status,
+        h.run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false
+            }
+        )
+        .await
+        .status,
         OpStatus::Stopped
     );
     repo.write("clash.txt", "resolved three\n");
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.snapshot.in_progress, None);
     assert_eq!(current_branch(&repo).as_deref(), Some("feature"));
@@ -289,7 +366,14 @@ async fn continue_finishes_a_cherry_pick_and_a_revert() {
     let out = h.run(id, cherry_pick(&one)).await;
     assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
     repo.write("clash.txt", "picked\n");
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.title, "Continue the cherry-pick");
     assert_eq!(out.snapshot.in_progress, None);
@@ -303,7 +387,14 @@ async fn continue_finishes_a_cherry_pick_and_a_revert() {
     let out = h.run(id, revert(&repo.git(&["rev-parse", "HEAD~1"]))).await;
     assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
     repo.write("clash.txt", "reverted\n");
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.snapshot.in_progress, None);
     assert_eq!(
@@ -324,7 +415,14 @@ async fn continue_that_comes_out_empty_explains() {
     assert_eq!(h.run(id, cherry_pick(&one)).await.status, OpStatus::Stopped);
     repo.write("clash.txt", "main\n");
 
-    let out = h.run(id, OpRequest::Continue).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(out.message.contains("empty"), "{}", out.message);
     assert!(out.message.contains("abort"), "{}", out.message);
@@ -346,7 +444,12 @@ async fn continue_with_nothing_in_progress_is_nothing_to_do() {
     let mark = h.last_log_id();
     let events = h.changes(id).len();
 
-    for request in [OpRequest::Continue, OpRequest::Abort] {
+    for request in [
+        OpRequest::Continue {
+            even_with_markers: false,
+        },
+        OpRequest::Abort,
+    ] {
         let err =
             h.m.run_op(id, request.clone(), &[])
                 .await
@@ -648,7 +751,9 @@ async fn a_sequence_committed_by_hand_continues_and_aborts() {
                 if abort {
                     OpRequest::Abort
                 } else {
-                    OpRequest::Continue
+                    OpRequest::Continue {
+                        even_with_markers: false,
+                    }
                 },
             )
             .await;

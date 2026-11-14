@@ -552,7 +552,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 body(move |ctx, _| Box::pin(async move { stash::branch(ctx, &hash, &name).await })),
             )
         }
-        OpRequest::Continue => (
+        OpRequest::Continue { .. } => (
             on_progress(|kind| progress::title("Continue", kind)),
             body(move |ctx, _| Box::pin(async move { progress::continue_op(ctx).await })),
         ),
@@ -822,16 +822,21 @@ impl RepoManager {
             in_progress,
         });
         match (&request, in_progress) {
-            (OpRequest::Continue | OpRequest::Abort, None) => {
+            (OpRequest::Continue { .. } | OpRequest::Abort, None) => {
                 return Err(progress::nothing_in_progress());
             }
             (_, Some(kind)) => {
                 if let Some(why) = progress::refused_while(&request, kind, head.as_deref()) {
                     return Ok((title, Ran::Refused(why)));
                 }
-                // Continuing stages the conflicted files: never one the user has not resolved.
-                if matches!(request, OpRequest::Continue)
-                    && let Some(why) = progress::unresolved_conflicts(&ctx).await?
+                // Continuing stages the conflicted files: never one the user has not resolved,
+                // unless they saw it listed and went ahead (R31).
+                if matches!(
+                    request,
+                    OpRequest::Continue {
+                        even_with_markers: false
+                    }
+                ) && let Some(why) = progress::unresolved_conflicts(&ctx).await?
                 {
                     return Ok((title, Ran::Refused(why)));
                 }

@@ -492,7 +492,12 @@ pub enum OpRequest {
         stash: String,
         name: String,
     },
-    Continue,
+    /// Stages the conflicted files as they are and continues. Refused while a file still
+    /// has conflict markers, unless `even_with_markers` (the user saw those files and went
+    /// ahead: a line that only looks like a marker must not trap them; R31).
+    Continue {
+        even_with_markers: bool,
+    },
     Abort,
 }
 
@@ -713,7 +718,7 @@ mod tests {
             json!({"op": "stash_pop", "stash": "h"}),
             json!({"op": "stash_drop", "stash": "h"}),
             json!({"op": "stash_branch", "stash": "h", "name": "n"}),
-            json!({"op": "continue"}),
+            json!({"op": "continue", "evenWithMarkers": true}),
             json!({"op": "abort"}),
         ];
         for case in cases {

@@ -11,6 +11,7 @@ mod danger;
 mod explain;
 mod local;
 mod network;
+pub(crate) mod order;
 mod progress;
 mod stash;
 
@@ -19,6 +20,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Instant;
 
 pub(crate) use danger::dangers;
@@ -34,6 +36,7 @@ use crate::git::names::{check_branch_name, check_tag_name};
 use crate::git::progress::read_kind;
 use crate::git::runner::{CmdKind, GitOutput, GitRunner, TimeLimit};
 use crate::repo::{Repo, RepoManager, unknown_repo};
+use order::NumberedTurn;
 
 /// What an operation's body ended with; `run_op` turns it into the outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -602,11 +605,12 @@ fn check_arg(value: &str, what: &str) -> Result<()> {
 /// An operation asked for: it waits for its turn in the repository's queue, then runs.
 struct Turn {
     repo: Arc<Repo>,
-    op_id: u64,
     request: OpRequest,
     confirmed: Vec<DangerKind>,
     title: Title,
     body: Body,
+    /// A numbered request's turn to join the queue (R28): released once it has joined.
+    numbered: Option<NumberedTurn>,
 }
 
 /// What a turn in the queue ended with.
@@ -636,14 +640,45 @@ impl RepoManager {
         request: OpRequest,
         confirmed: &[DangerKind],
     ) -> Result<OpOutcome> {
-        let Prepared { title, body } = prepare(&request)?;
+        self.run_numbered(repo_id, None, request, confirmed).await
+    }
+
+    /// Like [`RepoManager::run_op`], for request number `n` of the repository's requests
+    /// (R28): it joins the queue only after the ones numbered before it, waiting up to
+    /// [`order::ORDER_WAIT`] for one that has not arrived (see [`order`]).
+    pub async fn run_op_in_order(
+        self: &Arc<Self>,
+        repo_id: u32,
+        n: u64,
+        request: OpRequest,
+        confirmed: &[DangerKind],
+    ) -> Result<OpOutcome> {
+        self.run_numbered(repo_id, Some(n), request, confirmed)
+            .await
+    }
+
+    async fn run_numbered(
+        self: &Arc<Self>,
+        repo_id: u32,
+        n: Option<u64>,
+        request: OpRequest,
+        confirmed: &[DangerKind],
+    ) -> Result<OpOutcome> {
+        let prepared = prepare(&request);
+        let repo = self.get(repo_id)?;
+        let numbered = match n {
+            Some(n) => Some(repo.op_order.wait_for_turn(n).await),
+            None => None,
+        };
+        // Refused here, it never joins the queue: dropping its turn lets the next one in.
+        let Prepared { title, body } = prepared?;
         let turn = Turn {
-            repo: self.get(repo_id)?,
-            op_id: self.next_op_id(),
+            repo,
             request,
             confirmed: confirmed.to_vec(),
             title,
             body,
+            numbered,
         };
         let m = self.clone();
         let task = tokio::spawn(async move { m.run_in_turn(turn).await });
@@ -657,12 +692,22 @@ impl RepoManager {
     /// The body runs as a task of its own, so that if it panics the operation still ends
     /// here, within the turn: the repository is refreshed and no longer marked busy before
     /// the next operation starts.
-    async fn run_in_turn(self: &Arc<Self>, turn: Turn) -> Result<OpOutcome> {
-        let (repo, op_id) = (turn.repo.clone(), turn.op_id);
+    async fn run_in_turn(self: &Arc<Self>, mut turn: Turn) -> Result<OpOutcome> {
+        let repo = turn.repo.clone();
         repo.op_waiting.fetch_add(1, Ordering::SeqCst);
         self.op_queue_changed(&repo).await;
-        let _turn = repo.op_queue.lock().await;
+        // The mutex is fair: polled once, the request has its place in the queue, and the
+        // next numbered one may join behind it.
+        let mut queue = std::pin::pin!(repo.op_queue.lock());
+        let first = std::future::poll_fn(|cx| Poll::Ready(queue.as_mut().poll(cx))).await;
+        drop(turn.numbered.take());
+        let _turn = match first {
+            Poll::Ready(guard) => guard,
+            Poll::Pending => queue.await,
+        };
         repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
+        // Numbered when its turn comes, so ids follow the order operations run in.
+        let op_id = self.next_op_id();
         // Nothing of ours runs beside an operation (R13).
         self.cancel_scheduled_fetch(&repo).await;
         if repo.is_closed().await {
@@ -674,7 +719,7 @@ impl RepoManager {
         let started = Arc::new(AtomicBool::new(false));
         let inner = tokio::spawn({
             let (m, started) = (self.clone(), started.clone());
-            async move { m.run_body(turn, &started).await }
+            async move { m.run_body(turn, op_id, &started).await }
         });
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
@@ -748,14 +793,19 @@ impl RepoManager {
     /// stopped is `nothing_to_do`), checks its request for dangers and, if every one is
     /// confirmed, publishes it as running (setting `started`) and runs its body in the
     /// active worktree. Returns the title and how it ended.
-    async fn run_body(&self, turn: Turn, started: &AtomicBool) -> Result<(String, Ran)> {
+    async fn run_body(
+        &self,
+        turn: Turn,
+        op_id: u64,
+        started: &AtomicBool,
+    ) -> Result<(String, Ran)> {
         let Turn {
             repo,
-            op_id,
             request,
             confirmed,
             title,
             body,
+            numbered: _,
         } = turn;
         let ctx = OpCtx {
             repo: &repo,

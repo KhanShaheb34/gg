@@ -102,6 +102,8 @@ struct RunOpArgs {
     repo_id: u32,
     request: OpRequest,
     confirmed: Vec<DangerKind>,
+    /// The UI's number for this request, per repository (R28).
+    client_seq: u64,
 }
 
 #[derive(Deserialize)]
@@ -256,7 +258,7 @@ impl Core {
                 let a: RunOpArgs = parse(cmd, args)?;
                 to_json(
                     self.repos()?
-                        .run_op(a.repo_id, a.request, &a.confirmed)
+                        .run_op_in_order(a.repo_id, a.client_seq, a.request, &a.confirmed)
                         .await?,
                 )
             }

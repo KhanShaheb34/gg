@@ -329,7 +329,6 @@ for (const theme of ["light", "dark"] as const) {
     writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
     chmodSync(hook, 0o755);
     const first = runOp(page, { op: "checkout_branch", branch: "feature/ui", fastForward: false });
-    await expect(page.getByTestId("busy")).toContainText("feature/ui"); // the second goes behind it
     const second = runOp(page, { op: "checkout_branch", branch: "main", fastForward: false });
     await expect(page.getByTestId("busy")).toContainText("+1");
     await park(page);

@@ -164,10 +164,13 @@ pub(crate) struct Repo {
     status_seq: AtomicU64,
     /// The body search running, if any; a newer one aborts it.
     body_search: Mutex<Option<tokio::task::AbortHandle>>,
-    /// Operations take turns here, in the order they were asked for (the mutex is fair).
+    /// Operations take turns here, in the order they were asked for (the mutex is fair;
+    /// numbered requests join it in their numbers' order, see `op_order`).
     pub(crate) op_queue: tokio::sync::Mutex<()>,
     /// Operations waiting for their turn.
     pub(crate) op_waiting: AtomicU32,
+    /// The order numbered requests join `op_queue` in (R28).
+    pub(crate) op_order: Arc<crate::ops::order::OpOrder>,
     /// A fetch the user asked for is waiting for its turn or running; another one asked for
     /// meanwhile returns at once.
     pub(super) user_fetch: AtomicBool,
@@ -587,6 +590,7 @@ impl RepoManager {
             body_search: Mutex::new(None),
             op_queue: tokio::sync::Mutex::new(()),
             op_waiting: AtomicU32::new(0),
+            op_order: Arc::default(),
             user_fetch: AtomicBool::new(false),
             scheduled_cancel: Mutex::new(None),
             scheduled_running: Arc::new(tokio::sync::Mutex::new(())),

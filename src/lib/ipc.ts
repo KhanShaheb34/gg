@@ -257,6 +257,15 @@ export function onEvent<T>(name: EventName, handler: (payload: T) => void): () =
   return transport().listen(name, handler as Handler);
 }
 
+/** The number of the last operation sent to each repository (R28); a new id starts at 1. */
+const clientSeqs = new Map<number, number>();
+
+function nextClientSeq(repoId: number): number {
+  const n = (clientSeqs.get(repoId) ?? 0) + 1;
+  clientSeqs.set(repoId, n);
+  return n;
+}
+
 export const api = {
   getAppState: () => call<AppState>("get_app_state"),
   async saveSession(tabs: string[], active: string | null): Promise<void> {
@@ -301,9 +310,13 @@ export const api = {
    */
   commandLog: (sinceId: number, options: { repoId?: number; writesOnly?: boolean } = {}) =>
     call<CommandRecord[]>("command_log", { sinceId, ...options }),
-  /** Runs an operation once the ones before it on that repository are done. */
+  /**
+   * Runs an operation once the ones before it on that repository are done. Each is numbered
+   * in the order it is sent, per repository, so that the core queues them in that order
+   * even when two reach it in the other (R28).
+   */
   runOp: (repoId: number, request: OpRequest, confirmed: DangerKind[] = []) =>
-    call<OpOutcome>("run_op", { repoId, request, confirmed }),
+    call<OpOutcome>("run_op", { repoId, request, confirmed, clientSeq: nextClientSeq(repoId) }),
   getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
   setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
   /**

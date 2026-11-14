@@ -479,11 +479,11 @@ test("the toolbar shows the running operation and how many wait behind it", asyn
   chmodSync(hook, 0o755);
 
   const busy = page.getByTestId("busy");
+  // Both in the same instant: the core queues them in the order they were sent (R28).
   const first = runOp(page, { op: "checkout_branch", branch: "fix/typo", fastForward: false });
-  // The second once the first has reached the core: two requests sent the same instant may
-  // reach it in either order.
-  await expect(busy).toContainText("fix/typo");
   const second = runOp(page, { op: "checkout_branch", branch: "main", fastForward: false });
+  await expect(busy).toBeVisible();
+  await expect(busy).toContainText("fix/typo");
   await expect(busy).toContainText("+1");
   // While it runs, menus open and their items stay enabled (requests queue).
   await grid(page).locator('[data-ref="feature/login"] .name').click({ button: "right" });

@@ -334,7 +334,8 @@ async fn writes_survive_many_reads_in_the_log() {
         json!({
             "repoId": id,
             "request": {"op": "create_branch", "name": "kept", "at": head, "checkout": false},
-            "confirmed": []
+            "confirmed": [],
+            "clientSeq": 1
         }),
     )
     .await;
@@ -796,4 +797,114 @@ async fn snapshot_seq_increases_with_every_change() {
         "emitted in increasing order: {all:?}"
     );
     assert_eq!(h.m.snapshot(id).await.unwrap().seq, *all.last().unwrap());
+}
+
+/// R28: requests the UI numbers reach the queue in their numbers' order, whatever order they
+/// arrive in: one whose predecessor has not arrived waits for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn numbered_requests_arriving_out_of_order_run_in_order() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    // Number 2 arrives first, then number 1.
+    let second = tokio::spawn({
+        let (m, head) = (h.m.clone(), head.clone());
+        async move {
+            m.run_op_in_order(id, 2, create_branch("b", &head), &[])
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let first = tokio::spawn({
+        let (m, head) = (h.m.clone(), head.clone());
+        async move {
+            m.run_op_in_order(id, 1, create_branch("a", &head), &[])
+                .await
+        }
+    });
+    let started = std::time::Instant::now();
+    let first = first.await.unwrap().expect("first");
+    let second = second.await.unwrap().expect("second");
+    // Number 1 did not wait for anything.
+    assert!(started.elapsed() < Duration::from_millis(450));
+    assert_eq!(first.status, OpStatus::Done, "{first:?}");
+    assert_eq!(second.status, OpStatus::Done, "{second:?}");
+    assert!(
+        first.op_id < second.op_id,
+        "{} {}",
+        first.op_id,
+        second.op_id
+    );
+    assert!(second.log_from > first.log_to);
+    // Numbers go on from there.
+    let third =
+        h.m.run_op_in_order(id, 3, create_branch("c", &head), &[])
+            .await
+            .expect("third");
+    assert!(third.op_id > second.op_id);
+}
+
+/// R28: a request whose predecessor never arrives waits for it 500 ms, then runs; the gap
+/// is not waited for again, and the late predecessor runs at once when it comes. Numbers
+/// start again when the repository is opened again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let timed = |n: u64, name: &'static str| {
+        let (m, head) = (h.m.clone(), head.clone());
+        async move {
+            let t = std::time::Instant::now();
+            let out = m
+                .run_op_in_order(id, n, create_branch(name, &head), &[])
+                .await
+                .expect("runs");
+            assert_eq!(out.status, OpStatus::Done, "{out:?}");
+            t.elapsed()
+        }
+    };
+    let waited = timed(2, "b").await;
+    assert!(
+        waited >= Duration::from_millis(480),
+        "waited {waited:?} for number 1"
+    );
+    assert!(waited < Duration::from_millis(3000), "waited {waited:?}");
+    assert!(timed(3, "c").await < Duration::from_millis(450));
+    assert!(timed(1, "a").await < Duration::from_millis(450), "late");
+
+    h.m.close(id).await.expect("closes");
+    let id2 = h.open(repo.path()).await.repo_id;
+    let t = std::time::Instant::now();
+    h.m.run_op_in_order(id2, 1, create_branch("d", &head), &[])
+        .await
+        .expect("runs");
+    assert!(
+        t.elapsed() < Duration::from_millis(450),
+        "numbers start again"
+    );
+}
+
+/// R28: a request refused before it is queued (a bad name) still lets the next number in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_numbered_request_lets_the_next_one_in() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let err =
+        h.m.run_op_in_order(id, 1, create_branch("-bad", &head), &[])
+            .await
+            .expect_err("bad name");
+    assert_eq!(err.code, ErrorCode::BadName);
+    let t = std::time::Instant::now();
+    h.m.run_op_in_order(id, 2, create_branch("good", &head), &[])
+        .await
+        .expect("runs");
+    assert!(t.elapsed() < Duration::from_millis(450));
 }

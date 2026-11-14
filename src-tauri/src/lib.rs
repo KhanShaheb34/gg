@@ -187,7 +187,9 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// scrolls a few px every frame, like a trackpad; with `GG_PERF_SCROLL=pages` it loads every
 /// page of rows once without scrolling (to tell the memory of loading rows from that of
 /// drawing them); with `GG_PERF_SCROLL=jump3` it scrolls top to bottom three times, marking
-/// `pass-1`..`pass-3` after each (memory over repeated scrolls). Every mode also records the page's errors, unhandled rejections, CSP
+/// `pass-1`..`pass-3` after each (memory over repeated scrolls); with `GG_PERF_SCROLL=actions`
+/// it times right-click, menu, dialog and operation feedback (`actionsProbe.ts`; it creates
+/// branches, so only on a throwaway repository). Every mode also records the page's errors, unhandled rejections, CSP
 /// violations and console errors and warnings in `window.__GG_PAGE_ERRORS__`, which the
 /// probe reports as `page-error` marks. `None` otherwise.
 #[cfg(any(test, feature = "perf"))]
@@ -198,6 +200,7 @@ fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<String> {
         "smooth" => "\"smooth\"",
         "pages" => "\"pages\"",
         "jump3" => "\"jump3\"",
+        "actions" => "\"actions\"",
         _ => return None,
     };
     Some(format!(
@@ -338,6 +341,8 @@ mod tests {
             assert!(script.contains("unhandledrejection"), "{mode}");
             assert!(script.contains("console[level]"), "{mode}");
         }
+        let actions = perf_scroll_script(Some("actions".into())).unwrap();
+        assert!(actions.contains("__GG_PERF_SCROLL__ = \"actions\""));
         let pages = perf_scroll_script(Some("pages".into())).unwrap();
         assert!(pages.contains("__GG_PERF_SCROLL__ = \"pages\""));
         assert_eq!(perf_scroll_script(None), None);

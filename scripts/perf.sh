@@ -30,9 +30,11 @@
 # - Smooth (--smooth): GG_PERF_SCROLL=smooth scrolls for the same 6 s the way a trackpad does,
 #   a few px every frame at a steady speed (most frames move the rows by less than a row).
 # - Mixed (--mixed): N still and N scroll launches, alternating, so both see the same load.
-#   --modes "still 1 smooth" interleaves any of: 0 (idle), 1 (scroll), still, smooth, pages
+#   --modes "still 1 smooth" interleaves any of: 0 (idle), 1 (scroll), still, smooth, actions, pages
 #   (pages: GG_PERF_SCROLL=pages loads every page of rows once without drawing them, then
-#   runs the still control; it tells the memory of loading rows from that of drawing them).
+#   runs the still control; it tells the memory of loading rows from that of drawing them;
+#   actions: GG_PERF_SCROLL=actions times right-click -> menu, pick -> dialog, Enter -> dialog
+#   closed and operation end -> graph updated, creating branches: a throwaway repository only).
 #
 # WebKit helpers: WKWebView runs its page in XPC services (com.apple.WebKit.WebContent,
 # .Networking, .GPU) whose parent is launchd, not the app. They are matched by "responsible
@@ -229,9 +231,9 @@ for _ in $(seq 1 "$runs"); do
       for d in $detail; do printf '%s\t%s\tfoot-%s\t%s\n' "$run" "$name" "${d%%=*}" "${d#*=}"; done
     } >> "$results"
     if [ "$mode" != 0 ]; then
-      echo "    probe:" $(awk -F'\t' '$1 ~ /^(scroll|click|page)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { printf "%s=%s ", $1, $2 }' "$log")
+      echo "    probe:" $(awk -F'\t' '$1 ~ /^(scroll|click|page|action)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { printf "%s=%s ", $1, $2 }' "$log")
       awk -F'\t' '$1 ~ /^page-error / { print "    " $1 }' "$log"
-      awk -F'\t' -v r="$run" -v m="$name" '$1 ~ /^(scroll|click|page)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { print r "\t" m "\t" $1 "\t" $2 }' "$log" >> "$results"
+      awk -F'\t' -v r="$run" -v m="$name" '$1 ~ /^(scroll|click|page|action)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { print r "\t" m "\t" $1 "\t" $2 }' "$log" >> "$results"
       # WebKit drops graphics memory (tiles) some time after scrolling; measure again.
       sleep 30
       IFS=$'\t' read -r later detail < <(footprints "$pid")

@@ -258,10 +258,7 @@ async fn attributes<'a>(
         // `<path> NUL <attribute> NUL <value> NUL`, for each path and attribute asked for.
         let text = out.text();
         let fields: Vec<&str> = text.split('\0').collect();
-        for triple in fields.chunks_exact(3) {
-            let [path, name, value] = triple else {
-                continue;
-            };
+        for [path, name, value] in fields.as_chunks::<3>().0 {
             let Some(attr) = attrs.get_mut(*path) else {
                 continue;
             };

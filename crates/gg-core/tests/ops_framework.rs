@@ -833,11 +833,10 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
                 .await
         }
     });
-    let started = std::time::Instant::now();
+    // (That number 1 waits for nothing is order.rs's paused-clock test; timed here, it
+    // failed under the full suite's load.)
     let first = first.await.unwrap().expect("first");
     let second = second.await.unwrap().expect("second");
-    // Number 1 did not wait for anything.
-    assert!(started.elapsed() < Duration::from_millis(450));
     assert_eq!(first.status, OpStatus::Done, "{first:?}");
     assert_eq!(second.status, OpStatus::Done, "{second:?}");
     assert!(

@@ -44,8 +44,19 @@ impl RepoManager {
             );
             return Ok(note);
         }
-        launch(&argv, &cwd, self.login_path())?;
+        let record = crate::lock_ignoring_poison(&self.editor_record).clone();
+        match record {
+            Some(file) => record_launch(&file, &argv)?,
+            None => launch(&argv, &cwd, self.login_path())?,
+        }
         Ok(note)
+    }
+
+    /// From now on, editor launches are appended to `file` (one JSON array of the program
+    /// and its arguments per line) instead of run; `None` runs them again. For the dev
+    /// server, so that the UI's tests never start an editor.
+    pub fn record_editor_launches_to(&self, file: Option<PathBuf>) {
+        *crate::lock_ignoring_poison(&self.editor_record) = file;
     }
 
     /// From now on, editor launches are recorded instead of run (tests only; see
@@ -62,6 +73,25 @@ impl RepoManager {
             .clone()
             .unwrap_or_default()
     }
+}
+
+/// Appends `argv` to `file` as a line of JSON (see [`RepoManager::record_editor_launches_to`]).
+fn record_launch(file: &Path, argv: &[OsString]) -> Result<()> {
+    use std::io::Write as _;
+    let args: Vec<String> = argv
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let line = format!("{}\n", serde_json::Value::from(args));
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .and_then(|mut f| f.write_all(line.as_bytes()))
+        .map_err(|e| {
+            CoreError::new(ErrorCode::Io, "Could not record the editor launch")
+                .with_detail(e.to_string())
+        })
 }
 
 /// `rel` (a path relative to the worktree `root`, canonical), resolved, if it stays inside

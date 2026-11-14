@@ -4,6 +4,8 @@
 //! `--allow-origin`. Prints `listening on http://127.0.0.1:<port>` once ready (`--port 0`
 //! picks a free port). Env `GG_PERF_LOG` names a file perf marks are appended to. With
 //! `--exit-on-stdin-eof` it quits when its stdin closes (a test runner that started it died).
+//! With `--record-editor-launches <file>` it never starts an editor: each launch is appended
+//! to the file as a line of JSON instead (for the UI's tests).
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
@@ -15,7 +17,8 @@ use gg_devserver::{DEFAULT_ORIGINS, Events, serve};
 use tokio::net::TcpListener;
 
 const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>] \
-                     [--allow-origin <origin>]... [--exit-on-stdin-eof]";
+                     [--allow-origin <origin>]... [--exit-on-stdin-eof] \
+                     [--record-editor-launches <file>]";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -27,6 +30,8 @@ struct Args {
     allow_origins: Vec<String>,
     /// Quit when stdin reaches its end.
     exit_on_stdin_eof: bool,
+    /// Where editor launches are recorded instead of run.
+    record_editor: Option<PathBuf>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -36,6 +41,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut open = None;
     let mut allow_origins = Vec::new();
     let mut exit_on_stdin_eof = false;
+    let mut record_editor = None;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -65,6 +71,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
                 allow_origins.push(origin);
             }
             "--exit-on-stdin-eof" => exit_on_stdin_eof = true,
+            "--record-editor-launches" => record_editor = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -74,6 +81,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         open,
         allow_origins,
         exit_on_stdin_eof,
+        record_editor,
     })
 }
 
@@ -142,6 +150,7 @@ async fn main() -> ExitCode {
         }
     };
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
+    core.record_editor_launches_to(args.record_editor);
     let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, args.port)).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -185,6 +194,7 @@ mod tests {
                 open: None,
                 allow_origins: vec![],
                 exit_on_stdin_eof: false,
+                record_editor: None,
             }
         );
         assert_eq!(
@@ -199,6 +209,8 @@ mod tests {
                 "http://127.0.0.1:5173",
                 "--allow-origin",
                 "http://[::1]:5173",
+                "--record-editor-launches",
+                "/e.jsonl",
             ])
             .unwrap(),
             Args {
@@ -207,6 +219,7 @@ mod tests {
                 open: Some(dir.clone()),
                 allow_origins: vec!["http://127.0.0.1:5173".into(), "http://[::1]:5173".into()],
                 exit_on_stdin_eof: false,
+                record_editor: Some("/e.jsonl".into()),
             }
         );
         for bad in [

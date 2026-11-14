@@ -5,7 +5,7 @@
 // `window.__GG_DEV_URL__`, set before any app script runs.
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test as base, type Page } from "@playwright/test";
@@ -446,14 +446,30 @@ function killGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): voi
   }
 }
 
+/** Where the devserver of config folder `configDir` records editor launches (it never starts one). */
+function editorRecord(configDir: string): string {
+  return path.join(path.dirname(configDir), "editor-launches.jsonl");
+}
+
 /**
  * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
- * debug build unless `binary` names another.
+ * debug build unless `binary` names another. The debug build records editor launches instead
+ * of starting an editor (see `GG.editorLaunches`).
  */
 export function startDevserver(configDir: string, home: string, binary = DEVSERVER): Promise<Devserver> {
   const child = spawn(
     binary,
-    ["--port", "0", "--config-dir", configDir, "--allow-origin", VITE_ORIGIN, "--exit-on-stdin-eof"],
+    [
+      "--port",
+      "0",
+      "--config-dir",
+      configDir,
+      "--allow-origin",
+      VITE_ORIGIN,
+      "--exit-on-stdin-eof",
+      // The perf runs' release build (built on its own) need not know it.
+      ...(binary === DEVSERVER ? ["--record-editor-launches", editorRecord(configDir)] : []),
+    ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
     // server quits, though it is detached.
@@ -540,6 +556,8 @@ export type GG = {
   git(name: string, ...args: string[]): string;
   /** Runs git in folder `dir` (a clone beside a fixture, say); returns stdout. */
   gitAt(dir: string, ...args: string[]): string;
+  /** The editor launches asked for so far (program and arguments each), oldest first; none is started. */
+  editorLaunches(): string[][];
 };
 
 /**
@@ -602,7 +620,16 @@ export const test = base.extend<{ gg: GG }>({
         return run(...args);
       };
 
-      await use({ page, repoPath, folder, git, gitAt });
+      const editorLaunches = (): string[][] => {
+        const file = editorRecord(path.join(root, "config"));
+        if (!existsSync(file)) return [];
+        return readFileSync(file, "utf8")
+          .split("\n")
+          .filter((l) => l !== "")
+          .map((l) => JSON.parse(l) as string[]);
+      };
+
+      await use({ page, repoPath, folder, git, gitAt, editorLaunches });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

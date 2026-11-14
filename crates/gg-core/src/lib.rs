@@ -163,6 +163,14 @@ impl Core {
         self.perf().log = path;
     }
 
+    /// From now on, editor launches are appended to `file` instead of run (see
+    /// [`RepoManager::record_editor_launches_to`]); nothing without git.
+    pub fn record_editor_launches_to(&self, file: Option<PathBuf>) {
+        if let Ok(repos) = self.repos() {
+            repos.record_editor_launches_to(file);
+        }
+    }
+
     /// Every perf mark so far, oldest first.
     pub fn perf_marks(&self) -> Vec<(String, f64)> {
         self.perf().marks.clone()

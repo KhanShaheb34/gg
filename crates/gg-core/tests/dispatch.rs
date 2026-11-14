@@ -868,3 +868,40 @@ async fn open_in_editor_uses_the_editor_command_setting() {
         .await;
     assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
 }
+
+/// With launches recorded to a file (the dev server's `--record-editor-launches`), nothing is
+/// started: each launch is a line of JSON, the program and its arguments.
+#[tokio::test]
+async fn editor_launches_can_be_recorded_to_a_file() {
+    let repo = TestRepo::new();
+    repo.write("a b.txt", "x\n");
+    repo.commit_all("one");
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_editor_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    let patch = json!({"patch": {"editorCommand": "gg-no-such-editor --wait"}});
+    h.call("update_settings", patch).await;
+
+    let note = h
+        .call("open_in_editor", json!({"repoId": id, "path": "a b.txt"}))
+        .await;
+    assert_eq!(note, Value::Null);
+    h.call("open_in_editor", json!({"repoId": id, "path": null}))
+        .await;
+    let lines: Vec<Value> = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let root = dunce::canonicalize(repo.path()).unwrap();
+    assert_eq!(
+        lines,
+        [
+            json!(["gg-no-such-editor", "--wait", root.join("a b.txt")]),
+            json!(["gg-no-such-editor", "--wait", root]),
+        ]
+    );
+}

@@ -488,7 +488,8 @@ async fn status_counts() {
         WorktreeStatus {
             changed: 0,
             untracked: 0,
-            conflicted: 0
+            conflicted: 0,
+            conflicted_paths: vec![]
         }
     );
 
@@ -501,7 +502,8 @@ async fn status_counts() {
         WorktreeStatus {
             changed: 1,
             untracked: 2,
-            conflicted: 0
+            conflicted: 0,
+            conflicted_paths: vec![]
         }
     );
 
@@ -532,7 +534,8 @@ async fn status_counts_conflicts() {
         WorktreeStatus {
             changed: 1,
             untracked: 0,
-            conflicted: 1
+            conflicted: 1,
+            conflicted_paths: vec!["c.txt".to_owned()]
         }
     );
 }
@@ -850,6 +853,8 @@ fn stopped(
     Some(InProgress {
         kind,
         conflicted: conflicted.iter().map(|p| (*p).to_owned()).collect(),
+        // Nothing resolved yet: each still has git's conflict markers.
+        unresolved: conflicted.iter().map(|p| (*p).to_owned()).collect(),
         step: step.map(|(s, _)| s),
         total: step.map(|(_, t)| t),
         subject: Some(subject.to_owned()),
@@ -1019,6 +1024,71 @@ async fn conflicted_paths_with_spaces_and_unicode() {
             "\u{fc}/\u{f1} \u{e9}.txt"
         ]
     );
+}
+
+/// A conflicted file whose conflict markers are gone is resolved (it is still unmerged
+/// until it is staged); one that still has them is not. Other files' whitespace errors and a
+/// name that looks like git's report do not confuse it.
+#[tokio::test]
+async fn resolved_files_are_told_from_unresolved_ones() {
+    let repo = TestRepo::new();
+    let names = ["clash.txt", "a: 1: b.txt", "other.txt"];
+    for name in names {
+        repo.write(name, "base\n");
+    }
+    repo.write("spaces.txt", "fine\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    for name in names {
+        repo.write(name, "feature\n");
+    }
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    for name in names {
+        repo.write(name, "main\n");
+    }
+    repo.commit_all("main side");
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    let state = in_progress(&repo).await.expect("a merge");
+    assert_eq!(state.unresolved, state.conflicted);
+
+    repo.write("clash.txt", "resolved\n");
+    repo.write("spaces.txt", "trailing   \n");
+    let state = in_progress(&repo).await.expect("a merge");
+    assert_eq!(state.conflicted, ["a: 1: b.txt", "clash.txt", "other.txt"]);
+    assert_eq!(state.unresolved, ["a: 1: b.txt", "other.txt"]);
+
+    repo.write("a: 1: b.txt", "resolved\n");
+    repo.write("other.txt", "resolved\n");
+    let state = in_progress(&repo).await.expect("a merge");
+    assert_eq!(state.conflicted.len(), 3, "unmerged until staged");
+    assert!(state.unresolved.is_empty(), "{:?}", state.unresolved);
+}
+
+/// Conflicts nothing in progress explains (a stash pop's) are named in the status, at most
+/// 200 of them.
+#[tokio::test]
+async fn status_names_conflicted_files() {
+    let repo = TestRepo::new();
+    for i in 0..205 {
+        repo.write(&format!("f{i:03}.txt"), "base\n");
+    }
+    repo.commit_all("base");
+    for i in 0..205 {
+        repo.write(&format!("f{i:03}.txt"), "stashed\n");
+    }
+    repo.git(&["stash", "-q"]);
+    for i in 0..205 {
+        repo.write(&format!("f{i:03}.txt"), "committed\n");
+    }
+    repo.commit_all("moved on");
+    assert!(!repo.git_succeeds(&["stash", "pop"]));
+    let status = read_status(&runner().await, repo.path()).await.unwrap();
+    assert_eq!(status.conflicted, 205);
+    assert_eq!(status.conflicted_paths.len(), 200);
+    assert_eq!(status.conflicted_paths[0], "f000.txt");
+    assert_eq!(status.conflicted_paths[199], "f199.txt");
 }
 
 /// A merge started in a terminal shows in the snapshot after the next refresh, with the

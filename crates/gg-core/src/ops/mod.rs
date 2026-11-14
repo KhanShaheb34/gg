@@ -829,6 +829,12 @@ impl RepoManager {
                 if let Some(why) = progress::refused_while(&request, kind, head.as_deref()) {
                     return Ok((title, Ran::Refused(why)));
                 }
+                // Continuing stages the conflicted files: never one the user has not resolved.
+                if matches!(request, OpRequest::Continue)
+                    && let Some(why) = progress::unresolved_conflicts(&ctx).await?
+                {
+                    return Ok((title, Ran::Refused(why)));
+                }
             }
             // Conflicts nothing in progress explains (a stash pop's) stop what would touch
             // the conflicted files, before git can.

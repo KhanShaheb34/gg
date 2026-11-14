@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::dto::WorktreeStatus;
+use crate::dto::{MAX_CONFLICTED_PATHS, WorktreeStatus};
 use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner};
 
@@ -47,7 +47,8 @@ pub(crate) async fn read_conflicted(r: &GitRunner, worktree: &Path) -> Result<Ve
 
 /// Counts porcelain v2 entries: `1` (changed), `2` (renamed or copied; followed by an extra
 /// NUL-terminated original path), `u` (unmerged: changed and conflicted), `?` (untracked).
-/// Also returns the unmerged entries' paths, sorted.
+/// Also returns the unmerged entries' paths, sorted (all of them; the status names the first
+/// [`MAX_CONFLICTED_PATHS`]).
 fn parse_status(out: &[u8]) -> (WorktreeStatus, Vec<String>) {
     let mut s = WorktreeStatus::default();
     let mut conflicted = Vec::new();
@@ -70,6 +71,11 @@ fn parse_status(out: &[u8]) -> (WorktreeStatus, Vec<String>) {
         }
     }
     conflicted.sort();
+    s.conflicted_paths = conflicted
+        .iter()
+        .take(MAX_CONFLICTED_PATHS)
+        .cloned()
+        .collect();
     (s, conflicted)
 }
 
@@ -87,6 +93,15 @@ mod tests {
             changed,
             untracked,
             conflicted,
+            conflicted_paths: Vec::new(),
+        }
+    }
+
+    /// The counts of `status`, its paths left out.
+    fn only_counts(status: WorktreeStatus) -> WorktreeStatus {
+        WorktreeStatus {
+            conflicted_paths: Vec::new(),
+            ..status
         }
     }
 
@@ -101,7 +116,9 @@ mod tests {
             "! ignored\0",
         ]
         .concat();
-        assert_eq!(parse_status(out.as_bytes()).0, counts(3, 2, 1));
+        let (status, _) = parse_status(out.as_bytes());
+        assert_eq!(status.conflicted_paths, ["c.txt"]);
+        assert_eq!(only_counts(status), counts(3, 2, 1));
     }
 
     #[test]
@@ -117,6 +134,7 @@ mod tests {
         let (status, conflicted) = parse_status(out.as_bytes());
         assert_eq!(status.conflicted, 4);
         assert_eq!(conflicted, ["c.txt", "dir/a  b\u{fc}.txt", "z last.txt"]);
+        assert_eq!(status.conflicted_paths, conflicted);
     }
 
     #[test]

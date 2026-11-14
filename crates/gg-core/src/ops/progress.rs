@@ -8,7 +8,7 @@
 
 use crate::dto::{InProgressKind, OpRequest};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::git::progress::read_kind;
+use crate::git::progress::{read_kind, with_conflict_markers};
 use crate::git::status::read_conflicted;
 use crate::ops::explain::{explain, recognised};
 use crate::ops::local::{current_branch, kind_name, stopped_message, stopped_without_conflicts};
@@ -84,6 +84,29 @@ pub(crate) async fn unexplained_conflicts(ctx: &OpCtx<'_>) -> Result<Option<Stri
     if paths.is_empty() {
         return Ok(None);
     }
+    Ok(Some(format!(
+        "Some files still have conflicts from an earlier step ({}). Resolve them and stage \
+         them, or discard them, first.",
+        named(&paths)
+    )))
+}
+
+/// Why continue cannot run: files git stopped on still have conflict markers (the user has
+/// not resolved them), and continuing would stage them as they are. None when none has.
+pub(crate) async fn unresolved_conflicts(ctx: &OpCtx<'_>) -> Result<Option<String>> {
+    let conflicted = read_conflicted(&ctx.runner, &ctx.cwd).await?;
+    let marked = with_conflict_markers(&ctx.runner, &ctx.cwd, &conflicted).await?;
+    if marked.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "Some files still have conflict markers ({}). Resolve them, then continue.",
+        named(&marked)
+    )))
+}
+
+/// The first [`NAMED_CONFLICTS`] of `paths`, joined, with an ellipsis if there are more.
+fn named(paths: &[String]) -> String {
     let mut named = paths
         .iter()
         .take(NAMED_CONFLICTS)
@@ -93,10 +116,7 @@ pub(crate) async fn unexplained_conflicts(ctx: &OpCtx<'_>) -> Result<Option<Stri
     if paths.len() > NAMED_CONFLICTS {
         named.push('\u{2026}');
     }
-    Ok(Some(format!(
-        "Some files still have conflicts from an earlier step ({named}). Resolve them and \
-         stage them, or discard them, first."
-    )))
+    named
 }
 
 /// The paths with unmerged entries in the index (`ls-files --unmerged`), sorted, each once.

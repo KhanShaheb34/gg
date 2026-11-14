@@ -40,14 +40,20 @@ pub struct WorktreeInfo {
 }
 
 /// Change counts for one worktree.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeStatus {
     /// Tracked paths with staged or unstaged changes, conflicts included.
     pub changed: u32,
     pub untracked: u32,
     pub conflicted: u32,
+    /// The conflicted paths, relative to the worktree, sorted: the first
+    /// [`MAX_CONFLICTED_PATHS`] of them.
+    pub conflicted_paths: Vec<String>,
 }
+
+/// Most conflicted paths a [`WorktreeStatus`] names.
+pub const MAX_CONFLICTED_PATHS: usize = 200;
 
 /// How a file changed in a commit. Serialized as its single letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,6 +218,9 @@ pub struct InProgress {
     pub kind: InProgressKind,
     /// Conflicted paths relative to the worktree, sorted.
     pub conflicted: Vec<String>,
+    /// The conflicted paths that still have conflict markers (`git diff --check`), sorted:
+    /// not resolved yet. The others are resolved, though unmerged until they are staged.
+    pub unresolved: Vec<String>,
     /// Rebase only: the step git stopped at, and how many there are.
     pub step: Option<u32>,
     pub total: Option<u32>,
@@ -865,9 +874,13 @@ mod tests {
             changed: 1,
             untracked: 2,
             conflicted: 3,
+            conflicted_paths: vec!["a b.txt".into()],
         };
-        let v = serde_json::to_value(st).unwrap();
-        assert_eq!(v, json!({"changed": 1, "untracked": 2, "conflicted": 3}));
+        let v = serde_json::to_value(&st).unwrap();
+        assert_eq!(
+            v,
+            json!({"changed": 1, "untracked": 2, "conflicted": 3, "conflictedPaths": ["a b.txt"]})
+        );
         assert_eq!(serde_json::from_value::<WorktreeStatus>(v).unwrap(), st);
     }
 
@@ -961,6 +974,7 @@ mod tests {
             in_progress: Some(InProgress {
                 kind: InProgressKind::CherryPick,
                 conflicted: vec!["a b.txt".into()],
+                unresolved: vec![],
                 step: None,
                 total: None,
                 subject: Some("fix".into()),
@@ -975,12 +989,14 @@ mod tests {
                 "generation": 3, "totalRows": 10, "loading": true, "maxLane": 2,
                 "head": {"branch": null, "hash": "h"},
                 "branches": ["main"], "remoteBranches": ["origin/main"], "remotes": ["origin"],
-                "worktrees": [], "status": {"changed": 0, "untracked": 0, "conflicted": 0},
+                "worktrees": [], "status": {"changed": 0, "untracked": 0, "conflicted": 0,
+                           "conflictedPaths": []},
                 "viewOptions": {"branches": null, "showRemotes": true, "showTags": true,
                                 "showStashes": true},
                 "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},
                 "op": {"id": 4, "title": "Create branch x", "startedAtMs": 9, "queued": 1},
-                "inProgress": {"kind": "cherry-pick", "conflicted": ["a b.txt"], "step": null,
+                "inProgress": {"kind": "cherry-pick", "conflicted": ["a b.txt"], "unresolved": [],
+                               "step": null,
                                "total": null, "subject": "fix"},
                 "seq": 12
             })

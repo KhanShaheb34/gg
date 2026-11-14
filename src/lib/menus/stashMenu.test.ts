@@ -25,19 +25,19 @@ describe("stashMenu", () => {
 
 describe("uncommittedMenu", () => {
   it("offers to stash the changes", () => {
-    const items = uncommittedMenu(snap({ status: { changed: 2, untracked: 1, conflicted: 0 } }));
+    const items = uncommittedMenu(snap({ status: { changed: 2, untracked: 1, conflicted: 0, conflictedPaths: [] } }));
     expect(ids(items)).toEqual(["stash.save"]);
     expect(find(items, "stash.save").label).toBe("Stash changes…");
     expect(disabled(items)).toEqual([]);
   });
 
   it("is disabled while a merge is in progress (R17: saving would end the merge)", () => {
-    const resolved = snap({ ...inProgress("merge"), status: { changed: 1, untracked: 0, conflicted: 0 } });
+    const resolved = snap({ ...inProgress("merge"), status: { changed: 1, untracked: 0, conflicted: 0, conflictedPaths: [] } });
     expect(find(uncommittedMenu(resolved), "stash.save").disabledReason).toBe("A merge is in progress");
   });
 
   it("is disabled while files are conflicted", () => {
-    const conflicted = snap({ status: { changed: 1, untracked: 0, conflicted: 1 } });
+    const conflicted = snap({ status: { changed: 1, untracked: 0, conflicted: 1, conflictedPaths: ["a.txt"] } });
     expect(find(uncommittedMenu(conflicted), "stash.save").disabledReason).toBe(
       "Conflicted files cannot be stashed: resolve them first",
     );

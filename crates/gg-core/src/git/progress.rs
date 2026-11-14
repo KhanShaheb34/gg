@@ -143,6 +143,67 @@ pub(crate) async fn state_files(runner: &GitRunner, worktree: &Path) -> Result<O
     }))
 }
 
+/// Most paths given to one `git diff --check`, so the command line stays short.
+const CHECK_CHUNK: usize = 100;
+
+/// What `git diff --check` says of a line left from a conflict.
+const LEFTOVER: &str = ": leftover conflict marker";
+
+/// Those of `paths` (conflicted, relative to the worktree at `worktree`) whose working-tree
+/// file still has conflict markers, as `git diff --check` finds them: not resolved yet.
+/// When git's report cannot be read for a group of paths, each of them counts as unresolved.
+pub(crate) async fn with_conflict_markers(
+    runner: &GitRunner,
+    worktree: &Path,
+    paths: &[String],
+) -> Result<Vec<String>> {
+    let mut unresolved = Vec::new();
+    for chunk in paths.chunks(CHECK_CHUNK) {
+        // Literal: a path like `[ab].txt` must not match other files as a glob.
+        let mut args = vec![
+            "--literal-pathspecs",
+            "diff",
+            "--check",
+            "--no-ext-diff",
+            "--",
+        ];
+        args.extend(chunk.iter().map(String::as_str));
+        let out = runner.run_unchecked(worktree, &args, CmdKind::Read).await?;
+        // 0: nothing found; 2: problems found (listed); anything else: git failed.
+        let found = match out.code {
+            0 => Some(Vec::new()),
+            2 => marked_paths(&out.text(), chunk),
+            _ => None,
+        }
+        .unwrap_or_else(|| chunk.to_vec());
+        unresolved.extend(found);
+    }
+    unresolved.sort();
+    unresolved.dedup();
+    Ok(unresolved)
+}
+
+/// The paths of `paths` that `report` (`git diff --check`'s) says have a leftover conflict
+/// marker (`<path>:<line>: leftover conflict marker`). `None` if a marker is reported for a
+/// file that is not recognised among `paths` (a quoted name, say).
+fn marked_paths(report: &str, paths: &[String]) -> Option<Vec<String>> {
+    let mut marked = Vec::new();
+    for line in report.lines().filter(|l| l.ends_with(LEFTOVER)) {
+        let head = &line[..line.len() - LEFTOVER.len()];
+        // The longest path that is followed by `:<digits>`.
+        let path = paths
+            .iter()
+            .filter(|p| {
+                head.strip_prefix(p.as_str())
+                    .and_then(|rest| rest.strip_prefix(':'))
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .max_by_key(|p| p.len())?;
+        marked.push(path.clone());
+    }
+    Some(marked)
+}
+
 /// What git is stopped in, in the worktree at `worktree`, if anything (see
 /// [`StateFiles::kind`]).
 pub(crate) async fn read_kind(
@@ -155,7 +216,7 @@ pub(crate) async fn read_kind(
 }
 
 /// What git is stopped in, in the worktree at `worktree`, if anything: its kind, the
-/// conflicted paths, a rebase's step, and what is being applied.
+/// conflicted paths and those not resolved yet, a rebase's step, and what is being applied.
 pub async fn read_in_progress(runner: &GitRunner, worktree: &Path) -> Result<Option<InProgress>> {
     let Some(files) = state_files(runner, worktree).await? else {
         return Ok(None);
@@ -221,11 +282,39 @@ async fn describe(
             Some(out.text().trim().to_owned()).filter(|s| out.code == 0 && !s.is_empty())
         }
     };
+    let unresolved = with_conflict_markers(runner, worktree, &conflicted).await?;
     Ok(Some(InProgress {
         kind,
         conflicted,
+        unresolved,
         step,
         total,
         subject,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_reports_are_read_against_the_paths_asked_about() {
+        let paths = [
+            "a.txt".to_owned(),
+            "a.txt:2".to_owned(),
+            "b c.txt".to_owned(),
+        ];
+        let report = "a.txt:2:3: leftover conflict marker\n\
+                      b c.txt:4: trailing whitespace.\n\
+                      +x   \n\
+                      b c.txt:9: leftover conflict marker\n";
+        assert_eq!(
+            marked_paths(report, &paths),
+            Some(vec!["a.txt:2".to_owned(), "b c.txt".to_owned()])
+        );
+        assert_eq!(marked_paths("", &paths), Some(vec![]));
+        // A name git quoted is not one asked about: nothing can be told.
+        let quoted = "\"q\\\"x.txt\":1: leftover conflict marker\n";
+        assert_eq!(marked_paths(quoted, &paths), None);
+    }
 }

@@ -312,7 +312,7 @@ impl TreeState {
     /// The tree state `info` carries.
     fn of(info: &RepoInfo) -> Self {
         Self {
-            status: info.status,
+            status: info.status.clone(),
             in_progress: info.in_progress.clone(),
         }
     }

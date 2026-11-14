@@ -422,7 +422,7 @@ impl RepoState {
             remote_branches,
             remotes: self.info.remotes.clone(),
             worktrees: self.info.worktrees.clone(),
-            status: self.info.status,
+            status: self.info.status.clone(),
             view_options: self.view.clone(),
             fetch: fetch.clone(),
             op: None,
@@ -440,7 +440,7 @@ impl RepoState {
         let layout = &self.layouts[i as usize];
         let offset = self.row_offset();
         if i < offset {
-            let status = self.info.status;
+            let status = &self.info.status;
             let n = status.changed.saturating_add(status.untracked);
             return CommitRow {
                 index: i,
@@ -624,7 +624,7 @@ fn index_of(commits: &[Commit]) -> HashMap<String, u32> {
 
 /// HEAD's hash when the active worktree has changes to show as the uncommitted row.
 fn uncommitted_parent(info: &RepoInfo) -> Option<String> {
-    let s = info.status;
+    let s = &info.status;
     let dirty = s.changed > 0 || s.untracked > 0 || s.conflicted > 0;
     dirty.then(|| info.head.hash.clone()).flatten()
 }
@@ -888,6 +888,7 @@ mod tests {
             changed,
             untracked,
             conflicted: 0,
+            conflicted_paths: Vec::new(),
         };
         info
     }
@@ -996,6 +997,7 @@ mod tests {
         stopped.in_progress = Some(crate::dto::InProgress {
             kind: crate::dto::InProgressKind::Merge,
             conflicted: Vec::new(),
+            unresolved: Vec::new(),
             step: None,
             total: None,
             subject: None,

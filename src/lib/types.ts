@@ -28,7 +28,8 @@ export type WorktreeInfo = {
   locked: boolean;
   prunable: boolean;
 };
-export type WorktreeStatus = { changed: number; untracked: number; conflicted: number };
+/** `conflictedPaths`: the conflicted paths, sorted, the first 200 of them. */
+export type WorktreeStatus = { changed: number; untracked: number; conflicted: number; conflictedPaths: string[] };
 /** `lastError`: why the last fetch failed, in one line; `lastErrorDetail`: git's whole stderr of it. */
 export type FetchState = {
   running: boolean;
@@ -65,6 +66,7 @@ export type RepoSnapshot = {
 export type InProgress = {
   kind: "merge" | "rebase" | "cherry-pick" | "revert";
   conflicted: string[]; // paths relative to the worktree, sorted
+  unresolved: string[]; // those of `conflicted` that still have conflict markers (the others are resolved, unmerged until staged)
   step: number | null; // rebase only
   total: number | null; // rebase only
   subject: string | null; // what is being applied: the incoming branch or the commit's subject

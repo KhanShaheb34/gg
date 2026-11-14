@@ -56,7 +56,7 @@ export function snap(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     remoteBranches: ["origin/main"],
     remotes: ["origin"],
     worktrees: [],
-    status: { changed: 0, untracked: 0, conflicted: 0 },
+    status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,
@@ -70,7 +70,7 @@ export const DETACHED = { head: { branch: null, hash: HEAD_HASH } } satisfies Pa
 export const UNBORN = { head: { branch: "main", hash: null }, totalRows: 0 } satisfies Partial<RepoSnapshot>;
 
 export function inProgress(kind: InProgress["kind"]): Partial<RepoSnapshot> {
-  return { inProgress: { kind, conflicted: ["a.txt"], step: null, total: null, subject: null } };
+  return { inProgress: { kind, conflicted: ["a.txt"], unresolved: ["a.txt"], step: null, total: null, subject: null } };
 }
 
 export const RUNNING = {

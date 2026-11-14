@@ -149,6 +149,50 @@ async fn continue_stages_resolved_files_and_finishes_the_merge() {
     );
 }
 
+/// Continue never stages a file that still has conflict markers: it is refused, and nothing
+/// is staged.
+#[tokio::test]
+async fn continue_is_refused_while_a_file_has_conflict_markers() {
+    let repo = TestRepo::new();
+    for name in ["clash.txt", "other.txt"] {
+        repo.write(name, "base\n");
+    }
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    for name in ["clash.txt", "other.txt"] {
+        repo.write(name, "feature\n");
+    }
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    for name in ["clash.txt", "other.txt"] {
+        repo.write(name, "main\n");
+    }
+    repo.commit_all("main side");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(
+        h.run(id, merge_branch("feature")).await.status,
+        OpStatus::Stopped
+    );
+    repo.write("clash.txt", "resolved\n");
+
+    let out = h.run(id, OpRequest::Continue).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("other.txt") && out.message.contains("conflict markers"),
+        "{}",
+        out.message
+    );
+    assert!(args_of(&h, &out).is_empty(), "nothing ran");
+    assert!(in_git_dir(&repo, "MERGE_HEAD"), "still merging");
+    assert_eq!(
+        repo.git(&["diff", "--name-only", "--diff-filter=U"]),
+        "clash.txt\nother.txt",
+        "nothing staged"
+    );
+}
+
 #[tokio::test]
 async fn continue_commits_a_merge_stopped_without_conflicts() {
     let repo = TestRepo::new();

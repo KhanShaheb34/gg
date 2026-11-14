@@ -53,7 +53,12 @@ function advanceClock(dir: string, tick: number): void {
   clocks.set(dir, Math.max(clocks.get(dir) ?? 0, tick));
 }
 
-function gitIn(dir: string): Git {
+/** Who makes the commits of a fixture git: Ada, unless said otherwise. */
+type Identity = { name: string; email: string };
+const ADA: Identity = { name: "Ada Lovelace", email: "ada@example.com" };
+const GRACE: Identity = { name: "Grace Hopper", email: "grace@example.com" };
+
+function gitIn(dir: string, who: Identity = ADA): Git {
   return (...args) => {
     const tick = clocks.get(dir) ?? 0;
     clocks.set(dir, tick + 1);
@@ -64,10 +69,10 @@ function gitIn(dir: string): Git {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...isolatedEnv(),
-        GIT_AUTHOR_NAME: "Ada Lovelace",
-        GIT_AUTHOR_EMAIL: "ada@example.com",
-        GIT_COMMITTER_NAME: "Ada Lovelace",
-        GIT_COMMITTER_EMAIL: "ada@example.com",
+        GIT_AUTHOR_NAME: who.name,
+        GIT_AUTHOR_EMAIL: who.email,
+        GIT_COMMITTER_NAME: who.name,
+        GIT_COMMITTER_EMAIL: who.email,
         GIT_AUTHOR_DATE: when,
         GIT_COMMITTER_DATE: when,
       },
@@ -293,7 +298,8 @@ const REPOS: Record<string, RepoScript> = {
    * "Add login form" and "Validate login" on `feature/login` (from `staging`); all three
    * pushed with upstreams. Then the other clone pushes "Hotfix one" and "Hotfix two" to
    * `staging`, and this repository fetches: `staging` is 2 behind `origin/staging`, not
-   * ahead. `main` is checked out. Both clones have an identity for the commits git makes.
+   * ahead. `main` is checked out. The other clone's commits are Grace Hopper's; this one's,
+   * and those git makes here, Ada Lovelace's.
    */
   routine(git, write, dir) {
     git("init", "-q", "-b", "main");
@@ -317,10 +323,9 @@ const REPOS: Record<string, RepoScript> = {
 
     const other = otherClone(dir);
     git("clone", "-q", "../routine-origin.git", other);
-    const there = gitIn(other);
+    // Someone else's commits.
+    const there = gitIn(other, GRACE);
     advanceClock(other, clocks.get(dir) ?? 0);
-    there("config", "user.name", "Grace Hopper");
-    there("config", "user.email", "grace@example.com");
     there("switch", "-q", "staging");
     for (const subject of ["Hotfix one", "Hotfix two"]) {
       writeFileSync(path.join(other, `${subject.replace(" ", "-")}.txt`), `${subject}\n`);

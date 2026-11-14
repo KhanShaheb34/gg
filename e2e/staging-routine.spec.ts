@@ -56,6 +56,10 @@ test("checkout_staging_offers_fast_forward_then_merge_then_push", async ({ gg })
   await page.goto("/");
   await open(page, gg.repoPath("routine"));
   await expect(label(page, "staging").locator(".ab")).toHaveText("↓2");
+  // The commits that came from the other clone are someone else's.
+  expect(gg.git("routine", "log", "-1", "--format=%an <%ae>", "origin/staging").trim()).toBe(
+    "Grace Hopper <grace@example.com>",
+  );
 
   // Check out: staging is behind its upstream and not ahead, so the app asks first.
   await pickOnLabel(page, "staging", "Check out");

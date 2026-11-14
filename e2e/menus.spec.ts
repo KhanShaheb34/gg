@@ -204,6 +204,44 @@ test("the keyboard opens, moves through and picks from the menu", async ({ gg })
   await expect(page.getByRole("status").filter({ hasText: "Copied the hash" })).toBeVisible();
 });
 
+test("the keyboard reaches label menus: the row's menu lists its labels, remote halves included", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await rowOf(page, "Fix typo 4").click();
+  await grid(page).focus();
+  await page.keyboard.press("Shift+F10");
+  await page.keyboard.press("End");
+  await expect(item(page, "Branches")).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(menus(page).nth(1).getByRole("menuitem")).toHaveText(["Branch fix/typo", "Remote branch origin/fix/typo"]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowRight");
+  await expect(menus(page).nth(2).getByRole("menuitem").first()).toHaveText("Check out as a local branch…");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(menus(page)).toHaveCount(0);
+
+  // A row without labels has no such item.
+  await rowOf(page, "Add part 18").locator(".subject").click({ button: "right" });
+  expect(await itemNames(page)).not.toContain("Branches");
+});
+
+test("the +k pill lists the remote halves of the hidden labels too", async ({ gg }) => {
+  const { page } = gg;
+  const names = ["fix/a", "fix/b", "fix/c", "fix/d", "fix/e"];
+  for (const name of names) gg.git("small", "branch", name, "fix/typo");
+  gg.git("small", "push", "-q", "origin", ...names);
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await rowOf(page, "Fix typo 4").locator(".ref.more").click({ button: "right" });
+  const listed = await itemNames(page);
+  const hidden = listed.filter((n) => n.startsWith("Branch ")).map((n) => n.slice("Branch ".length));
+  expect(hidden.length).toBeGreaterThan(0);
+  for (const name of hidden) expect(listed).toContain(`Remote branch origin/${name}`);
+});
+
 test("copy message copies the whole message; copy name the branch's name", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

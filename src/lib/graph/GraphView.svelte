@@ -376,8 +376,26 @@
   }
 
   /**
+   * The targets of `labels` of `row`, each followed by the remote branches a combined label
+   * stands for too (`main | origin` is also `origin/main`). Stash labels are the row's own.
+   */
+  function labelTargets(row: CommitRow, labels: RefLabel[]): MenuTarget[] {
+    return labels
+      .filter((label) => label.kind !== "stash")
+      .flatMap((label) => [{ row, label }, ...label.remotes.map((r) => ({ row, label: remoteLabel(label, r) }))]);
+  }
+
+  /** What the row-menu item listing `targets` is called: "Branches", "Tags", or both. */
+  function labelsItemName(targets: MenuTarget[]): string {
+    const tags = targets.some((t) => t.label!.kind === "tag");
+    const branches = targets.some((t) => t.label!.kind !== "tag");
+    return tags && branches ? "Branches and tags" : tags ? "Tags" : "Branches";
+  }
+
+  /**
    * The menu for what element `on` is in `row`: a label's (the remote part of a combined label
-   * is the remote branch's; "+k" lists the hidden labels, each with its menu), else the row's.
+   * is the remote branch's; "+k" lists the hidden labels, each with its menu), else the row's,
+   * which ends with its labels' menus (so the keyboard reaches them from the row).
    */
   function menuAt(on: Element, row: CommitRow): { items: MenuItem[]; onPick: (id: string) => void } {
     const snap = view.snapshot;
@@ -385,6 +403,24 @@
       items: itemsFor(target, snap),
       onPick: (id: string) => pick(id, target, view.snapshot),
     });
+    const ofRow = () => {
+      const target: MenuTarget = { row, label: null };
+      const labels = labelTargets(row, row.labels);
+      if (labels.length === 0) return single(target);
+      const { items, targetOf } = menusOf(labels);
+      return {
+        items: [
+          ...itemsFor(target, snap),
+          { separator: true } as const,
+          { id: "labels", label: labelsItemName(labels), submenu: items },
+        ],
+        onPick: (id: string) => {
+          if (!id.includes(":")) return pick(id, target, view.snapshot);
+          const [inner, innerId] = targetOf(id);
+          pick(innerId, inner, view.snapshot);
+        },
+      };
+    };
     const several = (targets: MenuTarget[]) => {
       const { items, targetOf } = menusOf(targets);
       return {
@@ -397,12 +433,10 @@
     };
     const ref = on.closest<HTMLElement>(".ref[data-slot]");
     const slot = ref?.dataset.slot;
-    if (slot === undefined) return single({ row, label: null });
-    if (slot === "more") {
-      return several(row.labels.slice(ownLabels(row.labels.length)).map((label) => ({ row, label })));
-    }
+    if (slot === undefined) return ofRow();
+    if (slot === "more") return several(labelTargets(row, row.labels.slice(ownLabels(row.labels.length))));
     const label = row.labels[Number(slot)];
-    if (!label) return single({ row, label: null });
+    if (!label) return ofRow();
     if (on.closest(".remotes") && label.remotes.length > 0) {
       const remotes = label.remotes.map((r) => ({ row, label: remoteLabel(label, r) }));
       return remotes.length === 1 ? single(remotes[0]) : several(remotes);

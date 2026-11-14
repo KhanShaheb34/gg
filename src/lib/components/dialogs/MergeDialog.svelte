@@ -63,7 +63,7 @@
     <input class="checkbox" type="checkbox" bind:checked={squash} />
     <span>
       Squash the commits
-      <span class="check-note">Their changes are staged as one, for you to commit; no merge is recorded.</span>
+      <span class="check-note">Staged as one change for you to commit; no merge is recorded.</span>
     </span>
   </label>
   <label class="check-row">

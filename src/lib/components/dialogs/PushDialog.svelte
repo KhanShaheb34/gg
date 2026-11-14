@@ -41,7 +41,7 @@
     upstream === null
       ? "It has none yet, so this becomes it."
       : toUpstream
-        ? "It is already."
+        ? `${shown(upstream)} is its upstream already.`
         : `Instead of ${shown(upstream)}.`,
   );
 

@@ -1,7 +1,7 @@
 // The command log panel (spec §5.7), end to end against the real core: operations with their
 // commands and output, "Show log" from a failed operation's notice, background reads behind a
 // toggle, no requests while closed, and the keyboard.
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, type GG, test } from "./fixtures";
@@ -268,4 +268,54 @@ test("the graph keeps its minimum under the banner, the details and the log", as
   expect(heights.log).toBeLessThanOrEqual(heights.body + 0.5);
   expect(heights.details).toBeLessThanOrEqual(heights.body + 0.5);
   expect(heights.detailsTop).toBeGreaterThanOrEqual(heights.graphBottom - 0.5);
+});
+
+test("show_log_in_a_small_window_shows_the_operation_above_the_details", async ({ gg }) => {
+  const { page } = gg;
+  await page.setViewportSize({ width: 900, height: 560 });
+  const dir = gg.repoPath("conflicts");
+  await page.goto("/");
+  await open(page, dir);
+  try {
+    gg.git("conflicts", "merge", "wide");
+  } catch {
+    // Stopped on conflicts.
+  }
+  await expect(page.getByTestId("conflict-banner")).toContainText("12 files have conflicts");
+  await grid(page).locator('[role="row"]', { hasText: "Earlier work 3" }).first().click();
+  const details = page.getByTestId("commit-details");
+  await expect(details).toBeVisible();
+  // The details panel dragged as tall as it goes.
+  const splitter = details.getByRole("separator", { name: "Resize details panel" });
+  const box = (await splitter.boundingBox())!;
+  await page.mouse.move(box.x + 100, box.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 100, 0, { steps: 4 });
+  await page.mouse.up();
+  // Another program holds the index: Continue fails before it stages anything, and the 12
+  // files stay in the banner.
+  writeFileSync(path.join(dir, ".git/index.lock"), "");
+  const failed = await runOp(page, { op: "continue", evenWithMarkers: true });
+  expect(failed.status).toBe("failed");
+  await expect(page.getByTestId("conflict-banner")).toContainText("12 files have conflicts");
+
+  await page.getByRole("alert").filter({ hasText: failed.message }).getByRole("button", { name: "Show log" }).click();
+  const op = entries(page).locator(`[data-op="${failed.opId}"]`);
+  await expect(op).toHaveClass(/target/);
+  // At least two of its rows show in the log's list.
+  const visibleRows = await panel(page).evaluate((log) => {
+    const list = log.querySelector(".scroller")!.getBoundingClientRect();
+    return [...log.querySelectorAll(".target .row")].filter((r) => {
+      const b = r.getBoundingClientRect();
+      return b.top >= list.top - 0.5 && b.bottom <= list.bottom + 0.5;
+    }).length;
+  });
+  expect(visibleRows).toBeGreaterThanOrEqual(2);
+  if (process.env.GG_SCREENS === "1") {
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.screenshot({ path: `docs/perf/screens/small-log-show-${scheme}.png` });
+    }
+  }
+  rmSync(path.join(dir, ".git/index.lock"));
 });

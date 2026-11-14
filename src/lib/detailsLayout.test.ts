@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SPLIT, FILES_MIN, INFO_MIN, infoWidth, splitFor, LOG_MIN_H, MIN_GRAPH_H, detailsRoom, panelHeight, panelRoom } from "./detailsLayout";
+import { DEFAULT_SPLIT, FILES_MIN, INFO_MIN, infoWidth, splitFor, DETAILS_MIN_H, LOG_MIN_H, MIN_GRAPH_H, detailsRoom, panelHeight, panelRoom } from "./detailsLayout";
 
 describe("infoWidth", () => {
   it("takes the chosen share of the panel, 44 % by default", () => {
@@ -49,8 +49,15 @@ describe("bottom panels", () => {
     expect(detailsRoom(400, false)).toBe(400);
     expect(detailsRoom(1000, true)).toBe(550);
     expect(detailsRoom(300, true)).toBe(165);
-    expect(detailsRoom(200, true)).toBe(200 - LOG_MIN_H);
-    expect(detailsRoom(90, true)).toBe(45);
     expect(detailsRoom(0, true)).toBe(0);
+  });
+
+  it("with too little room for both, the log keeps its minimum and the details fold", () => {
+    expect(detailsRoom(DETAILS_MIN_H + LOG_MIN_H, true)).toBe(DETAILS_MIN_H);
+    expect(detailsRoom(DETAILS_MIN_H + LOG_MIN_H - 1, true)).toBe(0);
+    expect(detailsRoom(200, true)).toBe(0);
+    expect(detailsRoom(90, true)).toBe(0);
+    // Without the log the details take what there is.
+    expect(detailsRoom(90, false)).toBe(90);
   });
 });

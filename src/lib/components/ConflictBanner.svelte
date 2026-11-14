@@ -26,7 +26,8 @@
   import AbortDialog from "./dialogs/AbortDialog.svelte";
   import ContinueDialog from "./dialogs/ContinueDialog.svelte";
 
-  let { view }: { view: RepoView } = $props();
+  /** `compact`: a panel is open below the graph; the file list shows about three rows. */
+  let { view, compact = false }: { view: RepoView; compact?: boolean } = $props();
 
   const uid = Math.random().toString(36).slice(2, 8);
 
@@ -205,7 +206,7 @@
       </div>
     </div>
     {#if files.length > 0}
-      <div class="files-wrap" class:more>
+      <div class="files-wrap" class:more class:compact>
         <ul class="files" aria-label="Conflicted files" bind:this={list} onscroll={checkMore}>
           {#each files as file (file.path)}
             <li class="file-row">
@@ -394,6 +395,11 @@
     padding: 4px 0;
     list-style: none;
     overscroll-behavior: contain;
+  }
+
+  /* With a panel open below the graph: three rows and a bit. */
+  .files-wrap.compact .files {
+    max-height: 85px;
   }
 
   .files-wrap.more .files {

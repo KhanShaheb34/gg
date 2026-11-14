@@ -150,7 +150,7 @@
             <!-- The banner takes its height from the graph's top (the graph keeps its rows in place). -->
             <div class="graph-column">
               <div class="banner-slot" bind:contentRect={bannerRect}>
-                <ConflictBanner view={repoView(active.repoId)} />
+                <ConflictBanner view={repoView(active.repoId)} compact={detailsShown > 0 || logPrefs.open} />
               </div>
               <div class="graph-area">
                 <GraphView view={repoView(active.repoId)} />

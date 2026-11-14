@@ -10,6 +10,12 @@ const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");
 test.skip(!process.env.GG_SCREENS, "set GG_SCREENS=1 to take screenshots");
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
 
+/** The sizes every menu and dialog is shot at: the default window and the smallest one. */
+const SIZES = [
+  ["", 1280, 800],
+  ["small-", 900, 560],
+] as const;
+
 /** Somewhere nothing reacts to the pointer: the empty middle of the tab bar. */
 const park = (page: Page) => page.mouse.move(1000, 20);
 
@@ -248,9 +254,11 @@ for (const theme of ["light", "dark"] as const) {
 
 
 // Menus, the confirmation dialog, the busy indicator and the notices of operations.
-for (const theme of ["light", "dark"] as const) {
-  test(`menus, dialogs and operations, ${theme}`, async ({ gg }) => {
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`menus, dialogs and operations, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     await page.goto("/");
     const dir = gg.repoPath("branchy");
@@ -259,7 +267,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
     const shot = async (name: string) => {
       await page.waitForTimeout(200);
-      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+      await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
     };
 
     // A commit's menu with the reset submenu open, the hard reset under the pointer.
@@ -342,9 +350,11 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 // The dialogs of commit and tag actions (Task 7).
-for (const theme of ["light", "dark"] as const) {
-  test(`commit and tag dialogs, ${theme}`, async ({ gg }) => {
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`commit and tag dialogs, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     await page.goto("/");
     await open(page, gg.repoPath("branchy"));
@@ -354,7 +364,7 @@ for (const theme of ["light", "dark"] as const) {
     const shot = async (name: string) => {
       await park(page);
       await page.waitForTimeout(250);
-      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+      await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);
     };
@@ -419,9 +429,11 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 // The dialogs of branch actions and the staging routine's notices (Task 8).
-for (const theme of ["light", "dark"] as const) {
-  test(`branch dialogs and the staging routine, ${theme}`, async ({ gg }) => {
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`branch dialogs and the staging routine, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     const dir = gg.repoPath("routine");
     const other = otherClone(dir);
@@ -443,7 +455,7 @@ for (const theme of ["light", "dark"] as const) {
     };
     const snap = async (name: string) => {
       await page.waitForTimeout(250);
-      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+      await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
     };
     const shot = async (name: string) => {
       await park(page);
@@ -523,9 +535,11 @@ for (const theme of ["light", "dark"] as const) {
 
 // The conflict banner (spec §5.6) in each of its states, and the dialogs of continue and of
 // stashes.
-for (const theme of ["light", "dark"] as const) {
-  test(`conflict banner and stash dialogs, ${theme}`, async ({ gg }) => {
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`conflict banner and stash dialogs, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     const dir = gg.repoPath("conflicts");
     const git = (...args: string[]) => {
@@ -540,7 +554,7 @@ for (const theme of ["light", "dark"] as const) {
     const snap = async (name: string) => {
       await park(page);
       await page.waitForTimeout(250);
-      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+      await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
     };
     const resolve = (file: string) => writeFileSync(path.join(dir, file), "resolved\n");
     await page.goto("/");
@@ -728,9 +742,11 @@ for (const theme of ["light", "dark"] as const) {
 
 // The menus and confirmations not shot above, the remaining notice kinds, and the menus,
 // dialogs, notices and busy state at 900×560 (Task 11).
-for (const theme of ["light", "dark"] as const) {
-  test(`remaining menus, confirmations and notices, both sizes, ${theme}`, async ({ gg }) => {
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`remaining menus, confirmations and notices, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.goto("/");
@@ -740,7 +756,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
     const shot = async (name: string) => {
       await page.waitForTimeout(200);
-      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+      await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
     };
     const confirmation = page.getByRole("alertdialog");
 
@@ -813,7 +829,9 @@ for (const theme of ["light", "dark"] as const) {
     await park(page);
     await shot("notice-info");
 
-    // At 900×560: a commit's menu, a dialog, a failed operation's notice, the busy state.
+    // At 900×560: a commit's menu, a dialog, a failed operation's notice, the busy state
+    // (taken once, in the run at the large size).
+    if (prefix !== "") return;
     await page.setViewportSize({ width: 900, height: 560 });
     await page.keyboard.press("Escape");
     await grid.locator('[data-index="5"] .subject').click({ button: "right" });
@@ -849,8 +867,9 @@ for (const theme of ["light", "dark"] as const) {
   });
 
   // A continue that comes out empty: the notice that offers to skip.
-  test(`skip notice, ${theme}`, async ({ gg }) => {
+  test(`skip notice, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     await page.goto("/");
     const dir = gg.repoPath("conflicts");
@@ -863,6 +882,8 @@ for (const theme of ["light", "dark"] as const) {
     expect(failed.status).toBe("failed");
     await park(page);
     await page.waitForTimeout(200);
-    await page.screenshot({ path: path.join(OUT, `notice-skip-${theme}.png`) });
+    // The banner offers Skip too (R40).
+    await expect(page.getByTestId("conflict-banner").getByRole("button", { name: "Skip this commit" })).toBeVisible();
+    await page.screenshot({ path: path.join(OUT, `${prefix}notice-skip-${theme}.png`) });
   });
 }

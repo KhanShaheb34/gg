@@ -194,8 +194,10 @@ const DEFAULT_MARKER_SIZE: usize = 7;
 /// markers while a line starts with exactly the file's `conflict-marker-size` (default 7)
 /// of `<` or `>` (then a space or the line's end); `=======` alone is no marker (a Markdown
 /// underline looks the same). A file git kept one side of (binary, deleted or added on one
-/// side, a `merge` attribute that does not merge text), or one that cannot be read or is
-/// over 8 MiB, is undecided. The files are read, never written.
+/// side, a `merge` attribute that does not merge text), or one that cannot be read, is over
+/// 8 MiB, lies past [`JUDGE_BUDGET`] bytes of reading, or is reached through a folder that
+/// leads out of the worktree, is undecided. A file unchanged since it was last judged is not
+/// read again. The files are read, never written, off the async workers.
 pub(crate) async fn judge(
     runner: &GitRunner,
     worktree: &Path,
@@ -207,21 +209,131 @@ pub(crate) async fn judge(
         .map(|u| u.path.as_str())
         .collect();
     let attrs = attributes(runner, worktree, &text).await?;
+    // What to read: the path and its marker size, for files that can hold markers.
+    let to_read: Vec<(String, usize)> = unmerged
+        .iter()
+        .filter_map(|u| match attrs.get(u.path.as_str()) {
+            Some(attr) if u.both_sides_merged() && attr.merges_text => {
+                Some((u.path.clone(), attr.marker_size))
+            }
+            _ => None,
+        })
+        .collect();
+    let root = worktree.to_path_buf();
+    let read = tokio::task::spawn_blocking(move || {
+        let files: Vec<(&str, usize)> = to_read.iter().map(|(p, n)| (p.as_str(), *n)).collect();
+        let states = judge_files(&root, &files, JUDGE_BUDGET, &JUDGED);
+        to_read
+            .into_iter()
+            .map(|(p, _)| p)
+            .zip(states)
+            .collect::<HashMap<String, ConflictState>>()
+    })
+    .await
+    .unwrap_or_default();
     Ok(unmerged
         .iter()
-        .map(|u| {
-            let state = match attrs.get(u.path.as_str()) {
-                Some(attr) if u.both_sides_merged() && attr.merges_text => {
-                    file_state(&worktree.join(&u.path), attr.marker_size)
-                }
-                _ => ConflictState::Undecided,
-            };
-            ConflictFile {
-                path: u.path.clone(),
-                state,
-            }
+        .map(|u| ConflictFile {
+            path: u.path.clone(),
+            state: read
+                .get(&u.path)
+                .copied()
+                .unwrap_or(ConflictState::Undecided),
         })
         .collect())
+}
+
+/// Most bytes one judging reads (files taken from [`JUDGED`] cost nothing): it runs on every
+/// status read while git is stopped.
+const JUDGE_BUDGET: u64 = 32 * 1024 * 1024;
+
+/// What a file was judged, by its path, while it stays the same file of the same size and
+/// time (and marker size).
+#[derive(Default)]
+struct JudgeCache(std::sync::Mutex<HashMap<PathBuf, (FileKey, ConflictState)>>);
+
+/// Most files [`JUDGED`] remembers; past that it starts over.
+const MAX_JUDGED_FILES: usize = 4096;
+
+/// Files judged so far, for every repository.
+static JUDGED: std::sync::LazyLock<JudgeCache> = std::sync::LazyLock::new(JudgeCache::default);
+
+/// What tells one version of a file from another without reading it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileKey {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    ino: u64,
+    marker_size: usize,
+}
+
+/// The state of each of `files` (paths relative to `root`, with their marker sizes), reading
+/// at most `budget` bytes in all.
+fn judge_files(
+    root: &Path,
+    files: &[(&str, usize)],
+    budget: u64,
+    cache: &JudgeCache,
+) -> Vec<ConflictState> {
+    let root = dunce::canonicalize(root).ok();
+    let mut left = budget;
+    files
+        .iter()
+        .map(|&(rel, size)| {
+            let Some(root) = &root else {
+                return ConflictState::Undecided;
+            };
+            let Some(path) = inside(root, rel) else {
+                return ConflictState::Undecided;
+            };
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                return ConflictState::Undecided; // gone: deleted to resolve it, or unreadable
+            };
+            if !meta.is_file() || meta.len() > MAX_JUDGED_BYTES {
+                return ConflictState::Undecided;
+            }
+            let key = FileKey {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+                #[cfg(unix)]
+                ino: std::os::unix::fs::MetadataExt::ino(&meta),
+                marker_size: size,
+            };
+            let mut known = cache.0.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((k, state)) = known.get(&path)
+                && *k == key
+            {
+                return *state;
+            }
+            drop(known);
+            if meta.len() > left {
+                return ConflictState::Undecided;
+            }
+            left -= meta.len();
+            let state = match fs::read(&path) {
+                Ok(bytes) if bytes.contains(&0) => ConflictState::Undecided,
+                Ok(bytes) if has_markers(&bytes, size) => ConflictState::Markers,
+                Ok(_) => ConflictState::Resolved,
+                Err(_) => return ConflictState::Undecided,
+            };
+            known = cache.0.lock().unwrap_or_else(|e| e.into_inner());
+            if known.len() >= MAX_JUDGED_FILES {
+                known.clear();
+            }
+            known.insert(path, (key, state));
+            state
+        })
+        .collect()
+}
+
+/// `rel` under `root` (canonical) with its folder resolved, if that folder is still inside
+/// `root`: a folder replaced by a link to elsewhere is not read through.
+fn inside(root: &Path, rel: &str) -> Option<PathBuf> {
+    let path = root.join(rel);
+    let name = path.file_name()?.to_owned();
+    let parent = dunce::canonicalize(path.parent()?).ok()?;
+    parent.starts_with(root).then(|| parent.join(name))
 }
 
 /// What a file's attributes say about its conflicts.
@@ -275,22 +387,6 @@ async fn attributes<'a>(
         found.extend(attrs);
     }
     Ok(found)
-}
-
-/// The state of the text file at `path` whose markers are runs of `size`.
-fn file_state(path: &Path, size: usize) -> ConflictState {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return ConflictState::Undecided; // gone: deleted to resolve it, or unreadable
-    };
-    if !meta.is_file() || meta.len() > MAX_JUDGED_BYTES {
-        return ConflictState::Undecided;
-    }
-    match fs::read(path) {
-        Ok(bytes) if bytes.contains(&0) => ConflictState::Undecided,
-        Ok(bytes) if has_markers(&bytes, size) => ConflictState::Markers,
-        Ok(_) => ConflictState::Resolved,
-        Err(_) => ConflictState::Undecided,
-    }
 }
 
 /// Whether a line of `text` is a conflict's opening or closing marker: exactly `size` of `<`
@@ -471,6 +567,87 @@ async fn describe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn worktree() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap().join("wt");
+        fs::create_dir_all(&root).unwrap();
+        (dir, root)
+    }
+
+    #[test]
+    fn files_past_the_read_budget_are_undecided() {
+        let (_dir, root) = worktree();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(root.join(name), "resolved text\n").unwrap();
+        }
+        let files: Vec<(&str, usize)> = vec![("a.txt", 7), ("b.txt", 7), ("c.txt", 7)];
+        let cache = JudgeCache::default();
+        // Room for two of the three 14-byte files.
+        let states = judge_files(&root, &files, 30, &cache);
+        assert_eq!(
+            states,
+            [
+                ConflictState::Resolved,
+                ConflictState::Resolved,
+                ConflictState::Undecided
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_unchanged_since_the_last_look_is_not_read_again() {
+        let (_dir, root) = worktree();
+        let path = root.join("a.txt");
+        fs::write(&path, "<<<<<<< ours\n").unwrap();
+        let files = [("a.txt", 7)];
+        let cache = JudgeCache::default();
+        assert_eq!(
+            judge_files(&root, &files, 1 << 20, &cache),
+            [ConflictState::Markers]
+        );
+        // Same size, same time, same file: taken from the cache (the budget cannot read it).
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        fs::write(&path, "resolved!!!!\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(
+            judge_files(&root, &files, 0, &cache),
+            [ConflictState::Markers]
+        );
+        // Changed (its time moves on): read again.
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified + std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            judge_files(&root, &files, 1 << 20, &cache),
+            [ConflictState::Resolved]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_reached_through_a_linked_folder_outside_the_worktree_is_not_read() {
+        let (dir, root) = worktree();
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("a.txt"), "no markers here\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("src")).unwrap();
+        fs::create_dir_all(root.join("in")).unwrap();
+        fs::write(root.join("in/b.txt"), "no markers here\n").unwrap();
+        let files = [("src/a.txt", 7), ("in/b.txt", 7)];
+        assert_eq!(
+            judge_files(&root, &files, 1 << 20, &JudgeCache::default()),
+            [ConflictState::Undecided, ConflictState::Resolved]
+        );
+    }
 
     #[test]
     fn markers_are_whole_runs_at_a_line_start() {

@@ -174,6 +174,8 @@ pub(crate) struct Repo {
     pub(crate) op_waiting: AtomicU32,
     /// The order numbered requests join `op_queue` in (R28).
     pub(crate) op_order: Arc<crate::ops::order::OpOrder>,
+    /// How the app named the commit coming in to the merge or rebase it started last (R32).
+    pub(crate) incoming_name: Mutex<Option<crate::git::progress::KnownIncoming>>,
     /// A fetch the user asked for is waiting for its turn or running; another one asked for
     /// meanwhile returns at once.
     pub(super) user_fetch: AtomicBool,
@@ -595,6 +597,7 @@ impl RepoManager {
             op_queue: tokio::sync::Mutex::new(()),
             op_waiting: AtomicU32::new(0),
             op_order: Arc::default(),
+            incoming_name: Mutex::new(None),
             user_fetch: AtomicBool::new(false),
             scheduled_cancel: Mutex::new(None),
             scheduled_running: Arc::new(tokio::sync::Mutex::new(())),
@@ -710,8 +713,18 @@ impl RepoManager {
             }
             let (status, conflicted) =
                 read_status_and_conflicts(&repo.runner, &repo.worktree).await?;
+            let known = lock(&repo.incoming_name).clone();
             let in_progress =
-                read_in_progress_with(&repo.runner, &repo.worktree, conflicted).await?;
+                read_in_progress_with(&repo.runner, &repo.worktree, conflicted, known.as_ref())
+                    .await?;
+            if in_progress.is_none() && known.is_some() {
+                // What the app started has ended: its name is not for whatever comes next.
+                // Unless a newer one was remembered while this read ran.
+                let mut name = lock(&repo.incoming_name);
+                if *name == known {
+                    *name = None;
+                }
+            }
             Ok::<_, CoreError>(TreeState {
                 status,
                 in_progress,

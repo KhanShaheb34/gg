@@ -70,6 +70,9 @@ export type InProgress = {
   step: number | null; // rebase only
   total: number | null; // rebase only
   subject: string | null; // what is being applied: the incoming branch or the commit's subject
+  // what comes in (R32): merge, the branch or ref merged; rebase, what it goes onto; cherry-pick/revert, the 8-char hash
+  incoming: string | null;
+  rebasing: string | null; // rebase only: the branch being rebased
 };
 
 export type Edge = { from: number; to: number; color: number; half: "top" | "bottom" | "full" };
@@ -182,7 +185,7 @@ export type OpRequest =
   | { op: "stash_save"; message: string | null; includeUntracked: boolean }
   | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string } // stash commit hash
   | { op: "stash_branch"; stash: string; name: string }
-  | { op: "continue" }
+  | { op: "continue"; evenWithMarkers: boolean } // R31: true = go ahead though files still have conflict markers
   | { op: "abort" };
 
 export type DangerKind = "force_push" | "hard_reset" | "delete_unmerged_branch" | "delete_remote_branch" | "drop_stash";

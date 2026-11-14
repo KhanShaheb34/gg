@@ -6,7 +6,7 @@ use crate::dto::{
     Danger, DangerKind, InProgressKind, MergeTarget, MergeTargetKind, OpHint, ResetMode,
 };
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::git::progress::read_kind;
+use crate::git::progress::{incoming_commit, read_kind};
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{NO_BRANCH, nothing_to_do};
 use crate::ops::progress::unmerged_paths;
@@ -15,6 +15,18 @@ use crate::ops::{OpCtx, Step, explain, network};
 /// The first 8 characters of `hash`, for messages (as the UI shows hashes).
 pub(crate) fn short(hash: &str) -> &str {
     hash.get(..8).unwrap_or(hash)
+}
+
+/// Remembers `name` as how the user named the commit coming in to the merge or rebase that
+/// just ran, if git stopped in it (R32): the banner says it so.
+async fn remember_incoming(ctx: &OpCtx<'_>, name: &str) -> Result<()> {
+    if let Some(hash) = incoming_commit(&ctx.runner, &ctx.cwd).await? {
+        *ctx.repo
+            .incoming_name
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((hash, name.to_owned()));
+    }
+    Ok(())
 }
 
 /// Runs `args`; done with `done` if git exits 0, else as [`explain`] says.
@@ -324,7 +336,9 @@ pub(crate) async fn merge(
     // Unmerged entries the squash did not make must never be undone with it (run_op refuses
     // a merge over them; this is the second line).
     let unmerged_before = squash && !unmerged_paths(ctx).await?.is_empty();
-    let out = match git_may_stop(ctx, &args, false).await? {
+    let ran = git_may_stop(ctx, &args, false).await?;
+    remember_incoming(ctx, shown).await?;
+    let out = match ran {
         Ok(out) => out,
         Err(step) if squash && !unmerged_before => return squash_failed(ctx, step).await,
         Err(step) if squash => return Ok(step),
@@ -496,7 +510,9 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
         onto.to_owned()
     };
     let args = ["rebase", full.as_str()];
-    let out = match git_may_stop(ctx, &args, false).await? {
+    let ran = git_may_stop(ctx, &args, false).await?;
+    remember_incoming(ctx, onto).await?;
+    let out = match ran {
         Ok(out) => out,
         Err(step) => return Ok(step),
     };

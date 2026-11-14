@@ -226,6 +226,13 @@ pub struct InProgress {
     pub total: Option<u32>,
     /// What is being applied: the incoming branch or the commit's subject.
     pub subject: Option<String>,
+    /// What comes in (R32): for a merge, the branch or ref being merged (as the app asked
+    /// for it when it started the merge, else the first local branch, remote branch or tag
+    /// at that commit, else its 8-character hash); for a rebase, what it goes onto (found the
+    /// same way); for a cherry-pick or revert, the 8-character hash of the commit applied.
+    pub incoming: Option<String>,
+    /// Rebase only: the branch being rebased (git's `head-name`), if it is one.
+    pub rebasing: Option<String>,
 }
 
 /// A ref shown on a row.
@@ -983,6 +990,8 @@ mod tests {
                 step: None,
                 total: None,
                 subject: Some("fix".into()),
+                incoming: Some("0123abcd".into()),
+                rebasing: None,
             }),
             seq: 12,
         };

@@ -31,7 +31,7 @@
 <Dialog
   title="Continue the {kind}"
   primary={files.length > 0 ? "Stage and continue" : "Continue"}
-  onSubmit={() => closeAndRun(close, repoId, { op: "continue" })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: false })}
   onCancel={close}
 >
   {#if files.length > 0}

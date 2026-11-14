@@ -93,6 +93,41 @@ impl StateFiles {
         }
     }
 
+    /// The commit that comes in to what is stopped (`kind`): `MERGE_HEAD`'s first, the
+    /// rebase's `onto`, `CHERRY_PICK_HEAD` or `REVERT_HEAD`. `None` when git keeps none (a
+    /// sequence whose current commit was committed by hand) or it cannot be read.
+    fn incoming_commit(&self, kind: InProgressKind) -> Option<String> {
+        let path = match kind {
+            InProgressKind::Merge => self.merge_head.clone(),
+            InProgressKind::Rebase if self.rebase_merge.is_dir() => self.rebase_merge.join("onto"),
+            InProgressKind::Rebase => self.rebase_apply.join("onto"),
+            InProgressKind::CherryPick => self.cherry_pick_head.clone(),
+            InProgressKind::Revert => self.revert_head.clone(),
+        };
+        let bytes = fs::read(path).ok()?;
+        let hash = String::from_utf8_lossy(&bytes)
+            .lines()
+            .next()?
+            .trim()
+            .to_owned();
+        let hex = hash.bytes().all(|b| b.is_ascii_hexdigit());
+        (hex && (hash.len() == 40 || hash.len() == 64)).then_some(hash)
+    }
+
+    /// The branch a rebase works on (`head-name`, "refs/heads/<branch>"), if it is one.
+    fn rebase_head_name(&self) -> Option<String> {
+        let dir = if self.rebase_merge.is_dir() {
+            &self.rebase_merge
+        } else {
+            &self.rebase_apply
+        };
+        let bytes = fs::read(dir.join("head-name")).ok()?;
+        String::from_utf8_lossy(&bytes)
+            .trim()
+            .strip_prefix("refs/heads/")
+            .map(str::to_owned)
+    }
+
     /// The first line of `MERGE_MSG` that is neither blank nor a comment, if any.
     fn merge_msg_subject(&self) -> Option<String> {
         let bytes = fs::read(&self.merge_msg).ok()?;
@@ -204,6 +239,54 @@ fn marked_paths(report: &str, paths: &[String]) -> Option<Vec<String>> {
     Some(marked)
 }
 
+/// The commit coming in to what git is stopped in at `worktree` (see
+/// [`StateFiles::incoming_commit`]), if anything is stopped.
+pub(crate) async fn incoming_commit(runner: &GitRunner, worktree: &Path) -> Result<Option<String>> {
+    Ok(state_files(runner, worktree)
+        .await?
+        .and_then(|files| files.kind().and_then(|kind| files.incoming_commit(kind))))
+}
+
+/// How the app named the commit coming in to what it started (a merge's target, a rebase's
+/// `onto`): that commit and the name.
+pub type KnownIncoming = (String, String);
+
+/// A name for commit `hash`: the first local branch at it, else remote branch (not a
+/// remote's `HEAD`), else tag (annotated ones too), else its first 8 characters.
+async fn name_of(runner: &GitRunner, worktree: &Path, hash: &str) -> Result<String> {
+    let points_at = format!("--points-at={hash}");
+    let out = runner
+        .run_unchecked(
+            worktree,
+            &[
+                "for-each-ref",
+                &points_at,
+                "--format=%(refname)",
+                "refs/heads",
+                "refs/remotes",
+                "refs/tags",
+            ],
+            CmdKind::Read,
+        )
+        .await?;
+    let text = if out.code == 0 {
+        out.text()
+    } else {
+        String::new()
+    };
+    let refs: Vec<&str> = text.lines().collect();
+    let first = |prefix: &str| {
+        refs.iter()
+            .filter_map(|r| r.strip_prefix(prefix))
+            .find(|name| !(prefix == "refs/remotes/" && name.ends_with("/HEAD")))
+            .map(str::to_owned)
+    };
+    Ok(first("refs/heads/")
+        .or_else(|| first("refs/remotes/"))
+        .or_else(|| first("refs/tags/"))
+        .unwrap_or_else(|| hash.get(..8).unwrap_or(hash).to_owned()))
+}
+
 /// What git is stopped in, in the worktree at `worktree`, if anything (see
 /// [`StateFiles::kind`]).
 pub(crate) async fn read_kind(
@@ -225,17 +308,19 @@ pub async fn read_in_progress(runner: &GitRunner, worktree: &Path) -> Result<Opt
         return Ok(None);
     }
     let conflicted = read_conflicted(runner, worktree).await?;
-    describe(runner, worktree, &files, conflicted).await
+    describe(runner, worktree, &files, conflicted, None).await
 }
 
-/// Like [`read_in_progress`], with the conflicted paths already read (by the status read).
+/// Like [`read_in_progress`], with the conflicted paths already read (by the status read),
+/// and what the app knows of the commit coming in.
 pub(crate) async fn read_in_progress_with(
     runner: &GitRunner,
     worktree: &Path,
     conflicted: Vec<String>,
+    known: Option<&KnownIncoming>,
 ) -> Result<Option<InProgress>> {
     match state_files(runner, worktree).await? {
-        Some(files) => describe(runner, worktree, &files, conflicted).await,
+        Some(files) => describe(runner, worktree, &files, conflicted, known).await,
         None => Ok(None),
     }
 }
@@ -249,6 +334,7 @@ async fn describe(
     worktree: &Path,
     files: &StateFiles,
     conflicted: Vec<String>,
+    known: Option<&KnownIncoming>,
 ) -> Result<Option<InProgress>> {
     let Some(kind) = files.kind() else {
         return Ok(None);
@@ -283,6 +369,20 @@ async fn describe(
         }
     };
     let unresolved = with_conflict_markers(runner, worktree, &conflicted).await?;
+    let incoming = match files.incoming_commit(kind) {
+        None => None,
+        Some(hash) => Some(match kind {
+            InProgressKind::Merge | InProgressKind::Rebase => match known {
+                Some((commit, name)) if *commit == hash => name.clone(),
+                _ => name_of(runner, worktree, &hash).await?,
+            },
+            _ => hash[..8].to_owned(),
+        }),
+    };
+    let rebasing = match kind {
+        InProgressKind::Rebase => files.rebase_head_name(),
+        _ => None,
+    };
     Ok(Some(InProgress {
         kind,
         conflicted,
@@ -290,6 +390,8 @@ async fn describe(
         step,
         total,
         subject,
+        incoming,
+        rebasing,
     }))
 }
 

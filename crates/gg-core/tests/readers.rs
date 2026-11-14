@@ -858,6 +858,17 @@ fn stopped(
         step: step.map(|(s, _)| s),
         total: step.map(|(_, t)| t),
         subject: Some(subject.to_owned()),
+        incoming: None,
+        rebasing: None,
+    })
+}
+
+/// `state` with what is coming in (`incoming`) and, for a rebase, the branch being rebased.
+fn coming(state: Option<InProgress>, incoming: &str, rebasing: Option<&str>) -> Option<InProgress> {
+    state.map(|s| InProgress {
+        incoming: Some(incoming.to_owned()),
+        rebasing: rebasing.map(str::to_owned),
+        ..s
     })
 }
 
@@ -879,11 +890,15 @@ async fn merge_in_progress_is_read() {
     assert!(!repo.git_succeeds(&["merge", "feature"]));
     assert_eq!(
         in_progress(&repo).await,
-        stopped(
-            InProgressKind::Merge,
-            &["clash.txt"],
-            None,
-            "Merge branch 'feature'"
+        coming(
+            stopped(
+                InProgressKind::Merge,
+                &["clash.txt"],
+                None,
+                "Merge branch 'feature'"
+            ),
+            "feature",
+            None
         )
     );
 
@@ -896,7 +911,11 @@ async fn merge_in_progress_is_read() {
     repo.git(&["merge", "--no-commit", "--no-ff", "side"]);
     assert_eq!(
         in_progress(&repo).await,
-        stopped(InProgressKind::Merge, &[], None, "Merge branch 'side'")
+        coming(
+            stopped(InProgressKind::Merge, &[], None, "Merge branch 'side'"),
+            "side",
+            None
+        )
     );
 }
 
@@ -908,11 +927,15 @@ async fn rebase_in_progress_is_read() {
     assert!(!repo.git_succeeds(&["rebase", "main"]));
     assert_eq!(
         in_progress(&repo).await,
-        stopped(
-            InProgressKind::Rebase,
-            &["clash.txt"],
-            Some((1, 3)),
-            "feat one"
+        coming(
+            stopped(
+                InProgressKind::Rebase,
+                &["clash.txt"],
+                Some((1, 3)),
+                "feat one"
+            ),
+            "main",
+            Some("feature")
         )
     );
 }
@@ -929,11 +952,15 @@ async fn rebase_reports_step_and_total() {
     assert!(!repo.git_succeeds(&["rebase", "--continue"]));
     assert_eq!(
         in_progress(&repo).await,
-        stopped(
-            InProgressKind::Rebase,
-            &["clash.txt"],
-            Some((2, 3)),
-            "feat two"
+        coming(
+            stopped(
+                InProgressKind::Rebase,
+                &["clash.txt"],
+                Some((2, 3)),
+                "feat two"
+            ),
+            "main",
+            Some("feature")
         )
     );
     repo.git(&["rebase", "--abort"]);
@@ -943,11 +970,15 @@ async fn rebase_reports_step_and_total() {
     assert!(!repo.git_succeeds(&["rebase", "--apply", "main"]));
     assert_eq!(
         in_progress(&repo).await,
-        stopped(
-            InProgressKind::Rebase,
-            &["clash.txt"],
-            Some((1, 3)),
-            "feat one"
+        coming(
+            stopped(
+                InProgressKind::Rebase,
+                &["clash.txt"],
+                Some((1, 3)),
+                "feat one"
+            ),
+            "main",
+            Some("feature")
         )
     );
     repo.write("clash.txt", "resolved\n");
@@ -964,9 +995,14 @@ async fn cherry_pick_in_progress_is_read() {
     let repo = TestRepo::new();
     clashing(&repo);
     assert!(!repo.git_succeeds(&["cherry-pick", "feature~2"]));
+    let picked = repo.git(&["rev-parse", "feature~2"]);
     assert_eq!(
         in_progress(&repo).await,
-        stopped(InProgressKind::CherryPick, &["clash.txt"], None, "feat one")
+        coming(
+            stopped(InProgressKind::CherryPick, &["clash.txt"], None, "feat one"),
+            &picked[..8],
+            None
+        )
     );
 }
 
@@ -976,15 +1012,67 @@ async fn revert_in_progress_is_read() {
     clashing(&repo);
     repo.checkout("feature");
     assert!(!repo.git_succeeds(&["revert", "--no-edit", "feature~2"]));
+    let reverted = repo.git(&["rev-parse", "feature~2"]);
     assert_eq!(
         in_progress(&repo).await,
-        stopped(
-            InProgressKind::Revert,
-            &["clash.txt"],
-            None,
-            "Revert \"feat one\""
+        coming(
+            stopped(
+                InProgressKind::Revert,
+                &["clash.txt"],
+                None,
+                "Revert \"feat one\""
+            ),
+            &reverted[..8],
+            None
         )
     );
+}
+
+/// R32: what a merge brings in is named by the refs at that commit, a local branch before a
+/// remote one before a tag, else its 8-character hash. Started outside the app.
+#[tokio::test]
+async fn a_merge_names_what_comes_in() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let feature = repo.git(&["rev-parse", "feature"]);
+    let incoming = |repo: &TestRepo| {
+        let repo = repo.path().to_path_buf();
+        async move {
+            read_in_progress(&runner().await, &repo)
+                .await
+                .expect("read_in_progress")
+                .and_then(|p| p.incoming)
+        }
+    };
+    repo.git(&["update-ref", "refs/remotes/origin/feature", &feature]);
+    repo.git(&["tag", "v1", &feature]);
+    repo.git(&["tag", "-a", "-m", "annotated", "v2", &feature]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some("feature"));
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["branch", "-D", "feature"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some("origin/feature"));
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/feature"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some("v1"));
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["tag", "-d", "v1"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(
+        incoming(&repo).await.as_deref(),
+        Some("v2"),
+        "an annotated tag"
+    );
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["tag", "-d", "v2"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some(&feature[..8]));
 }
 
 #[tokio::test]
@@ -1123,11 +1211,15 @@ async fn state_started_outside_the_app_is_detected() {
     let snap = m.snapshot(id).await.unwrap();
     assert_eq!(
         snap.in_progress,
-        stopped(
-            InProgressKind::Merge,
-            &["clash.txt"],
-            None,
-            "Merge branch 'feature'"
+        coming(
+            stopped(
+                InProgressKind::Merge,
+                &["clash.txt"],
+                None,
+                "Merge branch 'feature'"
+            ),
+            "feature",
+            None
         )
     );
 

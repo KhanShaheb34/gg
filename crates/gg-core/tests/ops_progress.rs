@@ -463,6 +463,54 @@ async fn continue_with_nothing_in_progress_is_nothing_to_do() {
     assert_eq!(h.changes(id).len(), events, "nothing was published");
 }
 
+// ---- What comes in (R32) ----
+
+/// A merge or rebase the app started names what comes in as the user asked for it, even
+/// where another ref points at the same commit (`feature` sorts before `feature-copy`).
+#[tokio::test]
+async fn what_comes_in_is_named_as_the_app_asked_for_it() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    repo.git(&["branch", "feature-copy", "feature"]);
+    repo.git(&["branch", "main-copy", "main"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, merge_branch("feature-copy")).await;
+    assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+    let merging = out.snapshot.in_progress.expect("merging");
+    assert_eq!(merging.incoming.as_deref(), Some("feature-copy"));
+    assert_eq!(merging.rebasing, None);
+    assert_eq!(h.run(id, OpRequest::Abort).await.status, OpStatus::Done);
+
+    repo.checkout("feature");
+    h.m.refresh(id).await.unwrap();
+    let out = h
+        .run(
+            id,
+            OpRequest::Rebase {
+                onto: "main-copy".into(),
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+    let rebasing = out.snapshot.in_progress.expect("rebasing");
+    assert_eq!(rebasing.incoming.as_deref(), Some("main-copy"));
+    assert_eq!(rebasing.rebasing.as_deref(), Some("feature"));
+
+    // Once it has ended, what the app asked for is forgotten: started outside the app, the
+    // same commit is named by the first ref at it.
+    assert_eq!(h.run(id, OpRequest::Abort).await.status, OpStatus::Done);
+    assert!(!repo.git_succeeds(&["rebase", "main-copy"]));
+    h.m.refresh(id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, h.m.wait_status(id))
+        .await
+        .unwrap();
+    let snap = h.m.snapshot(id).await.unwrap();
+    let outside = snap.in_progress.expect("rebasing");
+    assert_eq!(outside.incoming.as_deref(), Some("main"));
+}
+
 // ---- Abort ----
 
 #[tokio::test]

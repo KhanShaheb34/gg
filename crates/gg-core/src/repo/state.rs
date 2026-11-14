@@ -1014,6 +1014,8 @@ mod tests {
             step: None,
             total: None,
             subject: None,
+            incoming: None,
+            rebasing: None,
         });
         assert_eq!(s.update(stopped.clone(), all()), Update::InProgressOnly);
         assert_eq!(s.info().in_progress, stopped.in_progress);

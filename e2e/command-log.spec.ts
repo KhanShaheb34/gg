@@ -124,7 +124,7 @@ test("failed_operation_notice_links_to_its_entry", async ({ gg }) => {
   await expect(op.locator(".op-head")).toContainText("Check out develop");
   await expect(op.locator(".op-head .exit")).toHaveText("exit 1");
   // Its failed command is open, with git's own message.
-  const checkout = op.locator(".cmd", { hasText: "git checkout develop --" });
+  const checkout = op.locator(".cmd", { hasText: "git checkout --no-guess develop --" });
   await expect(checkout.locator(".exit")).toHaveText("exit 1");
   await expect(checkout.getByRole("region")).toContainText("would be overwritten by checkout");
   await expect(checkout.getByRole("region")).toContainText("stderr");

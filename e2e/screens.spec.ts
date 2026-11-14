@@ -732,3 +732,143 @@ for (const theme of ["light", "dark"] as const) {
     await page.evaluate(() => localStorage.removeItem("gg.details.v1"));
   });
 }
+
+// The menus and confirmations not shot above, the remaining notice kinds, and the menus,
+// dialogs, notices and busy state at 900×560 (Task 11).
+for (const theme of ["light", "dark"] as const) {
+  test(`remaining menus, confirmations and notices, both sizes, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.goto("/");
+    const dir = gg.repoPath("branchy");
+    await open(page, dir);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    const shot = async (name: string) => {
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+    };
+    const confirmation = page.getByRole("alertdialog");
+
+    // A tag's menu.
+    await grid.locator('[data-ref="v1.0"]').first().click({ button: "right" });
+    await park(page);
+    await shot("menu-tag");
+    await page.keyboard.press("Escape");
+
+    // The uncommitted row's menu, and a stash's.
+    writeFileSync(path.join(dir, "files/f1.txt"), "changed\n");
+    gg.git("branchy", "stash", "push", "-q", "-m", "Keep the draft");
+    writeFileSync(path.join(dir, "files/f2.txt"), "changed\n");
+    const uncommitted = grid.locator('[role="row"]', { hasText: "Uncommitted changes" });
+    await expect(uncommitted).toHaveCount(1, { timeout: 5000 }).catch(async () => {
+      await page.keyboard.press("ControlOrMeta+R");
+      await expect(uncommitted).toHaveCount(1);
+    });
+    await uncommitted.locator(".subject").click({ button: "right" });
+    await park(page);
+    await shot("menu-uncommitted");
+    await page.keyboard.press("Escape");
+    const stash = grid.locator('[role="row"]', { hasText: "Keep the draft" });
+    await stash.locator(".subject").click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Drop…" }).hover();
+    await shot("menu-stash");
+    await page.keyboard.press("Escape");
+
+    // The core's red confirmations: dropping a stash, deleting a branch not merged, deleting
+    // a branch on the remote, force pushing.
+    const stashHash = gg.git("branchy", "rev-parse", "stash@{0}").trim();
+    void runOp(page, { op: "stash_drop", stash: stashHash });
+    await expect(confirmation).toBeVisible();
+    await park(page);
+    await shot("dialog-drop-stash");
+    await page.keyboard.press("Escape");
+    await expect(confirmation).toHaveCount(0);
+
+    void runOp(page, { op: "delete_branch", branch: "feature/search" });
+    await expect(confirmation).toBeVisible();
+    await park(page);
+    await shot("dialog-delete-unmerged");
+    await page.keyboard.press("Escape");
+    await expect(confirmation).toHaveCount(0);
+
+    void runOp(page, { op: "delete_remote_branch", remote: "origin", branch: "hotfix/crash" });
+    await expect(confirmation).toBeVisible();
+    await park(page);
+    await shot("dialog-delete-remote");
+    await page.keyboard.press("Escape");
+    await expect(confirmation).toHaveCount(0);
+
+    // Force push: the remote has a commit the local branch has not.
+    const other = `${dir}-elsewhere`;
+    gg.gitAt(path.dirname(dir), "clone", "-q", gg.git("branchy", "remote", "get-url", "origin").trim(), other);
+    gg.gitAt(other, "-c", "user.name=Grace Hopper", "-c", "user.email=grace@example.com", "commit", "-q", "--allow-empty", "-m", "Pushed from elsewhere");
+    gg.gitAt(other, "push", "-q", "origin", "main");
+    gg.git("branchy", "fetch", "-q", "origin");
+    void runOp(page, { op: "push", branch: "main", remote: "origin", setUpstream: false, force: true, lease: null });
+    await expect(confirmation).toBeVisible();
+    await park(page);
+    await shot("dialog-force-push");
+    await page.keyboard.press("Escape");
+    await expect(confirmation).toHaveCount(0);
+
+    // An information notice (a hash copied).
+    await grid.locator('[data-index="3"] .hash').click();
+    await expect(page.getByRole("status").filter({ hasText: "Copied" })).toBeVisible();
+    await park(page);
+    await shot("notice-info");
+
+    // At 900×560: a commit's menu, a dialog, a failed operation's notice, the busy state.
+    await page.setViewportSize({ width: 900, height: 560 });
+    await page.keyboard.press("Escape");
+    await grid.locator('[data-index="5"] .subject').click({ button: "right" });
+    await page.getByRole("menuitem", { name: /^Reset main to here$/ }).hover();
+    await shot("small-menu-commit");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await grid.locator('[data-ref="feature/ui"]').first().click({ button: "right" });
+    await page.getByRole("menuitem", { name: /^Push/ }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await park(page);
+    await shot("small-dialog-push");
+    await page.keyboard.press("Escape");
+
+    const differing = gg.git("branchy", "diff", "--name-only", "main", "develop").trim().split("\n")[0];
+    writeFileSync(path.join(dir, differing), "in the way\n");
+    const failed = await runOp(page, { op: "checkout_branch", branch: "develop", fastForward: false });
+    expect(failed.status).toBe("failed");
+    await park(page);
+    await shot("small-notice-failed");
+    await page.getByRole("alert").filter({ hasText: failed.message }).getByRole("button", { name: "Dismiss notification" }).click();
+    gg.git("branchy", "checkout", "--", ".");
+    gg.git("branchy", "clean", "-fdq");
+    const hook = path.join(dir, ".git/hooks/post-checkout");
+    writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
+    chmodSync(hook, 0o755);
+    const first = runOp(page, { op: "checkout_branch", branch: "feature/ui", fastForward: false });
+    const second = runOp(page, { op: "checkout_branch", branch: "main", fastForward: false });
+    await expect(page.getByTestId("busy")).toContainText("+1");
+    await park(page);
+    await shot("small-busy");
+    await Promise.all([first, second]);
+  });
+
+  // A continue that comes out empty: the notice that offers to skip.
+  test(`skip notice, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    const dir = gg.repoPath("conflicts");
+    await open(page, dir);
+    const hash = gg.git("conflicts", "rev-parse", "feature/x").trim();
+    expect((await runOp(page, { op: "cherry_pick", hash, mainline: null, noCommit: false })).status).toBe("stopped");
+    writeFileSync(path.join(dir, "app.txt"), "app from main\n");
+    writeFileSync(path.join(dir, "style.css"), "body { color: navy; }\n");
+    const failed = await runOp(page, { op: "continue", evenWithMarkers: false });
+    expect(failed.status).toBe("failed");
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `notice-skip-${theme}.png`) });
+  });
+}

@@ -48,7 +48,7 @@ pub(crate) async fn checkout_branch(
 ) -> Result<Step> {
     let step = run(
         ctx,
-        &["checkout", branch, "--"],
+        &["checkout", "--no-guess", branch, "--"],
         format!("Checked out {branch}."),
     )
     .await?;

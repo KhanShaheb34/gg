@@ -31,7 +31,7 @@ async fn checkout_branch_switches_to_it() {
     assert!(
         op_records(&h.log, &out)
             .iter()
-            .any(|r| r.args == ["checkout", "feature/x", "--"]),
+            .any(|r| r.args == ["checkout", "--no-guess", "feature/x", "--"]),
     );
 }
 
@@ -1586,4 +1586,68 @@ async fn unexplained_conflicts_name_three_files_at_most() {
         "Some files still have conflicts from an earlier step (a, b, c…). Resolve them and \
          stage them, or discard them, first."
     );
+}
+
+/// Review focus 5: a branch deleted in a terminal after its menu was opened. Whatever is
+/// asked of it fails plainly, names it, and touches nothing else (no file of the same name,
+/// no other branch).
+#[tokio::test]
+async fn a_branch_deleted_underneath_fails_plainly_and_touches_nothing_else() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("gone");
+    let _origin = repo.clone_as_remote();
+    // A file named like the branch: a checkout of "gone" must not take it for a path.
+    repo.write("gone", "a file\n");
+    repo.commit_all("a file named gone");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    repo.git(&["branch", "-D", "gone"]);
+    let head = repo.git(&["rev-parse", "HEAD"]);
+
+    let requests = [
+        checkout_branch("gone"),
+        OpRequest::RenameBranch {
+            branch: "gone".into(),
+            new_name: "renamed".into(),
+        },
+        OpRequest::DeleteBranch {
+            branch: "gone".into(),
+        },
+        OpRequest::Merge {
+            target: gg_core::dto::MergeTarget {
+                kind: MergeTargetKind::Branch,
+                name: "gone".into(),
+            },
+            no_ff: true,
+            squash: false,
+            no_commit: false,
+        },
+        OpRequest::Rebase {
+            onto: "gone".into(),
+        },
+        OpRequest::Push {
+            branch: "gone".into(),
+            remote: "origin".into(),
+            set_upstream: true,
+            force: false,
+            lease: None,
+        },
+    ];
+    for request in requests {
+        let out = h.run(id, request.clone()).await;
+        assert_eq!(out.status, OpStatus::Failed, "{request:?}: {out:?}");
+        assert!(out.message.contains("gone"), "{request:?}: {}", out.message);
+        assert_eq!(repo.git(&["rev-parse", "HEAD"]), head, "{request:?}");
+        assert_eq!(
+            current_branch(&repo).as_deref(),
+            Some("main"),
+            "{request:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join("gone")).unwrap(),
+            "a file\n"
+        );
+        assert!(!repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/renamed"]));
+    }
 }

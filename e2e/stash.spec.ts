@@ -140,10 +140,11 @@ test("stash_untracked_option: untracked files go into the stash only when asked"
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("?? scratch.txt");
 
   await stashChanges(page, "With untracked", true);
-  // Saved in the same second as the first, it may sit above or below it.
-  const newest = grid(page).locator('[role="row"]', { has: page.locator('[data-ref="stash@{0}"]') });
-  await expect(newest.locator(".subject")).toHaveText(/With untracked/);
-  await expect(subject(page, 0)).not.toHaveText(/^Uncommitted changes/);
+  // Newest on top, even saved in the same second as the first (R33).
+  await expect(row(page, 0).locator('[data-ref="stash@{0}"]')).toBeVisible();
+  await expect(subject(page, 0)).toHaveText(/With untracked/);
+  await expect(row(page, 1).locator('[data-ref="stash@{1}"]')).toBeVisible();
+  await expect(subject(page, 1)).toHaveText(/Tracked only/);
   expect(existsSync(path.join(dir, "scratch.txt"))).toBe(false);
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("");
   expect(gg.git("small", "show", "--name-only", "--format=", "stash@{0}^3").trim()).toBe("scratch.txt");

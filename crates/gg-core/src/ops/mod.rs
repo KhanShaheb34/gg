@@ -643,31 +643,48 @@ impl RepoManager {
         self.run_numbered(repo_id, None, request, confirmed).await
     }
 
-    /// Like [`RepoManager::run_op`], for request number `n` of the repository's requests
-    /// (R28): it joins the queue only after the ones numbered before it, waiting up to
-    /// [`order::ORDER_WAIT`] for one that has not arrived (see [`order`]).
+    /// Gives up number `n` of client `client` on repository `repo_id`: a request that will
+    /// never run (its arguments could not be read). Nothing for an unknown repository.
+    pub fn release_number(&self, repo_id: u32, client: &str, n: u64) {
+        if let Ok(repo) = self.get(repo_id) {
+            repo.op_order.of(client).release(n);
+        }
+    }
+
+    /// How many numbered requests of client `client` wait for their turn on repository
+    /// `repo_id` (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn numbered_waiting(&self, repo_id: u32, client: &str) -> usize {
+        self.get(repo_id)
+            .map_or(0, |repo| repo.op_order.of(client).waiting())
+    }
+
+    /// Like [`RepoManager::run_op`], for request number `n` of client `client`'s requests to
+    /// the repository (R28): it joins the queue only after the ones numbered before it,
+    /// waiting up to [`order::ORDER_WAIT`] for one that has not arrived (see [`order`]).
     pub async fn run_op_in_order(
         self: &Arc<Self>,
         repo_id: u32,
+        client: &str,
         n: u64,
         request: OpRequest,
         confirmed: &[DangerKind],
     ) -> Result<OpOutcome> {
-        self.run_numbered(repo_id, Some(n), request, confirmed)
+        self.run_numbered(repo_id, Some((client, n)), request, confirmed)
             .await
     }
 
     async fn run_numbered(
         self: &Arc<Self>,
         repo_id: u32,
-        n: Option<u64>,
+        n: Option<(&str, u64)>,
         request: OpRequest,
         confirmed: &[DangerKind],
     ) -> Result<OpOutcome> {
         let prepared = prepare(&request);
         let repo = self.get(repo_id)?;
         let numbered = match n {
-            Some(n) => Some(repo.op_order.wait_for_turn(n).await),
+            Some((client, n)) => Some(repo.op_order.of(client).wait_for_turn(n).await),
             None => None,
         };
         // Refused here, it never joins the queue: dropping its turn lets the next one in.

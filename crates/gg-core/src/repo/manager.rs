@@ -173,7 +173,7 @@ pub(crate) struct Repo {
     /// Operations waiting for their turn.
     pub(crate) op_waiting: AtomicU32,
     /// The order numbered requests join `op_queue` in (R28).
-    pub(crate) op_order: Arc<crate::ops::order::OpOrder>,
+    pub(crate) op_order: crate::ops::order::ClientOrders,
     /// How the app named the commit coming in to the merge or rebase it started last (R32).
     pub(crate) incoming_name: Mutex<Option<crate::git::progress::KnownIncoming>>,
     /// A fetch the user asked for is waiting for its turn or running; another one asked for
@@ -596,7 +596,7 @@ impl RepoManager {
             body_search: Mutex::new(None),
             op_queue: tokio::sync::Mutex::new(()),
             op_waiting: AtomicU32::new(0),
-            op_order: Arc::default(),
+            op_order: Default::default(),
             incoming_name: Mutex::new(None),
             user_fetch: AtomicBool::new(false),
             scheduled_cancel: Mutex::new(None),

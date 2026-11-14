@@ -102,7 +102,19 @@ struct RunOpArgs {
     repo_id: u32,
     request: OpRequest,
     confirmed: Vec<DangerKind>,
-    /// The UI's number for this request, per repository (R28).
+    /// The page load (or window) that numbers its requests (R28).
+    client_id: String,
+    /// The UI's number for this request, per repository and client (R28).
+    client_seq: u64,
+}
+
+/// Just the numbering of a `run_op`, read before the rest so that a request whose other
+/// arguments are wrong still gives up its number.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunOpNumber {
+    repo_id: u32,
+    client_id: String,
     client_seq: u64,
 }
 
@@ -255,10 +267,25 @@ impl Core {
                 }))
             }
             "run_op" => {
-                let a: RunOpArgs = parse(cmd, args)?;
+                let number = serde_json::from_value::<RunOpNumber>(args.clone()).ok();
+                let a: RunOpArgs = match parse(cmd, args) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        if let (Some(n), Ok(repos)) = (number, self.repos()) {
+                            repos.release_number(n.repo_id, &n.client_id, n.client_seq);
+                        }
+                        return Err(e);
+                    }
+                };
                 to_json(
                     self.repos()?
-                        .run_op_in_order(a.repo_id, a.client_seq, a.request, &a.confirmed)
+                        .run_op_in_order(
+                            a.repo_id,
+                            &a.client_id,
+                            a.client_seq,
+                            a.request,
+                            &a.confirmed,
+                        )
                         .await?,
                 )
             }

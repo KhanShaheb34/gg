@@ -335,6 +335,7 @@ async fn writes_survive_many_reads_in_the_log() {
             "repoId": id,
             "request": {"op": "create_branch", "name": "kept", "at": head, "checkout": false},
             "confirmed": [],
+            "clientId": "ui",
             "clientSeq": 1
         }),
     )
@@ -812,15 +813,22 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
     let second = tokio::spawn({
         let (m, head) = (h.m.clone(), head.clone());
         async move {
-            m.run_op_in_order(id, 2, create_branch("b", &head), &[])
+            m.run_op_in_order(id, "ui", 2, create_branch("b", &head), &[])
                 .await
         }
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Number 2 is waiting before number 1 is sent (no sleep: the core says so).
+    tokio::time::timeout(TIMEOUT, async {
+        while h.m.numbered_waiting(id, "ui") == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("number 2 waits");
     let first = tokio::spawn({
         let (m, head) = (h.m.clone(), head.clone());
         async move {
-            m.run_op_in_order(id, 1, create_branch("a", &head), &[])
+            m.run_op_in_order(id, "ui", 1, create_branch("a", &head), &[])
                 .await
         }
     });
@@ -840,7 +848,7 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
     assert!(second.log_from > first.log_to);
     // Numbers go on from there.
     let third =
-        h.m.run_op_in_order(id, 3, create_branch("c", &head), &[])
+        h.m.run_op_in_order(id, "ui", 3, create_branch("c", &head), &[])
             .await
             .expect("third");
     assert!(third.op_id > second.op_id);
@@ -861,7 +869,7 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
         async move {
             let t = std::time::Instant::now();
             let out = m
-                .run_op_in_order(id, n, create_branch(name, &head), &[])
+                .run_op_in_order(id, "ui", n, create_branch(name, &head), &[])
                 .await
                 .expect("runs");
             assert_eq!(out.status, OpStatus::Done, "{out:?}");
@@ -880,7 +888,7 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
     h.m.close(id).await.expect("closes");
     let id2 = h.open(repo.path()).await.repo_id;
     let t = std::time::Instant::now();
-    h.m.run_op_in_order(id2, 1, create_branch("d", &head), &[])
+    h.m.run_op_in_order(id2, "ui", 1, create_branch("d", &head), &[])
         .await
         .expect("runs");
     assert!(
@@ -898,13 +906,88 @@ async fn a_refused_numbered_request_lets_the_next_one_in() {
     let id = h.open(repo.path()).await.repo_id;
 
     let err =
-        h.m.run_op_in_order(id, 1, create_branch("-bad", &head), &[])
+        h.m.run_op_in_order(id, "ui", 1, create_branch("-bad", &head), &[])
             .await
             .expect_err("bad name");
     assert_eq!(err.code, ErrorCode::BadName);
     let t = std::time::Instant::now();
-    h.m.run_op_in_order(id, 2, create_branch("good", &head), &[])
+    h.m.run_op_in_order(id, "ui", 2, create_branch("good", &head), &[])
         .await
         .expect("runs");
     assert!(t.elapsed() < Duration::from_millis(450));
+}
+
+/// Review item 3a: each page load (a reload, another window) numbers from 1 under a client id
+/// of its own; one does not wait for another's numbers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_client_numbers_its_own_requests() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    for n in 1..=3 {
+        h.m.run_op_in_order(
+            id,
+            "before reload",
+            n,
+            create_branch(&format!("a{n}"), &head),
+            &[],
+        )
+        .await
+        .expect("runs");
+    }
+    let t = std::time::Instant::now();
+    h.m.run_op_in_order(id, "after reload", 1, create_branch("b", &head), &[])
+        .await
+        .expect("runs");
+    assert!(
+        t.elapsed() < Duration::from_millis(450),
+        "{:?}",
+        t.elapsed()
+    );
+}
+
+/// Review item 3b: a `run_op` whose arguments cannot be read still gives up its number, so
+/// the next one does not wait for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_op_that_cannot_be_read_lets_the_next_one_in() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let config = tempfile::tempdir().unwrap();
+    let core = Core::new(
+        config.path().to_path_buf(),
+        None,
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .unwrap();
+    let opened = core
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    let id = opened["repoId"].clone();
+    let err = core
+        .dispatch(
+            "run_op",
+            json!({"repoId": id, "clientId": "c", "clientSeq": 1, "confirmed": [],
+                   "request": {"op": "no_such_op"}}),
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let t = std::time::Instant::now();
+    let out = core
+        .dispatch(
+            "run_op",
+            json!({"repoId": id, "clientId": "c", "clientSeq": 2, "confirmed": [],
+                   "request": {"op": "create_branch", "name": "x", "at": head, "checkout": false}}),
+        )
+        .await
+        .expect("runs");
+    assert_eq!(out["status"], "done", "{out}");
+    assert!(
+        t.elapsed() < Duration::from_millis(450),
+        "{:?}",
+        t.elapsed()
+    );
 }

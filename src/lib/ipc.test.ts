@@ -81,12 +81,15 @@ describe("HTTP transport", () => {
     await Promise.all(sent);
     const seqs = fetchMock.mock.calls.map((c) => {
       const body = JSON.parse((c as unknown as [string, RequestInit])[1].body as string);
-      return [body.args.repoId, body.args.clientSeq];
+      return [body.args.repoId, body.args.clientSeq, body.args.clientId];
     });
+    // One client id for this page load, random enough that a reload does not reuse it.
+    const id = seqs[0][2];
+    expect(id).toMatch(/^[0-9a-z-]{8,}$/);
     expect(seqs).toEqual([
-      [71, 1],
-      [72, 1],
-      [71, 2],
+      [71, 1, id],
+      [72, 1, id],
+      [71, 2, id],
     ]);
   });
 
@@ -142,12 +145,12 @@ describe("HTTP transport", () => {
           repoId: 2,
           request: { op: "create_branch", name: "x", at: "abc", checkout: false },
           confirmed: [],
-          clientSeq: 1,
+          clientId: expect.any(String), clientSeq: 1,
         },
       },
       {
         cmd: "run_op",
-        args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard" }, confirmed: ["hard_reset"], clientSeq: 2 },
+        args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard" }, confirmed: ["hard_reset"], clientId: expect.any(String), clientSeq: 2 },
       },
       {
         cmd: "run_op",
@@ -155,10 +158,10 @@ describe("HTTP transport", () => {
           repoId: 2,
           request: { op: "push", branch: "b", remote: "origin", setUpstream: false, force: true, lease: "abc" },
           confirmed: ["force_push"],
-          clientSeq: 3,
+          clientId: expect.any(String), clientSeq: 3,
         },
       },
-      { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false }, confirmed: [], clientSeq: 4 } },
+      { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false }, confirmed: [], clientId: expect.any(String), clientSeq: 4 } },
       { cmd: "get_repo_prefs", args: { repoId: 2 } },
       { cmd: "set_repo_prefs", args: { repoId: 2, patch: { mergeNoFf: false } } },
       { cmd: "open_in_editor", args: { repoId: 2, path: null } },

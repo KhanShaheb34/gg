@@ -257,6 +257,15 @@ export function onEvent<T>(name: EventName, handler: (payload: T) => void): () =
   return transport().listen(name, handler as Handler);
 }
 
+/**
+ * This page load's name for the numbers below (R28): a reload, or another window, numbers
+ * from 1 again under a new one, so the core never waits for numbers it will not get.
+ */
+const clientId =
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
 /** The number of the last operation sent to each repository (R28); a new id starts at 1. */
 const clientSeqs = new Map<number, number>();
 
@@ -316,7 +325,7 @@ export const api = {
    * even when two reach it in the other (R28).
    */
   runOp: (repoId: number, request: OpRequest, confirmed: DangerKind[] = []) =>
-    call<OpOutcome>("run_op", { repoId, request, confirmed, clientSeq: nextClientSeq(repoId) }),
+    call<OpOutcome>("run_op", { repoId, request, confirmed, clientId, clientSeq: nextClientSeq(repoId) }),
   getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
   setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
   /**

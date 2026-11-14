@@ -717,6 +717,7 @@ impl RepoManager {
         // Set once the operation is published as running; only then is it ended with a
         // refresh. A request that needs confirmation shows nothing.
         let started = Arc::new(AtomicBool::new(false));
+        let continuing = matches!(turn.request, OpRequest::Continue { .. });
         let inner = tokio::spawn({
             let (m, started) = (self.clone(), started.clone());
             async move { m.run_body(turn, op_id, &started).await }
@@ -724,7 +725,10 @@ impl RepoManager {
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
         });
-        let snapshot = if started.load(Ordering::SeqCst) {
+        // A refused continue is read again too (R33): the files it names were edited outside
+        // the app, where nothing git watches changes, and the banner must show them as they are.
+        let refused_continue = continuing && matches!(ran, Ok((_, Ran::Refused(_))));
+        let snapshot = if started.load(Ordering::SeqCst) || refused_continue {
             self.finish_op(&repo, op_id).await
         } else {
             Ok(self.outcome_snapshot(&repo).await)

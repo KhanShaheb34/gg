@@ -213,6 +213,8 @@ async fn continue_is_refused_while_a_file_has_conflict_markers() {
         "clash.txt\nother.txt",
         "nothing staged"
     );
+    let now = out.snapshot.in_progress.expect("still merging");
+    assert_eq!(now.unresolved, ["other.txt"], "read again: {now:?}");
 }
 
 /// R31: told to, continue stages files with conflict markers as they are (a line that only

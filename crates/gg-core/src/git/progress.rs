@@ -51,28 +51,25 @@ impl StateFiles {
         } else if self.revert_head.exists() {
             Some(InProgressKind::Revert)
         } else {
-            self.sequence_next().map(|(kind, _)| kind)
+            self.sequence_kind()
         }
     }
 
-    /// The kind and subject of the sequencer's current command, for a cherry-pick or revert
-    /// of several commits: its `todo` lists `pick <commit> <subject>` (or `revert …`) lines,
-    /// the current one first. `None` without a sequence (or a command of another kind).
-    fn sequence_next(&self) -> Option<(InProgressKind, String)> {
+    /// The kind of the sequencer's current command, for a cherry-pick or revert of several
+    /// commits: its `todo` lists `pick <commit> <subject>` (or `revert …`) lines, the
+    /// current one first. `None` without a sequence (or a command of another kind).
+    fn sequence_kind(&self) -> Option<InProgressKind> {
         let bytes = fs::read(self.sequencer.join("todo")).ok()?;
         let text = String::from_utf8_lossy(&bytes);
         let line = text
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty() && !l.starts_with('#'))?;
-        let mut words = line.splitn(3, ' ');
-        let kind = match words.next()? {
-            "pick" | "p" => InProgressKind::CherryPick,
-            "revert" => InProgressKind::Revert,
-            _ => return None,
-        };
-        let _commit = words.next();
-        Some((kind, words.next().unwrap_or("").trim().to_owned()))
+        match line.split(' ').next()? {
+            "pick" | "p" => Some(InProgressKind::CherryPick),
+            "revert" => Some(InProgressKind::Revert),
+            _ => None,
+        }
     }
 
     /// The rebase's step and number of steps, from `rebase-merge/msgnum` and `end`, or
@@ -184,7 +181,8 @@ pub(crate) async fn read_in_progress_with(
 
 /// The in-progress state `files` show, with `conflicted` as its conflicted paths. The
 /// subject is the first line of `MERGE_MSG` (the merge's or the commit's message), else
-/// the subject of the commit being applied.
+/// the subject of the commit being applied; none for a cherry-pick or revert sequence whose
+/// current commit was committed by hand.
 async fn describe(
     runner: &GitRunner,
     worktree: &Path,
@@ -202,10 +200,9 @@ async fn describe(
     let sequence_only =
         matches!(kind, InProgressKind::CherryPick | InProgressKind::Revert) && !picking;
     let subject = match files.merge_msg_subject() {
-        _ if sequence_only => files
-            .sequence_next()
-            .map(|(_, subject)| subject)
-            .filter(|s| !s.is_empty()),
+        // Only the sequencer is left: the commit it was on was committed by hand, and its
+        // current line names that commit, not one still to apply. Unknown.
+        _ if sequence_only => None,
         Some(subject) => Some(subject),
         None => {
             let head = match kind {

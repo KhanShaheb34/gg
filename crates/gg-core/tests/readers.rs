@@ -1176,7 +1176,9 @@ fn in_git_dir_has(repo: &TestRepo, name: &str) -> bool {
 }
 
 /// A cherry-pick or revert sequence whose current commit was committed by hand is still
-/// in progress (git status says so): its kind comes from the sequencer's next command.
+/// in progress (git status says so): its kind comes from the sequencer's next command. Its
+/// subject is unknown: the sequencer's current line names the commit already made by hand
+/// (Task 5 review, item 9).
 #[tokio::test]
 async fn sequence_committed_by_hand_is_still_in_progress() {
     for (verb, kind) in [
@@ -1188,7 +1190,7 @@ async fn sequence_committed_by_hand_is_still_in_progress() {
         let state = in_progress(&repo).await.expect(verb);
         assert_eq!(state.kind, kind);
         assert!(state.conflicted.is_empty());
-        assert!(state.subject.is_some(), "{state:?}");
+        assert_eq!(state.subject, None, "{verb}: {state:?}");
     }
 }
 

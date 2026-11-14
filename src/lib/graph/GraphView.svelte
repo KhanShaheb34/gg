@@ -303,6 +303,13 @@
     if (!el) return null;
     const index = Number(el.dataset.index);
     const row = slots.find((s) => s.index === index)?.row;
+    // The element says which commit it shows; if the data under it has moved on before the
+    // next frame draws it, the commit the user saw is the one meant.
+    const drawn = el.dataset.hash;
+    if (row && drawn !== undefined && row.hash !== drawn) {
+      const seen = view.cache.byHash(drawn);
+      return seen ? { index: seen.index, row: seen } : null;
+    }
     return row ? { index, row } : null;
   }
 
@@ -325,10 +332,12 @@
    */
   function onRowsDblClick(e: MouseEvent) {
     const on = e.target as Element;
-    const slot = on.closest<HTMLElement>(".ref[data-slot]")?.dataset.slot;
+    const ref = on.closest<HTMLElement>(".ref[data-slot]");
+    const slot = ref?.dataset.slot;
     if (slot === undefined || slot === "more" || on.closest(".remotes")) return;
     const hit = rowAt(e);
-    const label = hit?.row.labels[Number(slot)];
+    const atSlot = hit?.row.labels[Number(slot)];
+    const label = atSlot?.name === ref?.dataset.ref ? atSlot : hit?.row.labels.find((l) => l.name === ref?.dataset.ref);
     if (!hit || label?.kind !== "branch") return;
     checkOutLabel(label, hit.row, view.snapshot);
   }
@@ -472,7 +481,10 @@
     const slot = ref?.dataset.slot;
     if (slot === undefined) return ofRow();
     if (slot === "more") return several(labelTargets(row, row.labels.slice(ownLabels(row.labels.length))));
-    const label = row.labels[Number(slot)];
+    // The label the user right-clicked, by the name it shows (its slot, if they agree).
+    const named = ref?.dataset.ref;
+    const atSlot = row.labels[Number(slot)];
+    const label = atSlot && (named === undefined || atSlot.name === named) ? atSlot : row.labels.find((l) => l.name === named);
     if (!label) return ofRow();
     if (on.closest(".remotes") && label.remotes.length > 0) {
       const remotes = label.remotes.map((r) => ({ row, label: remoteLabel(label, r) }));
@@ -656,6 +668,7 @@
             id={slot.index >= 0 ? `gg-${view.repoId}-${slot.index}` : undefined}
             hidden={slot.index < 0}
             data-index={slot.index >= 0 ? slot.index : undefined}
+            data-hash={r?.hash}
             aria-rowindex={slot.index >= 0 ? slot.index + 2 : undefined}
             aria-selected={r !== undefined && r.hash === view.selectedHash}
             aria-busy={r === undefined}

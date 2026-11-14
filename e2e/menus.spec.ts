@@ -574,3 +574,31 @@ test("a menu stays when the app itself scrolls the graph a moment later (keeping
   await page.mouse.wheel(0, 300);
   await expect(menus(page)).toHaveCount(0);
 });
+
+test("a menu acts on the label the user right-clicked, even if the row's data moved on before it was drawn", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  // A drawn row still showing develop's commit and label while the data under it is another
+  // row's (what a frame not yet drawn looks like): its element says what the user sees.
+  const shown = await page.evaluate(() => {
+    const develop = document.querySelector<HTMLElement>('.ref[data-ref="develop"]')!;
+    const developRow = develop.closest<HTMLElement>('[role="row"]')!;
+    const other = [...document.querySelectorAll<HTMLElement>('[role="row"][data-index]')].find(
+      (r) => r !== developRow && r.querySelector('.ref[data-slot="0"]:not([hidden])') && !r.hidden,
+    )!;
+    const label = other.querySelector<HTMLElement>('.ref[data-slot="0"]')!;
+    const was = label.dataset.ref;
+    label.dataset.ref = "develop";
+    label.dataset.doctored = "true";
+    other.dataset.hash = developRow.dataset.hash;
+    return was;
+  });
+  expect(shown).not.toBe("develop");
+  await grid(page).locator('.ref[data-doctored="true"]').click({ button: "right" });
+  await expect(item(page, "Copy name")).toBeVisible();
+  await item(page, "Copy name").click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("develop");
+});

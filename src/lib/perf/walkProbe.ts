@@ -123,6 +123,9 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
       await mark(`walk ${name}`, 0);
       const head = view.snapshot.head.branch ?? "detached";
       const shown = notices().map(text).join(" | ");
+      const ops = await api.commandLog(0, { repoId: view.repoId, writesOnly: true }).catch(() => []);
+      const last = ops.slice(-3).map((r) => `${r.opTitle}: git ${r.args.join(" ")}`).join(" | ");
+      await mark(`walk-note ${name} last writes: ${last}`);
       await mark(`walk-note ${name}: ${e instanceof Error ? e.message : String(e)} (HEAD ${head}; notices: ${shown})`);
       // Leave nothing open for the next step.
       for (let i = 0; i < 3 && (dialog() || menu()); i++) {
@@ -335,6 +338,9 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
     const done = text(await notice(/Finished rebasing|rebas/i));
     await dismissAll();
     await menuOn(() => label("main"), "the main label");
+    const target = label("main");
+    const items = [...document.querySelectorAll('[data-testid="context-menu"] [role="menuitem"]')].map(text);
+    await mark(`walk-note main menu: row ${target?.closest<HTMLElement>("[data-index]")?.dataset.index} slot ${target?.dataset.slot}: ${items.join(", ")}`);
     await pick(/^Check out$/);
     await until("HEAD on main", () => view.snapshot.head.branch === "main");
     return done;

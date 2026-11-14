@@ -5,6 +5,11 @@
   submits, unless focus is on Cancel or in a multi-line field (Cmd/Ctrl+Enter submits
   there), or the primary button is disabled (`valid` false). A dangerous primary button is
   red and never has the focus to begin with: the first field has it, else Cancel.
+
+  Submitting happens once per dialog (`once`; a dialog that stays open after a refusal
+  passes false and guards itself while its request is out). A held Enter does not repeat
+  it. A dangerous primary button takes no click or Enter in its first ARM_MS: a second
+  click meant for the dialog before it must not confirm one that opened in its place.
 -->
 <script lang="ts">
   import { onMount, type Snippet } from "svelte";
@@ -18,13 +23,29 @@
     /** The fields are valid: the primary button is enabled. */
     valid?: boolean;
     cancelLabel?: string;
+    /** Submits at most once (default). */
+    once?: boolean;
     onSubmit: () => void;
     onCancel: () => void;
     children: Snippet;
   };
 
-  let { title, primary, danger = false, valid = true, cancelLabel = "Cancel", onSubmit, onCancel, children }: Props =
-    $props();
+  let {
+    title,
+    primary,
+    danger = false,
+    valid = true,
+    cancelLabel = "Cancel",
+    once = true,
+    onSubmit,
+    onCancel,
+    children,
+  }: Props = $props();
+
+  /** How long a dangerous primary button ignores activation after the dialog opens, ms. */
+  const ARM_MS = 400;
+  const openedAt = performance.now();
+  let submitted = false;
 
   const uid = Math.random().toString(36).slice(2, 8);
   let box: HTMLDivElement;
@@ -35,7 +56,10 @@
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
   function submit() {
-    if (valid) onSubmit();
+    if (!valid || (once && submitted)) return;
+    if (danger && performance.now() - openedAt < ARM_MS) return;
+    submitted = true;
+    onSubmit();
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -56,6 +80,10 @@
       return;
     }
     if (e.key === "Enter" && !e.altKey && !e.shiftKey) {
+      if (e.repeat) {
+        e.preventDefault();
+        return;
+      }
       const target = e.target as HTMLElement;
       if (target === cancelButton) return; // the button's own click cancels
       if (target instanceof HTMLTextAreaElement && !(e.metaKey || e.ctrlKey)) return;

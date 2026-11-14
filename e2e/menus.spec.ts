@@ -260,12 +260,56 @@ test("a dangerous request asks first: Cancel has the focus and runs nothing; con
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("M src/part1.txt");
 
   const ran = runOp(page, { op: "reset", hash: target, mode: "hard" });
+  await expect(dialog).toBeVisible();
+  await page.waitForTimeout(450); // the red button takes no click at once (see Dialog)
   await dialog.getByRole("button", { name: "Reset and discard" }).click();
   expect((await ran).status).toBe("done");
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("");
   expect(gg.git("small", "rev-parse", "HEAD").trim()).toBe(target);
   await expect(page.getByRole("status").filter({ hasText: /Reset main/ })).toBeVisible();
   await expect(grid(page).locator('[data-index="0"] .subject')).toHaveText("Add part 18");
+});
+
+test("a quick second click does not confirm the confirmation the core asks for next", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const dir = gg.repoPath("small");
+  await open(page, dir);
+  writeFileSync(path.join(dir, "src/part1.txt"), "changed\n");
+  const target = gg.git("small", "rev-parse", "HEAD~1").trim();
+  // The core asks once more, as when a force push's remote moved meanwhile: the first
+  // confirmed request reaches it unconfirmed.
+  let reasked = false;
+  await page.route("**/invoke", (route) => {
+    const body = route.request().postDataJSON() as { cmd: string; args: { confirmed?: string[] } } | null;
+    if (body?.cmd === "run_op" && !reasked && (body.args.confirmed?.length ?? 0) > 0) {
+      reasked = true;
+      return route.continue({ postData: JSON.stringify({ ...body, args: { ...body.args, confirmed: [] } }) });
+    }
+    return route.continue();
+  });
+
+  const ran = runOp(page, { op: "reset", hash: target, mode: "hard" });
+  const go = page.getByRole("alertdialog").getByRole("button", { name: "Reset and discard" });
+  await expect(go).toBeVisible();
+  await page.waitForTimeout(450);
+  const box = (await go.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.click(x, y);
+  // The second confirmation opens where the first was; a click right away does nothing.
+  await expect.poll(() => reasked).toBe(true);
+  await expect(go).toBeVisible();
+  await page.mouse.click(x, y);
+  await page.waitForTimeout(150);
+  await expect(go).toBeVisible();
+  expect(gg.git("small", "status", "--porcelain").trim()).toBe("M src/part1.txt");
+
+  // A deliberate click, a moment later, goes ahead.
+  await page.waitForTimeout(400);
+  await go.click();
+  expect((await ran).status).toBe("done");
+  expect(gg.git("small", "status", "--porcelain").trim()).toBe("");
 });
 
 test("a failed operation shows git's text folded below its message, with a link to the log", async ({ gg }) => {

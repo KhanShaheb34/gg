@@ -978,6 +978,15 @@ async fn credentials_in_urls_never_reach_the_ui() {
     assert!(err.message.contains("https://***@host/gone"), "{err:?}");
     let err = serde_json::to_string(&err).unwrap();
 
+    // The push's progress lines (git's stderr as it comes) are events too.
+    assert!(
+        h.sink.events().iter().any(|(n, v)| n == "op-progress"
+            && v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("https://***@example.invalid"))),
+        "a progress line carried the masked URL"
+    );
+
     let mut seen = vec![outcome.to_string(), refreshed.to_string(), err];
     seen.extend(h.sink.events().iter().map(|(n, v)| format!("{n} {v}")));
     for text in &seen {

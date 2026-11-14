@@ -23,7 +23,14 @@
   import { clockTime, commandLine, formatDuration, outputLines, shortenPath, visibleText } from "../format";
   import { isMac } from "../platform";
   import { app, toast } from "../state/app.svelte";
-  import { commandLog, logPrefs, saveLogPrefs, type OpEntry } from "../state/commandLog.svelte";
+  import {
+    commandLog,
+    focusCameFrom,
+    logPrefs,
+    saveLogPrefs,
+    takeLogAutofocus,
+    type OpEntry,
+  } from "../state/commandLog.svelte";
   import type { CommandRecord } from "../types";
   import Splitter from "./Splitter.svelte";
 
@@ -35,11 +42,9 @@
     room: number;
     /** Closes the panel (Escape, its close button). */
     onclose: () => void;
-    /** Opened from the keyboard: the focus goes to its newest entry. */
-    autofocus?: boolean;
   };
 
-  let { repoId, hostH, room, onclose, autofocus = false }: Props = $props();
+  let { repoId, hostH, room, onclose }: Props = $props();
 
   const mac = isMac();
   const KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
@@ -185,8 +190,6 @@
   /** The row that takes the tab stop (data-row of a .row button). */
   let active = $state<string | null>(null);
   let panel: HTMLElement | undefined = $state();
-  /** Where the focus was before it came into the panel: Escape puts it back. */
-  let returnTo: HTMLElement | null = null;
 
   function rows(): HTMLElement[] {
     return [...(scroller?.querySelectorAll<HTMLElement>(".row") ?? [])];
@@ -209,16 +212,14 @@
 
   function onFocusIn(e: FocusEvent) {
     const from = e.relatedTarget as HTMLElement | null;
-    if (from && panel && !panel.contains(from)) returnTo = from;
+    if (from && panel && !panel.contains(from)) focusCameFrom(from);
     const row = (e.target as HTMLElement).closest<HTMLElement>(".row");
     if (row?.dataset.row) active = row.dataset.row;
   }
 
+  /** Closes the panel; the focus goes back where it came from (see setLogOpen). */
   function close() {
-    const back = returnTo;
     onclose();
-    if (back?.isConnected) back.focus();
-    else document.querySelector<HTMLElement>('[role="grid"]')?.focus({ preventScroll: true });
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -260,10 +261,10 @@
   }
 
   // Opened from the keyboard: to the newest entry once the first answer is in (the panel
-  // itself until then). Where the focus was is where Escape puts it back.
+  // itself until then); only when this opening asked for it, not when the panel mounts again
+  // for another tab. Where the focus was is where closing puts it back (setLogOpen).
   $effect(() => {
-    if (!untrack(() => autofocus)) return;
-    returnTo = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    if (!untrack(takeLogAutofocus)) return;
     panel?.focus({ preventScroll: true });
     void commandLog.fetchNow().then(async () => {
       await tick();

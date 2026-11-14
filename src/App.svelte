@@ -27,7 +27,7 @@
     toast,
     windowFocusChanged,
   } from "./lib/state/app.svelte";
-  import { logPrefs, saveLogPrefs } from "./lib/state/commandLog.svelte";
+  import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
   import { overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
@@ -47,14 +47,6 @@
   const bodyH = $derived(bodyRect?.height ?? Infinity);
   const bannerH = $derived(bannerRect?.height ?? 0);
   let detailsShown = $state(0);
-  /** The log was opened from the keyboard: its rows take the focus. */
-  let logFocus = $state(false);
-
-  function setLogOpen(open: boolean, fromKeyboard = false) {
-    logFocus = open && fromKeyboard;
-    logPrefs.open = open;
-    saveLogPrefs();
-  }
 
   onMount(() => {
     void init();
@@ -167,7 +159,6 @@
                 repoId={active.repoId}
                 hostH={bodyH}
                 room={panelRoom(bodyH, bannerH, detailsShown)}
-                autofocus={logFocus}
                 onclose={() => setLogOpen(false)}
               />
             {/if}

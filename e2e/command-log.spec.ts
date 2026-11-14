@@ -342,3 +342,28 @@ test("after_show_log_the_list_follows_the_next_operation", async ({ gg }) => {
   await expect(retry).toContainText("Check out develop");
   await expect(retry).toBeInViewport();
 });
+
+test("the shortcut closes the log with the focus put back, and another tab does not take it", async ({ gg }) => {
+  const { page } = gg;
+  identity(gg, "branchy");
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  await runOp(page, { op: "create_branch", name: "for-the-log", at: gg.git("branchy", "rev-parse", "HEAD").trim(), checkout: false });
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+L");
+  await expect(entries(page).locator(".row").last()).toBeFocused();
+  // Closed by the same shortcut, with the focus inside: it goes back to the graph.
+  await page.keyboard.press("ControlOrMeta+Shift+L");
+  await expect(panel(page)).toHaveCount(0);
+  await expect(grid(page)).toBeFocused();
+
+  // Opened by the shortcut, the focus moved back to the graph, then another tab: the log
+  // shows there too, and the focus stays in the graph.
+  await page.keyboard.press("ControlOrMeta+Shift+L");
+  await expect(entries(page).locator(".row").last()).toBeFocused();
+  await grid(page).focus();
+  await open(page, gg.repoPath("small"));
+  await expect(panel(page)).toBeVisible();
+  await page.waitForTimeout(300);
+  expect(await panel(page).evaluate((el) => el.contains(document.activeElement))).toBe(false);
+});

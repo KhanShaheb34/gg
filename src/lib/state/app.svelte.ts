@@ -4,7 +4,7 @@
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
 import type { CoreErrorDto, Recent, RepoSnapshot, Settings } from "../types";
-import { logPrefs, saveLogPrefs } from "./commandLog.svelte";
+import { setLogOpen } from "./commandLog.svelte";
 import { disposeRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
@@ -90,8 +90,7 @@ export function notify(notice: Omit<Toast, "id">): number {
 export function showLog(repoId: number, from: number): void {
   app.logRequest = { repoId, from };
   activate(repoId);
-  logPrefs.open = true;
-  saveLogPrefs();
+  setLogOpen(true);
 }
 
 /**

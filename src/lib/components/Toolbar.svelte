@@ -10,7 +10,7 @@
   import { untrack } from "svelte";
   import { relativeTime, visibleText } from "../format";
   import { isMac } from "../platform";
-  import { logPrefs, saveLogPrefs } from "../state/commandLog.svelte";
+  import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
@@ -25,8 +25,7 @@
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
 
   function toggleLog() {
-    logPrefs.open = !logPrefs.open;
-    saveLogPrefs();
+    setLogOpen(!logPrefs.open);
   }
 
   /** The time tooltips are written for; set as the pointer (or focus) arrives. */

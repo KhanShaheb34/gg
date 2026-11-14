@@ -32,9 +32,12 @@ import {
   CommandLogStore,
   LOG_REFRESH_MS,
   MAX_KEPT,
+  focusCameFrom,
   logPrefs,
   readLogPrefs,
   saveLogPrefs,
+  setLogOpen,
+  takeLogAutofocus,
 } from "./commandLog.svelte";
 
 let nextId = 1;
@@ -205,5 +208,61 @@ describe("panel preferences", () => {
     localStorage.setItem("gg.log.v1", '{"open":"yes","height":-4}');
     expect(readLogPrefs()).toEqual({ open: false, height: null, reads: false });
     vi.unstubAllGlobals();
+  });
+});
+
+describe("opening and closing the panel", () => {
+  /** A stand-in for the page: where the focus is, and the elements it can go back to. */
+  function fakePage(focusInside: () => boolean) {
+    const grid = { focus: vi.fn(), isConnected: true };
+    const active = { closest: (sel: string) => (sel.includes("command-log") && focusInside() ? {} : null) };
+    vi.stubGlobal("document", {
+      activeElement: active,
+      body: {},
+      querySelector: (sel: string) => (sel === '[role="grid"]' ? grid : null),
+    });
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+    return { grid };
+  }
+
+  afterEach(() => {
+    setLogOpen(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("gives the focus to the panel once when opened from the keyboard, never again on its own", () => {
+    fakePage(() => false);
+    setLogOpen(true, true);
+    expect(logPrefs.open).toBe(true);
+    expect(takeLogAutofocus()).toBe(true);
+    // The panel mounted again (another tab shown): the focus stays where it is.
+    expect(takeLogAutofocus()).toBe(false);
+    setLogOpen(false);
+    setLogOpen(true);
+    expect(takeLogAutofocus()).toBe(false);
+  });
+
+  it("puts the focus back where it came from when closed with the focus inside, however closed", () => {
+    let inside = true;
+    const { grid } = fakePage(() => inside);
+    const button = { focus: vi.fn(), isConnected: true };
+    setLogOpen(true, true);
+    focusCameFrom(button as unknown as HTMLElement);
+    setLogOpen(false);
+    expect(button.focus).toHaveBeenCalledTimes(1);
+    expect(logPrefs.open).toBe(false);
+
+    // Where it came from is gone: the graph.
+    setLogOpen(true);
+    focusCameFrom({ focus: vi.fn(), isConnected: false } as unknown as HTMLElement);
+    setLogOpen(false);
+    expect(grid.focus).toHaveBeenCalledTimes(1);
+
+    // Closed with the focus elsewhere (the toolbar's button): it stays there.
+    inside = false;
+    setLogOpen(true);
+    focusCameFrom(button as unknown as HTMLElement);
+    setLogOpen(false);
+    expect(button.focus).toHaveBeenCalledTimes(1);
   });
 });

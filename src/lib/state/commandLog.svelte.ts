@@ -200,3 +200,58 @@ export function saveLogPrefs(): void {
     // Kept until the window closes.
   }
 }
+
+// --- Opening and closing -------------------------------------------------------------------
+
+/** The panel's element, for where the focus is. */
+const PANEL = '[data-testid="command-log"]';
+/** The next panel that mounts takes the focus (opened from the keyboard); taken once. */
+let autofocusNext = false;
+/** Where the focus was before it went into the panel: it goes back there when the panel closes. */
+let returnTo: HTMLElement | null = null;
+
+function focusInPanel(): boolean {
+  if (typeof document === "undefined") return false;
+  const active = document.activeElement as Element | null;
+  return typeof active?.closest === "function" && active.closest(PANEL) !== null;
+}
+
+/**
+ * Opens or closes the command log: every way in and out (the shortcut, the toolbar button,
+ * "Show log", Escape, its close button) goes through here. Opened with `focus` (from the
+ * keyboard), the panel takes the focus when it mounts, once. Closed while the focus is inside
+ * it, the focus goes back where it came from (else to the graph).
+ */
+export function setLogOpen(open: boolean, focus = false): void {
+  if (open) {
+    autofocusNext = focus;
+    if (focus && typeof document !== "undefined") {
+      const active = document.activeElement;
+      returnTo = active && active !== document.body ? (active as HTMLElement) : null;
+    }
+  } else {
+    autofocusNext = false;
+    if (focusInPanel()) {
+      const back = returnTo;
+      if (back?.isConnected) back.focus();
+      else document.querySelector<HTMLElement>('[role="grid"]')?.focus({ preventScroll: true });
+    }
+    returnTo = null;
+  }
+  if (logPrefs.open !== open) {
+    logPrefs.open = open;
+    saveLogPrefs();
+  }
+}
+
+/** Whether the panel mounting now takes the focus; true once per keyboard opening. */
+export function takeLogAutofocus(): boolean {
+  const focus = autofocusNext;
+  autofocusNext = false;
+  return focus;
+}
+
+/** The focus came into the panel from `el` (outside it): closing puts it back there. */
+export function focusCameFrom(el: HTMLElement): void {
+  returnTo = el;
+}

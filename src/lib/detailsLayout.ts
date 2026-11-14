@@ -24,3 +24,33 @@ export function splitFor(width: number, panelW: number): number {
   if (panelW <= 0) return DEFAULT_SPLIT;
   return infoWidth(width / panelW, panelW) / panelW;
 }
+
+// --- The panels docked under the graph (details, command log) --------------------------------
+
+/** Height the graph's rows always keep, px, below the conflict banner (when one shows). */
+export const MIN_GRAPH_H = 160;
+/** Least height of the details panel, px, when there is room for it. */
+export const DETAILS_MIN_H = 120;
+/** Least height of the command log, px, when there is room for it. */
+export const LOG_MIN_H = 96;
+
+/**
+ * Room left for a bottom panel in a repository view `bodyH` px tall: the graph keeps
+ * MIN_GRAPH_H under a banner `bannerH` px tall, and `reserved` px go to the other panel.
+ */
+export function panelRoom(bodyH: number, bannerH: number, reserved: number): number {
+  return Math.max(0, bodyH - MIN_GRAPH_H - bannerH - reserved);
+}
+
+/** A panel's height: `wanted`, at least `min`, but never more than `room` (the graph's minimum wins). */
+export function panelHeight(wanted: number, min: number, room: number): number {
+  return Math.max(0, Math.min(Math.max(wanted, min), room));
+}
+
+/**
+ * Room for the details panel out of `avail` (what the graph leaves): with the log open, the
+ * log keeps its minimum, or half of `avail` when that is less than twice it.
+ */
+export function detailsRoom(avail: number, logOpen: boolean): number {
+  return logOpen ? avail - Math.min(LOG_MIN_H, avail / 2) : avail;
+}

@@ -4,6 +4,7 @@
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
 import type { CoreErrorDto, Recent, RepoSnapshot, Settings } from "../types";
+import { logPrefs, saveLogPrefs } from "./commandLog.svelte";
 import { disposeRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
@@ -82,9 +83,15 @@ export function notify(notice: Omit<Toast, "id">): number {
   return id;
 }
 
-/** Asks for the command log of repository `repoId` from entry `from` on (the log panel shows it). */
+/**
+ * Opens the command log at the entry holding command `from` of repository `repoId` (its tab
+ * comes to the front): "Show log" on a notice. The panel goes there and highlights it.
+ */
 export function showLog(repoId: number, from: number): void {
   app.logRequest = { repoId, from };
+  activate(repoId);
+  logPrefs.open = true;
+  saveLogPrefs();
 }
 
 /**

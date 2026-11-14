@@ -89,4 +89,12 @@ describe("the notices shortcut", () => {
     expect(shortcutFor(key("F6", { metaKey: true }), true)).toBeNull();
     expect(repeatable({ kind: "notices" })).toBe(false);
   });
+
+  it("Cmd+Shift+L shows or hides the command log (Ctrl+Shift+L elsewhere)", () => {
+    expect(shortcutFor(key("L", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "log" });
+    expect(shortcutFor(key("l", { ctrlKey: true, shiftKey: true }), false)).toEqual({ kind: "log" });
+    expect(shortcutFor(key("l", { metaKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("l", { ctrlKey: true, shiftKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "log" })).toBe(false);
+  });
 });

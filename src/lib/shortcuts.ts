@@ -4,6 +4,7 @@
 //   Ctrl+Tab         next tab (Shift: back)   Cmd+1..8, Cmd+9  a tab, the last tab
 //   Cmd+F            search commits           Cmd+Shift+F      fetch
 //   Cmd+R            refresh                  F6               the newest notice (its first button)
+//   Cmd+Shift+L      show or hide the command log (Escape in it closes it)
 
 export type Shortcut =
   | { kind: "open" }
@@ -13,7 +14,8 @@ export type Shortcut =
   | { kind: "search" }
   | { kind: "fetch" }
   | { kind: "refresh" }
-  | { kind: "notices" };
+  | { kind: "notices" }
+  | { kind: "log" };
 
 type Keys = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> &
   Partial<Pick<KeyboardEvent, "isComposing">>;
@@ -32,7 +34,7 @@ export function shortcutFor(e: Keys, isMac: boolean): Shortcut | null {
   const command = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
   if (!command) return null;
   const key = e.key.toLowerCase();
-  if (e.shiftKey) return key === "f" ? { kind: "fetch" } : null;
+  if (e.shiftKey) return key === "f" ? { kind: "fetch" } : key === "l" ? { kind: "log" } : null;
   if (key === "f") return { kind: "search" };
   if (key === "r") return { kind: "refresh" };
   if (key === "o") return { kind: "open" };

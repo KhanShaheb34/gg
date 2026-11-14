@@ -10,6 +10,7 @@
   import { untrack } from "svelte";
   import { relativeTime, visibleText } from "../format";
   import { isMac } from "../platform";
+  import { logPrefs, saveLogPrefs } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
@@ -21,6 +22,12 @@
   const mac = isMac();
   const FETCH_KEYS = mac ? "⌘⇧F" : "Ctrl+Shift+F";
   const REFRESH_KEYS = mac ? "⌘R" : "Ctrl+R";
+  const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
+
+  function toggleLog() {
+    logPrefs.open = !logPrefs.open;
+    saveLogPrefs();
+  }
 
   /** The time tooltips are written for; set as the pointer (or focus) arrives. */
   let now = $state(Date.now());
@@ -178,6 +185,21 @@
     </svg>
   </button>
 
+  <button
+    class="icon-btn tool"
+    aria-label="Command log"
+    aria-pressed={logPrefs.open}
+    title="{logPrefs.open ? 'Hide' : 'Show'} the git commands the app ran ({LOG_KEYS})"
+    data-testid="log-toggle"
+    onclick={toggleLog}
+  >
+    <!-- A terminal window: a prompt and a line of output. -->
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" />
+      <path d="M4.8 6.4 6.6 8l-1.8 1.6M8.2 9.8h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  </button>
+
   {#if view.snapshot.loading}
     <!-- Along the bottom edge of the header (the nearest positioned ancestor). -->
     <div class="loading" role="progressbar" aria-label="Loading commits"></div>
@@ -287,6 +309,11 @@
       opacity: 0;
       transform: translateX(4px);
     }
+  }
+
+  .tool[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
   }
 
   .tool[aria-disabled="true"] {

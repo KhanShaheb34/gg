@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SPLIT, FILES_MIN, INFO_MIN, infoWidth, splitFor } from "./detailsLayout";
+import { DEFAULT_SPLIT, FILES_MIN, INFO_MIN, infoWidth, splitFor, LOG_MIN_H, MIN_GRAPH_H, detailsRoom, panelHeight, panelRoom } from "./detailsLayout";
 
 describe("infoWidth", () => {
   it("takes the chosen share of the panel, 44 % by default", () => {
@@ -27,5 +27,28 @@ describe("splitFor", () => {
     expect(splitFor(100, 1280)).toBe(320 / 1280);
     expect(splitFor(1270, 1280)).toBe(1000 / 1280);
     expect(splitFor(300, 0)).toBe(DEFAULT_SPLIT);
+  });
+});
+
+describe("bottom panels", () => {
+  it("leave the graph its minimum below the banner", () => {
+    expect(panelRoom(600, 0, 0)).toBe(600 - MIN_GRAPH_H);
+    expect(panelRoom(600, 200, 0)).toBe(600 - MIN_GRAPH_H - 200);
+    expect(panelRoom(600, 200, LOG_MIN_H)).toBe(600 - MIN_GRAPH_H - 200 - LOG_MIN_H);
+    expect(panelRoom(300, 250, 0)).toBe(0);
+  });
+
+  it("take the height wanted, at least their minimum, never more than the room", () => {
+    expect(panelHeight(280, 120, 400)).toBe(280);
+    expect(panelHeight(60, 120, 400)).toBe(120);
+    expect(panelHeight(280, 120, 200)).toBe(200);
+    expect(panelHeight(280, 120, 90)).toBe(90);
+  });
+
+  it("keep the log its minimum beside the details, or half when room is short", () => {
+    expect(detailsRoom(400, false)).toBe(400);
+    expect(detailsRoom(400, true)).toBe(400 - LOG_MIN_H);
+    expect(detailsRoom(90, true)).toBe(45);
+    expect(detailsRoom(0, true)).toBe(0);
   });
 });

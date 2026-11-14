@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import CommandLog from "./lib/components/CommandLog.svelte";
   import CommitDetails from "./lib/components/CommitDetails.svelte";
   import ConflictBanner from "./lib/components/ConflictBanner.svelte";
   import ContextMenu from "./lib/components/ContextMenu.svelte";
@@ -8,6 +9,7 @@
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
+  import { detailsRoom, panelRoom } from "./lib/detailsLayout";
   import { colorIndex, shortenPath } from "./lib/format";
   import GraphView from "./lib/graph/GraphView.svelte";
   import { api, onFolderDrop } from "./lib/ipc";
@@ -25,6 +27,7 @@
     toast,
     windowFocusChanged,
   } from "./lib/state/app.svelte";
+  import { logPrefs, saveLogPrefs } from "./lib/state/commandLog.svelte";
   import { overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
@@ -34,6 +37,24 @@
 
   /** Files are being dragged over the window (app only). */
   let dragging = $state(false);
+
+  // The bottom panels (details, command log) share what the graph leaves: it keeps
+  // MIN_GRAPH_H under the conflict banner. The details panel goes first; the log takes what
+  // is left (its minimum is kept for it while open).
+  // Measured to the fraction of a pixel, so the graph's minimum holds exactly.
+  let bodyRect = $state<DOMRectReadOnly>();
+  let bannerRect = $state<DOMRectReadOnly>();
+  const bodyH = $derived(bodyRect?.height ?? Infinity);
+  const bannerH = $derived(bannerRect?.height ?? 0);
+  let detailsShown = $state(0);
+  /** The log was opened from the keyboard: its rows take the focus. */
+  let logFocus = $state(false);
+
+  function setLogOpen(open: boolean, fromKeyboard = false) {
+    logFocus = open && fromKeyboard;
+    logPrefs.open = open;
+    saveLogPrefs();
+  }
 
   onMount(() => {
     void init();
@@ -94,6 +115,9 @@
       case "notices":
         focusNewestNotice();
         break;
+      case "log":
+        if (active) setLogOpen(!logPrefs.open, true);
+        break;
     }
   }
 </script>
@@ -122,15 +146,31 @@
             </div>
             <Toolbar view={repoView(active.repoId)} />
           </header>
-          <div class="repo-body">
+          <div class="repo-body" bind:contentRect={bodyRect}>
             <!-- The banner takes its height from the graph's top (the graph keeps its rows in place). -->
             <div class="graph-column">
-              <ConflictBanner view={repoView(active.repoId)} />
+              <div class="banner-slot" bind:contentRect={bannerRect}>
+                <ConflictBanner view={repoView(active.repoId)} />
+              </div>
               <div class="graph-area">
                 <GraphView view={repoView(active.repoId)} />
               </div>
             </div>
-            <CommitDetails view={repoView(active.repoId)} />
+            <CommitDetails
+              view={repoView(active.repoId)}
+              hostH={bodyH}
+              room={detailsRoom(panelRoom(bodyH, bannerH, 0), logPrefs.open)}
+              bind:shown={detailsShown}
+            />
+            {#if logPrefs.open}
+              <CommandLog
+                repoId={active.repoId}
+                hostH={bodyH}
+                room={panelRoom(bodyH, bannerH, detailsShown)}
+                autofocus={logFocus}
+                onclose={() => setLogOpen(false)}
+              />
+            {/if}
           </div>
         {/key}
       </div>
@@ -243,12 +283,18 @@
     min-height: 0;
   }
 
+  /* The bottom panels are sized so the graph's rows keep MIN_GRAPH_H under the banner
+     (detailsLayout.ts); the column clips rather than push them out of the window. */
   .graph-column {
     display: flex;
     flex-direction: column;
     flex: 1 1 0;
-    /* The panel never takes the graph (with the banner) below this (CommitDetails' MIN_GRAPH_H). */
-    min-height: 160px;
+    min-height: 0;
+    overflow: clip;
+  }
+
+  .banner-slot {
+    flex: none;
   }
 
   .graph-area {

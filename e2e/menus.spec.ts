@@ -141,6 +141,34 @@ test("the +k pill lists the hidden labels, each with its menu", async ({ gg }) =
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("x4");
 });
 
+test("a menu taller than the window scrolls inside it, and the keyboard keeps the active item in view", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.setViewportSize({ width: 900, height: 560 });
+  for (let i = 1; i <= 40; i++) gg.git("small", "tag", `release-${String(i).padStart(2, "0")}`, "HEAD");
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await rowOf(page, "Add part 19").locator(".ref.more").click({ button: "right" });
+  const m = menu(page);
+  await expect(m).toBeVisible();
+  const box = (await m.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(560);
+  expect(await m.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+
+  await page.keyboard.press("End");
+  const last = m.getByRole("menuitem").last();
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport();
+  const inside = await last.evaluate((el) => {
+    const a = el.getBoundingClientRect();
+    const b = el.parentElement!.getBoundingClientRect();
+    return a.top >= b.top && a.bottom <= b.bottom;
+  });
+  expect(inside).toBe(true);
+});
+
 test("the keyboard opens, moves through and picks from the menu", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

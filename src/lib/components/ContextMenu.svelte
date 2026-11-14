@@ -129,6 +129,8 @@
     if (!panel) return;
     const el = panel.querySelector<HTMLElement>(`[data-index="${levels[l].active}"]`);
     (el ?? panel).focus({ preventScroll: true });
+    // A panel taller than the window scrolls: keep the active item in it.
+    el?.scrollIntoView({ block: "nearest" });
   }
 
   function clearHover() {
@@ -362,6 +364,10 @@
     z-index: 70;
     min-width: 210px;
     max-width: 360px;
+    /* Taller than the window: it scrolls inside (place() keeps it within the edges). */
+    max-height: calc(100vh - 12px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 5px;
     border: 1px solid var(--border-strong);
     border-radius: 9px;

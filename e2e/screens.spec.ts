@@ -423,3 +423,20 @@ for (const theme of ["light", "dark"] as const) {
     await shot("dialog-push-tag");
   });
 }
+
+// A menu taller than the smallest window: it scrolls inside, the last item active.
+for (const theme of ["light", "dark"] as const) {
+  test(`tall menu in a small window, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.setViewportSize({ width: 900, height: 560 });
+    await page.emulateMedia({ colorScheme: theme });
+    for (let i = 1; i <= 40; i++) gg.git("small", "tag", `release-${String(i).padStart(2, "0")}`, "HEAD");
+    await page.goto("/");
+    await open(page, gg.repoPath("small"));
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await grid.locator('[role="row"]', { hasText: "Add part 19" }).locator(".ref.more").click({ button: "right" });
+    await page.keyboard.press("End");
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `menu-tall-${theme}.png`) });
+  });
+}

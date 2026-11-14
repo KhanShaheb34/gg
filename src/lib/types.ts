@@ -188,8 +188,10 @@ export type OpRequest =
   | { op: "create_tag"; name: string; hash: string; message: string | null }
   | { op: "delete_tag"; name: string; remote: string | null } // remote set = also delete there
   | { op: "push_tag"; name: string; remote: string }
+  // to: null = the branch of the same name on the remote (R38); else the branch's upstream there,
+  // picked in the Push dialog. An existing upstream is never changed; one is set if there is none.
   // lease: with force, the token of the force_push danger the user confirmed (R11)
-  | { op: "push"; branch: string; remote: string; setUpstream: boolean; force: boolean; lease: string | null }
+  | { op: "push"; branch: string; remote: string; to: string | null; force: boolean; lease: string | null }
   | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase" }
   | { op: "fetch_into_local"; remoteBranch: string; localName: string }
   | { op: "delete_remote_branch"; remote: string; branch: string }
@@ -205,10 +207,10 @@ export type DangerKind = "force_push" | "hard_reset" | "delete_unmerged_branch" 
 // send it back as the push's lease to confirm.
 export type Danger = { kind: DangerKind; message: string; detail: string | null; token: string | null };
 export type OpHint =
-  | { kind: "push"; branch: string; remote: string; setUpstream: boolean }
+  | { kind: "push"; branch: string; remote: string } // to the branch of the same name there
   | { kind: "fetch" }
   | { kind: "pull"; branch: string }
-  | { kind: "force_push"; branch: string; remote: string }
+  | { kind: "force_push"; branch: string; remote: string; to: string | null } // where the rejected push went
   | { kind: "choose_pull_mode"; branch: string }
   | { kind: "skip" }; // continuing came out empty: skip that commit
 

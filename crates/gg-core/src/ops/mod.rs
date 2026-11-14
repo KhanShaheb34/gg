@@ -442,23 +442,34 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::Push {
             branch,
             remote,
-            set_upstream,
+            to,
             force,
             lease,
         } => {
             check_branch_name(&branch)?;
             check_arg(&remote, "remote")?;
+            if let Some(to) = &to {
+                check_branch_name(to)?;
+            }
+            let there = format!("{remote}/{}", to.as_deref().unwrap_or(&branch));
             let title = if force {
-                format!("Force push {branch} to {remote}")
+                format!("Force push {branch} to {there}")
             } else {
-                format!("Push {branch} to {remote}")
+                format!("Push {branch} to {there}")
             };
             (
                 fixed(title),
                 body(move |ctx, _| {
                     Box::pin(async move {
-                        network::push(ctx, &branch, &remote, set_upstream, force, lease.as_deref())
-                            .await
+                        network::push(
+                            ctx,
+                            &branch,
+                            &remote,
+                            to.as_deref(),
+                            force,
+                            lease.as_deref(),
+                        )
+                        .await
                     })
                 }),
             )
@@ -878,6 +889,17 @@ impl RepoManager {
         }
         if let Some(remote) = remote_of(&request)
             && let Some(why) = network::unknown_remote(&ctx, remote).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
+        if let OpRequest::Push {
+            branch,
+            remote,
+            to: Some(to),
+            ..
+        } = &request
+            && to != branch
+            && let Some(why) = network::not_its_upstream(&ctx, branch, remote, to).await?
         {
             return Ok((title, Ran::Refused(why)));
         }

@@ -490,10 +490,14 @@ pub enum OpRequest {
         name: String,
         remote: String,
     },
+    /// Pushes `branch` to the branch of the same name on `remote` (R38), or to `to`, a
+    /// branch of another name there, which must be the branch's upstream (the user picked it
+    /// in the Push dialog). A branch without an upstream gets this one; an existing upstream
+    /// is never changed.
     Push {
         branch: String,
         remote: String,
-        set_upstream: bool,
+        to: Option<String>,
         force: bool,
         /// With `force`: the `token` of the `force_push` danger the user confirmed. The
         /// push runs only if it is still the remote-tracking commit, and git refuses it if
@@ -575,18 +579,22 @@ pub struct Danger {
     rename_all_fields = "camelCase"
 )]
 pub enum OpHint {
+    /// Push `branch` to the branch of the same name on `remote` (offered only when that is
+    /// its upstream, or it has none).
     Push {
         branch: String,
         remote: String,
-        set_upstream: bool,
     },
     Fetch,
     Pull {
         branch: String,
     },
+    /// Force push `branch` to where the rejected push went: `to` on `remote`, or the branch
+    /// of the same name there.
     ForcePush {
         branch: String,
         remote: String,
+        to: Option<String>,
     },
     ChoosePullMode {
         branch: String,
@@ -752,7 +760,7 @@ mod tests {
             json!({"op": "create_tag", "name": "v1", "hash": "h", "message": null}),
             json!({"op": "delete_tag", "name": "v1", "remote": "origin"}),
             json!({"op": "push_tag", "name": "v1", "remote": "origin"}),
-            json!({"op": "push", "branch": "b", "remote": "origin", "setUpstream": true,
+            json!({"op": "push", "branch": "b", "remote": "origin", "to": "main",
                    "force": true, "lease": "abc"}),
             json!({"op": "pull", "branch": "b", "mode": "default"}),
             json!({"op": "fetch_into_local", "remoteBranch": "origin/b", "localName": "b"}),
@@ -811,13 +819,13 @@ mod tests {
                 OpHint::Push {
                     branch: "b".into(),
                     remote: "origin".into(),
-                    set_upstream: true,
                 },
                 OpHint::Fetch,
                 OpHint::Pull { branch: "b".into() },
                 OpHint::ForcePush {
                     branch: "b".into(),
                     remote: "origin".into(),
+                    to: Some("main".into()),
                 },
                 OpHint::ChoosePullMode { branch: "b".into() },
             ],
@@ -862,10 +870,10 @@ mod tests {
         assert_eq!(
             v["hints"],
             json!([
-                {"kind": "push", "branch": "b", "remote": "origin", "setUpstream": true},
+                {"kind": "push", "branch": "b", "remote": "origin"},
                 {"kind": "fetch"},
                 {"kind": "pull", "branch": "b"},
-                {"kind": "force_push", "branch": "b", "remote": "origin"},
+                {"kind": "force_push", "branch": "b", "remote": "origin", "to": "main"},
                 {"kind": "choose_pull_mode", "branch": "b"}
             ])
         );

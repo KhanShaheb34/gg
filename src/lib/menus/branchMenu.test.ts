@@ -49,6 +49,11 @@ describe("branchMenu, local branch", () => {
     expect(find(items, "pull").label).toBe("Pull");
   });
 
+  it("ahead of an upstream of another name, the push goes elsewhere: no count (R38)", () => {
+    const items = branchMenu(label({ upstream: "origin/main", ahead: 2 }), row(), snap());
+    expect(find(items, "push").label).toBe("Push…");
+  });
+
   it("a branch with no upstream cannot be pulled", () => {
     const items = branchMenu(label(), row(), snap());
     expect(disabled(items)).toEqual(["pull"]);

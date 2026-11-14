@@ -443,27 +443,18 @@ pub(crate) fn autostash_note(step: Step, out: &GitOutput) -> Step {
     }
 }
 
-/// Push for `branch` after it got new commits: to its upstream's remote, or, without an
-/// upstream, to the repository's only remote (setting it as upstream). `None` otherwise.
+/// Push for `branch` after it got new commits, to the branch of the same name (R38): on
+/// its upstream's remote when the upstream has that name, or, without an upstream, on the
+/// repository's only remote (where the push then sets it). `None` otherwise: a branch whose
+/// upstream has another name (or is a local branch) is pushed from the Push dialog, which
+/// names where it goes.
 async fn push_hint(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<OpHint>> {
-    let full = format!("refs/heads/{branch}");
-    let out = ctx
-        .read(&[
-            "for-each-ref",
-            "--format=%(refname)%00%(upstream:remotename)",
-            &full,
-        ])
-        .await?;
-    let upstream_remote = out.text().lines().find_map(|line| {
-        let (name, remote) = line.split_once('\0')?;
-        (name == full && !remote.is_empty()).then(|| remote.to_owned())
-    });
-    if let Some(remote) = upstream_remote {
+    if let Some(up) = network::upstream(ctx, branch).await? {
         // "." is the repository itself: an upstream that is a local branch.
-        return Ok((remote != ".").then(|| OpHint::Push {
+        let same_name = up.remote_ref == format!("refs/heads/{branch}");
+        return Ok((up.remote != "." && same_name).then(|| OpHint::Push {
             branch: branch.to_owned(),
-            remote,
-            set_upstream: false,
+            remote: up.remote,
         }));
     }
     let remotes = ctx.read(&["remote"]).await?;
@@ -478,7 +469,6 @@ async fn push_hint(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<OpHint>> {
         Ok([remote]) => Some(OpHint::Push {
             branch: branch.to_owned(),
             remote,
-            set_upstream: true,
         }),
         Err(_) => None,
     })

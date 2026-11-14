@@ -24,9 +24,10 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
         OpRequest::Push {
             branch,
             remote,
+            to,
             force: true,
             ..
-        } => vec![force_push(ctx, branch, remote).await?],
+        } => vec![force_push(ctx, branch, remote, to.as_deref()).await?],
         OpRequest::DeleteRemoteBranch { remote, branch } => {
             vec![remote_branch_deleted(ctx, remote, branch).await?]
         }
@@ -122,8 +123,13 @@ const MAX_COMMITS_LISTED: &str = "10";
 /// local branch lacks, as of the last fetch, which a force push discards (the detail lists
 /// them). Its token is that remote-tracking commit: the push runs only if it is confirmed
 /// with that token, and git refuses unless the remote branch is still there.
-async fn force_push(ctx: &OpCtx<'_>, branch: &str, remote: &str) -> Result<Danger> {
-    let target = push_target(ctx, branch, remote).await?;
+async fn force_push(
+    ctx: &OpCtx<'_>,
+    branch: &str,
+    remote: &str,
+    to: Option<&str>,
+) -> Result<Danger> {
+    let target = push_target(branch, remote, to);
     let tracking = target.tracking;
     let local = format!("refs/heads/{branch}");
     let shown = target.short;

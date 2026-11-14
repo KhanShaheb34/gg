@@ -206,15 +206,45 @@ test("push a branch without an upstream: it gets one; the target is said plainly
   const d = dialog(page);
   await expect(d.getByRole("heading")).toHaveText("Push topic");
   await expect(d.getByRole("combobox", { name: "Remote" })).toHaveValue("origin");
-  await expect(d.getByText("origin/topic", { exact: true })).toBeVisible();
-  const upstream = d.getByRole("checkbox", { name: /Set as its upstream/ });
-  await expect(upstream).toBeChecked();
-  await expect(upstream).toBeDisabled();
+  await expect(d.getByTestId("push-target")).toHaveText("origin/topic");
+  await expect(d.getByTestId("upstream-note")).toHaveText("origin/topic becomes its upstream: it has none yet.");
   await expect(d.getByRole("checkbox", { name: /Force push/ })).not.toBeChecked();
   await d.getByRole("button", { name: "Push", exact: true }).click();
-  await expect(notice(page, "Pushed topic to origin, and set origin/topic as its upstream.")).toBeVisible();
+  await expect(notice(page, "Pushed topic to origin/topic, and set it as its upstream.")).toBeVisible();
   await expect(label(page, "topic")).toContainText("origin");
   expect(gg.git("routine", "rev-parse", "--abbrev-ref", "topic@{upstream}").trim()).toBe("origin/topic");
+});
+
+test("push a branch whose upstream has another name: the branch of the same name, unless the upstream is picked (R38)", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  gg.git("routine", "switch", "-q", "-c", "topic", "--track", "origin/main");
+  commitOutside(gg, "Topic work");
+  const mainThere = gg.git("routine", "rev-parse", "origin/main").trim();
+  await expect(label(page, "topic")).toBeVisible();
+
+  await pickOnLabel(page, "topic", "Push…");
+  const d = dialog(page);
+  const same = d.getByRole("radio", { name: /origin\/topic/ });
+  const upstream = d.getByRole("radio", { name: /origin\/main/ });
+  await expect(same).toBeChecked();
+  await expect(upstream).not.toBeChecked();
+  await expect(d.getByTestId("upstream-note")).toHaveText("Its upstream stays origin/main.");
+  await d.getByRole("button", { name: "Push", exact: true }).click();
+  await expect(notice(page, "Pushed topic to origin/topic.")).toBeVisible();
+  expect(gg.git("routine", "rev-parse", "origin/main").trim()).toBe(mainThere);
+  expect(gg.git("routine", "rev-parse", "--abbrev-ref", "topic@{upstream}").trim()).toBe("origin/main");
+
+  // Picking the upstream sends it there, by name.
+  await pickOnLabel(page, "topic", "Push…");
+  await d.getByRole("radio", { name: /origin\/main/ }).check();
+  await expect(d.getByText(/Replaces origin\/main with this branch/)).toBeVisible();
+  await d.getByRole("button", { name: "Push", exact: true }).click();
+  await expect(notice(page, "Pushed topic to origin/main.")).toBeVisible();
+  expect(gg.git("routine", "rev-parse", "origin/main").trim()).toBe(gg.git("routine", "rev-parse", "topic").trim());
 });
 
 test("pull: another branch is fast-forwarded without being checked out; the current one is pulled", async ({ gg }) => {

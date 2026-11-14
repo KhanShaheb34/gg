@@ -809,7 +809,7 @@ for (const theme of ["light", "dark"] as const) {
     gg.gitAt(other, "-c", "user.name=Grace Hopper", "-c", "user.email=grace@example.com", "commit", "-q", "--allow-empty", "-m", "Pushed from elsewhere");
     gg.gitAt(other, "push", "-q", "origin", "main");
     gg.git("branchy", "fetch", "-q", "origin");
-    void runOp(page, { op: "push", branch: "main", remote: "origin", setUpstream: false, force: true, lease: null });
+    void runOp(page, { op: "push", branch: "main", remote: "origin", to: null, force: true, lease: null });
     await expect(confirmation).toBeVisible();
     await park(page);
     await shot("dialog-force-push");

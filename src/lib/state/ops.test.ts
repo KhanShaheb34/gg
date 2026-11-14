@@ -173,7 +173,7 @@ describe("runOp", () => {
   });
 
   it("confirms a force push with the remote commit it was shown, and asks again if the remote moved", async () => {
-    const push: OpRequest = { op: "push", branch: "main", remote: "origin", setUpstream: false, force: true, lease: null };
+    const push: OpRequest = { op: "push", branch: "main", remote: "origin", to: null, force: true, lease: null };
     const force = (token: string, message: string) =>
       outcome({ status: "needs_confirmation", dangers: [danger({ kind: "force_push", token, message })] });
     vi.mocked(ipc.api.runOp)
@@ -264,7 +264,7 @@ describe("runOp", () => {
 describe("hint buttons", () => {
   it("a notice with buttons stays until it is dismissed or an operation after its own runs there", async () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
-      outcome({ opId: 9, hints: [{ kind: "push", branch: "main", remote: "origin", setUpstream: false }] }),
+      outcome({ opId: 9, hints: [{ kind: "push", branch: "main", remote: "origin" }] }),
     );
     await ops.runOp(1, RESET);
     expect(app.app.toasts[0]).toMatchObject({ persistent: true, until: { repoId: 1, opId: 9 } });
@@ -277,7 +277,7 @@ describe("hint buttons", () => {
   });
 
   it("goes when the outcome of a later operation on that repository arrives (review item 4)", async () => {
-    const push = { kind: "push", branch: "main", remote: "origin", setUpstream: false } as const;
+    const push = { kind: "push", branch: "main", remote: "origin" } as const;
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 9, hints: [push] }));
     await ops.runOp(1, RESET);
     expect(app.app.toasts).toHaveLength(1);
@@ -289,10 +289,10 @@ describe("hint buttons", () => {
 
   it("names the branch on its buttons", async () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
-      outcome({ hints: [{ kind: "push", branch: "feature/\u202ex", remote: "origin", setUpstream: false }] }),
+      outcome({ hints: [{ kind: "push", branch: "feature/\u202ex", remote: "origin" }] }),
     );
     await ops.runOp(1, RESET);
-    expect(app.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Push feature/‹U+202E›x to origin"]);
+    expect(app.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Push feature/‹U+202E›x to origin/feature/‹U+202E›x"]);
   });
 
   async function buttonsFor(hints: OpHint[], status: OpOutcome["status"] = "done") {
@@ -303,25 +303,25 @@ describe("hint buttons", () => {
   }
 
   it("push: pushes the branch the core named", async () => {
-    const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin", setUpstream: true }]);
-    expect(push.label).toBe("Push main to origin");
+    const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin" }]);
+    expect(push.label).toBe("Push main to origin/main");
     await push.run();
     expect(ipc.api.runOp).toHaveBeenCalledWith(
       1,
-      { op: "push", branch: "main", remote: "origin", setUpstream: true, force: false, lease: null },
+      { op: "push", branch: "main", remote: "origin", to: null, force: false, lease: null },
       [],
     );
   });
 
   it("a rejected push: fetch, pull, and a separate force push that goes through the confirmation", async () => {
     const buttons = await buttonsFor(
-      [{ kind: "fetch" }, { kind: "pull", branch: "main" }, { kind: "force_push", branch: "main", remote: "origin" }],
+      [{ kind: "fetch" }, { kind: "pull", branch: "main" }, { kind: "force_push", branch: "main", remote: "origin", to: null }],
       "failed",
     );
     expect(buttons.map((b) => [b.label, !!b.danger])).toEqual([
       ["Fetch", false],
       ["Pull main", false],
-      ["Force push main…", true],
+      ["Force push main to origin/main…", true],
     ]);
     await buttons[0].run();
     expect(view.fetch).toHaveBeenCalled();
@@ -330,7 +330,18 @@ describe("hint buttons", () => {
     await buttons[2].run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,
-      { op: "push", branch: "main", remote: "origin", setUpstream: false, force: true, lease: null },
+      { op: "push", branch: "main", remote: "origin", to: null, force: true, lease: null },
+      [],
+    );
+  });
+
+  it("a rejected push to the upstream of another name offers the force push there, named (R38)", async () => {
+    const [force] = await buttonsFor([{ kind: "force_push", branch: "feature", remote: "origin", to: "main" }], "failed");
+    expect(force.label).toBe("Force push feature to origin/main…");
+    await force.run();
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(
+      1,
+      { op: "push", branch: "feature", remote: "origin", to: "main", force: true, lease: null },
       [],
     );
   });
@@ -357,7 +368,7 @@ describe("hint buttons", () => {
   });
 
   it("a follow-up that fails is reported, not thrown at the button", async () => {
-    const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin", setUpstream: false }]);
+    const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin" }]);
     vi.mocked(ipc.api.runOp).mockRejectedValueOnce(new ipc.CoreError({ code: "busy", message: "Busy", detail: null }));
     await expect(push.run()).resolves.toBeUndefined();
     expect(app.app.toasts.at(-1)).toMatchObject({ kind: "error", message: "Busy" });

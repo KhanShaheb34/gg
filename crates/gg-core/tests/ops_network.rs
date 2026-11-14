@@ -19,12 +19,23 @@ use gg_core::testutil::TestRepo;
 mod common;
 use common::*;
 
-fn push(branch: &str, remote: &str, set_upstream: bool, force: bool) -> OpRequest {
+fn push(branch: &str, remote: &str, force: bool) -> OpRequest {
     OpRequest::Push {
         branch: branch.to_owned(),
         remote: remote.to_owned(),
-        set_upstream,
+        to: None,
         force,
+        lease: None,
+    }
+}
+
+/// A push of `branch` to branch `to` on `remote` (its upstream there, picked in the dialog).
+fn push_to(branch: &str, remote: &str, to: &str) -> OpRequest {
+    OpRequest::Push {
+        branch: branch.to_owned(),
+        remote: remote.to_owned(),
+        to: Some(to.to_owned()),
+        force: false,
         lease: None,
     }
 }
@@ -35,7 +46,7 @@ fn force_push(branch: &str, remote: &str, lease: Option<&str>) -> OpRequest {
     OpRequest::Push {
         branch: branch.to_owned(),
         remote: remote.to_owned(),
-        set_upstream: false,
+        to: None,
         force: true,
         lease: lease.map(str::to_owned),
     }
@@ -111,9 +122,9 @@ async fn push_sets_upstream_when_missing() {
     let id = h.open(repo.path()).await.repo_id;
 
     // No upstream yet: the core sets it, though the request did not ask.
-    let out = h.run(id, push("topic", "origin", false, false)).await;
+    let out = h.run(id, push("topic", "origin", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
-    assert_eq!(out.title, "Push topic to origin");
+    assert_eq!(out.title, "Push topic to origin/topic");
     assert!(
         ran(
             &h,
@@ -143,7 +154,7 @@ async fn push_sets_upstream_when_missing() {
     // With an upstream, a push leaves it alone.
     repo.checkout("topic");
     repo.commit("more");
-    let out = h.run(id, push("topic", "origin", false, false)).await;
+    let out = h.run(id, push("topic", "origin", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(
         ran(
@@ -162,12 +173,12 @@ async fn push_sets_upstream_when_missing() {
     assert_eq!(rev(&origin, "refs/heads/topic"), rev(&repo, "topic"));
 
     // Nothing new: done, saying so.
-    let out = h.run(id, push("topic", "origin", false, false)).await;
+    let out = h.run(id, push("topic", "origin", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(out.message.contains("up to date"), "{}", out.message);
 
     // A remote that does not exist is refused before git runs.
-    let out = h.run(id, push("topic", "nope", false, false)).await;
+    let out = h.run(id, push("topic", "nope", false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message
@@ -195,6 +206,7 @@ async fn push_rejected_explains_and_hints() {
         OpHint::ForcePush {
             branch: "main".into(),
             remote: "origin".into(),
+            to: None,
         },
     ];
     // Not fetched yet ("fetch first"), then fetched ("non-fast-forward"): the same.
@@ -202,7 +214,7 @@ async fn push_rejected_explains_and_hints() {
         if fetched {
             repo.git(&["fetch", "-q", "origin"]);
         }
-        let out = h.run(id, push("main", "origin", false, false)).await;
+        let out = h.run(id, push("main", "origin", false)).await;
         assert_eq!(out.status, OpStatus::Failed, "{out:?}");
         assert!(
             out.message
@@ -232,9 +244,9 @@ async fn force_push_needs_confirmation_and_uses_lease() {
     let id = h.open(repo.path()).await.repo_id;
 
     let mark = h.last_log_id();
-    let out = h.run(id, push("main", "origin", false, true)).await;
+    let out = h.run(id, push("main", "origin", true)).await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
-    assert_eq!(out.title, "Force push main to origin");
+    assert_eq!(out.title, "Force push main to origin/main");
     assert_eq!(out.dangers.len(), 1);
     assert_eq!(out.dangers[0].kind, DangerKind::ForcePush);
     let message = &out.dangers[0].message;
@@ -277,11 +289,7 @@ async fn force_push_needs_confirmation_and_uses_lease() {
     // Confirmed without the token: asked again, nothing runs.
     let mark = h.last_log_id();
     let out = h
-        .run_confirmed(
-            id,
-            push("main", "origin", false, true),
-            &[DangerKind::ForcePush],
-        )
+        .run_confirmed(id, push("main", "origin", true), &[DangerKind::ForcePush])
         .await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
     assert!(h.writes_since(mark).is_empty());
@@ -449,23 +457,55 @@ async fn force_push_without_a_tracking_branch() {
     );
 }
 
-/// R12: a branch with an upstream on the remote pushed to pushes to that upstream branch,
-/// whatever its name; the danger and the lease use it too.
+/// C1 / R38: a branch whose upstream has another name (`git switch -c feature origin/main`)
+/// is pushed to the branch of its own name: the remote's `main` and the branch's upstream
+/// stay as they are. Only a push that names the upstream (`to`, picked in the dialog) goes
+/// there, and `to` can name nothing else.
 #[tokio::test]
-async fn push_goes_to_the_upstream_branch() {
-    let (repo, origin, other) = with_remote();
-    other.git(&["checkout", "-q", "-b", "feature"]);
-    other.commit("feature base");
-    other.git(&["push", "-q", "origin", "feature"]);
-    repo.git(&["fetch", "-q", "origin"]);
-    repo.git(&["branch", "-q", "--track", "feat", "origin/feature"]);
-    repo.checkout("feat");
-    let mine = repo.commit("on feat");
+async fn push_goes_to_the_same_named_branch_whatever_the_upstream() {
+    let (repo, origin, _other) = with_remote();
+    repo.git(&["switch", "-q", "-c", "feature", "--track", "origin/main"]);
+    let mine = repo.commit("on feature");
+    let main_there = rev(&origin, "refs/heads/main");
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
 
-    let out = h.run(id, push("feat", "origin", false, false)).await;
+    let out = h.run(id, push("feature", "origin", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Push feature to origin/feature");
+    assert_eq!(out.message, "Pushed feature to origin/feature.");
+    assert!(
+        ran(
+            &h,
+            &out,
+            &[
+                "push",
+                "--progress",
+                "origin",
+                "refs/heads/feature:refs/heads/feature"
+            ]
+        ),
+        "{:?}",
+        op_args(&h, &out)
+    );
+    assert_eq!(rev(&origin, "refs/heads/feature"), mine);
+    assert_eq!(
+        rev(&origin, "refs/heads/main"),
+        main_there,
+        "main unchanged"
+    );
+    assert_eq!(
+        repo.git(&["rev-parse", "--abbrev-ref", "feature@{upstream}"]),
+        "origin/main",
+        "the upstream is not changed"
+    );
+
+    // Named in the request, the upstream is where it goes.
+    let more = repo.commit("more on feature");
+    let out = h.run(id, push_to("feature", "origin", "main")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(out.title, "Push feature to origin/main");
+    assert_eq!(out.message, "Pushed feature to origin/main.");
     assert!(ran(
         &h,
         &out,
@@ -473,34 +513,83 @@ async fn push_goes_to_the_upstream_branch() {
             "push",
             "--progress",
             "origin",
-            "refs/heads/feat:refs/heads/feature"
+            "refs/heads/feature:refs/heads/main"
         ]
     ));
-    assert_eq!(rev(&origin, "refs/heads/feature"), mine);
-    assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/feat"]));
+    assert_eq!(rev(&origin, "refs/heads/main"), more);
 
-    // Diverge, then force: the danger names origin/feature, the lease refs/heads/feature.
-    other.git(&["pull", "-q", "--ff-only", "origin", "feature"]);
+    // `to` names only the upstream: anything else is refused before git runs.
+    let mark = h.last_log_id();
+    let out = h.run(id, push_to("feature", "origin", "release")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(out.message.contains("origin/release"), "{}", out.message);
+    assert!(h.writes_since(mark).is_empty());
+    assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/release"]));
+}
+
+/// A force push to the upstream of another name (picked in the dialog): the danger names
+/// it, and the lease is on it.
+#[tokio::test]
+async fn force_push_to_the_upstream_picked_in_the_dialog() {
+    let (repo, origin, other) = with_remote();
+    other.git(&["checkout", "-q", "-b", "feature"]);
+    other.commit("feature base");
+    other.git(&["push", "-q", "origin", "feature"]);
+    repo.git(&["fetch", "-q", "origin"]);
+    repo.git(&["branch", "-q", "--track", "feat", "origin/feature"]);
+    repo.checkout("feat");
+    repo.commit("on feat");
     other.commit("theirs on feature");
     other.git(&["push", "-q", "origin", "feature"]);
     repo.git(&["fetch", "-q", "origin"]);
-    repo.git(&["commit", "-q", "--amend", "-m", "on feat, amended"]);
-    let out = h.run(id, force_push("feat", "origin", None)).await;
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let force = OpRequest::Push {
+        branch: "feat".into(),
+        remote: "origin".into(),
+        to: Some("feature".into()),
+        force: true,
+        lease: None,
+    };
+    let out = h.run(id, force.clone()).await;
     assert_eq!(out.status, OpStatus::NeedsConfirmation);
+    assert_eq!(out.title, "Force push feat to origin/feature");
     assert!(out.dangers[0].message.contains("origin/feature"), "{out:?}");
     let token = out.dangers[0].token.clone().unwrap();
     assert_eq!(token, rev(&repo, "refs/remotes/origin/feature"));
+    let mut confirmed = force;
+    if let OpRequest::Push { lease, .. } = &mut confirmed {
+        *lease = Some(token.clone());
+    }
     let out = h
-        .run_confirmed(
-            id,
-            force_push("feat", "origin", Some(&token)),
-            &[DangerKind::ForcePush],
-        )
+        .run_confirmed(id, confirmed, &[DangerKind::ForcePush])
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     let lease = format!("--force-with-lease=refs/heads/feature:{token}");
     assert!(op_args(&h, &out).iter().any(|a| a.contains(&lease)));
     assert_eq!(rev(&origin, "refs/heads/feature"), rev(&repo, "feat"));
+    assert!(!origin.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/feat"]));
+}
+
+/// A rejected push offers a force push to where it went: the upstream it named.
+#[tokio::test]
+async fn a_rejected_push_to_the_upstream_offers_a_force_push_there() {
+    let (repo, _origin, other) = with_remote();
+    repo.git(&["switch", "-q", "-c", "feature", "--track", "origin/main"]);
+    repo.commit("mine");
+    other.commit("theirs");
+    other.git(&["push", "-q", "origin", "main"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, push_to("feature", "origin", "main")).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(out.hints.contains(&OpHint::ForcePush {
+        branch: "feature".into(),
+        remote: "origin".into(),
+        to: Some("main".into()),
+    }));
 }
 
 // ---- pull ----
@@ -1037,12 +1126,12 @@ async fn push_to_unreachable_remote_fails_fast_and_queue_continues() {
     let started = Instant::now();
     let pushing = tokio::spawn({
         let m = h.m.clone();
-        async move { m.run_op(id, push("main", "dead", false, false), &[]).await }
+        async move { m.run_op(id, push("main", "dead", false), &[]).await }
     });
     // Asked for once the push has started: it waits for the push, then runs.
     h.sink
         .wait_for(TIMEOUT, |n, v| {
-            n == "repo-changed" && v["repoId"] == id && v["op"]["title"] == "Push main to dead"
+            n == "repo-changed" && v["repoId"] == id && v["op"]["title"] == "Push main to dead/main"
         })
         .await
         .expect("the push starts");
@@ -1147,12 +1236,12 @@ async fn authentication_failures_explain() {
     let id = h.open(repo.path()).await.repo_id;
 
     let started = Instant::now();
-    let out = h.run(id, push("main", "nocreds", false, false)).await;
+    let out = h.run(id, push("main", "nocreds", false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(out.message.contains("username"), "{}", out.message);
     assert!(out.detail.unwrap().contains("could not read Username"));
 
-    let out = h.run(id, push("main", "wrongcreds", false, false)).await;
+    let out = h.run(id, push("main", "wrongcreds", false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(out.message.contains("refused the"), "{}", out.message);
     assert!(out.detail.unwrap().contains("Authentication failed"));
@@ -1175,7 +1264,7 @@ async fn network_op_reports_progress_events() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
 
-    let out = h.run(id, push("big", "origin", false, false)).await;
+    let out = h.run(id, push("big", "origin", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     let progress: Vec<serde_json::Value> = h
         .sink
@@ -1207,20 +1296,14 @@ async fn merge_outcome_hints_push() {
     let hint = OpHint::Push {
         branch: "main".into(),
         remote: "origin".into(),
-        set_upstream: false,
     };
     assert_eq!(out.hints, std::slice::from_ref(&hint));
 
     // The hint is a push that works as offered.
-    let OpHint::Push {
-        branch,
-        remote,
-        set_upstream,
-    } = hint
-    else {
+    let OpHint::Push { branch, remote } = hint else {
         unreachable!()
     };
-    let out = h.run(id, push(&branch, &remote, set_upstream, false)).await;
+    let out = h.run(id, push(&branch, &remote, false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
 }
@@ -1282,7 +1365,7 @@ async fn network_operations_fail_plainly_on_an_empty_repository() {
     let id = h.open(repo.path()).await.repo_id;
 
     let requests = vec![
-        push("main", "origin", false, false),
+        push("main", "origin", false),
         pull("main", PullMode::Default),
         fetch_into_local("origin/main", "x"),
         OpRequest::PushTag {
@@ -1661,7 +1744,7 @@ async fn only_the_repositorys_remotes_are_pushed_to() {
         "nope",
     ] {
         for request in [
-            push("main", remote, false, false),
+            push("main", remote, false),
             OpRequest::PushTag {
                 name: "v1".into(),
                 remote: remote.into(),

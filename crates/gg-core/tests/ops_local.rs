@@ -694,7 +694,6 @@ async fn merge_hints_push_when_there_is_somewhere_to_push() {
         [OpHint::Push {
             branch: "main".into(),
             remote: "origin".into(),
-            set_upstream: true,
         }]
     );
 
@@ -706,9 +705,21 @@ async fn merge_hints_push_when_there_is_somewhere_to_push() {
         [OpHint::Push {
             branch: "main".into(),
             remote: "origin".into(),
-            set_upstream: false,
         }]
     );
+
+    // An upstream of another name (C1, R38): a push of main goes to origin/main, not to
+    // the upstream, so no one-click push is offered.
+    repo.git(&["reset", "-q", "--hard", &main_tip]);
+    repo.git(&[
+        "update-ref",
+        "refs/remotes/origin/trunk",
+        "refs/remotes/origin/main",
+    ]);
+    repo.git(&["branch", "-q", "-u", "origin/trunk", "main"]);
+    let out = h.run(id, merge_branch("feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(out.hints.is_empty(), "{:?}", out.hints);
 }
 
 /// `main` (HEAD) and `feature` after `base`: `feature` changes `clash.txt`, `main` adds
@@ -1629,7 +1640,7 @@ async fn a_branch_deleted_underneath_fails_plainly_and_touches_nothing_else() {
         OpRequest::Push {
             branch: "gone".into(),
             remote: "origin".into(),
-            set_upstream: true,
+            to: None,
             force: false,
             lease: None,
         },

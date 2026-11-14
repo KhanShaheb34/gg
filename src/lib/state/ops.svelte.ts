@@ -142,9 +142,9 @@ async function followUp(repoId: number, request: OpRequest): Promise<void> {
 function hintActions(repoId: number, hint: OpHint): ToastAction[] {
   switch (hint.kind) {
     case "push": {
-      const { branch, remote, setUpstream } = hint;
-      const push: OpRequest = { op: "push", branch, remote, setUpstream, force: false, lease: null };
-      return [{ label: `Push ${shown(branch)} to ${shown(remote)}`, run: () => followUp(repoId, push) }];
+      const { branch, remote } = hint;
+      const push: OpRequest = { op: "push", branch, remote, to: null, force: false, lease: null };
+      return [{ label: `Push ${shown(branch)} to ${shown(`${remote}/${branch}`)}`, run: () => followUp(repoId, push) }];
     }
     case "fetch":
       return [{ label: "Fetch", run: () => findRepoView(repoId)?.fetch() }];
@@ -153,9 +153,10 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
         { label: `Pull ${shown(hint.branch)}`, run: () => followUp(repoId, { op: "pull", branch: hint.branch, mode: "default" }) },
       ];
     case "force_push": {
-      const { branch, remote } = hint;
-      const push: OpRequest = { op: "push", branch, remote, setUpstream: false, force: true, lease: null };
-      return [{ label: `Force push ${shown(branch)}…`, danger: true, run: () => followUp(repoId, push) }];
+      const { branch, remote, to } = hint;
+      const push: OpRequest = { op: "push", branch, remote, to, force: true, lease: null };
+      const there = shown(`${remote}/${to ?? branch}`);
+      return [{ label: `Force push ${shown(branch)} to ${there}…`, danger: true, run: () => followUp(repoId, push) }];
     }
     case "choose_pull_mode":
       return []; // a dialog asks instead (see report)

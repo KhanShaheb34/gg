@@ -115,7 +115,7 @@ describe("HTTP transport", () => {
     await api.runOp(2, { op: "reset", hash: "abc", mode: "hard" }, ["hard_reset"]);
     await api.runOp(
       2,
-      { op: "push", branch: "b", remote: "origin", setUpstream: false, force: true, lease: "abc" },
+      { op: "push", branch: "b", remote: "origin", to: null, force: true, lease: "abc" },
       ["force_push"],
     );
     await api.runOp(2, { op: "continue", evenWithMarkers: false });
@@ -156,7 +156,7 @@ describe("HTTP transport", () => {
         cmd: "run_op",
         args: {
           repoId: 2,
-          request: { op: "push", branch: "b", remote: "origin", setUpstream: false, force: true, lease: "abc" },
+          request: { op: "push", branch: "b", remote: "origin", to: null, force: true, lease: "abc" },
           confirmed: ["force_push"],
           clientId: expect.any(String), clientSeq: 3,
         },

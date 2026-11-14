@@ -35,6 +35,10 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
       : undefined;
   const noCurrent = noCurrentBranchReason(snap);
   const tracked = label.upstream !== null;
+  // Ahead counts against the upstream; a push goes to the branch of the same name (R38), so
+  // the count is only that push's when the upstream has that name.
+  const upstreamRemote = label.upstream === null ? null : remoteOf(label.upstream, snap.remotes);
+  const sameNamed = upstreamRemote !== null && label.upstream!.slice(upstreamRemote.length + 1) === label.name;
   return [
     item("checkout", "Check out", {
       disabledReason: firstReason(label.current ? "Already checked out" : undefined, elsewhere, busy),
@@ -54,7 +58,7 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
       disabledReason: firstReason(label.current ? "A branch cannot be rebased onto itself" : undefined, noCurrent, busy),
     }),
     SEPARATOR,
-    item("push", tracked && label.ahead > 0 ? `Push ${commits(label.ahead)}…` : "Push…", {
+    item("push", sameNamed && label.ahead > 0 ? `Push ${commits(label.ahead)}…` : "Push…", {
       disabledReason: noRemoteReason(snap),
     }),
     item("pull", tracked && label.behind > 0 ? `Pull ${commits(label.behind)}` : "Pull", {

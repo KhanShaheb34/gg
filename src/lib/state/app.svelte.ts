@@ -116,7 +116,7 @@ function reportSettingsProblem(problem: string): void {
             return;
           }
           dismissToast(id);
-          toast("info", "Settings reset: saving again");
+          toast("info", "Settings reset: saving again.");
         },
       },
     ],

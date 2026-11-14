@@ -67,7 +67,7 @@ export function pick(id: string, target: MenuTarget, snap: RepoSnapshot): void {
       void copyMessage(snap.repoId, row.hash);
       return;
     default:
-      toast("info", "This action is not available yet");
+      toast("info", "This action is not available yet.");
   }
 }
 
@@ -224,10 +224,10 @@ async function copy(text: string, what: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    toast("error", `Could not copy the ${what}`);
+    toast("error", `Could not copy the ${what}.`);
     return;
   }
-  toast("info", `Copied the ${what}`);
+  toast("info", `Copied the ${what}.`);
 }
 
 /** Copies the commit's whole message (the row has only its subject). */

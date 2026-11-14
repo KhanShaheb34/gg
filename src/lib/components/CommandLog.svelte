@@ -180,7 +180,7 @@
     untrack(() => {
       app.logRequest = null;
       void goTo(request.from).then((found) => {
-        if (!found) toast("info", "That operation's commands are no longer in the log");
+        if (!found) toast("info", "That operation's commands are no longer in the log.");
       });
     });
   });
@@ -278,8 +278,8 @@
 
   function copy(r: CommandRecord) {
     navigator.clipboard.writeText(commandLine(r.args)).then(
-      () => toast("info", "Copied the command line"),
-      () => toast("error", "Could not copy the command line"),
+      () => toast("info", "Copied the command line."),
+      () => toast("error", "Could not copy the command line."),
     );
   }
 

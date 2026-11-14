@@ -183,8 +183,8 @@
     if (selection && !selection.isCollapsed && hashEl?.contains(selection.anchorNode)) return;
     if (!hash) return;
     navigator.clipboard.writeText(hash).then(
-      () => toast("info", "Copied"),
-      () => toast("error", "Could not copy the commit hash"),
+      () => toast("info", "Copied the hash."),
+      () => toast("error", "Could not copy the hash."),
     );
   }
 
@@ -209,14 +209,14 @@
       }
       if (view.snapshot.generation !== generation) continue;
       if (index === null) {
-        toast("info", "That commit is not shown in the graph");
+        toast("info", "That commit is not shown in the graph.");
         return;
       }
       await view.selectRow(index, true);
       focusGraph(panel?.parentElement);
       return;
     }
-    toast("info", "The graph changed while looking for that commit; try again");
+    toast("info", "The graph changed while looking for that commit; try again.");
   }
 
   function focusGraph(host: Element | null | undefined) {

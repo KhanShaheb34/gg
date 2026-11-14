@@ -471,7 +471,7 @@ describe("settings that cannot be saved", () => {
     await s.init();
     await s.app.toasts[0].actions![0].run();
     expect(ipc.api.resetSettings).toHaveBeenCalledTimes(1);
-    expect(s.app.toasts.map((t) => t.message)).toEqual(["Settings reset: saving again"]);
+    expect(s.app.toasts.map((t) => t.message)).toEqual(["Settings reset: saving again."]);
   });
 
   it("a reset that fails keeps the notice and says why", async () => {

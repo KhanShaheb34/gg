@@ -335,8 +335,8 @@
 
   function copyHash(hash: string) {
     navigator.clipboard.writeText(hash).then(
-      () => toast("info", "Copied"),
-      () => toast("error", "Could not copy the commit hash"),
+      () => toast("info", "Copied the hash."),
+      () => toast("error", "Could not copy the hash."),
     );
   }
 

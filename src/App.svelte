@@ -113,7 +113,7 @@
       case "close":
         // With no tab left, Cmd+W closes the window, as in other tabbed apps.
         if (app.activeRepoId !== null) void closeActiveTab();
-        else void api.closeWindow().catch(() => toast("error", "Could not close the window"));
+        else void api.closeWindow().catch(() => toast("error", "Could not close the window."));
         break;
       case "cycle":
         cycleTab(shortcut.delta);

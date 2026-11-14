@@ -155,7 +155,7 @@ test("the hash is copied when clicked", async ({ gg, context }) => {
   await open(page, gg.repoPath("details"));
   await rowWith(page, "Main work").click();
   await panel(page).getByTestId("details-hash").click();
-  await expect(page.getByText("Copied", { exact: true })).toBeVisible();
+  await expect(page.getByText("Copied the hash.", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(hashOf(gg, "Main work"));
 });
 

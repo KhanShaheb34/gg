@@ -59,7 +59,7 @@ fn problem(name: &str) -> Option<&'static str> {
         .chars()
         .any(|c| matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
     {
-        return Some("it can't contain any of: ~ ^ : ? * [ \\ or a space");
+        return Some("it can't contain ~ ^ : ? * [ or \\ characters");
     }
     if name.contains("..") {
         return Some("it can't contain two dots in a row");

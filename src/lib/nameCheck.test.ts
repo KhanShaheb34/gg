@@ -47,7 +47,7 @@ describe("refNameProblem", () => {
     expect(refNameProblem("-f", [])).toBe("It can’t start with a hyphen.");
     expect(refNameProblem("has space", [])).toBe("It can’t contain spaces.");
     expect(refNameProblem("a..b", [])).toBe("It can’t contain two dots in a row.");
-    expect(refNameProblem("a~1", [])).toBe("It can’t contain any of: ~ ^ : ? * [ \\ or a space.");
+    expect(refNameProblem("a~1", [])).toBe("It can’t contain ~ ^ : ? * [ or \\ characters.");
     expect(refNameProblem("x.lock", [])).toBe("No part of it can end in “.lock”, git’s own ending.");
     expect(refNameProblem("x.", [])).toBe("It can’t end with a dot.");
     expect(refNameProblem("a/.b", [])).toBe("No part of it can start with a dot.");

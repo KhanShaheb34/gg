@@ -19,7 +19,7 @@ function formProblem(name: string): string | null {
   if (name === "@") return "“@” alone is git’s name for HEAD.";
   const odd = /[\u0000-\u001f\u007f ]/.exec(name);
   if (odd) return odd[0] === " " ? "It can’t contain spaces." : "It can’t contain control characters.";
-  if (/[~^:?*[\\]/.test(name)) return "It can’t contain any of: ~ ^ : ? * [ \\ or a space.";
+  if (/[~^:?*[\\]/.test(name)) return "It can’t contain ~ ^ : ? * [ or \\ characters.";
   if (name.includes("..")) return "It can’t contain two dots in a row.";
   if (name.includes("@{")) return "It can’t contain “@{” anywhere.";
   if (name.startsWith("/") || name.endsWith("/") || name.includes("//")) {

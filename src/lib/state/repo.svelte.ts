@@ -381,7 +381,7 @@ export class RepoView {
   private syncing = false;
   private syncAgain = false;
 
-    /**
+  /**
    * Looks at the repository again (as `sync`), at most once every RECHECK_MS: for a change
    * no watcher reports, such as a conflicted file resolved in an editor, when the user comes
    * back to the conflict banner.
@@ -393,7 +393,7 @@ export class RepoView {
     void this.sync();
   }
 
-/**
+  /**
    * Re-reads the repository without showing progress, as when the window comes back: the
    * working tree may have changed meanwhile, and only the git dir is watched. Errors are
    * not shown; the next refresh the user asks for says. Overlapping calls coalesce.

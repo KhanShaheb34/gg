@@ -13,6 +13,7 @@ use crate::Core;
 use crate::dto::{AppState, DangerKind, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::LogFilter;
+use crate::mask;
 use crate::store::{RepoPrefsPatch, SettingsPatch};
 
 #[derive(Deserialize)]
@@ -143,7 +144,17 @@ impl Core {
     /// Runs command `cmd` with `args` (a JSON object) and returns its result as JSON. The
     /// commands and their arguments and results are the Commands table of the boundary
     /// types; `fetch` returns as soon as the fetch has started.
+    ///
+    /// Credentials in URLs are masked in the result (see [`crate::mask`]) and in errors.
     pub async fn dispatch(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
+        match self.run_command(cmd, args).await {
+            Ok(value) if mask::masks_result_of(cmd) => Ok(mask::mask_json(value)),
+            Ok(value) => Ok(value),
+            Err(e) => Err(e.masked()),
+        }
+    }
+
+    async fn run_command(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
         match cmd {
             "get_app_state" => {
                 let NoArgs {} = parse(cmd, args)?;

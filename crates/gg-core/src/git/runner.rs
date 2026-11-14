@@ -1,7 +1,6 @@
 //! `GitRunner` is the only place the app spawns `git`. Every command gets the same
 //! non-interactive environment and leading `-c` options, and lands in the `CommandLog`.
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io;
@@ -14,6 +13,7 @@ use serde::Serialize;
 use tokio::process::{Child, Command};
 
 use crate::error::{CoreError, ErrorCode, Result};
+use crate::mask::mask_userinfo;
 
 /// Number of reads, and separately of writes, the log keeps; older ones are dropped.
 const LOG_CAPACITY: usize = 500;
@@ -367,36 +367,6 @@ impl Tail {
         }
         self.bytes
     }
-}
-
-/// `text` with the userinfo of every URL in it (`https://user:token@host/…`, where a
-/// credential may be) replaced by `***`: `https://***@host/…`. The authority ends at the
-/// first `/`, `?`, `#`, quote, angle bracket, backtick, space or control character; its last
-/// `@` ends the userinfo. `git@host:path` (no scheme) carries no secret and stays.
-pub(crate) fn mask_userinfo(text: &str) -> Cow<'_, str> {
-    if !text.contains("://") {
-        return Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find("://") {
-        let start = at + 3;
-        out.push_str(&rest[..start]);
-        rest = &rest[start..];
-        let end = rest
-            .find(|c: char| {
-                matches!(c, '/' | '?' | '#' | '\'' | '"' | '<' | '>' | '`')
-                    || c.is_whitespace()
-                    || c.is_control()
-            })
-            .unwrap_or(rest.len());
-        if let Some(last) = rest[..end].rfind('@') {
-            out.push_str("***");
-            rest = &rest[last..];
-        }
-    }
-    out.push_str(rest);
-    Cow::Owned(out)
 }
 
 /// Cuts `s` to at most `MAX_LOG_TEXT` bytes on a char boundary.
@@ -1300,24 +1270,6 @@ mod tests {
         for text in [&r.args[1], &r.stdout, &r.stderr] {
             assert!(!text.contains("SECRET"), "{text}");
         }
-    }
-
-    #[test]
-    fn userinfo_is_masked_only_inside_urls() {
-        assert_eq!(mask_userinfo("plain text"), "plain text");
-        assert_eq!(mask_userinfo("a@b.c, x://"), "a@b.c, x://");
-        assert_eq!(
-            mask_userinfo("http://host/p@q"),
-            "http://host/p@q",
-            "@ in the path"
-        );
-        assert_eq!(
-            mask_userinfo("https://u:p@h/ then https://h2/?a=b@c"),
-            "https://***@h/ then https://h2/?a=b@c"
-        );
-        assert_eq!(mask_userinfo("file:///tmp/a@b"), "file:///tmp/a@b");
-        assert_eq!(mask_userinfo("https://a@b@host/x"), "https://***@host/x");
-        assert_eq!(mask_userinfo("é https://ü:ß@h"), "é https://***@h");
     }
 
     /// The operation a record belongs to is served with its title, once the operation has

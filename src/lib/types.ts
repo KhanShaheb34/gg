@@ -152,7 +152,7 @@ export type AppState = {
 
 /**
  * One git command the core ran (`command_log`); `args` excludes the injected `-c` options. The
- * userinfo of URLs in `args`, `stdout` and `stderr` is masked by the core ("https://***@host/…").
+ * userinfo of URLs in `args`, `stdout` and `stderr` is masked by the core, as in every message, outcome, event and error it hands the UI ("https://***@host/…").
  */
 export type CommandRecord = {
   id: number;

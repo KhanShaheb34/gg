@@ -9,6 +9,7 @@ mod editor;
 pub mod error;
 pub mod git;
 pub mod graph;
+mod mask;
 pub mod ops;
 pub mod repo;
 pub mod store;
@@ -94,6 +95,8 @@ impl Core {
         runner: Result<GitRunner>,
     ) -> Arc<Self> {
         let store = Store::load(&config_dir);
+        // Every event leaves the core with credentials in URLs masked (R36).
+        let sink: Arc<dyn EventSink> = Arc::new(mask::MaskingSink(sink));
         let repos = runner.map(|runner| {
             let repos = RepoManager::new(runner, sink.clone());
             repos.set_fetch_interval(store.settings().fetch_interval_secs);

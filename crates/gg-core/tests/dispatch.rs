@@ -905,3 +905,85 @@ async fn editor_launches_can_be_recorded_to_a_file() {
         ]
     );
 }
+
+/// R36: a credential in a URL (the `user:password@` part) never reaches the UI, wherever git
+/// or the config put it: a failed operation's message and output, the fetch state, errors.
+/// git hides credentials in the URLs it prints itself; a hook or a helper does not, so a
+/// pre-push hook and an upload-pack print one here.
+#[cfg(unix)]
+#[tokio::test]
+async fn credentials_in_urls_never_reach_the_ui() {
+    use std::os::unix::fs::PermissionsExt;
+    const SECRET: &str = "s3cr3t-t0ken";
+    let say =
+        format!("echo \"could not reach https://user:{SECRET}@example.invalid/x.git\" >&2; exit 1");
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    let script = |path: &Path| {
+        std::fs::write(path, format!("#!/bin/sh\ncat >/dev/null &\n{say}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    script(&repo.path().join(".git/hooks/pre-push"));
+    let upload_pack = repo.dir.path().join("failing-upload-pack");
+    script(&upload_pack);
+    repo.git(&[
+        "config",
+        "remote.origin.uploadpack",
+        upload_pack.to_str().unwrap(),
+    ]);
+
+    let h = harness().await;
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+
+    // A failed push: git's message and output come back in the outcome.
+    let outcome = h
+        .call(
+            "run_op",
+            json!({"repoId": id, "clientId": "c", "clientSeq": 1, "confirmed": [],
+                   "request": {"op": "push", "branch": "main", "remote": "origin",
+                               "setUpstream": true, "force": false, "lease": null}}),
+        )
+        .await;
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    let detail = outcome["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("https://***@example.invalid"), "{outcome}");
+
+    // A failed fetch: its one-line reason and git's output are in the fetch state.
+    h.call("fetch", json!({"repoId": id})).await;
+    let failed = h
+        .sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["fetch"]["lastError"].is_string()
+        })
+        .await
+        .expect("the fetch failed");
+    assert!(
+        failed.1["fetch"]["lastErrorDetail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("https://***@example.invalid"),
+        "{}",
+        failed.1["fetch"]
+    );
+    let refreshed = h.call("refresh", json!({"repoId": id})).await;
+
+    // An error: a folder that does not exist, named in the error.
+    let missing = repo
+        .dir
+        .path()
+        .join(format!("https://user:{SECRET}@host/gone"));
+    let err = h.fail("open_repo", json!({"path": missing})).await;
+    assert!(err.message.contains("https://***@host/gone"), "{err:?}");
+    let err = serde_json::to_string(&err).unwrap();
+
+    let mut seen = vec![outcome.to_string(), refreshed.to_string(), err];
+    seen.extend(h.sink.events().iter().map(|(n, v)| format!("{n} {v}")));
+    for text in &seen {
+        assert!(
+            !text.contains(SECRET),
+            "the credential reached the UI: {text}"
+        );
+    }
+}

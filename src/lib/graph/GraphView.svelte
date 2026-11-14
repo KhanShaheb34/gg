@@ -30,7 +30,7 @@
   import { api } from "../ipc";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
-  import type { CommitRow, RefLabel } from "../types";
+  import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
   import {
     alignSlackFor,
     autoGraphWidth,
@@ -442,9 +442,14 @@
    */
   function menuAt(on: Element, row: CommitRow): Menu {
     const snap = view.snapshot;
+    /**
+     * The repository as it is when an item is picked, but with HEAD as the menu showed it:
+     * the request is for the branch the menu named (M2; the core refuses it if HEAD has moved).
+     */
+    const picked = (): RepoSnapshot => ({ ...view.snapshot, head: snap.head });
     const single = (target: MenuTarget): Menu => ({
       items: itemsFor(target, snap),
-      onPick: (id: string) => pick(id, target, view.snapshot),
+      onPick: (id: string) => pick(id, target, picked()),
       targets: [target],
     });
     const ofRow = (): Menu => {
@@ -459,9 +464,9 @@
           { id: "labels", label: labelsItemName(labels), submenu: items },
         ],
         onPick: (id: string) => {
-          if (!id.includes(":")) return pick(id, target, view.snapshot);
+          if (!id.includes(":")) return pick(id, target, picked());
           const [inner, innerId] = targetOf(id);
-          pick(innerId, inner, view.snapshot);
+          pick(innerId, inner, picked());
         },
         targets: [target, ...labels],
       };
@@ -472,7 +477,7 @@
         items,
         onPick: (id: string) => {
           const [target, inner] = targetOf(id);
-          pick(inner, target, view.snapshot);
+          pick(inner, target, picked());
         },
         targets,
       };

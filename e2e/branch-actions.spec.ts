@@ -359,3 +359,27 @@ test("a menu stays open while the repository refreshes behind it, and closes whe
   await expect(rowOf(page, "Made elsewhere")).toHaveCount(0);
   await expect(menus(page)).toHaveCount(0);
 });
+
+test("a menu's Pull is for the branch the menu was built on: checked out meanwhile, it is refused, not merged (M2)", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  const before = gg.git("routine", "rev-parse", "staging").trim();
+  await label(page, "staging").locator(".name").click({ button: "right" });
+  await expect(item(page, "Pull 2 commits")).toBeVisible();
+  // While the menu is open, staging is checked out in a terminal and the app sees it.
+  gg.git("routine", "switch", "-q", "staging");
+  await page.evaluate(async () => {
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    await findRepoView(app.activeRepoId!)!.refresh();
+  });
+  await expect(label(page, "staging")).toHaveClass(/current/);
+  await item(page, "Pull 2 commits").click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Nothing was done: it was asked for on main, but staging is checked out now." }),
+  ).toBeVisible();
+  expect(gg.git("routine", "rev-parse", "staging").trim()).toBe(before);
+});

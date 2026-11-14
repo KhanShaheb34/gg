@@ -720,8 +720,10 @@ for (const theme of ["light", "dark"] as const) {
     await grid.locator('[role="row"]', { hasText: "Earlier work 39" }).click();
     const details = page.getByTestId("commit-details");
     const splitter = details.getByRole("separator", { name: "Resize details panel" });
+    await expect(details).toBeVisible();
+    await page.waitForTimeout(400); // the panel has taken its place: grab its edge, not the text
     const box = (await splitter.boundingBox())!;
-    await page.mouse.move(box.x + 100, box.y + 4);
+    await page.mouse.move(box.x + 100, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(box.x + 100, 0, { steps: 4 });
     await page.mouse.up();

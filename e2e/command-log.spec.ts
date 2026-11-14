@@ -247,7 +247,7 @@ test("the graph keeps its minimum under the banner, the details and the log", as
   // The details panel dragged as tall as it goes.
   const splitter = details.getByRole("separator", { name: "Resize details panel" });
   const box = (await splitter.boundingBox())!;
-  await page.mouse.move(box.x + 100, box.y + 4);
+  await page.mouse.move(box.x + 100, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + 100, 0, { steps: 4 });
   await page.mouse.up();
@@ -289,7 +289,7 @@ test("show_log_in_a_small_window_shows_the_operation_above_the_details", async (
   // The details panel dragged as tall as it goes.
   const splitter = details.getByRole("separator", { name: "Resize details panel" });
   const box = (await splitter.boundingBox())!;
-  await page.mouse.move(box.x + 100, box.y + 4);
+  await page.mouse.move(box.x + 100, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + 100, 0, { steps: 4 });
   await page.mouse.up();

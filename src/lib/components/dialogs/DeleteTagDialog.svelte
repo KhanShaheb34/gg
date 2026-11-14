@@ -4,7 +4,7 @@
   (origin chosen to begin with). Without remotes, only the local tag is deleted.
 -->
 <script lang="ts">
-  import { shown } from "../../menus/common";
+  import { defaultRemote, shown } from "../../menus/common";
   import Dialog from "../Dialog.svelte";
   import { closeAndRun } from "./run";
 
@@ -15,7 +15,7 @@
   const uid = Math.random().toString(36).slice(2, 8);
   let alsoRemote = $state(false);
   // svelte-ignore state_referenced_locally
-  let remote = $state(remotes.includes("origin") ? "origin" : (remotes[0] ?? ""));
+  let remote = $state(defaultRemote(remotes));
 
   function submit() {
     closeAndRun(close, repoId, { op: "delete_tag", name, remote: alsoRemote ? remote : null });

@@ -460,6 +460,43 @@ test("push a tag with several remotes: origin is chosen, another can be", async 
   expect(gg.git("small", "ls-remote", "--tags", "backup").trim()).toContain("refs/tags/v1");
 });
 
+test("several remotes, none named origin: the first is chosen, so the dialogs can go ahead at once", async ({ gg }) => {
+  const { page } = gg;
+  const dir = gg.repoPath("small");
+  gg.git("small", "remote", "rename", "origin", "upstream");
+  gg.git("small", "init", "-q", "--bare", "../backup.git");
+  gg.git("small", "remote", "add", "backup", path.join(path.dirname(dir), "backup.git"));
+  await page.goto("/");
+  await open(page, dir);
+  await grid(page).evaluate((el) => (el.scrollTop = el.scrollHeight));
+
+  await pickOnLabel(page, "v1", "Push…");
+  await expect(dialog(page).getByRole("combobox", { name: "Remote" })).toHaveValue("backup");
+  await expect(dialog(page).getByRole("button", { name: "Push tag" })).toBeEnabled();
+  await page.keyboard.press("Escape");
+
+  await pickOnLabel(page, "v1", "Delete…");
+  const d = page.getByRole("alertdialog");
+  await d.getByRole("checkbox", { name: "Also delete it on a remote" }).check();
+  await expect(d.getByRole("combobox", { name: "Remote" })).toHaveValue("backup");
+  await page.keyboard.press("Escape");
+});
+
+test("delete a tag in a repository without remotes: no remote to choose", async ({ gg }) => {
+  const { page } = gg;
+  gg.git("picks", "tag", "solo");
+  await page.goto("/");
+  await open(page, gg.repoPath("picks"));
+  await pickOnLabel(page, "solo", "Delete…");
+  const d = page.getByRole("alertdialog");
+  await expect(d.getByRole("checkbox")).toHaveCount(0);
+  await expect(d.getByRole("combobox")).toHaveCount(0);
+  await armed(page);
+  await d.getByRole("button", { name: "Delete tag" }).click();
+  await expect(notice(page, "Deleted tag solo.")).toBeVisible();
+  expect(gg.git("picks", "tag", "--list", "solo").trim()).toBe("");
+});
+
 /** Runs `request` through the app's own runOp in the active tab, not waiting for it. */
 function startOp(page: Page, request: OpRequest): Promise<unknown> {
   return page.evaluate(async (req) => {
@@ -528,7 +565,7 @@ test("a dialog closing under another leaves the focus in the one above; a covere
   await page.evaluate(async () => {
     const ops = await import("/src/lib/state/ops.svelte.ts");
     const { app } = await import("/src/lib/state/app.svelte.ts");
-    const picks = app.tabs.find((t) => t.path.endsWith("/picks"))!.repoId;
+    const picks = app.tabs.find((t: { path: string }) => t.path.endsWith("/picks"))!.repoId;
     void ops.runOp(picks, { op: "delete_branch", branch: "topic" }).catch(() => {});
   });
   const above = page.getByRole("alertdialog");

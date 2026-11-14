@@ -3,7 +3,7 @@
   disabled when there is no remote.)
 -->
 <script lang="ts">
-  import { shown } from "../../menus/common";
+  import { defaultRemote, shown } from "../../menus/common";
   import Dialog from "../Dialog.svelte";
   import { closeAndRun } from "./run";
 
@@ -13,7 +13,7 @@
 
   const uid = Math.random().toString(36).slice(2, 8);
   // svelte-ignore state_referenced_locally
-  let remote = $state(remotes.includes("origin") ? "origin" : (remotes[0] ?? ""));
+  let remote = $state(defaultRemote(remotes));
 
   function submit() {
     closeAndRun(close, repoId, { op: "push_tag", name, remote });

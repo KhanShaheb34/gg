@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shown } from "./common";
+import { defaultRemote, shown } from "./common";
 
 const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const codePoints = (s: string) => [...s].length;
@@ -37,5 +37,14 @@ describe("shown", () => {
     const flag = "🇧🇩";
     const out = shown(`${"a".repeat(21)}${flag.repeat(30)}`);
     expect(out.replace(/^a+…?/, "").replace(/…/, "").length % 4).toBe(0);
+  });
+});
+
+describe("defaultRemote", () => {
+  it("is the preferred one, else origin, else the first", () => {
+    expect(defaultRemote(["backup", "origin"], "backup")).toBe("backup");
+    expect(defaultRemote(["backup", "origin"], "gone")).toBe("origin");
+    expect(defaultRemote(["backup", "upstream"])).toBe("backup");
+    expect(defaultRemote([])).toBe("");
   });
 });

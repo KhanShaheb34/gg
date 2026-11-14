@@ -205,6 +205,19 @@ describe("runOp", () => {
       expect.objectContaining({ kind: "error", message: "“a..b” is not a valid branch name" }),
     ]);
   });
+
+  it("leaves the errors its caller shows itself unreported (a dialog shows a bad name beside its field)", async () => {
+    const bad = new ipc.CoreError({ code: "bad_name", message: "A branch named “x” already exists.", detail: null });
+    vi.mocked(ipc.api.runOp).mockRejectedValueOnce(bad);
+    const create: OpRequest = { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false };
+    await expect(ops.runOp(1, create, { ownErrors: ["bad_name"] })).rejects.toBe(bad);
+    expect(app.app.toasts).toEqual([]);
+
+    // Others are still reported.
+    vi.mocked(ipc.api.runOp).mockRejectedValueOnce(new ipc.CoreError({ code: "io", message: "Disk full", detail: null }));
+    await expect(ops.runOp(1, create, { ownErrors: ["bad_name"] })).rejects.toThrow("Disk full");
+    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: "Disk full" })]);
+  });
 });
 
 describe("hint buttons", () => {

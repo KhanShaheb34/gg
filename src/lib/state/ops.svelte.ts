@@ -3,8 +3,8 @@
 // shows how it went. The running operation itself is part of the repository's snapshot.
 
 import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
-import { api } from "../ipc";
-import type { Danger, DangerKind, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
+import { api, CoreError } from "../ipc";
+import type { CoreErrorDto, Danger, DangerKind, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 import { notify, reportError, showLog, type ToastAction } from "./app.svelte";
 import { closeDialog, openDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
@@ -18,16 +18,21 @@ import { findRepoView } from "./repo.svelte";
  * with a button per hint; `failed`, its message with git's text folded below, the hints, and
  * a link to its command-log entries; `stopped` (git stopped on conflicts), none: the
  * conflict banner shows it. An error from the core is reported, and the promise rejects
- * with it.
+ * with it; errors with a code in `ownErrors` are not reported: the caller shows them (a
+ * dialog shows a refused name beside its field).
  */
-export async function runOp(repoId: number, request: OpRequest): Promise<OpOutcome> {
+export async function runOp(
+  repoId: number,
+  request: OpRequest,
+  { ownErrors = [] }: { ownErrors?: CoreErrorDto["code"][] } = {},
+): Promise<OpOutcome> {
   let confirmed: DangerKind[] = [];
   for (;;) {
     let outcome: OpOutcome;
     try {
       outcome = await api.runOp(repoId, request, confirmed);
     } catch (e) {
-      reportError(e);
+      if (!(e instanceof CoreError && ownErrors.includes(e.code))) reportError(e);
       throw e;
     }
     findRepoView(repoId)?.applySnapshot(outcome.snapshot);

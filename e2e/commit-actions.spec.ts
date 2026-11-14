@@ -5,7 +5,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import type { InProgress } from "../src/lib/types";
+import type { InProgress, OpRequest } from "../src/lib/types";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -442,4 +442,50 @@ test("push a tag with several remotes: origin is chosen, another can be", async 
   await dialog(page).getByRole("button", { name: "Push tag" }).click();
   await expect(notice(page, "Pushed tag v1 to backup.")).toBeVisible();
   expect(gg.git("small", "ls-remote", "--tags", "backup").trim()).toContain("refs/tags/v1");
+});
+
+/** Runs `request` through the app's own runOp in the active tab, not waiting for it. */
+function startOp(page: Page, request: OpRequest): Promise<unknown> {
+  return page.evaluate(async (req) => {
+    const ops = await import("/src/lib/state/ops.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    void ops.runOp(app.activeRepoId!, req).catch(() => {});
+  }, request);
+}
+
+test("a dialog whose request waits behind another: a name dialog says so and cannot be cancelled; others close", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  const dir = gg.repoPath("small");
+  await open(page, dir);
+  identify((...a) => gg.git("small", ...a));
+  // Each checkout runs this hook, which takes a while.
+  writeFileSync(path.join(dir, ".git/hooks/post-checkout"), "#!/bin/sh\nsleep 2\n", { mode: 0o755 });
+  const busy = page.getByTestId("busy");
+
+  await startOp(page, { op: "checkout_branch", branch: "fix/typo", fastForward: false });
+  await expect(busy).toContainText("fix/typo");
+  await pickOnRow(page, "Add part 3", "Create branch here…");
+  const d = dialog(page);
+  await page.keyboard.type("queued");
+  await page.keyboard.press("Enter");
+  // The core may yet refuse the name: the dialog waits, and says for what.
+  await expect(d.getByText("Waiting for Check out fix/typo to finish…")).toBeVisible();
+  await expect(d.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(d).toBeVisible();
+  await expect(d).toHaveCount(0, { timeout: 10_000 });
+  await expect(notice(page, "Created branch queued and checked it out.")).toBeVisible();
+  expect(gg.git("small", "branch", "--show-current").trim()).toBe("queued");
+
+  // A dialog whose request cannot come back to it closes at once; the toolbar shows the queue.
+  await startOp(page, { op: "checkout_branch", branch: "main", fastForward: false });
+  await expect(busy).toContainText("main");
+  await pickOnRow(page, "Add part 3", "Revert…");
+  await page.keyboard.press("Enter");
+  await expect(d).toHaveCount(0);
+  await expect(busy).toContainText("+1");
+  await expect(notice(page, /Reverted [0-9a-f]+: a new commit undoes its changes\./)).toBeVisible({ timeout: 10_000 });
 });

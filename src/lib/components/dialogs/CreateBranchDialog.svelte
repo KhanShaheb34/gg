@@ -37,6 +37,7 @@
   primary={named.pending ? "Creating…" : "Create branch"}
   valid={problem === null && !named.pending}
   once={false}
+  cancellable={!named.pending}
   onSubmit={submit}
   onCancel={close}
 >
@@ -44,7 +45,7 @@
     <span class="dialog-target-label">At</span>
     <CommitRef {hash} {subject} />
   </div>
-  <NameField label="Branch name" bind:value={name} {problem} readonly={named.pending} />
+  <NameField label="Branch name" bind:value={name} {problem} readonly={named.pending} waiting={named.waitingFor} />
   <label class="check-row">
     <input class="checkbox" type="checkbox" bind:checked={checkout} disabled={named.pending} />
     <span>Check out after creating</span>

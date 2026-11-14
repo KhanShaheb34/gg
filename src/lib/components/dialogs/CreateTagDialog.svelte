@@ -33,6 +33,7 @@
   primary={named.pending ? "Creating…" : "Create tag"}
   valid={problem === null && !named.pending}
   once={false}
+  cancellable={!named.pending}
   onSubmit={submit}
   onCancel={close}
 >
@@ -40,7 +41,7 @@
     <span class="dialog-target-label">At</span>
     <CommitRef {hash} {subject} />
   </div>
-  <NameField label="Tag name" bind:value={name} {problem} readonly={named.pending} />
+  <NameField label="Tag name" bind:value={name} {problem} readonly={named.pending} waiting={named.waitingFor} />
   <div class="field">
     <label class="field-label" for="tag-message-{uid}">Message <span class="optional">(optional)</span></label>
     <textarea

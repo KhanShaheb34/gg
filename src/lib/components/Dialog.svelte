@@ -1,7 +1,8 @@
 <!--
   The frame of every modal dialog: a title, the dialog's own content, and Cancel and a
   primary button. Modal: the window behind is dimmed and takes no input; Tab stays inside;
-  focus goes back where it was when the dialog closes. Escape (and Cancel) cancel; Enter
+  focus goes back where it was when the dialog closes. Escape (and Cancel) cancel, unless
+  `cancellable` is false (a request the dialog waits on is out); Enter
   submits, unless focus is on Cancel or in a multi-line field (Cmd/Ctrl+Enter submits
   there), or the primary button is disabled (`valid` false). A dangerous primary button is
   red and never has the focus to begin with: the first field has it, else Cancel. Enter on a
@@ -25,6 +26,8 @@
     /** The fields are valid: the primary button is enabled. */
     valid?: boolean;
     cancelLabel?: string;
+    /** Cancel and Escape work (default); false while a request the dialog waits on is out. */
+    cancellable?: boolean;
     /** Submits at most once (default). */
     once?: boolean;
     onSubmit: () => void;
@@ -38,6 +41,7 @@
     danger = false,
     valid = true,
     cancelLabel = "Cancel",
+    cancellable = true,
     once = true,
     onSubmit,
     onCancel,
@@ -69,7 +73,7 @@
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      onCancel();
+      if (cancellable) onCancel();
       return;
     }
     if (e.key === "Tab") {
@@ -130,7 +134,7 @@
       {@render children()}
     </div>
     <div class="buttons">
-      <button class="button" bind:this={cancelButton} onclick={onCancel}>{cancelLabel}</button>
+      <button class="button" bind:this={cancelButton} disabled={!cancellable} onclick={onCancel}>{cancelLabel}</button>
       <button class="button primary" class:danger disabled={!valid} bind:this={primaryButton} onclick={submit}
         >{primary}</button
       >
@@ -200,8 +204,12 @@
       border-color 80ms linear;
   }
 
-  .button:hover {
+  .button:hover:not(:disabled) {
     background: var(--bg-hover);
+  }
+
+  .button:disabled:not(.primary) {
+    color: var(--text-faint);
   }
 
   .button:active {

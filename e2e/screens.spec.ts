@@ -293,7 +293,7 @@ for (const theme of ["light", "dark"] as const) {
     await shot("menu-branch");
     await page.keyboard.press("Escape");
 
-    // A remote branch, near the right edge of the window.
+    // A remote branch's own label.
     await grid.locator('[data-ref="origin/main"]').first().click({ button: "right" });
     await shot("menu-remote");
     await page.keyboard.press("Escape");
@@ -322,6 +322,9 @@ for (const theme of ["light", "dark"] as const) {
     // A merge whose notice offers to push, and the busy indicator with one queued.
     gg.git("branchy", "checkout", "--", ".");
     gg.git("branchy", "clean", "-fdq");
+    // The graph has caught up with the clean-up before the operations start (none refresh
+    // the view beside an operation).
+    await expect(grid.locator('[role="row"]', { hasText: "Uncommitted changes" })).toHaveCount(0);
     const hook = path.join(dir, ".git/hooks/post-checkout");
     writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
     chmodSync(hook, 0o755);

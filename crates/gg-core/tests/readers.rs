@@ -6,7 +6,8 @@ use std::fs;
 use std::path::Path;
 
 use gg_core::dto::{
-    FileChange, FileStatus, InProgress, InProgressKind, ViewOptions, WorktreeStatus,
+    ConflictFile, ConflictState, FileChange, FileStatus, InProgress, InProgressKind, ViewOptions,
+    WorktreeStatus,
 };
 use gg_core::error::ErrorCode;
 use gg_core::git::details::read_details;
@@ -852,9 +853,15 @@ fn stopped(
 ) -> Option<InProgress> {
     Some(InProgress {
         kind,
-        conflicted: conflicted.iter().map(|p| (*p).to_owned()).collect(),
         // Nothing resolved yet: each still has git's conflict markers.
-        unresolved: conflicted.iter().map(|p| (*p).to_owned()).collect(),
+        files: conflicted
+            .iter()
+            .map(|p| ConflictFile {
+                path: (*p).to_owned(),
+                state: ConflictState::Markers,
+            })
+            .collect(),
+        file_count: conflicted.len() as u32,
         step: step.map(|(s, _)| s),
         total: step.map(|(_, t)| t),
         subject: Some(subject.to_owned()),
@@ -1101,10 +1108,10 @@ async fn conflicted_paths_with_spaces_and_unicode() {
     repo.git(&["rm", "-q", "--", "gone.txt"]);
     repo.commit_all("main side");
     assert!(!repo.git_succeeds(&["merge", "feature"]));
-    let conflicted = in_progress(&repo).await.expect("a merge").conflicted;
+    let state = in_progress(&repo).await.expect("a merge");
     // Sorted, relative to the worktree, unquoted; the file deleted on one side included.
     assert_eq!(
-        conflicted,
+        state.paths(),
         [
             "[ab].txt",
             "a b.txt",
@@ -1114,17 +1121,27 @@ async fn conflicted_paths_with_spaces_and_unicode() {
     );
 }
 
-/// A conflicted file whose conflict markers are gone is resolved (it is still unmerged
-/// until it is staged); one that still has them is not. Other files' whitespace errors and a
-/// name that looks like git's report do not confuse it.
-#[tokio::test]
-async fn resolved_files_are_told_from_unresolved_ones() {
-    let repo = TestRepo::new();
-    let names = ["clash.txt", "a: 1: b.txt", "other.txt"];
+/// The state of each file of the merge in `repo` (path, state), in path order.
+async fn states(repo: &TestRepo) -> Vec<(String, ConflictState)> {
+    in_progress(repo)
+        .await
+        .expect("a merge")
+        .files
+        .into_iter()
+        .map(|f| (f.path, f.state))
+        .collect()
+}
+
+fn st(path: &str, state: ConflictState) -> (String, ConflictState) {
+    (path.to_owned(), state)
+}
+
+/// `main` and `feature` both change each of `names` after `base` (each from `base\n` to
+/// "<side>\n"); the merge of `feature` stopped.
+fn both_changed(repo: &TestRepo, names: &[&str]) {
     for name in names {
         repo.write(name, "base\n");
     }
-    repo.write("spaces.txt", "fine\n");
     repo.commit_all("base");
     repo.branch("feature");
     repo.checkout("feature");
@@ -1138,20 +1155,99 @@ async fn resolved_files_are_told_from_unresolved_ones() {
     }
     repo.commit_all("main side");
     assert!(!repo.git_succeeds(&["merge", "feature"]));
-    let state = in_progress(&repo).await.expect("a merge");
-    assert_eq!(state.unresolved, state.conflicted);
+}
+
+/// A conflicted text file whose conflict markers are gone is resolved (still unmerged until
+/// it is staged); one that still has a `<<<<<<<` or `>>>>>>>` line is not. A Markdown
+/// underline of `=======` is no marker. Names git would quote (a double quote, a tab) and
+/// one that looks like a report line are read as they are.
+#[tokio::test]
+async fn resolved_files_are_told_from_ones_with_markers() {
+    use ConflictState::{Markers, Resolved};
+    let repo = TestRepo::new();
+    let names = ["clash.txt", "a: 1: b.txt", "say \"hi\"\tthere.md"];
+    both_changed(&repo, &names);
+    let all_marked = vec![
+        st("a: 1: b.txt", Markers),
+        st("clash.txt", Markers),
+        st("say \"hi\"\tthere.md", Markers),
+    ];
+    assert_eq!(states(&repo).await, all_marked);
 
     repo.write("clash.txt", "resolved\n");
-    repo.write("spaces.txt", "trailing   \n");
-    let state = in_progress(&repo).await.expect("a merge");
-    assert_eq!(state.conflicted, ["a: 1: b.txt", "clash.txt", "other.txt"]);
-    assert_eq!(state.unresolved, ["a: 1: b.txt", "other.txt"]);
+    repo.write("say \"hi\"\tthere.md", "Title\n=======\n\nText.\n");
+    assert_eq!(
+        states(&repo).await,
+        [
+            st("a: 1: b.txt", Markers),
+            st("clash.txt", Resolved),
+            st("say \"hi\"\tthere.md", Resolved),
+        ]
+    );
 
-    repo.write("a: 1: b.txt", "resolved\n");
-    repo.write("other.txt", "resolved\n");
+    // Only the closing marker left: still not resolved. Eight `<` are no marker.
+    repo.write("a: 1: b.txt", "<<<<<<<< not one\nkept\n>>>>>>> feature\n");
+    assert_eq!(states(&repo).await[0], st("a: 1: b.txt", Markers));
+    repo.write("a: 1: b.txt", "<<<<<<<< not one\n");
     let state = in_progress(&repo).await.expect("a merge");
-    assert_eq!(state.conflicted.len(), 3, "unmerged until staged");
-    assert!(state.unresolved.is_empty(), "{:?}", state.unresolved);
+    assert_eq!(state.file_count, 3, "unmerged until staged");
+    assert!(state.files.iter().all(|f| f.state == Resolved), "{state:?}");
+}
+
+/// What `git diff --check` cannot see: a binary conflict (git keeps one side, no markers)
+/// and a file deleted on one side are undecided; a text file marked `-diff` (a lock file)
+/// with markers in it has markers; `conflict-marker-size` is honoured.
+#[tokio::test]
+async fn binary_deleted_and_undiffed_conflicts_are_not_taken_for_resolved() {
+    use ConflictState::{Markers, Resolved, Undecided};
+    let repo = TestRepo::new();
+    repo.write(
+        ".gitattributes",
+        "*.lock -diff\nwide.txt conflict-marker-size=10\n",
+    );
+    repo.write("image.bin", "base\0\x01");
+    repo.write("gone.txt", "base\n");
+    for name in ["deps.lock", "wide.txt"] {
+        repo.write(name, "base\n");
+    }
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("image.bin", "feature\0\x02");
+    repo.write("gone.txt", "feature\n");
+    for name in ["deps.lock", "wide.txt"] {
+        repo.write(name, "feature\n");
+    }
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("image.bin", "main\0\x03");
+    repo.git(&["rm", "-q", "--", "gone.txt"]);
+    for name in ["deps.lock", "wide.txt"] {
+        repo.write(name, "main\n");
+    }
+    repo.commit_all("main side");
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    assert_eq!(
+        states(&repo).await,
+        [
+            st("deps.lock", Markers),
+            st("gone.txt", Undecided),
+            st("image.bin", Undecided),
+            st("wide.txt", Markers),
+        ]
+    );
+    // A run of 7 is no marker where the size is 10.
+    repo.write("wide.txt", "<<<<<<< x\n>>>>>>> y\n");
+    repo.write("deps.lock", "resolved\n");
+    assert_eq!(
+        states(&repo).await,
+        [
+            st("deps.lock", Resolved),
+            st("gone.txt", Undecided),
+            st("image.bin", Undecided),
+            st("wide.txt", Resolved),
+        ]
+    );
 }
 
 /// Conflicts nothing in progress explains (a stash pop's) are named in the status, at most
@@ -1206,7 +1302,11 @@ async fn state_started_outside_the_app_is_detected() {
         .await
         .expect("a repo-changed with the merge in progress");
     assert_eq!(changed.1["inProgress"]["kind"], "merge");
-    assert_eq!(changed.1["inProgress"]["conflicted"][0], "clash.txt");
+    assert_eq!(
+        changed.1["inProgress"]["files"][0],
+        serde_json::json!({"path": "clash.txt", "state": "markers"})
+    );
+    assert_eq!(changed.1["inProgress"]["fileCount"], 1);
     assert_eq!(changed.1["status"]["conflicted"], 1);
     let snap = m.snapshot(id).await.unwrap();
     assert_eq!(
@@ -1351,7 +1451,7 @@ async fn sequence_committed_by_hand_is_still_in_progress() {
         sequence_committed_by_hand(&repo, verb);
         let state = in_progress(&repo).await.expect(verb);
         assert_eq!(state.kind, kind);
-        assert!(state.conflicted.is_empty());
+        assert!(state.files.is_empty());
         assert_eq!(state.subject, None, "{verb}: {state:?}");
     }
 }

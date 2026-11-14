@@ -9,10 +9,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::dto::{InProgress, InProgressKind};
+use std::collections::HashMap;
+
+use crate::dto::{ConflictFile, ConflictState, InProgress, InProgressKind, MAX_CONFLICTED_PATHS};
 use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner};
-use crate::git::status::read_conflicted;
+use crate::git::status::{Unmerged, read_conflicted};
 
 /// The state files asked for, in the order `rev-parse` prints their paths.
 const STATE_FILES: [&str; 7] = [
@@ -178,65 +180,136 @@ pub(crate) async fn state_files(runner: &GitRunner, worktree: &Path) -> Result<O
     }))
 }
 
-/// Most paths given to one `git diff --check`, so the command line stays short.
-const CHECK_CHUNK: usize = 100;
+/// Most paths given to one `git check-attr`, so the command line stays short.
+const ATTR_CHUNK: usize = 100;
 
-/// What `git diff --check` says of a line left from a conflict.
-const LEFTOVER: &str = ": leftover conflict marker";
+/// Largest file read to look for conflict markers; a larger one is undecided.
+const MAX_JUDGED_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Those of `paths` (conflicted, relative to the worktree at `worktree`) whose working-tree
-/// file still has conflict markers, as `git diff --check` finds them: not resolved yet.
-/// When git's report cannot be read for a group of paths, each of them counts as unresolved.
-pub(crate) async fn with_conflict_markers(
+/// git's default length of a conflict marker's run.
+const DEFAULT_MARKER_SIZE: usize = 7;
+
+/// How far each of `unmerged` (relative to the worktree at `worktree`) is resolved, in the
+/// same order. Only a file both sides changed as text can hold conflict markers: it has
+/// markers while a line starts with exactly the file's `conflict-marker-size` (default 7)
+/// of `<` or `>` (then a space or the line's end); `=======` alone is no marker (a Markdown
+/// underline looks the same). A file git kept one side of (binary, deleted or added on one
+/// side, a `merge` attribute that does not merge text), or one that cannot be read or is
+/// over 8 MiB, is undecided. The files are read, never written.
+pub(crate) async fn judge(
     runner: &GitRunner,
     worktree: &Path,
-    paths: &[String],
-) -> Result<Vec<String>> {
-    let mut unresolved = Vec::new();
-    for chunk in paths.chunks(CHECK_CHUNK) {
-        // Literal: a path like `[ab].txt` must not match other files as a glob.
-        let mut args = vec![
-            "--literal-pathspecs",
-            "diff",
-            "--check",
-            "--no-ext-diff",
-            "--",
-        ];
-        args.extend(chunk.iter().map(String::as_str));
-        let out = runner.run_unchecked(worktree, &args, CmdKind::Read).await?;
-        // 0: nothing found; 2: problems found (listed); anything else: git failed.
-        let found = match out.code {
-            0 => Some(Vec::new()),
-            2 => marked_paths(&out.text(), chunk),
-            _ => None,
-        }
-        .unwrap_or_else(|| chunk.to_vec());
-        unresolved.extend(found);
-    }
-    unresolved.sort();
-    unresolved.dedup();
-    Ok(unresolved)
+    unmerged: &[Unmerged],
+) -> Result<Vec<ConflictFile>> {
+    let text: Vec<&str> = unmerged
+        .iter()
+        .filter(|u| u.both_sides_merged())
+        .map(|u| u.path.as_str())
+        .collect();
+    let attrs = attributes(runner, worktree, &text).await?;
+    Ok(unmerged
+        .iter()
+        .map(|u| {
+            let state = match attrs.get(u.path.as_str()) {
+                Some(attr) if u.both_sides_merged() && attr.merges_text => {
+                    file_state(&worktree.join(&u.path), attr.marker_size)
+                }
+                _ => ConflictState::Undecided,
+            };
+            ConflictFile {
+                path: u.path.clone(),
+                state,
+            }
+        })
+        .collect())
 }
 
-/// The paths of `paths` that `report` (`git diff --check`'s) says have a leftover conflict
-/// marker (`<path>:<line>: leftover conflict marker`). `None` if a marker is reported for a
-/// file that is not recognised among `paths` (a quoted name, say).
-fn marked_paths(report: &str, paths: &[String]) -> Option<Vec<String>> {
-    let mut marked = Vec::new();
-    for line in report.lines().filter(|l| l.ends_with(LEFTOVER)) {
-        let head = &line[..line.len() - LEFTOVER.len()];
-        // The longest path that is followed by `:<digits>`.
-        let path = paths
+/// What a file's attributes say about its conflicts.
+struct ConflictAttrs {
+    /// git merges it as text (its `merge` attribute is not unset or `binary`).
+    merges_text: bool,
+    marker_size: usize,
+}
+
+/// The conflict attributes of each of `paths` (`git check-attr -z`), by path.
+async fn attributes<'a>(
+    runner: &GitRunner,
+    worktree: &Path,
+    paths: &[&'a str],
+) -> Result<HashMap<&'a str, ConflictAttrs>> {
+    let mut found = HashMap::new();
+    for chunk in paths.chunks(ATTR_CHUNK) {
+        let mut args = vec!["check-attr", "-z", "merge", "conflict-marker-size", "--"];
+        args.extend(chunk.iter().copied());
+        let out = runner.run_unchecked(worktree, &args, CmdKind::Read).await?;
+        if out.code != 0 {
+            continue; // unknown: each stays undecided
+        }
+        let mut attrs: HashMap<&str, ConflictAttrs> = chunk
             .iter()
-            .filter(|p| {
-                head.strip_prefix(p.as_str())
-                    .and_then(|rest| rest.strip_prefix(':'))
-                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .map(|p| {
+                let attr = ConflictAttrs {
+                    merges_text: true,
+                    marker_size: DEFAULT_MARKER_SIZE,
+                };
+                (*p, attr)
             })
-            .max_by_key(|p| p.len())?;
-        marked.push(path.clone());
+            .collect();
+        // `<path> NUL <attribute> NUL <value> NUL`, for each path and attribute asked for.
+        let text = out.text();
+        let fields: Vec<&str> = text.split('\0').collect();
+        for triple in fields.chunks_exact(3) {
+            let [path, name, value] = triple else {
+                continue;
+            };
+            let Some(attr) = attrs.get_mut(*path) else {
+                continue;
+            };
+            match *name {
+                "merge" => attr.merges_text = !matches!(*value, "unset" | "binary"),
+                "conflict-marker-size" => {
+                    if let Ok(n @ 1..=1024) = value.parse::<usize>() {
+                        attr.marker_size = n;
+                    }
+                }
+                _ => {}
+            }
+        }
+        found.extend(attrs);
     }
-    Some(marked)
+    Ok(found)
+}
+
+/// The state of the text file at `path` whose markers are runs of `size`.
+fn file_state(path: &Path, size: usize) -> ConflictState {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return ConflictState::Undecided; // gone: deleted to resolve it, or unreadable
+    };
+    if !meta.is_file() || meta.len() > MAX_JUDGED_BYTES {
+        return ConflictState::Undecided;
+    }
+    match fs::read(path) {
+        Ok(bytes) if bytes.contains(&0) => ConflictState::Undecided,
+        Ok(bytes) if has_markers(&bytes, size) => ConflictState::Markers,
+        Ok(_) => ConflictState::Resolved,
+        Err(_) => ConflictState::Undecided,
+    }
+}
+
+/// Whether a line of `text` is a conflict's opening or closing marker: exactly `size` of `<`
+/// or `>` at its start, then a space, a tab or the line's end.
+fn has_markers(text: &[u8], size: usize) -> bool {
+    text.split(|&b| b == b'\n').any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(&first) = line.first() else {
+            return false;
+        };
+        if first != b'<' && first != b'>' {
+            return false;
+        }
+        let run = line.iter().take_while(|&&b| b == first).count();
+        run == size && matches!(line.get(size), None | Some(b' ' | b'\t'))
+    })
 }
 
 /// The commit coming in to what git is stopped in at `worktree` (see
@@ -316,7 +389,7 @@ pub async fn read_in_progress(runner: &GitRunner, worktree: &Path) -> Result<Opt
 pub(crate) async fn read_in_progress_with(
     runner: &GitRunner,
     worktree: &Path,
-    conflicted: Vec<String>,
+    conflicted: Vec<Unmerged>,
     known: Option<&KnownIncoming>,
 ) -> Result<Option<InProgress>> {
     match state_files(runner, worktree).await? {
@@ -333,7 +406,7 @@ async fn describe(
     runner: &GitRunner,
     worktree: &Path,
     files: &StateFiles,
-    conflicted: Vec<String>,
+    conflicted: Vec<Unmerged>,
     known: Option<&KnownIncoming>,
 ) -> Result<Option<InProgress>> {
     let Some(kind) = files.kind() else {
@@ -368,7 +441,10 @@ async fn describe(
             Some(out.text().trim().to_owned()).filter(|s| out.code == 0 && !s.is_empty())
         }
     };
-    let unresolved = with_conflict_markers(runner, worktree, &conflicted).await?;
+    // The files named (the first 200) are judged; the rest only counted.
+    let file_count = u32::try_from(conflicted.len()).unwrap_or(u32::MAX);
+    let named = &conflicted[..conflicted.len().min(MAX_CONFLICTED_PATHS)];
+    let judged = judge(runner, worktree, named).await?;
     let incoming = match files.incoming_commit(kind) {
         None => None,
         Some(hash) => Some(match kind {
@@ -385,8 +461,8 @@ async fn describe(
     };
     Ok(Some(InProgress {
         kind,
-        conflicted,
-        unresolved,
+        files: judged,
+        file_count,
         step,
         total,
         subject,
@@ -400,23 +476,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn marker_reports_are_read_against_the_paths_asked_about() {
-        let paths = [
-            "a.txt".to_owned(),
-            "a.txt:2".to_owned(),
-            "b c.txt".to_owned(),
-        ];
-        let report = "a.txt:2:3: leftover conflict marker\n\
-                      b c.txt:4: trailing whitespace.\n\
-                      +x   \n\
-                      b c.txt:9: leftover conflict marker\n";
-        assert_eq!(
-            marked_paths(report, &paths),
-            Some(vec!["a.txt:2".to_owned(), "b c.txt".to_owned()])
+    fn markers_are_whole_runs_at_a_line_start() {
+        assert!(has_markers(b"a\n<<<<<<< HEAD\nb\n", 7));
+        assert!(has_markers(b">>>>>>> feature\r\n", 7));
+        assert!(
+            has_markers(b"x\n<<<<<<<", 7),
+            "at the end, without a newline"
         );
-        assert_eq!(marked_paths("", &paths), Some(vec![]));
-        // A name git quoted is not one asked about: nothing can be told.
-        let quoted = "\"q\\\"x.txt\":1: leftover conflict marker\n";
-        assert_eq!(marked_paths(quoted, &paths), None);
+        assert!(has_markers(b"<<<<<<<\tours\n", 7));
+        assert!(!has_markers(b"Title\n=======\n", 7), "an underline");
+        assert!(!has_markers(b"||||||| base\n", 7));
+        assert!(!has_markers(b"<<<<<<<< eight\n", 7));
+        assert!(!has_markers(b" <<<<<<< indented\n", 7));
+        assert!(!has_markers(b"<<<<<<<x\n", 7));
+        assert!(!has_markers(b"", 7));
+        assert!(has_markers(b"<<<<<<<<<< x\n", 10));
+        assert!(!has_markers(b"<<<<<<< x\n", 10));
     }
 }

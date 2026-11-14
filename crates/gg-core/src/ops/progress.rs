@@ -6,10 +6,11 @@
 //! that moment (the user resolved them; the UI asked them to confirm first) and nothing
 //! else.
 
+use crate::dto::ConflictState;
 use crate::dto::{InProgressKind, OpRequest};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::git::progress::{read_kind, with_conflict_markers};
-use crate::git::status::read_conflicted;
+use crate::git::progress::{judge, read_kind};
+use crate::git::status::{paths, read_conflicted};
 use crate::ops::explain::{explain, recognised};
 use crate::ops::local::{current_branch, kind_name, stopped_message, stopped_without_conflicts};
 use crate::ops::{OpCtx, Step};
@@ -91,18 +92,40 @@ pub(crate) async fn unexplained_conflicts(ctx: &OpCtx<'_>) -> Result<Option<Stri
     )))
 }
 
-/// Why continue cannot run: files git stopped on still have conflict markers (the user has
-/// not resolved them), and continuing would stage them as they are. None when none has.
+/// Why continue cannot run without the user's go-ahead: files git stopped on still have
+/// conflict markers, or git kept one side of them and only the user can say which they want
+/// (see [`judge`]); continuing would stage them as they are. None when every file is
+/// resolved.
 pub(crate) async fn unresolved_conflicts(ctx: &OpCtx<'_>) -> Result<Option<String>> {
     let conflicted = read_conflicted(&ctx.runner, &ctx.cwd).await?;
-    let marked = with_conflict_markers(&ctx.runner, &ctx.cwd, &conflicted).await?;
-    if marked.is_empty() {
+    let files = judge(&ctx.runner, &ctx.cwd, &conflicted).await?;
+    let with = |state| {
+        files
+            .iter()
+            .filter(|f| f.state == state)
+            .map(|f| f.path.clone())
+            .collect::<Vec<_>>()
+    };
+    let (marked, undecided) = (with(ConflictState::Markers), with(ConflictState::Undecided));
+    let mut why = Vec::new();
+    if !marked.is_empty() {
+        why.push(format!(
+            "Some files still have conflict markers ({}).",
+            named(&marked)
+        ));
+    }
+    if !undecided.is_empty() {
+        why.push(format!(
+            "In some files git kept one side, as they are binary or were deleted on one side \
+             ({}).",
+            named(&undecided)
+        ));
+    }
+    if why.is_empty() {
         return Ok(None);
     }
-    Ok(Some(format!(
-        "Some files still have conflict markers ({}). Resolve them, then continue.",
-        named(&marked)
-    )))
+    why.push("Resolve them, or continue anyway.".to_owned());
+    Ok(Some(why.join(" ")))
 }
 
 /// The first [`NAMED_CONFLICTS`] of `paths`, joined, with an ellipsis if there are more.
@@ -158,7 +181,7 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
     let Some(kind) = read_kind(&ctx.runner, &ctx.cwd).await? else {
         return Err(nothing_in_progress());
     };
-    let unmerged = read_conflicted(&ctx.runner, &ctx.cwd).await?;
+    let unmerged = paths(&read_conflicted(&ctx.runner, &ctx.cwd).await?);
     for chunk in unmerged.chunks(ADD_CHUNK) {
         // Literal: a path like `[ab].txt` must not match other files as a glob.
         let mut args = vec!["--literal-pathspecs", "add", "--"];

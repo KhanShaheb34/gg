@@ -216,11 +216,11 @@ pub enum InProgressKind {
 #[serde(rename_all = "camelCase")]
 pub struct InProgress {
     pub kind: InProgressKind,
-    /// Conflicted paths relative to the worktree, sorted.
-    pub conflicted: Vec<String>,
-    /// The conflicted paths that still have conflict markers (`git diff --check`), sorted:
-    /// not resolved yet. The others are resolved, though unmerged until they are staged.
-    pub unresolved: Vec<String>,
+    /// The conflicted (unmerged) files, relative to the worktree, sorted by path: the first
+    /// [`MAX_CONFLICTED_PATHS`] of them, each with how far it is resolved.
+    pub files: Vec<ConflictFile>,
+    /// How many files are conflicted in all (`files` names at most 200).
+    pub file_count: u32,
     /// Rebase only: the step git stopped at, and how many there are.
     pub step: Option<u32>,
     pub total: Option<u32>,
@@ -233,6 +233,37 @@ pub struct InProgress {
     pub incoming: Option<String>,
     /// Rebase only: the branch being rebased (git's `head-name`), if it is one.
     pub rebasing: Option<String>,
+}
+
+impl InProgress {
+    /// The paths of `files`.
+    pub fn paths(&self) -> Vec<&str> {
+        self.files.iter().map(|f| f.path.as_str()).collect()
+    }
+}
+
+/// A conflicted file and how far it is resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFile {
+    pub path: String,
+    pub state: ConflictState,
+}
+
+/// How far a conflicted file is resolved, as the core can judge from the working tree.
+/// Serialized lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictState {
+    /// A text file that still has a conflict-marker line (`<<<<<<<` or `>>>>>>>`, of the
+    /// file's `conflict-marker-size`).
+    Markers,
+    /// git kept one side and left no markers (a binary file, a file deleted or added on one
+    /// side, a `merge` attribute that does not merge text), or the file cannot be judged
+    /// (unreadable, over 8 MiB): only the user can say.
+    Undecided,
+    /// A text file with no conflict-marker line left.
+    Resolved,
 }
 
 /// A ref shown on a row.
@@ -985,8 +1016,11 @@ mod tests {
             }),
             in_progress: Some(InProgress {
                 kind: InProgressKind::CherryPick,
-                conflicted: vec!["a b.txt".into()],
-                unresolved: vec![],
+                files: vec![ConflictFile {
+                    path: "a b.txt".into(),
+                    state: ConflictState::Resolved,
+                }],
+                file_count: 1,
                 step: None,
                 total: None,
                 subject: Some("fix".into()),
@@ -1009,9 +1043,10 @@ mod tests {
                                 "showStashes": true},
                 "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},
                 "op": {"id": 4, "title": "Create branch x", "startedAtMs": 9, "queued": 1},
-                "inProgress": {"kind": "cherry-pick", "conflicted": ["a b.txt"], "unresolved": [],
-                               "step": null,
-                               "total": null, "subject": "fix"},
+                "inProgress": {"kind": "cherry-pick",
+                               "files": [{"path": "a b.txt", "state": "resolved"}],
+                               "fileCount": 1, "step": null, "total": null, "subject": "fix",
+                               "incoming": "0123abcd", "rebasing": null},
                 "seq": 12
             })
         );

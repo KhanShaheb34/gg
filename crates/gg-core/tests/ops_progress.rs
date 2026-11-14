@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use gg_core::dto::{InProgressKind, MergeTargetKind, OpRequest, OpStatus};
+use gg_core::dto::{ConflictState, InProgressKind, MergeTargetKind, OpRequest, OpStatus};
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::CmdKind;
 use gg_core::testutil::TestRepo;
@@ -98,7 +98,7 @@ async fn continue_stages_resolved_files_and_finishes_the_merge() {
         .expect("the outcome shows the merge");
     assert_eq!(stopped.kind, InProgressKind::Merge);
     assert_eq!(
-        stopped.conflicted,
+        stopped.paths(),
         ["[ab].txt", "a b.txt", "clash.txt", "gone.txt"]
     );
 
@@ -111,11 +111,23 @@ async fn continue_stages_resolved_files_and_finishes_the_merge() {
     repo.write("a.txt", "untracked\n");
     repo.write("notes.txt", "edited, not part of the merge\n");
 
-    let out = h
+    // The file deleted on one side is git's to keep one side of: only the user can say it
+    // is resolved (they go ahead past the warning).
+    let refused = h
         .run(
             id,
             OpRequest::Continue {
                 even_with_markers: false,
+            },
+        )
+        .await;
+    assert_eq!(refused.status, OpStatus::Failed, "{refused:?}");
+    assert!(refused.message.contains("gone.txt"), "{}", refused.message);
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: true,
             },
         )
         .await;
@@ -214,7 +226,68 @@ async fn continue_is_refused_while_a_file_has_conflict_markers() {
         "nothing staged"
     );
     let now = out.snapshot.in_progress.expect("still merging");
-    assert_eq!(now.unresolved, ["other.txt"], "read again: {now:?}");
+    assert_eq!(
+        now.files.iter().map(|f| f.state).collect::<Vec<_>>(),
+        [ConflictState::Resolved, ConflictState::Markers],
+        "read again: {now:?}"
+    );
+}
+
+/// A file git could not merge and kept one side of (binary, or deleted on one side) is not
+/// taken for resolved: continue is refused without the user's go-ahead, saying which, and
+/// with it stages what is in the folder.
+#[tokio::test]
+async fn continue_is_refused_while_git_kept_one_side_of_a_file() {
+    let repo = TestRepo::new();
+    repo.write("image.bin", "base\0");
+    repo.write("gone.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("image.bin", "feature\0");
+    repo.write("gone.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("image.bin", "main\0");
+    repo.git(&["rm", "-q", "--", "gone.txt"]);
+    repo.commit_all("main side");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, merge_branch("feature")).await;
+    assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+    let files = out.snapshot.in_progress.expect("merging").files;
+    assert!(
+        files.iter().all(|f| f.state == ConflictState::Undecided),
+        "{files:?}"
+    );
+
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: false,
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message.contains("gone.txt") && out.message.contains("image.bin"),
+        "{}",
+        out.message
+    );
+    assert!(args_of(&h, &out).is_empty(), "nothing ran");
+
+    let out = h
+        .run(
+            id,
+            OpRequest::Continue {
+                even_with_markers: true,
+            },
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(repo.git(&["show", "HEAD:image.bin"]), "main\0".trim_end());
+    assert_eq!(repo.git(&["show", "HEAD:gone.txt"]), "feature");
 }
 
 /// R31: told to, continue stages files with conflict markers as they are (a line that only
@@ -265,7 +338,7 @@ async fn continue_commits_a_merge_stopped_without_conflicts() {
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     let progress = out.snapshot.in_progress.expect("merge in progress");
     assert_eq!(progress.kind, InProgressKind::Merge);
-    assert!(progress.conflicted.is_empty());
+    assert!(progress.files.is_empty());
 
     let out = h
         .run(
@@ -319,7 +392,7 @@ async fn continue_rebase_that_stops_again_returns_stopped() {
     let p = out.snapshot.in_progress.clone().expect("still in progress");
     assert_eq!(p.kind, InProgressKind::Rebase);
     assert_eq!((p.step, p.total), (Some(2), Some(3)));
-    assert_eq!(p.conflicted, ["clash.txt"]);
+    assert_eq!(p.paths(), ["clash.txt"]);
     assert_eq!(p.subject.as_deref(), Some("feat two"));
     assert!(
         args_of(&h, &out)
@@ -434,7 +507,7 @@ async fn continue_that_comes_out_empty_explains() {
     );
     let p = out.snapshot.in_progress.expect("still in progress");
     assert_eq!(p.kind, InProgressKind::CherryPick);
-    assert!(p.conflicted.is_empty());
+    assert!(p.files.is_empty());
 }
 
 #[tokio::test]

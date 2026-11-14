@@ -15,6 +15,27 @@ pub(crate) const STATUS_ARGS: [&str; 5] = [
     "--ignore-submodules=all",
 ];
 
+/// An unmerged (conflicted) path and git's two-letter code for it (`UU` both modified, `AA`
+/// both added, `DU` deleted by us, …).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unmerged {
+    pub path: String,
+    pub code: [u8; 2],
+}
+
+impl Unmerged {
+    /// Both sides have the file as text git merged line by line: it may hold conflict
+    /// markers. Otherwise git kept one side (or none) and left no markers.
+    pub fn both_sides_merged(&self) -> bool {
+        matches!(&self.code, b"UU" | b"AA")
+    }
+}
+
+/// The paths of `unmerged`.
+pub fn paths(unmerged: &[Unmerged]) -> Vec<String> {
+    unmerged.iter().map(|u| u.path.clone()).collect()
+}
+
 /// Change counts for the worktree at `worktree` (untracked files counted one by one).
 /// Submodules are ignored entirely, so git never looks inside them or reads their config.
 pub async fn read_status(r: &GitRunner, worktree: &Path) -> Result<WorktreeStatus> {
@@ -26,14 +47,14 @@ pub async fn read_status(r: &GitRunner, worktree: &Path) -> Result<WorktreeStatu
 pub async fn read_status_and_conflicts(
     r: &GitRunner,
     worktree: &Path,
-) -> Result<(WorktreeStatus, Vec<String>)> {
+) -> Result<(WorktreeStatus, Vec<Unmerged>)> {
     let out = r.run(worktree, &STATUS_ARGS, CmdKind::Read).await?;
     Ok(parse_status(&out.stdout))
 }
 
 /// The conflicted paths of the worktree at `worktree`, sorted, without looking at untracked
 /// files (cheaper than [`read_status`] on a big tree).
-pub(crate) async fn read_conflicted(r: &GitRunner, worktree: &Path) -> Result<Vec<String>> {
+pub(crate) async fn read_conflicted(r: &GitRunner, worktree: &Path) -> Result<Vec<Unmerged>> {
     let args = [
         "status",
         "--porcelain=v2",
@@ -49,7 +70,7 @@ pub(crate) async fn read_conflicted(r: &GitRunner, worktree: &Path) -> Result<Ve
 /// NUL-terminated original path), `u` (unmerged: changed and conflicted), `?` (untracked).
 /// Also returns the unmerged entries' paths, sorted (all of them; the status names the first
 /// [`MAX_CONFLICTED_PATHS`]).
-fn parse_status(out: &[u8]) -> (WorktreeStatus, Vec<String>) {
+fn parse_status(out: &[u8]) -> (WorktreeStatus, Vec<Unmerged>) {
     let mut s = WorktreeStatus::default();
     let mut conflicted = Vec::new();
     let mut fields = out.split(|&b| b == 0);
@@ -63,18 +84,23 @@ fn parse_status(out: &[u8]) -> (WorktreeStatus, Vec<String>) {
             s.changed = s.changed.saturating_add(1);
             s.conflicted = s.conflicted.saturating_add(1);
             // `u XY sub m1 m2 m3 mW h1 h2 h3 <path>`: the path is the rest, spaces and all.
-            if let Some(path) = entry.splitn(11, |&b| b == b' ').nth(10) {
-                conflicted.push(String::from_utf8_lossy(path).into_owned());
+            let mut parts = entry.splitn(11, |&b| b == b' ');
+            let code = parts.nth(1).unwrap_or_default();
+            if let (Some(path), &[x, y]) = (parts.nth(8), code) {
+                conflicted.push(Unmerged {
+                    path: String::from_utf8_lossy(path).into_owned(),
+                    code: [x, y],
+                });
             }
         } else if entry.starts_with(b"? ") {
             s.untracked = s.untracked.saturating_add(1);
         }
     }
-    conflicted.sort();
+    conflicted.sort_by(|a, b| a.path.cmp(&b.path));
     s.conflicted_paths = conflicted
         .iter()
         .take(MAX_CONFLICTED_PATHS)
-        .cloned()
+        .map(|u| u.path.clone())
         .collect();
     (s, conflicted)
 }
@@ -133,8 +159,13 @@ mod tests {
         .concat();
         let (status, conflicted) = parse_status(out.as_bytes());
         assert_eq!(status.conflicted, 4);
-        assert_eq!(conflicted, ["c.txt", "dir/a  b\u{fc}.txt", "z last.txt"]);
-        assert_eq!(status.conflicted_paths, conflicted);
+        assert_eq!(
+            paths(&conflicted),
+            ["c.txt", "dir/a  b\u{fc}.txt", "z last.txt"]
+        );
+        assert_eq!(status.conflicted_paths, paths(&conflicted));
+        assert_eq!(&conflicted[1].code, b"DU");
+        assert!(conflicted[0].both_sides_merged() && !conflicted[1].both_sides_merged());
     }
 
     #[test]

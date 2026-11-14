@@ -608,7 +608,7 @@ async fn pull_that_conflicts_stops() {
         assert_eq!(out.status, OpStatus::Stopped, "{mode:?}: {out:?}");
         assert!(out.message.contains("conflicts"), "{}", out.message);
         let progress = out.snapshot.in_progress.expect("in progress");
-        assert_eq!(progress.conflicted, ["clash.txt"], "{mode:?}");
+        assert_eq!(progress.paths(), ["clash.txt"], "{mode:?}");
     }
 }
 

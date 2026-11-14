@@ -262,7 +262,7 @@ async fn in_progress_changes_arrive_by_the_watcher() {
         .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
         .await
         .expect("the merge showed up");
-    assert_eq!(changed.in_progress.unwrap().conflicted, ["clash.txt"]);
+    assert_eq!(changed.in_progress.unwrap().paths(), ["clash.txt"]);
     repo.git(&["merge", "--abort"]);
     assert!(
         h.changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_none()
@@ -285,7 +285,7 @@ async fn in_progress_changes_arrive_by_the_watcher() {
         .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
         .await
         .expect("the linked worktree's merge showed up");
-    assert_eq!(changed.in_progress.unwrap().conflicted, ["clash.txt"]);
+    assert_eq!(changed.in_progress.unwrap().paths(), ["clash.txt"]);
     assert!(git_in(&wt, &["merge", "--abort"]));
     assert!(
         h.changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_none())
@@ -312,7 +312,7 @@ async fn in_progress_change_alone_is_published() {
         .await
         .expect("published");
     assert_eq!(changed.status, snap.status, "the status did not change");
-    assert!(changed.in_progress.unwrap().conflicted.is_empty());
+    assert!(changed.in_progress.unwrap().files.is_empty());
     // The rows did not change: no new generation (the UI would refetch them all).
     assert_eq!(changed.generation, snap.generation);
     assert!(changed.seq > snap.seq);

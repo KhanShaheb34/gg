@@ -1009,8 +1009,8 @@ mod tests {
         let mut stopped = info();
         stopped.in_progress = Some(crate::dto::InProgress {
             kind: crate::dto::InProgressKind::Merge,
-            conflicted: Vec::new(),
-            unresolved: Vec::new(),
+            files: Vec::new(),
+            file_count: 0,
             step: None,
             total: None,
             subject: None,

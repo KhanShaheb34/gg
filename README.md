@@ -87,6 +87,11 @@ on the selected row) for its menu. Items that cannot run say why when you point 
   that hangs, say): it ends the git command and everything it started, and the action fails
   as "Stopped.". git runs without a terminal and without input, so it never waits for a
   password or a prompt there.
+- Because git runs without a terminal, anything that would ask on one fails at once instead,
+  even when the app was started from a terminal: commit signing with a loopback pinentry
+  (`pinentry-mode loopback`), an SSH signing key whose passphrase is not in an agent, and
+  hooks that read `/dev/tty`. Use an agent (gpg-agent, ssh-agent, 1Password) or a GUI
+  pinentry such as pinentry-mac; credential helpers and askpass programs keep working.
 - Names (branches, tags) are checked as you type and again by the core: a name git would
   refuse, one that is taken, or one starting with `-` is refused before git runs.
 - Network actions (push, pull, fetch into a branch, deleting on a remote) stop after 120 s

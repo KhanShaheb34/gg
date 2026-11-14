@@ -333,10 +333,10 @@ async fn split_remote_branch(
 }
 
 /// The step for a fetch into a local branch (`args`) that failed with `out`, as [`explain`]
-/// says, except when git refused because the branch is checked out in this very worktree
-/// while git is stopped here (a rebase working on that branch): then the message says what
-/// is in progress here rather than to switch to another worktree, and to `then` ("pull",
-/// "fetch") once it has ended.
+/// says, except when git refused because the branch is checked out in this very worktree:
+/// then the message does not say to switch to another worktree. With git stopped here (a
+/// rebase working on that branch) it says what is in progress, and to `then` ("pull",
+/// "fetch") once it has ended; with nothing stopped, to pull the branch instead.
 async fn fetch_into_failed(
     ctx: &OpCtx<'_>,
     args: &[&str],
@@ -360,12 +360,25 @@ async fn fetch_into_failed(
     if dunce::canonicalize(&path).ok() != dunce::canonicalize(&ctx.cwd).ok() {
         return Ok(step);
     }
-    // Nothing stopped: the branch is simply checked out here, as git says.
-    let Some(kind) = stopped_kind(ctx).await else {
-        return Ok(step);
-    };
+    let stopped = stopped_kind(ctx).await;
     let Step::Failed { detail, hints, .. } = step else {
         return Ok(step);
+    };
+    // Nothing stopped: the branch is simply checked out here.
+    let Some(kind) = stopped else {
+        let instead = if then == "pull" {
+            "pull it as the current branch instead"
+        } else {
+            "use Pull to update it"
+        };
+        return Ok(Step::Failed {
+            message: format!(
+                "Branch \u{201c}{branch}\u{201d} is checked out here, and git does not move a \
+                 checked-out branch by fetching into it: {instead}."
+            ),
+            detail,
+            hints,
+        });
     };
     let kind = kind_name(kind);
     Ok(Step::Failed {

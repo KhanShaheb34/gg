@@ -1689,13 +1689,12 @@ async fn fetching_into_the_branch_checked_out_here_with_nothing_stopped_says_why
 
     let out = h.run(id, fetch_into_local("origin/main", "main")).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
-    assert!(
-        out.message
-            .starts_with("Branch \u{201c}main\u{201d} is checked out in the worktree at"),
-        "{}",
-        out.message
+    // Checked out in this very worktree: not "switch to that worktree", but to pull it.
+    assert_eq!(
+        out.message,
+        "Branch \u{201c}main\u{201d} is checked out here, and git does not move a \
+         checked-out branch by fetching into it: use Pull to update it."
     );
-    assert!(!out.message.contains("in progress"), "{}", out.message);
 }
 
 /// Item 6, the other half: with a rebase stopped on the branch, fetching into it says the

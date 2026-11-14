@@ -4,12 +4,11 @@
   (taken, say) shows under the field with the text kept.
 -->
 <script lang="ts">
-  import { onDestroy } from "svelte";
-  import { visibleText } from "../../format";
   import { refNameProblem } from "../../nameCheck";
   import Dialog from "../Dialog.svelte";
   import CommitRef from "./CommitRef.svelte";
-  import { runNamed } from "./run";
+  import NameField from "./NameField.svelte";
+  import { NamedSubmit } from "./named.svelte";
 
   type Props = { repoId: number; hash: string; subject: string; close: () => void };
 
@@ -18,31 +17,21 @@
   const uid = Math.random().toString(36).slice(2, 8);
   let name = $state("");
   let message = $state("");
-  let pending = $state(false);
-  let refused = $state<{ name: string; message: string } | null>(null);
-  let open = true;
-  onDestroy(() => (open = false));
-
+  // svelte-ignore state_referenced_locally
+  const named = new NamedSubmit(repoId, close);
   // Tags are not all known here (only loaded rows carry them): the core says if one is taken.
-  const problem = $derived(
-    refused !== null && refused.name === name ? refused.message : refNameProblem(name, [], "tag"),
-  );
+  const problem = $derived(named.problem(name, refNameProblem(name, [], "tag")));
   const annotated = $derived(message.trim() !== "");
 
-  async function submit() {
-    pending = true;
-    const sent = name;
-    const request = { op: "create_tag", name: sent, hash, message: annotated ? message : null } as const;
-    const said = await runNamed(close, () => open, repoId, request);
-    pending = false;
-    if (said !== null) refused = { name: sent, message: said };
+  function submit() {
+    void named.submit(name, { op: "create_tag", name, hash, message: annotated ? message : null });
   }
 </script>
 
 <Dialog
   title="Create tag"
-  primary={pending ? "Creating…" : "Create tag"}
-  valid={problem === null && !pending}
+  primary={named.pending ? "Creating…" : "Create tag"}
+  valid={problem === null && !named.pending}
   once={false}
   onSubmit={submit}
   onCancel={close}
@@ -51,24 +40,7 @@
     <span class="dialog-target-label">At</span>
     <CommitRef {hash} {subject} />
   </div>
-  <div class="field">
-    <label class="field-label" for="tag-name-{uid}">Tag name</label>
-    <input
-      id="tag-name-{uid}"
-      class="text-input"
-      type="text"
-      bind:value={name}
-      readonly={pending}
-      autocomplete="off"
-      autocapitalize="off"
-      spellcheck="false"
-      aria-invalid={problem !== null && name !== ""}
-      aria-describedby="tag-hint-{uid}"
-    />
-    <p class="field-hint" class:problem={problem !== null && name !== ""} id="tag-hint-{uid}" aria-live="polite">
-      {problem === null ? "" : visibleText(problem)}
-    </p>
-  </div>
+  <NameField label="Tag name" bind:value={name} {problem} readonly={named.pending} />
   <div class="field">
     <label class="field-label" for="tag-message-{uid}">Message <span class="optional">(optional)</span></label>
     <textarea
@@ -76,7 +48,7 @@
       class="text-input"
       rows="3"
       bind:value={message}
-      readonly={pending}
+      readonly={named.pending}
       aria-describedby="tag-kind-{uid}"
     ></textarea>
     <p class="field-hint" id="tag-kind-{uid}">

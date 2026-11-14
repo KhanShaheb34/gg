@@ -4,12 +4,11 @@
   refuses shows under the field, the text kept.
 -->
 <script lang="ts">
-  import { onDestroy } from "svelte";
-  import { visibleText } from "../../format";
   import { refNameProblem } from "../../nameCheck";
   import Dialog from "../Dialog.svelte";
   import CommitRef from "./CommitRef.svelte";
-  import { runNamed } from "./run";
+  import NameField from "./NameField.svelte";
+  import { NamedSubmit } from "./named.svelte";
 
   type Props = {
     repoId: number;
@@ -22,32 +21,21 @@
 
   let { repoId, hash, subject, branches, close }: Props = $props();
 
-  const uid = Math.random().toString(36).slice(2, 8);
   let name = $state("");
   let checkout = $state(true);
-  let pending = $state(false);
-  /** What the core said of the name last sent, while that name is still the one typed. */
-  let refused = $state<{ name: string; message: string } | null>(null);
-  let open = true;
-  onDestroy(() => (open = false));
+  // svelte-ignore state_referenced_locally
+  const named = new NamedSubmit(repoId, close);
+  const problem = $derived(named.problem(name, refNameProblem(name, branches, "branch")));
 
-  const problem = $derived(
-    refused !== null && refused.name === name ? refused.message : refNameProblem(name, branches, "branch"),
-  );
-
-  async function submit() {
-    pending = true;
-    const sent = name;
-    const message = await runNamed(close, () => open, repoId, { op: "create_branch", name: sent, at: hash, checkout });
-    pending = false;
-    if (message !== null) refused = { name: sent, message };
+  function submit() {
+    void named.submit(name, { op: "create_branch", name, at: hash, checkout });
   }
 </script>
 
 <Dialog
   title="Create branch"
-  primary={pending ? "Creating…" : "Create branch"}
-  valid={problem === null && !pending}
+  primary={named.pending ? "Creating…" : "Create branch"}
+  valid={problem === null && !named.pending}
   once={false}
   onSubmit={submit}
   onCancel={close}
@@ -56,26 +44,9 @@
     <span class="dialog-target-label">At</span>
     <CommitRef {hash} {subject} />
   </div>
-  <div class="field">
-    <label class="field-label" for="branch-name-{uid}">Branch name</label>
-    <input
-      id="branch-name-{uid}"
-      class="text-input"
-      type="text"
-      bind:value={name}
-      readonly={pending}
-      autocomplete="off"
-      autocapitalize="off"
-      spellcheck="false"
-      aria-invalid={problem !== null && name !== ""}
-      aria-describedby="branch-hint-{uid}"
-    />
-    <p class="field-hint" class:problem={problem !== null && name !== ""} id="branch-hint-{uid}" aria-live="polite">
-      {problem === null ? "" : visibleText(problem)}
-    </p>
-  </div>
+  <NameField label="Branch name" bind:value={name} {problem} readonly={named.pending} />
   <label class="check-row">
-    <input class="checkbox" type="checkbox" bind:checked={checkout} disabled={pending} />
+    <input class="checkbox" type="checkbox" bind:checked={checkout} disabled={named.pending} />
     <span>Check out after creating</span>
   </label>
 </Dialog>

@@ -1224,10 +1224,14 @@ async fn create_tag_lightweight_and_annotated() {
         "-release two"
     );
 
-    let out = h.run(id, create_tag("v1", &second, None)).await;
-    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    // A taken name is a bad name, as for a branch: the dialog shows it beside the field.
+    let err =
+        h.m.run_op(id, create_tag("v1", &second, None), &[])
+            .await
+            .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadName);
     assert_eq!(
-        out.message,
+        err.message,
         "A tag named \u{201c}v1\u{201d} already exists."
     );
     assert_eq!(repo.git(&["rev-parse", "refs/tags/v1"]), first);

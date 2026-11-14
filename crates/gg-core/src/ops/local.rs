@@ -575,13 +575,24 @@ pub(crate) async fn reset(ctx: &OpCtx<'_>, hash: &str, mode: ResetMode) -> Resul
 }
 
 /// `tag -- <name> <hash>`, or with a message, an annotated tag:
-/// `tag -a -m <message> -- <name> <hash>`.
+/// `tag -a -m <message> -- <name> <hash>`. `bad_name` if a tag of that name exists (git is
+/// not asked to make it), as for a branch.
 pub(crate) async fn create_tag(
     ctx: &OpCtx<'_>,
     name: &str,
     hash: &str,
     message: Option<&str>,
 ) -> Result<Step> {
+    let full = format!("refs/tags/{name}");
+    let exists = ctx
+        .read(&["rev-parse", "--verify", "--quiet", &full])
+        .await?;
+    if exists.code == 0 {
+        return Err(CoreError::new(
+            ErrorCode::BadName,
+            format!("A tag named \u{201c}{name}\u{201d} already exists."),
+        ));
+    }
     let mut args = vec!["tag"];
     if let Some(message) = message {
         args.extend(["-a", "-m", message]);

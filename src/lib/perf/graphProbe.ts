@@ -15,7 +15,7 @@ export type ProbeSlot = { readonly index: number; readonly row: unknown; skeleto
 /** Rows at least partly in view. */
 export type VisibleRows = { readonly visibleFirst: number; readonly visibleLast: number };
 
-type PerfScroll = boolean | "still" | "smooth" | "pages" | "jump3" | "actions";
+type PerfScroll = boolean | "still" | "smooth" | "pages" | "jump3" | "actions" | "walk";
 
 export class GraphProbe {
   private scrolledSinceFrame = false;
@@ -80,6 +80,16 @@ export class GraphProbe {
 
   private async run(mode: PerfScroll, scroller: HTMLElement): Promise<void> {
     const view = this.view;
+    // "walk": the app used through its menus, dialogs, banner and log (walkProbe.ts).
+    if (mode === "walk") {
+      const { runWalk } = await import("./walkProbe");
+      await runWalk(view, scroller);
+      const errors = (window as { __GG_PAGE_ERRORS__?: string[] }).__GG_PAGE_ERRORS__ ?? [];
+      await api.perfMark("page-errors", errors.length).catch(() => {});
+      for (const text of errors) await api.perfMark(`page-error ${text}`, 0).catch(() => {});
+      await api.perfMark("scroll-done", performance.now()).catch(() => {});
+      return;
+    }
     // "actions": the feedback of right-click, menu, dialog and operation (actionsProbe.ts).
     if (mode === "actions") {
       const { runActionsProbe, actionMarks } = await import("./actionsProbe");

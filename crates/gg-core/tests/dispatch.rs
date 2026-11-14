@@ -631,7 +631,9 @@ async fn launch_path_is_reported() {
             "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null},
             "launchPath": null,
             "homeDir": home,
-            "settingsProblem": null
+            "settingsProblem": null,
+            // The git installed here is new enough (M3).
+            "gitProblem": null
         })
     );
 }

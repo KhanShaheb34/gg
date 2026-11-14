@@ -204,7 +204,15 @@ impl RepoState {
             .collect();
         self.commits.retain(|c| !gone.contains(c.hash.as_str()));
         let mut index = index_of(&self.commits);
-        for st in &self.info.stashes {
+        // Place in the stash list (0 the newest) by stash commit.
+        let place: HashMap<&str, usize> = self
+            .info
+            .stashes
+            .iter()
+            .enumerate()
+            .map(|(n, s)| (s.hash.as_str(), n))
+            .collect();
+        for (n, st) in self.info.stashes.iter().enumerate() {
             if !self.stash_bases.contains_key(&st.hash) || index.contains_key(&st.hash) {
                 continue;
             }
@@ -212,10 +220,15 @@ impl RepoState {
                 continue; // not loaded: needs_reload asked for the log instead
             };
             let base = base as usize;
-            // `--date-order` goes by committer time.
+            // `--date-order` goes by committer time; for equal times git keeps the order of
+            // the tips it was given, the stashes newest first (R33): above an older stash.
             let at = self.commits[..base]
                 .iter()
-                .position(|c| c.commit_time < st.commit_time)
+                .position(|c| {
+                    c.commit_time < st.commit_time
+                        || (c.commit_time == st.commit_time
+                            && place.get(c.hash.as_str()).is_some_and(|&m| m > n))
+                })
                 .unwrap_or(base);
             self.commits.insert(
                 at,
@@ -1604,6 +1617,26 @@ mod tests {
         let mut i = info();
         i.stashes = vec![stash('w', 0, 'e', 'i', None)];
         assert!(loaded(info()).needs_reload(&i, &all(), false));
+    }
+
+    /// R33: stashes saved in the same second (equal committer times) are ordered by their
+    /// place in the stash list, newest first, whether put in memory or loaded with the log
+    /// (git keeps the order of the tips it is given for equal times; the newest is given
+    /// first).
+    #[test]
+    fn stashes_saved_in_the_same_second_go_newest_first() {
+        let older = with_stashes(vec![stash('v', 0, 'd', 'j', None)]);
+        let mut s = loaded_with(older, all());
+        // A second stash on the same commit, in the same second: it is stash@{0} now.
+        let both = with_stashes(vec![
+            stash('w', 0, 'd', 'i', None),
+            stash('v', 1, 'd', 'j', None),
+        ]);
+        assert!(!s.needs_reload(&both, &all(), false));
+        assert_eq!(s.update(both.clone(), all()), Update::Rows);
+        let hashes: Vec<String> = s.rows(0, 3).into_iter().map(|r| r.hash).collect();
+        assert_eq!(hashes, [h('w'), h('v'), h('d')]);
+        assert_eq!(s.rows(0, 10), loaded_with(both, all()).rows(0, 10));
     }
 
     #[test]

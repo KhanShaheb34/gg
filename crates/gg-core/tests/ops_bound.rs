@@ -295,3 +295,55 @@ async fn an_abort_confirmed_for_a_merge_does_not_abort_a_cherry_pick() {
     assert!(h.writes_since(mark).is_empty());
     assert!(in_git_dir(&repo, "CHERRY_PICK_HEAD"));
 }
+
+/// N1: a tag named like the branch checked out must not make the core read the branch as
+/// `heads/main` (what `symbolic-ref --short` gives then): requests carry HEAD as the snapshot
+/// shows it (`main`), and continue and abort of a stopped merge still run.
+#[tokio::test]
+async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
+    for aborting in [false, true] {
+        let repo = TestRepo::new();
+        conflicting(&repo);
+        repo.git(&["tag", "main", "main~1"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+        let shown = |snap: &gg_core::dto::RepoSnapshot| snap.head.clone();
+
+        let snap = h.m.snapshot(id).await.unwrap();
+        assert_eq!(snap.head.branch.as_deref(), Some("main"));
+        let mut request = merge_branch("feature");
+        if let OpRequest::Merge { expect_head, .. } = &mut request {
+            *expect_head = shown(&snap);
+        }
+        let out = h.run(id, request).await;
+        assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+        assert_eq!(out.title, "Merge feature into main");
+
+        let head = shown(&out.snapshot);
+        let out = if aborting {
+            let asked = h
+                .run(
+                    id,
+                    OpRequest::Abort {
+                        expect_head: head.clone(),
+                    },
+                )
+                .await;
+            let yes = confirmed(&asked);
+            h.run_with(id, OpRequest::Abort { expect_head: head }, &yes)
+                .await
+        } else {
+            repo.write("clash.txt", "resolved\n");
+            h.run(
+                id,
+                OpRequest::Continue {
+                    even_with_markers: false,
+                    expect_head: head,
+                },
+            )
+            .await
+        };
+        assert_eq!(out.status, OpStatus::Done, "aborting {aborting}: {out:?}");
+        assert!(out.snapshot.in_progress.is_none());
+    }
+}

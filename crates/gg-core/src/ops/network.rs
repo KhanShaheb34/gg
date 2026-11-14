@@ -77,7 +77,7 @@ pub(crate) async fn upstream(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Ups
     let out = ctx
         .read(&[
             "for-each-ref",
-            "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:short)",
+            "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)",
             &full,
         ])
         .await?;
@@ -85,6 +85,12 @@ pub(crate) async fn upstream(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Ups
         let mut parts = line.split('\0');
         let (name, remote, remote_ref, short) =
             (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        // Its full name shortened by hand: `:short` gives `remotes/origin/x` when a branch
+        // or tag is also named `origin/x`.
+        let short = short
+            .strip_prefix("refs/remotes/")
+            .or_else(|| short.strip_prefix("refs/heads/"))
+            .unwrap_or(short);
         (name == full && !remote.is_empty() && !remote_ref.is_empty()).then(|| Upstream {
             remote: remote.to_owned(),
             remote_ref: remote_ref.to_owned(),

@@ -162,7 +162,8 @@ pub fn head_at(path: &Path) -> HeadInfo {
             .filter(|s| !s.is_empty())
     };
     HeadInfo {
-        branch: git(&["symbolic-ref", "-q", "--short", "HEAD"]),
+        branch: git(&["symbolic-ref", "-q", "HEAD"])
+            .and_then(|r| r.strip_prefix("refs/heads/").map(str::to_owned)),
         hash: git(&["rev-parse", "-q", "--verify", "HEAD^{commit}"]),
     }
 }
@@ -235,8 +236,10 @@ pub fn delete_branch(branch: &str) -> OpRequest {
 
 /// The branch HEAD is on, or `None` when detached.
 pub fn current_branch(repo: &TestRepo) -> Option<String> {
-    repo.git_succeeds(&["symbolic-ref", "-q", "HEAD"])
-        .then(|| repo.git(&["symbolic-ref", "--short", "HEAD"]))
+    repo.git_succeeds(&["symbolic-ref", "-q", "HEAD"]).then(|| {
+        let full = repo.git(&["symbolic-ref", "HEAD"]);
+        full.strip_prefix("refs/heads/").unwrap_or(&full).to_owned()
+    })
 }
 
 pub fn merge(

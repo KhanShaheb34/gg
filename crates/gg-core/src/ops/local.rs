@@ -244,11 +244,15 @@ pub(crate) fn stopped_without_conflicts(kind: InProgressKind) -> String {
     }
 }
 
-/// The branch HEAD is on, or `None` when detached (or unborn and unreadable).
+/// The branch HEAD is on, or `None` when detached (or unborn and unreadable): the full ref
+/// with `refs/heads/` taken off, as the snapshot names it (`read_head`). Not `--short`, which
+/// gives `heads/main` when a tag is also named `main` (N1).
 pub(crate) async fn current_branch(ctx: &OpCtx<'_>) -> Result<Option<String>> {
-    let out = ctx.read(&["symbolic-ref", "-q", "--short", "HEAD"]).await?;
+    let out = ctx.read(&["symbolic-ref", "-q", "HEAD"]).await?;
+    let text = out.text();
     Ok((out.code == 0)
-        .then(|| out.text().trim().to_owned())
+        .then(|| text.trim().strip_prefix("refs/heads/").map(str::to_owned))
+        .flatten()
         .filter(|b| !b.is_empty()))
 }
 

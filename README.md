@@ -26,8 +26,9 @@ repository, and shows git's own message when it fails.
 - The command log (⌘⇧L, or the terminal button in the toolbar) shows the git commands the app
   ran for the repository: each operation under its title, with each command's line, time,
   duration, exit code and output; "Background reads" adds the reads the app makes by itself.
-  "Show log" on a failed operation's notice opens it there. Credentials in remote URLs are
-  shown as `***`.
+  "Show log" on a failed operation's notice opens it there. Credentials in URLs
+  (`https://user:token@host/…`) are shown as `***` here and in every message, notice and
+  error the app shows from git.
 - A conflict banner above the graph shows when git stops in a merge, rebase, cherry-pick or
   revert (started in the app or in a terminal): what is coming in, each conflicted file
   ("Conflict markers", "Git kept one side", "Resolved"; a file opens in your editor from

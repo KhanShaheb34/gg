@@ -245,6 +245,21 @@ test("cherry-pick a merge commit: the parent is chosen, each shown by short hash
   expect(gg.git("picks", "show", "--name-only", "--format=", "HEAD").trim()).toBe("feature.txt");
 });
 
+test("cherry-pick a merge commit relative to its second parent", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("picks"));
+  const second = gg.git("picks", "rev-parse", "integration^2").trim();
+  await pickOnRow(page, "Merge branch 'feature' into integration", "Cherry-pick…");
+  const d = dialog(page);
+  await d.getByRole("radio", { name: new RegExp(second.slice(0, 8)) }).check();
+  await d.getByRole("button", { name: "Cherry-pick" }).click();
+
+  await expect(notice(page, /Cherry-picked [0-9a-f]{8} onto main\./)).toBeVisible();
+  // Relative to the feature side, the merge brought in integration's own change.
+  expect(gg.git("picks", "show", "--name-only", "--format=", "HEAD").trim()).toBe("integration.txt");
+});
+
 test("cherry_pick_conflict_shows_no_error_toast", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
@@ -254,7 +269,6 @@ test("cherry_pick_conflict_shows_no_error_toast", async ({ gg }) => {
   await expect(dialog(page)).toHaveCount(0);
 
   await expect.poll(() => inProgress(page)).toMatchObject({ kind: "cherry-pick", conflicted: ["greeting.txt"] });
-  await page.waitForTimeout(300); // a notice would be up by now
   await expect(notices(page)).toHaveCount(0);
 });
 
@@ -294,6 +308,25 @@ test("revert a merge commit asks whose side to keep", async ({ gg }) => {
   await expect(notice(page, `Reverted ${short(merge)}: a new commit undoes its changes.`)).toBeVisible();
   await expect(topSubject(page)).toHaveText(`Revert "Merge branch 'feature/login'"`);
   expect(gg.git("small", "ls-files", "login").trim()).toBe("");
+});
+
+test("revert a merge commit keeping the second parent's side", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  identify((...a) => gg.git("small", ...a));
+  const merge = gg.git("small", "rev-parse", "HEAD~2").trim();
+  const loginSide = gg.git("small", "rev-parse", `${merge}^2`).trim();
+  await pickOnRow(page, "Merge branch 'feature/login'", "Revert…");
+  const d = dialog(page);
+  await d.getByRole("radio", { name: new RegExp(loginSide.slice(0, 8)) }).check();
+  await d.getByRole("button", { name: "Revert" }).click();
+
+  await expect(notice(page, `Reverted ${short(merge)}: a new commit undoes its changes.`)).toBeVisible();
+  // Relative to feature/login, the merge brought in main's parts 13 to 17: those go; login stays.
+  expect(gg.git("small", "ls-files", "login").trim()).not.toBe("");
+  expect(gg.git("small", "ls-files", "src/part13.txt", "src/part17.txt").trim()).toBe("");
+  expect(gg.git("small", "ls-files", "src/part18.txt").trim()).toBe("src/part18.txt");
 });
 
 test("reset soft and mixed move the branch and keep the changes", async ({ gg }) => {

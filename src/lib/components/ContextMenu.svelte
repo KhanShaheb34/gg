@@ -1,11 +1,9 @@
 <!--
   The context menu (openMenu in state/overlays): one panel at the pointer, kept inside the
-  window, and a panel per open submenu beside its item. It closes on Escape, a click
-  elsewhere, a scroll of what it was opened on (another list scrolling by itself, like the
-  command log following new commands, leaves it), the window losing focus, or its repository
-  changing under it (new rows, an operation starting or ending): its items may no longer
-  apply. Focus then goes back
-  where it was.
+  window, and a panel per open submenu beside its item. It closes on Escape, a click or the
+  wheel elsewhere (scrolling the app does by itself leaves it), the window losing focus, or
+  its repository changing under it (new rows, an operation starting or ending): its items
+  may no longer apply. Focus then goes back where it was.
 
   Keys act on the deepest open panel: arrows, Home and End move; typing jumps to the next
   item starting with what was typed; Enter or Space picks; ArrowRight opens a submenu and
@@ -29,18 +27,10 @@
   const HOVER_MS = 140;
   /** Typed letters are searched for together within this time. */
   const TYPEAHEAD_MS = 600;
-  /**
-   * Scrolling closes the menu, but not the scroll that opening it caused: the right-click
-   * selects the row, the details panel opens, and the graph keeps the row in view.
-   */
-  const SETTLE_MS = 300;
 
   let levels: Level[] = $state([]);
   let panels: HTMLElement[] = $state([]);
   let shownId = 0;
-  let openedAt = 0;
-  /** The element the menu was opened over (under its point), if any. */
-  let openedOver: Element | null = null;
   let hoverTimer: ReturnType<typeof setTimeout> | null = null;
   let typed = "";
   let typedAt = 0;
@@ -60,9 +50,6 @@
     }
     if (menu.id === shownId) return;
     shownId = menu.id;
-    openedAt = performance.now();
-    // Before the panel is drawn: what the menu was opened on.
-    openedOver = document.elementFromPoint(menu.x, menu.y);
     typed = "";
     clearHover();
     levels = [
@@ -295,21 +282,17 @@
     void tick().then(focusActive);
   }
 
-  /** A click or scroll outside every panel closes the menu. */
+  /**
+   * A click, or the wheel, outside every panel closes the menu. Scrolling the app does by
+   * itself (keeping a row in view as a panel opens, the command log following new commands, a
+   * refresh keeping its place) leaves it open: the user scrolls with the wheel or trackpad
+   * (wheel events), the scrollbar (a click) or keys (which the menu takes).
+   */
   function outside(e: Event): boolean {
     const target = e.target as Node | null;
     return !panels.some((p) => p?.contains(target));
   }
 
-  /**
-   * The scroll moved what the menu was opened on (the graph, the page): another list
-   * scrolling by itself (the command log following new commands) leaves the menu open.
-   */
-  function movesWhatItIsOn(e: Event): boolean {
-    const target = e.target;
-    if (!(target instanceof Element) || openedOver === null) return true;
-    return target.contains(openedOver);
-  }
 
   /**
    * Puts a panel where its anchor says, inside the window: at the point (or to its left
@@ -339,8 +322,6 @@
 <svelte:window
   onkeydowncapture={onKeydown}
   onpointerdowncapture={(e) => overlays.menu && outside(e) && closeMenu(false)}
-  onscrollcapture={(e) =>
-    overlays.menu && outside(e) && movesWhatItIsOn(e) && performance.now() - openedAt > SETTLE_MS && closeMenu(false)}
   onwheelcapture={(e) => overlays.menu && outside(e) && closeMenu(false)}
   onblur={() => closeMenu(false)}
   onresize={() => closeMenu(false)}

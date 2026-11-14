@@ -555,3 +555,22 @@ test("the command log taking in new commands does not close an open menu", async
   await page.waitForTimeout(500);
   await expect(menu(page)).toBeVisible();
 });
+
+test("a menu stays when the app itself scrolls the graph a moment later (keeping a row in view)", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  await grid(page).locator('[data-index="6"] .subject').click({ button: "right" });
+  await expect(menu(page)).toBeVisible();
+  // What the graph does when a panel opening below it (late, on a busy machine) would hide
+  // the selected row: it scrolls by itself. No wheel, no click, no key from the user.
+  await page.waitForTimeout(500);
+  await grid(page).evaluate((el) => (el.scrollTop += 52));
+  await page.waitForTimeout(300);
+  await expect(menu(page)).toBeVisible();
+  // The user's own scrolling still closes it.
+  const box = (await grid(page).boundingBox())!;
+  await page.mouse.move(box.x + box.width - 40, box.y + box.height - 40);
+  await page.mouse.wheel(0, 300);
+  await expect(menus(page)).toHaveCount(0);
+});

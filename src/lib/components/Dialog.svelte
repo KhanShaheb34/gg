@@ -4,7 +4,9 @@
   focus goes back where it was when the dialog closes. Escape (and Cancel) cancel; Enter
   submits, unless focus is on Cancel or in a multi-line field (Cmd/Ctrl+Enter submits
   there), or the primary button is disabled (`valid` false). A dangerous primary button is
-  red and never has the focus to begin with: the first field has it, else Cancel.
+  red and never has the focus to begin with: the first field has it, else Cancel. Enter on a
+  button or link inside the dialog presses it instead. A dangerous dialog (an alertdialog)
+  is described by its content, its message.
 
   Submitting happens once per dialog (`once`; a dialog that stays open after a refusal
   passes false and guards itself while its request is out). A held Enter does not repeat
@@ -85,7 +87,8 @@
         return;
       }
       const target = e.target as HTMLElement;
-      if (target === cancelButton) return; // the button's own click cancels
+      // A button (Cancel, or one of the content's) or a link does what it does itself.
+      if (target !== primaryButton && target.closest("button, a[href], summary, [role=button]")) return;
       if (target instanceof HTMLTextAreaElement && !(e.metaKey || e.ctrlKey)) return;
       e.preventDefault();
       submit();
@@ -117,12 +120,13 @@
     role={danger ? "alertdialog" : "dialog"}
     aria-modal="true"
     aria-labelledby="dialog-title-{uid}"
+    aria-describedby={danger ? `dialog-body-${uid}` : undefined}
     tabindex="-1"
     bind:this={box}
     onkeydown={onKeydown}
   >
     <h2 class="title" id="dialog-title-{uid}">{title}</h2>
-    <div class="body">
+    <div class="body" id="dialog-body-{uid}">
       {@render children()}
     </div>
     <div class="buttons">

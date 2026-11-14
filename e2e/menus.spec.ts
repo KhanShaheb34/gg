@@ -353,6 +353,40 @@ test("a dangerous request asks first: Cancel has the focus and runs nothing; con
   await expect(grid(page).locator('[data-index="0"] .subject')).toHaveText("Add part 18");
 });
 
+test("a confirmation is described by its message; Enter on a button inside a dialog presses that button", async ({
+  gg,
+}) => {
+  const { page } = gg;
+  await page.goto("/");
+  const dir = gg.repoPath("small");
+  await open(page, dir);
+  writeFileSync(path.join(dir, "src/part1.txt"), "changed\n");
+  void runOp(page, { op: "reset", hash: gg.git("small", "rev-parse", "HEAD~1").trim(), mode: "hard" });
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toBeVisible();
+  const described = await dialog.evaluate((d) => {
+    const ids = (d.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+    return ids.map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+  });
+  expect(described).toContain("discards the uncommitted changes to 1 file");
+
+  // A button of the dialog's own content (as a "Show more" would be): Enter presses it, and
+  // does not confirm.
+  await dialog.evaluate((d) => {
+    const b = document.createElement("button");
+    b.textContent = "Show more";
+    b.onclick = () => (b.dataset.pressed = "yes");
+    d.querySelector('[data-testid="dangers"]')!.append(b);
+    b.focus();
+  });
+  await page.waitForTimeout(450); // past the red button's first moments, so Enter could confirm
+  await page.keyboard.press("Enter");
+  await expect(dialog.getByRole("button", { name: "Show more" })).toHaveAttribute("data-pressed", "yes");
+  await expect(dialog).toBeVisible();
+  expect(gg.git("small", "status", "--porcelain").trim()).toBe("M src/part1.txt");
+  await page.keyboard.press("Escape");
+});
+
 test("a quick second click does not confirm the confirmation the core asks for next", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

@@ -4,7 +4,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import type { OpOutcome, OpRequest } from "../src/lib/types";
-import { expect, makeRepo, test } from "./fixtures";
+import { expect, makeRepo, otherClone, test } from "./fixtures";
 
 const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");
 
@@ -424,6 +424,92 @@ for (const theme of ["light", "dark"] as const) {
     await grid.locator('[data-ref="v1.0"]').first().click({ button: "right" });
     await page.getByRole("menuitem", { name: "Push…" }).click();
     await shot("dialog-push-tag");
+  });
+}
+
+// The dialogs of branch actions and the staging routine's notices (Task 8).
+for (const theme of ["light", "dark"] as const) {
+  test(`branch dialogs and the staging routine, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    const dir = gg.repoPath("routine");
+    const other = otherClone(dir);
+    // A branch only the remote has, for the remote branch dialogs.
+    gg.gitAt(other, "switch", "-q", "-c", "release/2.0", "origin/main");
+    gg.gitAt(other, "commit", "-q", "--allow-empty", "-m", "Start release 2.0");
+    gg.gitAt(other, "push", "-q", "origin", "release/2.0");
+    gg.git("routine", "fetch", "-q", "origin");
+    await page.goto("/");
+    await open(page, dir);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    const dialog = page.locator('[role="dialog"], [role="alertdialog"]');
+    const label = (name: string, part = ".name") => grid.locator(`[data-ref="${name}"]`).first().locator(part);
+    const pick = async (name: string, item: string, part = ".name") => {
+      await label(name, part).click({ button: "right" });
+      await page.getByRole("menuitem", { name: item, exact: true }).click();
+      await expect(dialog).toBeVisible();
+    };
+    const snap = async (name: string) => {
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+    };
+    const shot = async (name: string) => {
+      await park(page);
+      await snap(name);
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+    };
+
+    await pick("staging", "Check out");
+    await shot("dialog-fast-forward");
+    await pick("feature/login", "Merge feature/login into main…");
+    await shot("dialog-merge");
+    await pick("feature/login", "Rebase main onto feature/login…");
+    await shot("dialog-rebase");
+    await pick("feature/login", "Rename…");
+    await shot("dialog-rename-branch");
+    await pick("feature/login", "Delete…");
+    await shot("dialog-delete-branch");
+    await pick("feature/login", "Push…");
+    await shot("dialog-push");
+    await pick("feature/login", "Push…");
+    await dialog.getByRole("checkbox", { name: /Force push/ }).check();
+    await shot("dialog-push-force");
+    await pick("feature/login", "Check out as a local branch…", ".remotes");
+    await shot("dialog-checkout-remote-existing");
+    await pick("origin/release/2.0", "Check out as a local branch…");
+    await shot("dialog-checkout-remote");
+    await pick("origin/release/2.0", "Fetch into a local branch…");
+    await shot("dialog-fetch-into-local");
+
+    // The routine: staging fast-forwarded, feature/login merged: the notice offers to push.
+    await pick("staging", "Check out");
+    await dialog.getByRole("button", { name: "Yes", exact: true }).click();
+    await expect(grid.locator('[data-ref="staging"]').first()).toHaveClass(/current/);
+    await pick("feature/login", "Merge feature/login into staging…");
+    await dialog.getByRole("button", { name: "Merge", exact: true }).click();
+    const merged = page.getByRole("status").filter({ hasText: "Merged feature/login into staging." });
+    await merged.hover();
+    await snap("notice-merge-push");
+    await merged.getByRole("button", { name: "Dismiss notification" }).click();
+
+    // Meanwhile the remote moved: the push is rejected, with what to do next.
+    gg.gitAt(other, "switch", "-q", "staging");
+    gg.gitAt(other, "pull", "-q", "--ff-only");
+    gg.gitAt(other, "commit", "-q", "--allow-empty", "-m", "Hotfix three");
+    gg.gitAt(other, "push", "-q", "origin", "staging");
+    await pick("staging", "Push 3 commits…");
+    await dialog.getByRole("button", { name: "Push", exact: true }).click();
+    const rejected = page.getByRole("alert").filter({ hasText: "The remote has commits you don't have" });
+    await expect(rejected).toBeVisible();
+    await rejected.hover();
+    await snap("notice-push-rejected");
+
+    // Pull: diverged, and git is not told how: the choice.
+    await rejected.getByRole("button", { name: "Pull", exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await shot("dialog-pull");
   });
 }
 

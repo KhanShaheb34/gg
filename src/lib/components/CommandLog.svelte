@@ -113,15 +113,31 @@
   let scroller: HTMLElement | undefined = $state();
   /** The list shows its end: new entries keep it there. */
   let atEnd = true;
+  /**
+   * "Show log" went to an entry: the list stays there (not following new entries) until the
+   * user is back at the end or a new operation comes in. The highlight stays either way.
+   */
+  let holding = false;
+  /** The newest operation's key when "Show log" went to its entry. */
+  let heldNewest: string | null = null;
 
   function onScroll() {
-    if (scroller) atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+    if (!scroller) return;
+    atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+    if (atEnd) holding = false;
   }
+
+  /** The newest operation's entry, if any. */
+  const newestOp = $derived(items.findLast((i) => i.kind === "op")?.key ?? null);
 
   $effect(() => {
     void commandLog.count;
     void shownItems.length;
-    if (!scroller || !atEnd || target !== null) return;
+    if (holding && newestOp !== heldNewest) {
+      holding = false;
+      atEnd = true;
+    }
+    if (!scroller || !atEnd || holding) return;
     const el = scroller;
     void tick().then(() => (el.scrollTop = el.scrollHeight));
   });
@@ -136,6 +152,9 @@
     const at = items.indexOf(entry);
     if (at >= 0 && at < items.length - limit) limit = items.length - at;
     target = entry.key;
+    holding = true;
+    heldNewest = newestOp;
+    atEnd = false;
     if (entry.kind === "op") {
       folded[entry.opId] = false;
       for (const r of entry.records) if (failed(r) && hasOutput(r)) opened[r.id] = true;

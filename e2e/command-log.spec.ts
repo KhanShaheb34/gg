@@ -319,3 +319,26 @@ test("show_log_in_a_small_window_shows_the_operation_above_the_details", async (
   }
   rmSync(path.join(dir, ".git/index.lock"));
 });
+
+test("after_show_log_the_list_follows_the_next_operation", async ({ gg }) => {
+  const { page } = gg;
+  // A short log: the failed checkout's output fills it.
+  await page.setViewportSize({ width: 1100, height: 600 });
+  const dir = gg.repoPath("branchy");
+  await page.goto("/");
+  await open(page, dir);
+  const differing = gg.git("branchy", "diff", "--name-only", "main", "develop").trim().split("\n")[0];
+  writeFileSync(path.join(dir, differing), "in the way\n");
+  const failed = await runOp(page, { op: "checkout_branch", branch: "develop", fastForward: false });
+  expect(failed.status).toBe("failed");
+  await page.getByRole("alert").filter({ hasText: failed.message }).getByRole("button", { name: "Show log" }).click();
+  await expect(entries(page).locator(`[data-op="${failed.opId}"]`)).toHaveClass(/target/);
+
+  // The user moves the change out of the way and tries again: the retry shows.
+  rmSync(path.join(dir, differing));
+  const retried = await runOp(page, { op: "checkout_branch", branch: "develop", fastForward: false });
+  expect(retried.status).toBe("done");
+  const retry = entries(page).locator(`[data-op="${retried.opId}"] .op-head`);
+  await expect(retry).toContainText("Check out develop");
+  await expect(retry).toBeInViewport();
+});

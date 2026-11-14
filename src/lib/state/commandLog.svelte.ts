@@ -3,8 +3,9 @@
 // were part of. It asks the core only while the panel is open (`start`): when the repository
 // changes, at most once a second; closed, it holds what it has and does nothing.
 //
-// Also the panel's preferences (open, height, background reads shown), remembered in this
-// window's local storage like the details panel's.
+// Also the panel's preferences (open, height, background reads shown), remembered in local
+// storage like the details panel's. Every window of the app shares that storage: a change in
+// one is taken over by the others (the storage event).
 
 import { api, onEvent } from "../ipc";
 import type { CommandRecord, RepoSnapshot } from "../types";
@@ -32,6 +33,8 @@ export class CommandLogStore {
   writesOnly = true;
   /** The first ask has been answered: an empty list means there is nothing. */
   loaded = $state(false);
+  /** Why the first ask failed, until an ask works (the panel offers to try again). */
+  error = $state<string | null>(null);
 
   private ops = new Map<number, OpEntry>();
   /** Bumped when starting over: an answer to an earlier ask is dropped. */
@@ -52,6 +55,7 @@ export class CommandLogStore {
     this.count = 0;
     this.lastId = 0;
     this.loaded = false;
+    this.error = null;
     this.again = false;
   }
 
@@ -82,12 +86,15 @@ export class CommandLogStore {
     let records: CommandRecord[];
     try {
       records = await api.commandLog(this.lastId, { repoId, writesOnly: this.writesOnly });
-    } catch {
-      return; // asked again with the next change
+    } catch (e) {
+      // Asked again with the next change; with nothing shown yet, the panel says why.
+      if (epoch === this.epoch && !this.loaded) this.error = e instanceof Error ? e.message : String(e);
+      return;
     }
     if (epoch !== this.epoch) return;
     this.add(records);
     this.loaded = true;
+    this.error = null;
   }
 
   /** Asks soon: now, unless the last ask was under LOG_REFRESH_MS ago (then once it is not). */
@@ -192,6 +199,14 @@ export function readLogPrefs(): LogPrefs {
 }
 
 export const logPrefs = $state<LogPrefs>(readLogPrefs());
+
+/** Takes over the preferences another window saved, when storage key `key` changed. */
+export function syncLogPrefs(key: string | null): void {
+  if (key !== PREFS_KEY && key !== null) return;
+  Object.assign(logPrefs, readLogPrefs());
+}
+
+if (typeof window !== "undefined") window.addEventListener("storage", (e) => syncLogPrefs(e.key));
 
 export function saveLogPrefs(): void {
   try {

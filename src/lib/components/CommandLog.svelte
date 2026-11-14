@@ -396,7 +396,12 @@
   </header>
 
   <div class="scroller" bind:this={scroller} onscroll={onScroll}>
-    {#if empty}
+    {#if commandLog.error !== null && !commandLog.loaded}
+      <p class="empty" role="alert">
+        Could not read the command log: {visibleText(commandLog.error)}
+        <button class="retry" onclick={() => void commandLog.fetchNow()}>Try again</button>
+      </p>
+    {:else if empty}
       <p class="empty">
         {logPrefs.reads
           ? "No commands yet."
@@ -515,6 +520,20 @@
     font-size: var(--fs-sm);
   }
 
+  .retry {
+    margin-left: 6px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .retry:hover {
+    text-decoration: underline;
+  }
+
   .earlier {
     display: block;
     margin: 2px 14px 6px;
@@ -584,7 +603,8 @@
   .row:focus-visible,
   .copy:focus-visible,
   .more:focus-visible,
-  .earlier:focus-visible {
+  .earlier:focus-visible,
+  .retry:focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: -2px;
   }

@@ -96,7 +96,8 @@ test("operation_appears_with_its_commands_and_output", async ({ gg }) => {
   await expect(entries(page).locator(".op").last()).toHaveAttribute("data-op", String(created.opId));
   await expect(entries(page).locator(".op").last()).toContainText("Create branch after-merge");
 
-  // Open across a reload (remembered per window), closed by its button.
+  // Open across a reload (remembered in the app's storage, which its windows share), closed
+  // by its button.
   await page.reload();
   await expect(panel(page)).toBeVisible();
   await panel(page).getByRole("button", { name: "Close command log" }).click();
@@ -225,7 +226,7 @@ test("escape_closes_and_focus_returns", async ({ gg }) => {
   await page.keyboard.press("Escape");
   await expect(panel(page)).toHaveCount(0);
   await expect(grid(page)).toBeFocused();
-  // The details panel was not closed by that Escape (none was open; the selection stays).
+  // The toolbar's log button says it is closed.
   await expect(toggle(page)).toHaveAttribute("aria-pressed", "false");
 });
 
@@ -366,4 +367,37 @@ test("the shortcut closes the log with the focus put back, and another tab does 
   await expect(panel(page)).toBeVisible();
   await page.waitForTimeout(300);
   expect(await panel(page).evaluate((el) => el.contains(document.activeElement))).toBe(false);
+});
+
+test("a log that cannot be read says so and can be read again", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  let refuse = true;
+  await page.route("**/invoke", (route) => {
+    if (refuse && (route.request().postDataJSON() as { cmd: string } | null)?.cmd === "command_log") {
+      return route.fulfill({ json: { err: { code: "io", message: "The core is not answering.", detail: null } } });
+    }
+    return route.continue();
+  });
+  await toggle(page).click();
+  await expect(panel(page).getByRole("alert")).toContainText("Could not read the command log: The core is not answering.");
+  refuse = false;
+  await panel(page).getByRole("button", { name: "Try again" }).click();
+  await expect(panel(page).getByRole("alert")).toHaveCount(0);
+  await expect(panel(page)).toContainText("No operations yet.");
+  await page.unrouteAll({ behavior: "wait" });
+});
+
+test("show log for an operation no longer kept says so", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  await page.evaluate(async () => {
+    const { showLog, app } = await import("/src/lib/state/app.svelte.ts");
+    // A command id the log does not hold (its ids start at 1; older ones are dropped past 1000).
+    showLog(app.activeRepoId!, 0);
+  });
+  await expect(panel(page)).toBeVisible();
+  await expect(page.getByRole("status").or(page.getByRole("alert")).filter({ hasText: "That operation's commands are no longer in the log" })).toBeVisible();
 });

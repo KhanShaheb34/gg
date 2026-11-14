@@ -37,6 +37,7 @@ import {
   readLogPrefs,
   saveLogPrefs,
   setLogOpen,
+  syncLogPrefs,
   takeLogAutofocus,
 } from "./commandLog.svelte";
 
@@ -264,5 +265,39 @@ describe("opening and closing the panel", () => {
     focusCameFrom(button as unknown as HTMLElement);
     setLogOpen(false);
     expect(button.focus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("when the log cannot be read", () => {
+  it("says so after a failed first ask, and a retry that works clears it", async () => {
+    const { api } = await import("../ipc");
+    vi.mocked(api.commandLog).mockRejectedValueOnce(new Error("core gone"));
+    const store = new CommandLogStore();
+    store.show(1, true);
+    await store.fetchNow();
+    expect(store.loaded).toBe(false);
+    expect(store.error).toBe("core gone");
+    await store.fetchNow();
+    expect(store.loaded).toBe(true);
+    expect(store.error).toBeNull();
+  });
+});
+
+describe("preferences changed in another window", () => {
+  it("are taken over from the storage event", () => {
+    const items = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => items.get(k) ?? null,
+      setItem: (k: string, v: string) => void items.set(k, String(v)),
+      removeItem: (k: string) => void items.delete(k),
+    });
+    logPrefs.open = false;
+    logPrefs.reads = false;
+    items.set("gg.log.v1", '{"open":true,"height":180,"reads":true}');
+    syncLogPrefs("other.key");
+    expect(logPrefs.open).toBe(false);
+    syncLogPrefs("gg.log.v1");
+    expect(logPrefs).toEqual({ open: true, height: 180, reads: true });
+    vi.unstubAllGlobals();
   });
 });

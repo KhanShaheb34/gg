@@ -25,7 +25,7 @@ import { showDialog as show } from "../state/overlays.svelte";
 import type { CommitRow, OpRequest, RefLabel, RepoSnapshot } from "../types";
 import { branchMenu } from "./branchMenu";
 import { checkOutBranch } from "./checkout";
-import { remoteOf } from "./common";
+import { remoteOf, shown } from "./common";
 import { commitMenu } from "./commitMenu";
 import { stashMenu, uncommittedMenu } from "./stashMenu";
 import { tagMenu } from "./tagMenu";
@@ -211,7 +211,7 @@ function pickRemote(id: string, name: string, snap: RepoSnapshot): boolean {
     case "delete": {
       // The core asks to confirm, saying what would be lost: no dialog of its own.
       const remote = remoteOf(name, remotes);
-      if (remote === null) toast("error", `No remote of this repository has ${name}`);
+      if (remote === null) toast("error", `No remote of this repository has ${shown(name)}.`);
       else run(repoId, { op: "delete_remote_branch", remote, branch: name.slice(remote.length + 1) });
       return true;
     }

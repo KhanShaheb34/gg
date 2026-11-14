@@ -1132,6 +1132,29 @@ async fn soft_and_mixed_reset_run_without_confirmation() {
     );
 }
 
+/// The confirmation lists 20 files at most, then says how many more.
+#[tokio::test]
+async fn hard_reset_lists_twenty_files_then_how_many_more() {
+    let repo = TestRepo::new();
+    for i in 0..25 {
+        repo.write(&format!("f{i:02}.txt"), "one\n");
+    }
+    let first = repo.commit_all("files");
+    for i in 0..25 {
+        repo.write(&format!("f{i:02}.txt"), "changed\n");
+    }
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, reset(&first, ResetMode::Hard)).await;
+    let detail = out.dangers[0].detail.clone().unwrap();
+    let lines: Vec<&str> = detail.lines().collect();
+    assert_eq!(lines.len(), 21, "{detail}");
+    assert_eq!(lines[0], "f00.txt");
+    assert_eq!(lines[19], "f19.txt");
+    assert_eq!(lines[20], "and 5 more");
+}
+
 #[tokio::test]
 async fn hard_reset_needs_confirmation() {
     let repo = TestRepo::new();
@@ -1157,6 +1180,8 @@ async fn hard_reset_needs_confirmation() {
         "{}",
         danger.message
     );
+    // The files whose changes would be lost, for the confirmation to list.
+    assert_eq!(danger.detail.as_deref(), Some("a.txt\nb.txt"));
     assert!(h.writes_since(mark).is_empty());
     assert_eq!(
         fs::read_to_string(repo.path().join("a.txt")).unwrap(),

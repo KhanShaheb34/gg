@@ -235,8 +235,12 @@ fn short_ref(full: &str) -> &str {
         .unwrap_or(full)
 }
 
-/// `hard_reset`, always: it discards the uncommitted changes, which the message counts;
-/// untracked files are kept, which it says too.
+/// Most files a hard reset's confirmation lists; the rest are counted.
+const MAX_LOST_LISTED: usize = 20;
+
+/// `hard_reset`, always: it discards the uncommitted changes, which the message counts and
+/// the detail lists (MAX_LOST_LISTED files, then how many more); untracked files are kept,
+/// which it says too.
 async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
     let status = read_status(&ctx.runner, &ctx.cwd).await?;
     let to = hash.get(..7).unwrap_or(hash);
@@ -252,10 +256,27 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
         1 => "1 untracked file is kept: git leaves untracked files alone.".to_owned(),
         n => format!("{n} untracked files are kept: git leaves untracked files alone."),
     };
+    // The tracked files that differ from HEAD, staged or not: what the reset puts back.
+    let out = ctx
+        .read(&["diff", "--name-only", "-z", "HEAD", "--"])
+        .await?;
+    let text = out.text();
+    let files: Vec<&str> = text.split('\0').filter(|f| !f.is_empty()).collect();
+    let detail = (out.code == 0 && !files.is_empty()).then(|| {
+        let mut lines: Vec<String> = files
+            .iter()
+            .take(MAX_LOST_LISTED)
+            .map(|f| (*f).to_owned())
+            .collect();
+        if files.len() > MAX_LOST_LISTED {
+            lines.push(format!("and {} more", files.len() - MAX_LOST_LISTED));
+        }
+        lines.join("\n")
+    });
     Ok(Danger {
         kind: DangerKind::HardReset,
         message: format!("{lost} {kept}"),
-        detail: None,
+        detail,
         token: None,
     })
 }

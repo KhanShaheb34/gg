@@ -295,6 +295,16 @@ button {
   outline-offset: 1px;
 }
 
+/* Ticked in a row that destroys something (force push): the danger colour. */
+.check-row.danger .checkbox:checked {
+  border-color: var(--danger-fill);
+  background: var(--danger-fill);
+}
+
+.check-row.danger .checkbox:checked::before {
+  background: var(--danger-contrast);
+}
+
 /* Dialog fields (inside Dialog.svelte's body): a label above its control and a hint or a
    problem below it; checkboxes and radio choices with a line saying what they do. */
 .field {

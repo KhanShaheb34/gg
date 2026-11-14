@@ -1,6 +1,6 @@
 <!--
-  Rebase the current branch onto another (local or remote): a one-line confirmation naming
-  both, and that the current branch's commits are rewritten.
+  Rebase the current branch onto another (local or remote): a short confirmation naming both
+  (in the title), and that the current branch's commits are rewritten.
 -->
 <script lang="ts">
   import { shown } from "../../menus/common";
@@ -25,8 +25,6 @@
   onSubmit={() => closeAndRun(close, repoId, { op: "rebase", onto })}
   onCancel={close}
 >
-  <p class="dialog-text">
-    The commits of {shown(branch)} that {shown(onto)} lacks are made again on top of it, so they get new hashes:
-    if they were pushed, pushing them again takes a force push.
-  </p>
+  <p class="dialog-text">Its own commits are made again on top, with new hashes.</p>
+  <p class="dialog-text muted">If they were pushed, pushing again takes a force push.</p>
 </Dialog>

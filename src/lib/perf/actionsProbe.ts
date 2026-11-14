@@ -79,6 +79,8 @@ export async function runActionsProbe(scroller: HTMLElement, count = 10): Promis
     return outcome;
   };
   const run = Date.now().toString(36);
+  // The rows may still be skeletons when the repository has loaded: wait for some to show.
+  await paintedWhen(() => visibleRows(scroller).length > 0, 600);
   try {
     for (let k = 0; k < count; k++) {
       // Right-click -> menu.

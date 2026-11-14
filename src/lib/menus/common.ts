@@ -8,13 +8,37 @@ import type { MenuItem } from "./types";
 /** Longest name shown whole in an item's label; longer ones lose their middle. */
 const MAX_NAME = 44;
 
-/** `name` (from git) for an item's label: invisible characters shown, a long one shortened in the middle. */
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * `name` (from git) for an item's label: invisible characters shown, a long one shortened
+ * in the middle to MAX_NAME characters (code points). Cut only between graphemes, each shown
+ * whole: never inside a character, a flag or an invisible character's marker (‹U+202E›).
+ */
 export function shown(name: string): string {
   const text = visibleText(name);
-  if (text.length <= MAX_NAME) return text;
-  const head = Math.ceil((MAX_NAME - 1) / 2);
-  const tail = MAX_NAME - 1 - head;
-  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+  if ([...text].length <= MAX_NAME) return text;
+  const parts = [...graphemes.segment(name)].map((g) => visibleText(g.segment));
+  const width = (part: string) => [...part].length;
+  const budget = MAX_NAME - 1; // the ellipsis
+  let head = "";
+  let tail = "";
+  let used = 0;
+  for (let i = 0, j = parts.length - 1; i <= j; ) {
+    // Alternate ends, the head first; stop at the first part that does not fit.
+    const takeHead = width(head) <= width(tail);
+    const part = takeHead ? parts[i] : parts[j];
+    if (used + width(part) > budget) break;
+    used += width(part);
+    if (takeHead) {
+      head += part;
+      i++;
+    } else {
+      tail = part + tail;
+      j--;
+    }
+  }
+  return `${head}…${tail}`;
 }
 
 export const SEPARATOR: MenuItem = { separator: true };

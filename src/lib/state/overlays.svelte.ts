@@ -17,8 +17,13 @@ export type OpenMenu = {
   returnFocus: HTMLElement | null;
   /** Opened from the keyboard: its first item is active at once. */
   keyboard: boolean;
-  /** The repository its items act on: the menu closes when that changes under it. */
+  /** The repository its items act on: the menu closes when an operation starts or ends there. */
   repoId: number | null;
+  /**
+   * Whether what the menu acts on (its rows and labels) is still there, as far as known;
+   * asked when the repository's rows change. Without it, the menu stays open.
+   */
+  alive: (() => Promise<boolean>) | null;
 };
 
 export type OpenDialog = {
@@ -48,13 +53,19 @@ let nextId = 1;
  * Picking an item closes the menu, puts focus back where it was, then calls `onPick` with
  * the item's id. Opening another menu replaces this one. `keyboard`: opened from the
  * keyboard (the menu key), so its first item is made active. `repoId`: the repository its
- * items act on; the menu closes when its rows change or an operation starts or ends there.
+ * items act on; the menu closes when an operation starts or ends there, or when its rows
+ * change and `alive` then says its target is gone. A background refresh alone (a scheduled
+ * fetch, the working tree's status) leaves it open (R26).
  */
 export function openMenu(
   at: { x: number; y: number },
   items: MenuItem[],
   onPick: (id: string) => void,
-  { keyboard = false, repoId = null }: { keyboard?: boolean; repoId?: number | null } = {},
+  {
+    keyboard = false,
+    repoId = null,
+    alive = null,
+  }: { keyboard?: boolean; repoId?: number | null; alive?: (() => Promise<boolean>) | null } = {},
 ): void {
   const focused = document.activeElement;
   overlays.menu = {
@@ -66,6 +77,7 @@ export function openMenu(
     returnFocus: focused instanceof HTMLElement && focused !== document.body ? focused : null,
     keyboard,
     repoId,
+    alive,
   };
 }
 
@@ -92,4 +104,12 @@ export function openDialog<P extends Record<string, unknown>>(component: Compone
 /** Closes dialog `id`, wherever it is in the stack; nothing if it is closed already. */
 export function closeDialog(id: number): void {
   if (overlays.dialogs.some((d) => d.id === id)) overlays.dialogs = overlays.dialogs.filter((d) => d.id !== id);
+}
+
+/** Opens `component` as a dialog with `props` and a `close` that closes it. */
+export function showDialog<P extends Record<string, unknown>>(
+  component: Component<P & { close: () => void }>,
+  props: P,
+): void {
+  const id = openDialog(component, { ...props, close: () => closeDialog(id) } as P & { close: () => void });
 }

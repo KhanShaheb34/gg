@@ -70,20 +70,34 @@
     void tick().then(() => focusActive());
   });
 
-  /** What the menu's items were made from: its repository's rows and running operation. */
-  function stateOf(repoId: number | null): string | null {
+  /** The menu's repository as it bears on the menu: its rows and its running operation. */
+  function stateOf(repoId: number | null): { generation: number; op: number } | null {
     const snap = repoId === null ? undefined : findRepoView(repoId)?.snapshot;
-    return snap ? `${snap.generation}/${snap.op?.id ?? 0}/${snap.inProgress?.kind ?? ""}` : null;
+    return snap ? { generation: snap.generation, op: snap.op?.id ?? 0 } : null;
   }
 
-  // The repository changed under the open menu: close it.
-  let openedOn: { id: number; state: string | null } | null = null;
+  // An operation starting or ending closes the menu; new rows close it if its target went.
+  let openedOn: { id: number; state: { generation: number; op: number } | null } | null = null;
   $effect(() => {
     const menu = overlays.menu;
     if (!menu) return;
     const state = stateOf(menu.repoId);
-    if (openedOn?.id !== menu.id) openedOn = { id: menu.id, state };
-    else if (state !== openedOn.state) closeMenu();
+    if (openedOn?.id !== menu.id) {
+      openedOn = { id: menu.id, state };
+      return;
+    }
+    const before = openedOn.state;
+    openedOn.state = state;
+    if (before === null || state === null) {
+      if (before !== state) closeMenu();
+      return;
+    }
+    if (state.op !== before.op) closeMenu();
+    else if (state.generation !== before.generation && menu.alive) {
+      void menu.alive().then((alive) => {
+        if (!alive && overlays.menu?.id === menu.id) closeMenu();
+      });
+    }
   });
 
   // The reason of the deepest active item that cannot apply, beside its panel.

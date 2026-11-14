@@ -65,8 +65,8 @@ export type RepoSnapshot = {
 /** A merge, rebase, cherry-pick or revert git stopped in. */
 export type InProgress = {
   kind: "merge" | "rebase" | "cherry-pick" | "revert";
-  conflicted: string[]; // paths relative to the worktree, sorted
-  unresolved: string[]; // those of `conflicted` that still have conflict markers (the others are resolved, unmerged until staged)
+  files: ConflictFile[]; // the conflicted files, relative to the worktree, sorted: the first 200
+  fileCount: number; // how many are conflicted in all
   step: number | null; // rebase only
   total: number | null; // rebase only
   subject: string | null; // what is being applied: the incoming branch or the commit's subject
@@ -74,6 +74,12 @@ export type InProgress = {
   incoming: string | null;
   rebasing: string | null; // rebase only: the branch being rebased
 };
+
+/**
+ * A conflicted file. `markers`: it still has a conflict-marker line; `undecided`: git kept one
+ * side (binary, deleted or added on one side) or it cannot be judged; `resolved`: no marker left.
+ */
+export type ConflictFile = { path: string; state: "markers" | "undecided" | "resolved" };
 
 export type Edge = { from: number; to: number; color: number; half: "top" | "bottom" | "full" };
 export type RefLabel = {

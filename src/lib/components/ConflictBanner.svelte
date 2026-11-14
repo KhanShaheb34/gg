@@ -1,17 +1,20 @@
 <!--
   The banner above the graph while git is stopped in a merge, rebase, cherry-pick or revert
-  (spec §5.6), started here or outside the app: what is in progress, the conflicted files
-  (each opens in the editor; the list scrolls past six), and Abort, Open in editor and
-  Continue. Continue stays disabled, saying why, while a file still has conflict markers;
-  it asks first, listing the files it stages. The app never edits the files.
+  (spec §5.6), started here or outside the app: what is in progress ("Merging feature/x into
+  main", "Rebasing topic onto main, step 2 of 5"), the conflicted files with how far each is
+  resolved (each opens in the editor; the list scrolls, fading at its bottom edge), and Abort,
+  Open in editor and Continue. Continue is enabled once every file is resolved; until then it
+  says why, and a quieter "Continue anyway…" asks first, naming the files that still have
+  markers and those git kept one side of (R31). The app never edits the files.
 
   A quieter form shows conflicts nothing is in progress for (left by applying a stash): the
-  files and Open in editor only, and that they need resolving and staging.
+  files and Open in editor only, and what clears them.
 
-  Resolving a file in an editor changes nothing git watches, so when the pointer comes to
-  the banner (or to Continue) while files are unresolved, it has the repository looked at
-  again (at most once a second). It takes its height from the graph's top; the graph keeps
-  its rows where they were.
+  Resolving a file in an editor changes nothing git watches, so when the pointer or the focus
+  comes to the banner, it has the repository looked at again (at most once a second). A
+  polite status announces the headline when the banner appears or what it shows changes
+  (another kind, another step), never on a recheck. It takes its height from the graph's
+  top; the graph keeps its rows where they were.
 -->
 <script lang="ts">
   import { visibleText } from "../format";
@@ -19,7 +22,7 @@
   import { openInEditor } from "../state/editor";
   import { showDialog } from "../state/overlays.svelte";
   import type { RepoView } from "../state/repo.svelte";
-  import type { InProgress } from "../types";
+  import type { ConflictFile, InProgress } from "../types";
   import AbortDialog from "./dialogs/AbortDialog.svelte";
   import ContinueDialog from "./dialogs/ContinueDialog.svelte";
 
@@ -32,11 +35,15 @@
   /** Conflicts with nothing in progress: the quieter form. */
   const leftover = $derived(progress === null && snap.status.conflicted > 0);
 
-  const files = $derived(progress ? progress.conflicted : snap.status.conflictedPaths);
-  const unresolved = $derived(new Set(progress ? progress.unresolved : snap.status.conflictedPaths));
-  /** Files the status counts beyond those it names. */
-  const unnamed = $derived(leftover ? Math.max(0, snap.status.conflicted - files.length) : 0);
-  const left = $derived(progress ? progress.unresolved.length : 0);
+  const files = $derived<ConflictFile[]>(
+    progress ? progress.files : snap.status.conflictedPaths.map((path) => ({ path, state: "markers" as const })),
+  );
+  const total = $derived(progress ? progress.fileCount : snap.status.conflicted);
+  /** Files counted beyond those named. */
+  const unnamed = $derived(Math.max(0, total - files.length));
+  const resolved = $derived(files.filter((f) => f.state === "resolved").length);
+  /** Every file is resolved (and every one was looked at). */
+  const ready = $derived(progress !== null && unnamed === 0 && resolved === files.length);
 
   const files_ = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
   const has = (n: number) => `${files_(n)} ${n === 1 ? "has" : "have"} conflicts`;
@@ -44,68 +51,134 @@
   function headline(p: InProgress | null, branch: string | null): string {
     if (p === null) return has(snap.status.conflicted);
     const on = branch === null ? null : shown(branch);
+    const what = p.incoming === null ? null : shown(p.incoming);
     switch (p.kind) {
       case "merge":
-        return on ? `Merging into ${on}` : "Merging";
-      case "rebase":
-        return p.step !== null && p.total !== null ? `Rebasing, step ${p.step} of ${p.total}` : "Rebasing";
+        if (what && on) return `Merging ${what} into ${on}`;
+        return what ? `Merging ${what}` : on ? `Merging into ${on}` : "Merging";
+      case "rebase": {
+        const who = p.rebasing === null ? null : shown(p.rebasing);
+        const head = who && what ? `Rebasing ${who} onto ${what}` : what ? `Rebasing onto ${what}` : "Rebasing";
+        return p.step !== null && p.total !== null ? `${head}, step ${p.step} of ${p.total}` : head;
+      }
       case "cherry-pick":
-        return on ? `Cherry-picking onto ${on}` : "Cherry-picking";
+        return ["Cherry-picking", what, on && `onto ${on}`].filter(Boolean).join(" ");
       case "revert":
-        return on ? `Reverting on ${on}` : "Reverting";
+        return ["Reverting", what, on && `on ${on}`].filter(Boolean).join(" ");
     }
   }
 
   const title = $derived(headline(progress, snap.head.branch));
 
-  const state = $derived.by(() => {
-    if (progress === null) {
-      return "Left by applying a stash or an earlier step. Resolve them in your editor, then stage them: until then nothing that changes the files can run.";
-    }
-    const n = progress.conflicted.length;
-    if (n === 0) return "Nothing is conflicted: ready to continue.";
-    if (left === 0) return "All conflicts are resolved: continue stages the files and goes on.";
-    if (left === n) return `${has(n)}. Resolve them in your editor, then continue.`;
-    return `${n - left} of ${files_(n)} resolved. Resolve the rest in your editor, then continue.`;
+  /**
+   * The line under the headline: the commit being applied. A merge's message only repeats
+   * what the headline says ("Merge branch 'feature/x'") once it names what comes in.
+   */
+  const subject = $derived.by(() => {
+    if (!progress?.subject) return null;
+    if (progress.kind === "merge" && progress.incoming !== null && progress.subject.includes(progress.incoming)) return null;
+    return progress.subject;
   });
 
-  const continueReason = $derived(left > 0 ? `Resolve the conflicts in ${files_(left)} first.` : null);
+  const stateLine = $derived.by(() => {
+    if (progress === null) {
+      const it = snap.status.conflicted === 1 ? "it" : "them";
+      return `Left by applying a stash or an earlier step. Resolve ${it} in your editor; this goes once git sees no conflict: git add the ${snap.status.conflicted === 1 ? "file" : "files"}, or reset to the current commit (mixed).`;
+    }
+    const n = progress.fileCount;
+    if (n === 0) return "Nothing is conflicted: ready to continue.";
+    if (ready) return "All conflicts are resolved: continue stages the files and goes on.";
+    if (resolved === 0) return `${has(n)}. Resolve them in your editor, then continue.`;
+    return `${resolved} of ${files_(n)} resolved. Resolve the rest in your editor, then continue.`;
+  });
+
+  const continueReason = $derived(ready ? null : `${files_(total - resolved)} not resolved yet.`);
+
+  const STATE_WORDS: Record<ConflictFile["state"], string> = {
+    markers: "Conflict markers",
+    undecided: "Git kept one side",
+    resolved: "Resolved",
+  };
+  const STATE_TIPS: Record<ConflictFile["state"], string> = {
+    markers: "The file still has conflict markers",
+    undecided: "Binary, or deleted or added on one side: git kept one side and left no markers. Only you can say it is right.",
+    resolved: "No conflict markers left",
+  };
 
   /** The user comes back to the banner: look again if a file may have been resolved meanwhile. */
   function recheck() {
-    if (left > 0) view.recheck();
+    if (progress !== null && !ready) view.recheck();
   }
 
   function abort() {
     if (progress) showDialog(AbortDialog, { repoId: view.repoId, kind: progress.kind, branch: snap.head.branch });
   }
 
-  function continueOp() {
-    if (progress && left === 0) {
-      showDialog(ContinueDialog, { repoId: view.repoId, kind: progress.kind, files: progress.conflicted });
-    }
+  function continueOp(force: boolean) {
+    if (!progress || (!force && !ready)) return;
+    showDialog(ContinueDialog, {
+      repoId: view.repoId,
+      kind: progress.kind,
+      files: progress.files,
+      fileCount: progress.fileCount,
+      force,
+    });
   }
+
+  // --- What is announced -------------------------------------------------------------------
+
+  /** The text of the polite status: the headline, set only when the stop is new or moved on. */
+  let announced = $state("");
+  let announcedKey = "";
+  $effect(() => {
+    const key = progress === null ? (leftover ? "leftover" : "") : `${progress.kind}:${progress.step ?? ""}`;
+    if (key === announcedKey) return;
+    announcedKey = key;
+    announced = key === "" ? "" : title;
+  });
+
+  // --- The list's fade -------------------------------------------------------------------------
+
+  let list: HTMLElement | undefined = $state();
+  /** The list has more below what shows. */
+  let more = $state(false);
+
+  function checkMore() {
+    if (list) more = list.scrollHeight - list.scrollTop - list.clientHeight > 1;
+  }
+
+  $effect(() => {
+    void files;
+    if (!list) return;
+    checkMore();
+    const observer = new ResizeObserver(checkMore);
+    observer.observe(list);
+    return () => observer.disconnect();
+  });
 </script>
+
+<span class="visually-hidden" role="status" data-testid="banner-announce">{announced}</span>
 
 {#if progress !== null || leftover}
   <section
     class="banner"
     class:leftover
-    class:ready={progress !== null && left === 0}
+    class:ready
     data-testid="conflict-banner"
     aria-labelledby="banner-title-{uid}"
     onpointerenter={recheck}
+    onfocusin={recheck}
   >
     <div class="head">
       <span class="mark" aria-hidden="true"></span>
       <div class="text">
-        <h2 class="title" id="banner-title-{uid}">{title}</h2>
-        {#if progress?.subject}
-          <p class="subject" title={visibleText(progress.subject)}>
-            <bdi>{visibleText(progress.subject)}</bdi>
+        <h2 class="title" id="banner-title-{uid}"><bdi>{visibleText(title)}</bdi></h2>
+        {#if subject}
+          <p class="subject" title={visibleText(subject)}>
+            <bdi>{visibleText(subject)}</bdi>
           </p>
         {/if}
-        <p class="state" class:ready={progress !== null && left === 0}>{state}</p>
+        <p class="state" class:ready>{stateLine}</p>
       </div>
       <div class="actions">
         {#if progress !== null}
@@ -113,13 +186,16 @@
         {/if}
         <button class="button" onclick={() => void openInEditor(view.repoId, null)}>Open in editor</button>
         {#if progress !== null}
+          {#if !ready}
+            <button class="button quiet" onclick={() => continueOp(true)}>Continue anyway…</button>
+          {/if}
           <span class="continue-wrap" role="presentation" onpointerenter={recheck} title={continueReason ?? undefined}>
+            <!-- aria-disabled, not disabled: it stays reachable, and its reason is read out. -->
             <button
               class="button primary"
-              disabled={continueReason !== null}
+              aria-disabled={continueReason !== null}
               aria-describedby={continueReason ? `continue-why-${uid}` : undefined}
-              onfocus={recheck}
-              onclick={continueOp}>Continue…</button
+              onclick={() => continueOp(false)}>Continue…</button
             >
           </span>
           {#if continueReason}
@@ -129,29 +205,32 @@
       </div>
     </div>
     {#if files.length > 0}
-      <ul class="files" aria-label="Conflicted files">
-        {#each files as file (file)}
-          {@const open = unresolved.has(file)}
-          <li class="file-row">
-            <span class="icon" class:open aria-hidden="true">
-              {#if open}
-                <svg viewBox="0 0 12 12" width="12" height="12"><path d="M6 1.5 11 10.5H1Z" /></svg>
-              {:else}
-                <svg viewBox="0 0 12 12" width="12" height="12"><path d="M2.5 6.2 5 8.6 9.6 3.6" /></svg>
+      <div class="files-wrap" class:more>
+        <ul class="files" aria-label="Conflicted files" bind:this={list} onscroll={checkMore}>
+          {#each files as file (file.path)}
+            <li class="file-row">
+              <span class="icon {file.state}" aria-hidden="true">
+                {#if file.state === "resolved"}
+                  <svg viewBox="0 0 12 12" width="12" height="12"><path d="M2.5 6.2 5 8.6 9.6 3.6" /></svg>
+                {:else}
+                  <svg viewBox="0 0 12 12" width="12" height="12"><path d="M6 1.5 11 10.5H1Z" /></svg>
+                {/if}
+              </span>
+              <button
+                class="file path-tail"
+                title="Open {visibleText(file.path)} in the editor"
+                onclick={() => void openInEditor(view.repoId, file.path)}><bdi>{visibleText(file.path)}</bdi></button
+              >
+              {#if progress !== null}
+                <span class="file-state {file.state}" title={STATE_TIPS[file.state]}>{STATE_WORDS[file.state]}</span>
               {/if}
-            </span>
-            <button class="file path-tail" title="Open {visibleText(file)} in the editor" onclick={() => void openInEditor(view.repoId, file)}
-              ><bdi>{visibleText(file)}</bdi></button
-            >
-            {#if progress !== null}
-              <span class="file-state" class:open>{open ? "Conflicted" : "Resolved"}</span>
-            {/if}
-          </li>
-        {/each}
-        {#if unnamed > 0}
-          <li class="file-row more">and {files_(unnamed)} more</li>
-        {/if}
-      </ul>
+            </li>
+          {/each}
+          {#if unnamed > 0}
+            <li class="file-row more-row">and {files_(unnamed)} more</li>
+          {/if}
+        </ul>
+      </div>
     {/if}
   </section>
 {/if}
@@ -201,9 +280,12 @@
   }
 
   .title {
+    overflow: hidden;
     font-size: var(--fs);
     font-weight: 650;
     line-height: 18px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .subject {
@@ -252,11 +334,11 @@
       border-color 80ms linear;
   }
 
-  .button:hover:not(:disabled) {
+  .button:hover:not([aria-disabled="true"]) {
     background: color-mix(in srgb, var(--text) 6%, var(--bg-elevated));
   }
 
-  .button:active:not(:disabled) {
+  .button:active:not([aria-disabled="true"]) {
     background: color-mix(in srgb, var(--text) 10%, var(--bg-elevated));
   }
 
@@ -266,36 +348,57 @@
     outline-offset: 2px;
   }
 
+  /* A way past the check, not the way on: no frame until the pointer comes. */
+  .button.quiet {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted);
+  }
+
+  .button.quiet:hover {
+    color: var(--text);
+  }
+
   .primary {
     border-color: var(--accent);
     background: var(--accent);
     color: var(--accent-contrast);
   }
 
-  .primary:hover:not(:disabled) {
+  .primary:hover:not([aria-disabled="true"]) {
     border-color: var(--accent-hover);
     background: var(--accent-hover);
   }
 
-  .primary:disabled {
+  .primary[aria-disabled="true"] {
     border-color: var(--border-strong);
     background: color-mix(in srgb, var(--text) 5%, var(--bg));
     color: var(--text-faint);
     cursor: default;
   }
 
-  .files {
-    /* Six rows show, and half of the next when there are more: the list scrolls. */
-    max-height: calc(6.5 * 22px + 4px);
-    overflow-y: auto;
-    margin: 0 0 0 20px;
-    padding: 4px 0;
+  .files-wrap {
+    align-self: flex-start;
+    min-width: min(360px, 100%);
+    max-width: min(640px, 100%);
+    margin-left: 20px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg);
+  }
+
+  .files {
+    /* Six rows and a bit; past that it scrolls, fading at the bottom edge (never more than a quarter of the window). */
+    max-height: min(151px, 25vh);
+    overflow-y: auto;
+    padding: 4px 0;
     list-style: none;
-    max-width: 640px;
     overscroll-behavior: contain;
+  }
+
+  .files-wrap.more .files {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
   }
 
   .file-row {
@@ -303,10 +406,10 @@
     align-items: center;
     gap: 8px;
     height: 22px;
-    padding: 0 10px 0 9px;
+    padding: 0 12px 0 9px;
   }
 
-  .file-row.more {
+  .file-row.more-row {
     color: var(--text-muted);
     font-size: var(--fs-sm);
     padding-left: 29px;
@@ -317,7 +420,7 @@
     display: grid;
     place-items: center;
     width: 12px;
-    color: var(--success);
+    color: var(--warning);
   }
 
   .icon svg {
@@ -328,11 +431,11 @@
     stroke-linejoin: round;
   }
 
-  .icon.open {
-    color: var(--warning);
+  .icon.resolved {
+    color: var(--success);
   }
 
-  .leftover .icon.open {
+  .leftover .icon {
     color: var(--text-muted);
   }
 
@@ -356,16 +459,21 @@
     text-underline-offset: 2px;
   }
 
+  /* Right after the name, so the eye does not travel to find it. */
   .file-state {
     flex: none;
-    margin-left: auto;
-    padding-left: 12px;
-    color: var(--success);
+    padding-left: 4px;
+    color: var(--text-muted);
     font-size: var(--fs-xs);
+    white-space: nowrap;
   }
 
-  .file-state.open {
-    color: var(--text-muted);
+  .file-state.resolved {
+    color: var(--success);
+  }
+
+  .file-state.undecided {
+    color: var(--warning);
   }
 
   .visually-hidden {

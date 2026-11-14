@@ -1,22 +1,29 @@
 <!--
-  Continue what git stopped in: the files that are staged as they are now (every file that
-  was conflicted; the user resolved them), and what happens then.
+  Continue what git stopped in. With every file resolved: the files that are staged as they
+  are now, and what happens then. `force` ("Continue anyway…", R31): a red confirmation that
+  names, apart, the files that still contain conflict markers (committed with them) and those
+  git kept one side of (binary, or deleted on one side: what is in the folder now is taken);
+  confirming tells the core to go ahead (`evenWithMarkers`).
 -->
 <script lang="ts">
   import { visibleText } from "../../format";
-  import type { InProgress } from "../../types";
+  import type { ConflictFile, InProgress } from "../../types";
   import Dialog from "../Dialog.svelte";
   import { closeAndRun } from "./run";
 
   type Props = {
     repoId: number;
     kind: InProgress["kind"];
-    /** The conflicted files, staged by continuing. */
-    files: string[];
+    /** The conflicted files (the first 200), staged by continuing. */
+    files: ConflictFile[];
+    /** How many are conflicted in all. */
+    fileCount: number;
+    /** Go ahead although not every file is resolved. */
+    force?: boolean;
     close: () => void;
   };
 
-  let { repoId, kind, files, close }: Props = $props();
+  let { repoId, kind, files, fileCount, force = false, close }: Props = $props();
 
   const then = $derived(
     {
@@ -26,34 +33,79 @@
       revert: "the commit that reverts it is made",
     }[kind],
   );
+
+  const marked = $derived(files.filter((f) => f.state === "markers"));
+  const undecided = $derived(files.filter((f) => f.state === "undecided"));
+  /** Files counted but not named (past the first 200). */
+  const unnamed = $derived(Math.max(0, fileCount - files.length));
+  const filesWord = (n: number) => `${n} more file${n === 1 ? "" : "s"}`;
 </script>
 
-<Dialog
-  title="Continue the {kind}"
-  primary={files.length > 0 ? "Stage and continue" : "Continue"}
-  onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: false })}
-  onCancel={close}
->
-  {#if files.length > 0}
-    <p class="dialog-text">
-      {files.length === 1 ? "This file is" : "These files are"} staged as {files.length === 1 ? "it is" : "they are"} now,
-      then {then}:
-    </p>
-    <ul class="files">
-      {#each files as file (file)}
-        <li class="path-tail"><bdi>{visibleText(file)}</bdi></li>
-      {/each}
-    </ul>
-  {:else}
-    <p class="dialog-text">Nothing needs staging: {then}.</p>
-  {/if}
-</Dialog>
+{#snippet list(items: ConflictFile[], more: number)}
+  <ul class="files">
+    {#each items as file (file.path)}
+      <li class="path-tail"><bdi>{visibleText(file.path)}</bdi></li>
+    {/each}
+    {#if more > 0}
+      <li class="more">and {filesWord(more)}</li>
+    {/if}
+  </ul>
+{/snippet}
+
+{#if force}
+  <Dialog
+    title="Continue the {kind} anyway?"
+    primary="Continue anyway"
+    danger
+    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: true })}
+    onCancel={close}
+  >
+    <p class="dialog-text">Every conflicted file is staged as it is now, then {then}.</p>
+    {#if marked.length > 0}
+      <p class="dialog-text lead">
+        {marked.length === 1 ? "This file still contains" : "These files still contain"} conflict markers, which are committed with
+        {marked.length === 1 ? "it" : "them"}:
+      </p>
+      {@render list(marked, 0)}
+    {/if}
+    {#if undecided.length > 0}
+      <p class="dialog-text lead">
+        In {undecided.length === 1 ? "this file" : "these files"} git kept one side (binary, or deleted on one side): continuing takes
+        what is in your folder now:
+      </p>
+      {@render list(undecided, 0)}
+    {/if}
+    {#if unnamed > 0}
+      <p class="dialog-text lead">And {filesWord(unnamed)} that {unnamed === 1 ? "was" : "were"} not checked.</p>
+    {/if}
+  </Dialog>
+{:else}
+  <Dialog
+    title="Continue the {kind}"
+    primary={files.length > 0 ? "Stage and continue" : "Continue"}
+    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: false })}
+    onCancel={close}
+  >
+    {#if files.length > 0}
+      <p class="dialog-text">
+        {fileCount === 1 ? "This file is" : "These files are"} staged as {fileCount === 1 ? "it is" : "they are"} now, then {then}:
+      </p>
+      {@render list(files, unnamed)}
+    {:else}
+      <p class="dialog-text">Nothing needs staging: {then}.</p>
+    {/if}
+  </Dialog>
+{/if}
 
 <style>
+  .lead {
+    margin-top: 12px;
+  }
+
   .files {
-    max-height: calc(8 * 20px + 12px);
+    max-height: calc(6 * 20px + 12px);
     overflow-y: auto;
-    margin: 10px 0 2px;
+    margin: 8px 0 2px;
     padding: 6px 10px;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -62,5 +114,10 @@
     font-size: var(--fs-sm);
     line-height: 20px;
     list-style: none;
+  }
+
+  .more {
+    color: var(--text-muted);
+    font-family: var(--font-sans, inherit);
   }
 </style>

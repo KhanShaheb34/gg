@@ -526,7 +526,32 @@ test("an operation that ends at once shows no busy indicator", async ({ gg }) =>
     }).observe(document.body, { childList: true, subtree: true });
   });
   const hash = gg.git("small", "rev-parse", "HEAD").trim();
+  const started = Date.now();
   expect((await runOp(page, { op: "create_tag", name: "quick", hash, message: null })).status).toBe("done");
+  const took = Date.now() - started;
   await page.waitForTimeout(300);
-  expect(await page.evaluate(() => (window as unknown as { busySeen: boolean }).busySeen)).toBe(false);
+  // The indicator waits 150 ms (R23): an operation that took less never shows it. (On a
+  // loaded machine even this one can take longer, and then showing it is right.)
+  const seen = await page.evaluate(() => (window as unknown as { busySeen: boolean }).busySeen);
+  if (took < 140) expect(seen).toBe(false);
+});
+
+test("the command log taking in new commands does not close an open menu", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("big"));
+  // The log open with the background reads, so a refresh adds entries and it follows them.
+  await page.getByRole("button", { name: "Command log", exact: true }).click();
+  const log = page.getByRole("region", { name: "Command log" });
+  await log.getByRole("checkbox", { name: "Background reads" }).check();
+  await expect(log.locator(".row").first()).toBeVisible();
+  const before = await log.locator(".row").count();
+
+  await grid(page).locator('[data-index="4"] .subject').click({ button: "right" });
+  await expect(menu(page)).toBeVisible();
+  await page.waitForTimeout(400);
+  gg.git("big", "commit", "-q", "--allow-empty", "-m", "Made outside the app");
+  await expect.poll(() => log.locator(".row").count(), { timeout: 5000 }).toBeGreaterThan(before);
+  await page.waitForTimeout(500);
+  await expect(menu(page)).toBeVisible();
 });

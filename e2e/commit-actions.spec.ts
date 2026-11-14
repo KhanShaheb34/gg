@@ -228,6 +228,13 @@ test("cherry-pick a merge commit: the parent is chosen, each shown by short hash
   await open(page, gg.repoPath("picks"));
   const first = gg.git("picks", "rev-parse", "integration^1").trim();
   const second = gg.git("picks", "rev-parse", "integration^2").trim();
+  // The parents' subjects come from the rows already loaded, without asking the core.
+  const asked: string[] = [];
+  await page.route("**/invoke", (route) => {
+    const body = route.request().postDataJSON() as { cmd: string; args: { hash?: string } } | null;
+    if (body?.cmd === "commit_details" && body.args.hash) asked.push(body.args.hash);
+    return route.continue();
+  });
   await pickOnRow(page, "Merge branch 'feature' into integration", "Cherry-pick…");
   const d = dialog(page);
   const parents = d.getByRole("radio");
@@ -238,6 +245,8 @@ test("cherry-pick a merge commit: the parent is chosen, each shown by short hash
   await expect(d.locator("label.choice", { hasText: first.slice(0, 8) })).toContainText("Prepare integration");
   await expect(d.locator("label.choice", { hasText: second.slice(0, 8) })).toContainText("Build the feature");
   await expect(two).not.toBeChecked();
+  expect(asked).not.toContain(first);
+  expect(asked).not.toContain(second);
   await d.getByRole("button", { name: "Cherry-pick" }).click();
 
   await expect(notice(page, /Cherry-picked [0-9a-f]{8} onto main\./)).toBeVisible();

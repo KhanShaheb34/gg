@@ -51,6 +51,18 @@ function fakeCore(totalRows: () => number) {
 }
 
 describe("RowCache", () => {
+  it("finds a loaded row by its hash, and only a loaded one", async () => {
+    const core = fakeCore(() => 5000);
+    const cache = new RowCache(core.fetchPage);
+    cache.reset(1, 5000);
+    void cache.ensure(0, 50);
+    await core.flush();
+    expect(cache.byHash("h310")?.index).toBe(310);
+    expect(cache.byHash("h900")).toBeUndefined();
+    cache.reset(2, 5000);
+    expect(cache.byHash("h310")).toBeUndefined();
+  });
+
   it("loads the pages covering the range plus one page either side, clipped at 0", async () => {
     const core = fakeCore(() => 5000);
     const cache = new RowCache(core.fetchPage);

@@ -1,11 +1,13 @@
 <!--
   For a merge commit: which parent its changes are taken relative to (git's `-m`, 1-based),
-  each parent shown by short hash and subject (read from the core as the dialog opens). The
+  each parent shown by short hash and subject (from the loaded rows, else read from the core
+  as the dialog opens). The
   first is chosen to begin with: it is the branch the merge was made on.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
   import { api } from "../../ipc";
+  import { findRepoView } from "../../state/repo.svelte";
   import CommitRef from "./CommitRef.svelte";
 
   type Props = {
@@ -19,11 +21,20 @@
 
   let { repoId, parents, legend, mainline = $bindable() }: Props = $props();
 
+  /** Subjects of the parents, by hash: from the loaded rows at once, the others as read. */
   let subjects: Record<string, string> = $state({});
+  onMount(() => {
+    const loaded = findRepoView(repoId)?.cache;
+    for (const parent of parents) {
+      const row = loaded?.byHash(parent);
+      if (row) subjects[parent] = row.subject;
+    }
+  });
   const uid = Math.random().toString(36).slice(2, 8);
 
   onMount(() => {
     for (const parent of parents) {
+      if (parent in subjects) continue;
       api
         .commitDetails(repoId, parent)
         .then((d) => (subjects[parent] = d.message.split("\n", 1)[0]))

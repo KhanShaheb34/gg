@@ -49,6 +49,15 @@ export class RowCache {
     return this.pages.get(page)?.[index - page * this.pageSize];
   }
 
+  /** The loaded row of commit `hash`, if any (a scan of the few pages kept). */
+  byHash(hash: string): CommitRow | undefined {
+    for (const rows of this.pages.values()) {
+      const row = rows.find((r) => r.hash === hash);
+      if (row) return row;
+    }
+    return undefined;
+  }
+
   /** Whether every row of `first..=last` (clipped to the rows there are) is loaded. */
   loaded(first: number, last: number): boolean {
     const end = Math.min(last, this.totalRows - 1);

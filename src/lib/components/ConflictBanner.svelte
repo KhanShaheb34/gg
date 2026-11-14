@@ -91,6 +91,7 @@
   <section
     class="banner"
     class:leftover
+    class:ready={progress !== null && left === 0}
     data-testid="conflict-banner"
     aria-labelledby="banner-title-{uid}"
     onpointerenter={recheck}
@@ -165,7 +166,12 @@
     padding: 10px 14px 10px 12px;
     border-bottom: 1px solid var(--border);
     background: color-mix(in srgb, var(--tone) 6%, var(--bg));
-    box-shadow: inset 3px 0 0 var(--tone);
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--tone) 85%, var(--bg));
+  }
+
+  /* Nothing left to resolve: calm, the way on. */
+  .banner.ready {
+    --tone: var(--accent);
   }
 
   .banner.leftover {
@@ -279,8 +285,8 @@
   }
 
   .files {
-    /* Six rows show; more scroll. */
-    max-height: calc(6 * 22px + 8px);
+    /* Six rows show, and half of the next when there are more: the list scrolls. */
+    max-height: calc(6.5 * 22px + 4px);
     overflow-y: auto;
     margin: 0 0 0 20px;
     padding: 4px 0;

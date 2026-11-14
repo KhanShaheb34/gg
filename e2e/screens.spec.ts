@@ -529,3 +529,109 @@ for (const theme of ["light", "dark"] as const) {
     await page.screenshot({ path: path.join(OUT, `menu-tall-${theme}.png`) });
   });
 }
+
+// The conflict banner (spec §5.6) in each of its states, and the dialogs of continue and of
+// stashes.
+for (const theme of ["light", "dark"] as const) {
+  test(`conflict banner and stash dialogs, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    const dir = gg.repoPath("conflicts");
+    const git = (...args: string[]) => {
+      try {
+        gg.git("conflicts", ...args);
+      } catch {
+        // A merge or rebase stopped on conflicts.
+      }
+    };
+    const banner = page.getByTestId("conflict-banner");
+    const dialog = page.locator('[role="dialog"], [role="alertdialog"]');
+    const snap = async (name: string) => {
+      await park(page);
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+    };
+    const resolve = (file: string) => writeFileSync(path.join(dir, file), "resolved\n");
+    await page.goto("/");
+    await open(page, dir);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+
+    // A merge with two conflicted files, one of them resolved.
+    git("merge", "feature/x");
+    await expect(banner).toContainText("2 files have conflicts");
+    await snap("banner-merge");
+    resolve("app.txt");
+    await banner.hover({ position: { x: 30, y: 10 } });
+    await expect(banner).toContainText("1 of 2 files resolved");
+    await snap("banner-merge-partly");
+    // Resolved: ready, and Continue's question.
+    resolve("style.css");
+    await page.waitForTimeout(1100);
+    await banner.hover({ position: { x: 30, y: 10 } });
+    await expect(banner).toContainText("All conflicts are resolved");
+    await snap("banner-merge-resolved");
+    await banner.getByRole("button", { name: "Continue…" }).click();
+    await expect(dialog).toBeVisible();
+    await snap("dialog-continue");
+    await page.keyboard.press("Escape");
+    await banner.getByRole("button", { name: "Abort…" }).click();
+    await expect(dialog).toBeVisible();
+    await snap("dialog-abort");
+    await page.keyboard.press("Escape");
+    gg.git("conflicts", "merge", "--abort");
+    await expect(banner).toHaveCount(0);
+
+    // Many files: the list scrolls.
+    git("merge", "wide");
+    await expect(banner).toContainText("12 files have conflicts");
+    await snap("banner-many");
+    gg.git("conflicts", "merge", "--abort");
+    await expect(banner).toHaveCount(0);
+
+    // Nothing conflicted: a merge stopped before its commit.
+    git("merge", "--no-commit", "--no-ff", "topic~4");
+    await expect(banner).toContainText("ready to continue");
+    await snap("banner-ready");
+    gg.git("conflicts", "merge", "--abort");
+    await expect(banner).toHaveCount(0);
+
+    // A rebase stopped at step 2 of 5.
+    gg.git("conflicts", "switch", "-q", "topic");
+    git("rebase", "main");
+    await expect(banner).toContainText("step 2 of 5");
+    await snap("banner-rebase");
+    gg.git("conflicts", "rebase", "--abort");
+    gg.git("conflicts", "switch", "-q", "main");
+    await expect(banner).toHaveCount(0);
+
+    // Conflicts a stash left: the quieter banner.
+    writeFileSync(path.join(dir, "app.txt"), "stashed change\n");
+    gg.git("conflicts", "stash", "push", "-q", "--message=Try a new layout");
+    writeFileSync(path.join(dir, "app.txt"), "committed change\n");
+    gg.git("conflicts", "commit", "-qam", "Change the app");
+    git("stash", "pop");
+    await expect(banner).toContainText("1 file has conflicts");
+    await snap("banner-stash");
+    gg.git("conflicts", "checkout", "-q", "HEAD", "--", "app.txt");
+    await expect(banner).toHaveCount(0);
+
+    // Stash dialogs: save (from the uncommitted row), create a branch from a stash.
+    writeFileSync(path.join(dir, "app.txt"), "work in progress\n");
+    writeFileSync(path.join(dir, "notes.txt"), "untracked notes\n");
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await grid.evaluate((el) => (el.scrollTop = 0));
+    const uncommitted = grid.locator('[data-index="0"] .subject');
+    await expect(uncommitted).toHaveText(/^Uncommitted changes/);
+    await uncommitted.click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Stash changes…" }).click();
+    await dialog.getByLabel("Message (optional)").fill("Try a new layout");
+    await snap("dialog-stash-save");
+    await page.keyboard.press("Escape");
+    await grid.locator('[data-ref="stash@{0}"]').first().click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Create branch from stash…" }).click();
+    await page.keyboard.type("layout-trial");
+    await snap("dialog-stash-branch");
+    await page.keyboard.press("Escape");
+  });
+}

@@ -5,7 +5,7 @@
 import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
 import { api, CoreError } from "../ipc";
 import type { CoreErrorDto, Danger, DangerKind, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
-import { notify, reportError, showLog, type ToastAction } from "./app.svelte";
+import { app, notify, reportError, showLog, type ToastAction } from "./app.svelte";
 import { closeDialog, openDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
 
@@ -40,7 +40,7 @@ export async function runOp(
       report(repoId, outcome);
       return outcome;
     }
-    if (!(await confirm(outcome))) return outcome;
+    if (!(await confirm(repoId, outcome))) return outcome;
     confirmed = [...new Set([...confirmed, ...outcome.dangers.map((d) => d.kind)])];
     request = withTokens(request, outcome.dangers);
   }
@@ -54,16 +54,25 @@ export const ops = {
   },
 };
 
-/** Shows the dangers of `outcome` and resolves to whether the user went ahead. */
-function confirm(outcome: OpOutcome): Promise<boolean> {
+/**
+ * Shows the dangers of `outcome` (on top of any dialog open) and resolves to whether the
+ * user went ahead. Only the first answer counts, and it closes this confirmation only. For
+ * a repository other than the active tab's, the confirmation names it.
+ */
+function confirm(repoId: number, outcome: OpOutcome): Promise<boolean> {
   return new Promise((resolve) => {
+    let ended = false;
     const end = (yes: boolean) => {
-      closeDialog();
+      if (ended) return;
+      ended = true;
+      closeDialog(id);
       resolve(yes);
     };
-    openDialog(ConfirmDialog, {
+    const repository = repoId === app.activeRepoId ? null : (findRepoView(repoId)?.snapshot.name ?? null);
+    const id = openDialog(ConfirmDialog, {
       title: outcome.title,
       dangers: outcome.dangers,
+      repository,
       onConfirm: () => end(true),
       onCancel: () => end(false),
     });

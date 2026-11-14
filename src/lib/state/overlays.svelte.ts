@@ -1,5 +1,7 @@
-// The context menu and the modal dialog: at most one of each is open. ContextMenu.svelte and
-// the dialog host in App.svelte show what is here.
+// The context menu (at most one) and the modal dialogs: a stack, the top one taking input.
+// A dialog opened while another is open (a confirmation the core asks for while a form is
+// open) goes on top of it; the one below is kept as it is and takes input again once the
+// top one closes. ContextMenu.svelte and the dialog host in App.svelte show what is here.
 
 import type { Component } from "svelte";
 import type { MenuItem } from "../menus/types";
@@ -26,7 +28,13 @@ export type OpenDialog = {
 
 class Overlays {
   menu: OpenMenu | null = $state.raw(null);
-  dialog: OpenDialog | null = $state.raw(null);
+  /** Open dialogs, bottom first. */
+  dialogs: OpenDialog[] = $state.raw([]);
+
+  /** The top dialog, the one taking input, or null. */
+  get dialog(): OpenDialog | null {
+    return this.dialogs.at(-1) ?? null;
+  }
 }
 
 export const overlays = new Overlays();
@@ -66,15 +74,18 @@ export function closeMenu(restoreFocus = true): void {
 }
 
 /**
- * Shows `component` as the modal dialog with `props` (one at a time: it replaces any open
- * one). The dialog says how it ends through its props' callbacks; whoever opened it calls
- * `closeDialog`.
+ * Shows `component` with `props` as a modal dialog, on top of any open one (which stays as it
+ * is). Returns its id. The dialog says how it ends through its props' callbacks; whoever
+ * opened it closes it with `closeDialog(id)`.
  */
-export function openDialog<P extends Record<string, unknown>>(component: Component<P>, props: P): void {
+export function openDialog<P extends Record<string, unknown>>(component: Component<P>, props: P): number {
   closeMenu(false);
-  overlays.dialog = { id: nextId++, component, props };
+  const id = nextId++;
+  overlays.dialogs = [...overlays.dialogs, { id, component, props }];
+  return id;
 }
 
-export function closeDialog(): void {
-  overlays.dialog = null;
+/** Closes dialog `id`, wherever it is in the stack; nothing if it is closed already. */
+export function closeDialog(id: number): void {
+  if (overlays.dialogs.some((d) => d.id === id)) overlays.dialogs = overlays.dialogs.filter((d) => d.id !== id);
 }

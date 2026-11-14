@@ -138,12 +138,9 @@
 
   <Toast />
   <ContextMenu />
-  {#if overlays.dialog}
-    {@const dialog = overlays.dialog}
-    {#key dialog.id}
-      <dialog.component {...dialog.props} />
-    {/key}
-  {/if}
+  {#each overlays.dialogs as dialog (dialog.id)}
+    <dialog.component {...dialog.props} />
+  {/each}
 </div>
 
 <style>

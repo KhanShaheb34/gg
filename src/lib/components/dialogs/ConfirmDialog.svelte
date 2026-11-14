@@ -2,15 +2,22 @@
   The confirmation the core asks for before a dangerous operation runs: what it is (the
   operation's title), and each danger it found, in its words, with what would be lost listed
   below it (commits, files). The red button goes ahead; Cancel, which has the focus, does not.
+  For an operation on a repository other than the active tab's, `repository` names it.
 -->
 <script lang="ts">
   import { visibleText } from "../../format";
   import type { Danger, DangerKind } from "../../types";
   import Dialog from "../Dialog.svelte";
 
-  type Props = { title: string; dangers: Danger[]; onConfirm: () => void; onCancel: () => void };
+  type Props = {
+    title: string;
+    dangers: Danger[];
+    repository?: string | null;
+    onConfirm: () => void;
+    onCancel: () => void;
+  };
 
-  let { title, dangers, onConfirm, onCancel }: Props = $props();
+  let { title, dangers, repository = null, onConfirm, onCancel }: Props = $props();
 
   const VERB: Record<DangerKind, string> = {
     force_push: "Force push",
@@ -24,6 +31,9 @@
 </script>
 
 <Dialog title={visibleText(title)} {primary} danger onSubmit={onConfirm} {onCancel}>
+  {#if repository}
+    <p class="repository" data-testid="confirm-repository">In <bdi class="name">{visibleText(repository)}</bdi></p>
+  {/if}
   <ul class="dangers" data-testid="dangers">
     {#each dangers as danger (danger.kind)}
       <li class="danger">
@@ -46,6 +56,16 @@
 </Dialog>
 
 <style>
+  .repository {
+    margin-bottom: 10px;
+    color: var(--text-muted);
+  }
+
+  .repository .name {
+    color: var(--text);
+    font-weight: 600;
+  }
+
   .dangers {
     display: flex;
     flex-direction: column;

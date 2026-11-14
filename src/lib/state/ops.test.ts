@@ -28,7 +28,13 @@ vi.mock("./overlays.svelte", () => ({ openDialog: vi.fn(), closeDialog: vi.fn() 
 vi.mock("../components/dialogs/ConfirmDialog.svelte", () => ({ default: { name: "ConfirmDialog" } }));
 
 type Ipc = typeof import("../ipc");
-type ConfirmProps = { title: string; dangers: Danger[]; onConfirm: () => void; onCancel: () => void };
+type ConfirmProps = {
+  title: string;
+  dangers: Danger[];
+  repository: string | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
 
 let ipc: Ipc;
 let ops: typeof import("./ops.svelte");
@@ -78,7 +84,8 @@ beforeEach(async () => {
   app = await import("./app.svelte");
   ops = await import("./ops.svelte");
   vi.mocked(ipc.api.runOp).mockReset();
-  vi.mocked(overlays.openDialog).mockReset();
+  let ids = 40;
+  vi.mocked(overlays.openDialog).mockReset().mockImplementation(() => ++ids);
   vi.mocked(overlays.closeDialog).mockReset();
   view.applySnapshot.mockReset();
   view.fetch.mockReset();
@@ -112,12 +119,43 @@ describe("runOp", () => {
     dialog.onConfirm();
     const result = await run;
     expect(result.status).toBe("done");
-    expect(overlays.closeDialog).toHaveBeenCalled();
+    expect(overlays.closeDialog).toHaveBeenCalledWith(41);
     expect(vi.mocked(ipc.api.runOp).mock.calls).toEqual([
       [1, RESET, []],
       [1, RESET, ["hard_reset"]],
     ]);
     expect(app.app.toasts.map((t) => t.message)).toEqual(["Reset main to aaaaaaaa."]);
+  });
+
+  it("counts only the first answer, and closes only its own confirmation", async () => {
+    vi.mocked(ipc.api.runOp)
+      .mockResolvedValueOnce(outcome({ status: "needs_confirmation", dangers: [danger()] }))
+      .mockResolvedValueOnce(outcome());
+    const run = ops.runOp(1, RESET);
+    const dialog = await confirmation(1);
+    dialog.onConfirm();
+    dialog.onConfirm(); // a double click
+    dialog.onCancel();
+    await run;
+    await settle();
+    expect(ipc.api.runOp).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(overlays.closeDialog).mock.calls).toEqual([[41]]);
+  });
+
+  it("names the repository when the operation is not on the active tab's", async () => {
+    vi.mocked(ipc.api.runOp).mockResolvedValue(outcome({ status: "needs_confirmation", dangers: [danger()] }));
+    view.snapshot = snap({ name: "payments-api" });
+    app.app.activeRepoId = 2;
+    void ops.runOp(1, RESET);
+    const elsewhere = await confirmation(1);
+    expect(elsewhere.repository).toBe("payments-api");
+    elsewhere.onCancel();
+
+    app.app.activeRepoId = 1;
+    void ops.runOp(1, RESET);
+    const here = await confirmation(2);
+    expect(here.repository).toBeNull();
+    here.onCancel();
   });
 
   it("sends nothing more when the confirmation is cancelled, and says nothing", async () => {

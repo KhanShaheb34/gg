@@ -786,7 +786,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.keyboard.press("Escape");
     await expect(confirmation).toHaveCount(0);
 
-    void runOp(page, { op: "delete_branch", branch: "feature/search" });
+    void runOp(page, { op: "delete_branch", branch: "feature/ui" }); // 2 commits its upstream lacks
     await expect(confirmation).toBeVisible();
     await park(page);
     await shot("dialog-delete-unmerged");
@@ -802,7 +802,8 @@ for (const theme of ["light", "dark"] as const) {
 
     // Force push: the remote has a commit the local branch has not.
     const other = `${dir}-elsewhere`;
-    gg.gitAt(path.dirname(dir), "clone", "-q", gg.git("branchy", "remote", "get-url", "origin").trim(), other);
+    const originUrl = path.resolve(dir, gg.git("branchy", "remote", "get-url", "origin").trim());
+    gg.gitAt(path.dirname(dir), "clone", "-q", originUrl, other);
     gg.gitAt(other, "-c", "user.name=Grace Hopper", "-c", "user.email=grace@example.com", "commit", "-q", "--allow-empty", "-m", "Pushed from elsewhere");
     gg.gitAt(other, "push", "-q", "origin", "main");
     gg.git("branchy", "fetch", "-q", "origin");

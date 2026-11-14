@@ -18,7 +18,7 @@
   import {
     activateIndex,
     app,
-    closeTab,
+    closeActiveTab,
     cycleTab,
     init,
     openPath,
@@ -112,7 +112,7 @@
         break;
       case "close":
         // With no tab left, Cmd+W closes the window, as in other tabbed apps.
-        if (app.activeRepoId !== null) void closeTab(app.activeRepoId);
+        if (app.activeRepoId !== null) void closeActiveTab();
         else void api.closeWindow().catch(() => toast("error", "Could not close the window"));
         break;
       case "cycle":

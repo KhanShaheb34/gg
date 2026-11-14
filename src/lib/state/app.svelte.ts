@@ -333,6 +333,26 @@ export async function closeTab(repoId: number): Promise<void> {
   disposeRepoView(repoId);
 }
 
+/**
+ * Closes the active tab (Cmd+W). Pressed again while it is still closing, it closes the tab
+ * that will be active once that one has gone, as if the first close had already finished.
+ */
+export function closeActiveTab(): Promise<void> {
+  let at = app.tabs.findIndex((t) => t.repoId === app.activeRepoId);
+  if (at < 0) return Promise.resolve();
+  // Step to the neighbour each closing tab will hand the activity to (right, else left).
+  const gone = new Set<number>();
+  while (closing.has(app.tabs[at].repoId)) {
+    gone.add(app.tabs[at].repoId);
+    const right = app.tabs.findIndex((t, i) => i > at && !gone.has(t.repoId));
+    const left = app.tabs.findLastIndex((t, i) => i < at && !gone.has(t.repoId));
+    const next = right >= 0 ? right : left;
+    if (next < 0) return Promise.resolve();
+    at = next;
+  }
+  return closeTab(app.tabs[at].repoId);
+}
+
 export async function removeRecent(path: string): Promise<void> {
   try {
     app.recents = await api.removeRecent(path);

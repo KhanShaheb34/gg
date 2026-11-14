@@ -148,6 +148,18 @@ describe("closeTab", () => {
     expect(ipc.api.closeRepo).toHaveBeenCalledTimes(3);
   });
 
+  it("closeActiveTab pressed again while the active tab is still closing closes the next one", async () => {
+    let release: () => void = () => {};
+    vi.mocked(ipc.api.closeRepo).mockImplementationOnce(() => new Promise((r) => (release = () => r(undefined))));
+    // The last tab is active: closing it makes its left neighbour active.
+    const first = s.closeActiveTab();
+    const second = s.closeActiveTab();
+    release();
+    await Promise.all([first, second]);
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
+    expect(s.app.activeRepoId).toBe(1);
+  });
+
   it("keeps the active tab when another one closes", async () => {
     await s.closeTab(1);
     expect(s.app.activeRepoId).toBe(3);

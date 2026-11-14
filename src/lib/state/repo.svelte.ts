@@ -7,7 +7,7 @@
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
-import type { RepoSnapshot, RowsPage, ViewOptions } from "../types";
+import type { RefLabel, RepoSnapshot, RowsPage, ViewOptions } from "../types";
 import { CommitDetailsLoader } from "./details.svelte";
 import { SearchState } from "./search.svelte";
 import { DEFAULT_OPTIONS, readOptions, sameOptions, visible, writeOptions } from "./viewOptionsStore";
@@ -547,6 +547,13 @@ export class RepoView {
     // Scrolling done while this was underway moves the restored position along.
     const scrolled = atTop ? 0 : this.scrollTop - startTop;
     this.swap(this.incoming ?? target, next, Math.max(0, top + scrolled), selected, selectedIndex);
+  }
+
+  /** The label of local branch `name` on a loaded row, if any (with its ahead and behind counts). */
+  loadedLabel(name: string): RefLabel | undefined {
+    let found: RefLabel | undefined;
+    this.cache.find((row) => (found = row.labels.find((l) => l.kind === "branch" && l.name === name)) !== undefined);
+    return found;
   }
 
   /** Stops following the repository and drops its rows. */

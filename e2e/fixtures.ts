@@ -96,6 +96,11 @@ export function makeRepo(
   return dir;
 }
 
+/** The second clone beside fixture repository `dir` that pushes to its remote (`routine`). */
+export function otherClone(dir: string): string {
+  return path.join(path.dirname(dir), `${path.basename(dir)}-other`);
+}
+
 /** Subject of commit `i` (1 = oldest) of the `big` fixture. */
 export const bigSubject = (i: number) => `Big commit ${i}`;
 /** Number of commits in the `big` fixture. */
@@ -231,6 +236,51 @@ const REPOS: Record<string, RepoScript> = {
     git("merge", "-q", "--no-ff", "-m", "Merge branch 'feature' into integration", "feature");
     git("switch", "-q", "main");
     commit({ "greeting.txt": "hello from main\n" }, "Greet from main");
+  },
+  /**
+   * The staging routine (spec §5.3), with a bare `origin` beside it (`routine-origin.git`)
+   * and a second clone of that (`routine-other`, see `otherClone`) that pushes to it, to move
+   * the remote. Oldest first: "Initial commit" on `main`; "Prepare staging" on `staging`;
+   * "Add login form" and "Validate login" on `feature/login` (from `staging`); all three
+   * pushed with upstreams. Then the other clone pushes "Hotfix one" and "Hotfix two" to
+   * `staging`, and this repository fetches: `staging` is 2 behind `origin/staging`, not
+   * ahead. `main` is checked out. Both clones have an identity for the commits git makes.
+   */
+  routine(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const commit = (file: string, subject: string) => {
+      write(file, `${subject}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit("README.md", "Initial commit");
+    git("switch", "-q", "-c", "staging");
+    commit("staging.txt", "Prepare staging");
+    git("switch", "-q", "-c", "feature/login");
+    commit("login/form.txt", "Add login form");
+    commit("login/validate.txt", "Validate login");
+    git("switch", "-q", "main");
+    git("init", "-q", "--bare", "-b", "main", "../routine-origin.git");
+    git("remote", "add", "origin", "../routine-origin.git");
+    git("push", "-q", "-u", "origin", "main", "staging", "feature/login");
+
+    const other = otherClone(dir);
+    git("clone", "-q", "../routine-origin.git", other);
+    const there = gitIn(other);
+    advanceClock(other, clocks.get(dir) ?? 0);
+    there("config", "user.name", "Grace Hopper");
+    there("config", "user.email", "grace@example.com");
+    there("switch", "-q", "staging");
+    for (const subject of ["Hotfix one", "Hotfix two"]) {
+      writeFileSync(path.join(other, `${subject.replace(" ", "-")}.txt`), `${subject}\n`);
+      there("add", "-A");
+      there("commit", "-q", "-m", subject);
+    }
+    there("push", "-q", "origin", "staging");
+    advanceClock(dir, clocks.get(other) ?? 0);
+    git("fetch", "-q", "origin");
   },
   /** A shallow clone (depth 2) of three commits, "One" to "Three": "Two" is where its history is cut. */
   shallow(git, _write, dir) {
@@ -488,6 +538,8 @@ export type GG = {
   folder(name: string): string;
   /** Runs git in fixture repository `name`; returns stdout. */
   git(name: string, ...args: string[]): string;
+  /** Runs git in folder `dir` (a clone beside a fixture, say); returns stdout. */
+  gitAt(dir: string, ...args: string[]): string;
 };
 
 /**
@@ -544,7 +596,13 @@ export const test = base.extend<{ gg: GG }>({
         return run(...args);
       };
 
-      await use({ page, repoPath, folder, git });
+      const gitAt = (dir: string, ...args: string[]) => {
+        let run = gits.get(dir);
+        if (!run) gits.set(dir, (run = gitIn(dir)));
+        return run(...args);
+      };
+
+      await use({ page, repoPath, folder, git, gitAt });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

@@ -519,6 +519,14 @@ textarea.text-input {
   overflow-wrap: anywhere;
 }
 
+.dialog-text + .dialog-text {
+  margin-top: 6px;
+}
+
+.dialog-text.muted {
+  color: var(--text-muted);
+}
+
 /* The commit or ref a dialog acts on, boxed, above its fields. */
 .dialog-target {
   display: flex;
@@ -535,6 +543,13 @@ textarea.text-input {
   flex: none;
   color: var(--text-faint);
   font-size: var(--fs-sm);
+}
+
+/* A branch name in a dialog's target box. */
+.dialog-ref {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 /* Spinning for work in progress (an icon, or a ring). */

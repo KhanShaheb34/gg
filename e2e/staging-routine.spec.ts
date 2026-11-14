@@ -1,0 +1,261 @@
+// The staging routine of spec §5.3, end to end against the real core and a local bare remote
+// (the `routine` fixture: `staging` 2 behind `origin/staging`, a second clone that moves the
+// remote): check out staging (fast-forwarding it), merge a feature branch, push; a rejected
+// push and what follows it; a force push and its confirmation; the merge dialog's memory;
+// deleting branches; operations queued behind one another.
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+import type { Page } from "@playwright/test";
+import { expect, otherClone, test, type GG } from "./fixtures";
+
+async function open(page: Page, dir: string) {
+  page.once("dialog", (dialog) => dialog.accept(dir));
+  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
+}
+
+const grid = (page: Page) => page.getByRole("grid", { name: "Commits" });
+const label = (page: Page, name: string) => grid(page).locator(`[data-ref="${name}"]`).first();
+const item = (page: Page, name: string) => page.getByRole("menuitem", { name, exact: true });
+const dialog = (page: Page) => page.getByRole("dialog");
+const alertDialog = (page: Page) => page.getByRole("alertdialog");
+const notice = (page: Page, text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
+const failure = (page: Page, text: string | RegExp) => page.getByRole("alert").filter({ hasText: text });
+/** A red button takes no click just after its dialog opens (see Dialog): wait that out. */
+const armed = (page: Page) => page.waitForTimeout(450);
+
+/** Opens the menu of label `name` and picks `item`. */
+async function pickOnLabel(page: Page, name: string, itemName: string) {
+  await label(page, name).locator(".name").click({ button: "right" });
+  await item(page, itemName).click();
+}
+
+/** The commit `rev` names in the remote (`routine-origin.git`). */
+function remoteRef(gg: GG, rev: string): string {
+  return gg.git("routine", "--git-dir", "../routine-origin.git", "rev-parse", rev).trim();
+}
+
+/** Checks out `staging` from its menu without fast-forwarding it: it stays 2 behind. */
+async function checkOutStagingAsIs(page: Page) {
+  await pickOnLabel(page, "staging", "Check out");
+  await dialog(page).getByRole("button", { name: "No", exact: true }).click();
+  await expect(label(page, "staging")).toHaveClass(/current/);
+  await expect(label(page, "staging").locator(".ab")).toHaveText("↓2");
+}
+
+/** A commit on `staging` made outside the app. */
+function commitOutside(gg: GG, subject: string) {
+  writeFileSync(path.join(gg.repoPath("routine"), `${subject.replaceAll(" ", "-")}.txt`), `${subject}\n`);
+  gg.git("routine", "add", "-A");
+  gg.git("routine", "commit", "-q", "-m", subject);
+}
+
+test("checkout_staging_offers_fast_forward_then_merge_then_push", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  await expect(label(page, "staging").locator(".ab")).toHaveText("↓2");
+
+  // Check out: staging is behind its upstream and not ahead, so the app asks first.
+  await pickOnLabel(page, "staging", "Check out");
+  const ask = dialog(page);
+  await expect(ask.getByRole("heading")).toHaveText("Fast-forward 2 commits first?");
+  await expect(ask.getByRole("button", { name: "Yes", exact: true })).toBeFocused();
+  await expect(ask.getByRole("button", { name: "No", exact: true })).toBeVisible();
+  await expect(ask.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await ask.getByRole("button", { name: "Yes", exact: true }).click();
+  await expect(notice(page, "Checked out staging. It was fast-forwarded to origin/staging.")).toBeVisible();
+  await expect(label(page, "staging")).toHaveClass(/current/);
+  await expect(label(page, "staging").locator(".ab")).toHaveText("");
+  expect(gg.git("routine", "rev-parse", "staging").trim()).toBe(remoteRef(gg, "staging"));
+
+  // Merge the feature branch: a merge commit, then the notice offers to push.
+  await pickOnLabel(page, "feature/login", "Merge feature/login into staging…");
+  const merge = dialog(page);
+  await expect(merge.getByRole("heading")).toHaveText("Merge feature/login into staging");
+  await expect(merge.getByRole("checkbox", { name: /Create a merge commit even if fast-forward is possible/ })).toBeChecked();
+  await merge.getByRole("button", { name: "Merge", exact: true }).click();
+  const merged = notice(page, "Merged feature/login into staging.");
+  await expect(merged).toBeVisible();
+  await expect(grid(page).locator('[data-index="0"] .subject')).toHaveText("Merge branch 'feature/login' into staging");
+  await expect(label(page, "staging").locator(".ab")).toHaveText("↑3");
+
+  await merged.getByRole("button", { name: "Push", exact: true }).click();
+  await expect(notice(page, "Pushed staging to origin.")).toBeVisible();
+  // The counts follow without a refresh.
+  await expect(label(page, "staging").locator(".ab")).toHaveText("");
+  expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
+});
+
+test("push_rejected_then_pull_then_push", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  await checkOutStagingAsIs(page);
+  commitOutside(gg, "Local tweak");
+  await expect(label(page, "staging").locator(".ab")).toHaveText("↑1 ↓2");
+
+  await pickOnLabel(page, "staging", "Push 1 commit…");
+  await expect(dialog(page).getByText("origin/staging", { exact: true })).toBeVisible();
+  await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
+  const rejected = failure(page, "The remote has commits you don't have");
+  await expect(rejected).toBeVisible();
+  await expect(rejected.getByRole("button")).toContainText(["Fetch", "Pull", "Force push…"]);
+
+  // Pull: the branches have diverged and git's config does not say how to reconcile them.
+  await rejected.getByRole("button", { name: "Pull", exact: true }).click();
+  const choose = dialog(page);
+  await expect(choose.getByRole("heading")).toHaveText("Pull origin/staging into staging");
+  await expect(choose.getByText("This branch and its upstream have diverged")).toBeVisible();
+  await expect(choose.getByRole("radio", { name: /Merge/ })).toBeChecked();
+  await choose.getByRole("button", { name: "Pull", exact: true }).click();
+  await expect(notice(page, "Pulled origin/staging into staging.")).toBeVisible();
+  await expect(label(page, "staging").locator(".ab")).toHaveText("↑2");
+
+  await pickOnLabel(page, "staging", "Push 2 commits…");
+  await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
+  await expect(notice(page, "Pushed staging to origin.")).toBeVisible();
+  await expect(label(page, "staging").locator(".ab")).toHaveText("");
+  expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
+  expect(gg.git("routine", "log", "-1", "--format=%s", "staging").trim()).toMatch(/^Merge branch 'staging'/);
+});
+
+test("force_push_needs_the_second_confirmation", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  await checkOutStagingAsIs(page);
+  commitOutside(gg, "Local rewrite");
+  await expect(label(page, "staging").locator(".ab")).toHaveText("↑1 ↓2");
+  const before = remoteRef(gg, "staging");
+
+  // The push dialog's force choice turns its button red; the core's confirmation follows.
+  await pickOnLabel(page, "staging", "Push 1 commit…");
+  const push = dialog(page);
+  await expect(push.getByRole("checkbox", { name: /Force push \(with lease\)/ })).not.toBeChecked();
+  await push.getByRole("checkbox", { name: /Force push \(with lease\)/ }).check();
+  // Now a dangerous dialog (red button), then the core's confirmation.
+  const confirm = alertDialog(page);
+  await armed(page);
+  await confirm.getByRole("button", { name: "Force push", exact: true }).click();
+  await expect(confirm.getByTestId("dangers")).toContainText(
+    "A force push replaces origin/staging with staging, discarding 2 commits there",
+  );
+  await expect(confirm.getByTestId("dangers")).toContainText("Hotfix two");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(alertDialog(page)).toHaveCount(0);
+  expect(remoteRef(gg, "staging")).toBe(before);
+
+  // Again; meanwhile the remote moves and is fetched: the core asks again, with the new count.
+  await pickOnLabel(page, "staging", "Push 1 commit…");
+  await push.getByRole("checkbox", { name: /Force push \(with lease\)/ }).check();
+  await armed(page);
+  await confirm.getByRole("button", { name: "Force push", exact: true }).click();
+  await expect(confirm.getByTestId("dangers")).toContainText("discarding 2 commits there");
+  const other = otherClone(gg.repoPath("routine"));
+  writeFileSync(path.join(other, "hotfix-three.txt"), "three\n");
+  gg.gitAt(other, "add", "-A");
+  gg.gitAt(other, "commit", "-q", "-m", "Hotfix three");
+  gg.gitAt(other, "push", "-q", "origin", "staging");
+  gg.git("routine", "fetch", "-q", "origin");
+  await armed(page);
+  await confirm.getByRole("button", { name: "Force push" }).click();
+  await expect(confirm.getByTestId("dangers")).toContainText("discarding 3 commits there");
+  await armed(page);
+  await confirm.getByRole("button", { name: "Force push" }).click();
+  await expect(notice(page, "Force-pushed staging to origin.")).toBeVisible();
+  expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
+  await expect(label(page, "staging").locator(".ab")).toHaveText("");
+});
+
+test("merge_dialog_remembers_no_ff_per_repository", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  const box = () => dialog(page).getByRole("checkbox", { name: /Create a merge commit even if fast-forward is possible/ });
+
+  // Squash rules the merge commit out; Cancel saves nothing.
+  await pickOnLabel(page, "staging", "Merge staging into main…");
+  await expect(box()).toBeChecked();
+  await dialog(page).getByRole("checkbox", { name: /Squash/ }).check();
+  await expect(box()).toBeDisabled();
+  await dialog(page).getByRole("checkbox", { name: /Squash/ }).uncheck();
+  await box().uncheck();
+  await dialog(page).getByRole("button", { name: "Cancel" }).click();
+  await pickOnLabel(page, "staging", "Merge staging into main…");
+  await expect(box()).toBeChecked();
+
+  // Unticked and merged: a fast-forward, and remembered for this repository.
+  await box().uncheck();
+  await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
+  await expect(notice(page, /Fast-forwarded|Merged staging into main/)).toBeVisible();
+  expect(gg.git("routine", "rev-parse", "main").trim()).toBe(gg.git("routine", "rev-parse", "staging").trim());
+  await pickOnLabel(page, "feature/login", "Merge feature/login into main…");
+  await expect(box()).not.toBeChecked();
+  await dialog(page).getByRole("button", { name: "Cancel" }).click();
+
+  // Another repository has its own.
+  await open(page, gg.repoPath("small"));
+  await pickOnLabel(page, "fix/typo", "Merge fix/typo into main…");
+  await expect(box()).toBeChecked();
+  await dialog(page).getByRole("button", { name: "Cancel" }).click();
+});
+
+test("delete_unmerged_branch_double_confirm", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+
+  // Merged into its upstream: the dialog alone.
+  await pickOnLabel(page, "feature/login", "Delete…");
+  await expect(dialog(page).getByRole("heading")).toHaveText("Delete branch feature/login");
+  await dialog(page).getByRole("button", { name: "Delete branch" }).click();
+  await expect(notice(page, "Deleted branch feature/login.")).toBeVisible();
+  await expect(alertDialog(page)).toHaveCount(0);
+  expect(gg.git("routine", "branch", "--list", "feature/login").trim()).toBe("");
+
+  // A commit no other branch has: the core's confirmation follows, and says what is lost.
+  gg.git("routine", "switch", "-q", "-c", "spike");
+  commitOutside(gg, "Try an idea");
+  gg.git("routine", "switch", "-q", "main");
+  await expect(label(page, "spike")).toBeVisible();
+  await pickOnLabel(page, "spike", "Delete…");
+  await dialog(page).getByRole("button", { name: "Delete branch" }).click();
+  const confirm = alertDialog(page);
+  await expect(confirm.getByTestId("dangers")).toContainText(
+    "Branch “spike” has 1 commit not merged into main: deleting it loses it.",
+  );
+  await armed(page);
+  await confirm.getByRole("button", { name: "Delete branch" }).click();
+  await expect(notice(page, "Deleted branch spike.")).toBeVisible();
+  expect(gg.git("routine", "branch", "--list", "spike").trim()).toBe("");
+  await expect(grid(page).locator('[data-ref="spike"]')).toHaveCount(0);
+});
+
+test("actions_queue_while_one_runs", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const dir = gg.repoPath("routine");
+  await open(page, dir);
+  // Each checkout runs this hook, which takes a while.
+  const hook = path.join(dir, ".git/hooks/post-checkout");
+  writeFileSync(hook, "#!/bin/sh\nsleep 2\n", { mode: 0o755 });
+
+  // Check out feature/login (a double click), and at once staging, fast-forwarding it.
+  await label(page, "feature/login").locator(".name").dblclick();
+  const busy = page.getByTestId("busy");
+  await expect(busy).toContainText("feature/login");
+  await pickOnLabel(page, "staging", "Check out");
+  await dialog(page).getByRole("button", { name: "Yes", exact: true }).click();
+  await expect(busy).toContainText("+1");
+
+  const done = notice(page, /Checked out (feature\/login|staging)\./);
+  await expect(done).toHaveCount(2, { timeout: 10_000 });
+  await expect(done.first()).toContainText("Checked out feature/login.");
+  await expect(done.last()).toContainText("Checked out staging. It was fast-forwarded to origin/staging.");
+  await expect(busy).toHaveCount(0);
+  expect(gg.git("routine", "branch", "--show-current").trim()).toBe("staging");
+  await expect(label(page, "staging")).toHaveClass(/current/);
+  await expect(label(page, "staging").locator(".ab")).toHaveText("");
+});

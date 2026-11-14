@@ -30,6 +30,9 @@
     cancellable?: boolean;
     /** Submits at most once (default). */
     once?: boolean;
+    /** A second way to go ahead, beside the primary one ("No" to "Yes"); counts as submitting. */
+    secondary?: string;
+    onSecondary?: () => void;
     onSubmit: () => void;
     onCancel: () => void;
     children: Snippet;
@@ -43,6 +46,8 @@
     cancelLabel = "Cancel",
     cancellable = true,
     once = true,
+    secondary,
+    onSecondary,
     onSubmit,
     onCancel,
     children,
@@ -61,11 +66,11 @@
   const FOCUSABLE =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
-  function submit() {
+  function submit(then: () => void = onSubmit) {
     if (!valid || (once && submitted)) return;
     if (danger && performance.now() - openedAt < ARM_MS) return;
     submitted = true;
-    onSubmit();
+    then();
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -138,7 +143,10 @@
     </div>
     <div class="buttons">
       <button class="button" bind:this={cancelButton} disabled={!cancellable} onclick={onCancel}>{cancelLabel}</button>
-      <button class="button primary" class:danger disabled={!valid} bind:this={primaryButton} onclick={submit}
+      {#if secondary !== undefined && onSecondary}
+        <button class="button" disabled={!valid} onclick={() => submit(onSecondary)}>{secondary}</button>
+      {/if}
+      <button class="button primary" class:danger disabled={!valid} bind:this={primaryButton} onclick={() => submit()}
         >{primary}</button
       >
     </div>

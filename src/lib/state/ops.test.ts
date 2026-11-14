@@ -16,6 +16,7 @@ const view = vi.hoisted(() => ({
   snapshot: null as unknown,
   applySnapshot: vi.fn(),
   fetch: vi.fn(async () => {}),
+  loadedLabel: (() => undefined) as (name: string) => unknown,
 }));
 vi.mock("./repo.svelte", () => ({
   findRepoView: vi.fn((repoId: number) => (repoId === 1 ? view : undefined)),
@@ -24,8 +25,9 @@ vi.mock("./repo.svelte", () => ({
 }));
 
 // Dialogs: the test plays the user, through the props the dialog was opened with.
-vi.mock("./overlays.svelte", () => ({ openDialog: vi.fn(), closeDialog: vi.fn() }));
+vi.mock("./overlays.svelte", () => ({ openDialog: vi.fn(), closeDialog: vi.fn(), showDialog: vi.fn() }));
 vi.mock("../components/dialogs/ConfirmDialog.svelte", () => ({ default: { name: "ConfirmDialog" } }));
+vi.mock("../components/dialogs/PullDialog.svelte", () => ({ default: { name: "PullDialog" } }));
 
 type Ipc = typeof import("../ipc");
 type ConfirmProps = {
@@ -300,11 +302,18 @@ describe("hint buttons", () => {
     );
   });
 
-  it("choose_pull_mode: pull by merging or by rebasing", async () => {
-    const buttons = await buttonsFor([{ kind: "choose_pull_mode", branch: "main" }], "failed");
-    expect(buttons.map((b) => b.label)).toEqual(["Pull with merge", "Pull with rebase"]);
-    await buttons[1].run();
-    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "pull", branch: "main", mode: "rebase" }, []);
+  it("choose_pull_mode: no notice; the dialog that asks merge or rebase opens", async () => {
+    view.loadedLabel = vi.fn(() => ({ upstream: "origin/main" }));
+    const message = "This branch and its upstream have diverged: choose whether to pull by merging or by rebasing.";
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
+      outcome({ status: "failed", message, hints: [{ kind: "choose_pull_mode", branch: "main" }] }),
+    );
+    await ops.runOp(1, { op: "pull", branch: "main", mode: "default" });
+    expect(app.app.toasts).toEqual([]);
+    expect(overlays.showDialog).toHaveBeenCalledWith(
+      { name: "PullDialog" },
+      { repoId: 1, branch: "main", upstream: "origin/main", message },
+    );
   });
 
   it("a follow-up that fails is reported, not thrown at the button", async () => {

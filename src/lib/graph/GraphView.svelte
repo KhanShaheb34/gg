@@ -21,12 +21,13 @@
   import { onMount, tick } from "svelte";
   import { formatDate, formatDateLong, groupDigits, shortHash } from "../format";
   import { shown as shownName } from "../menus/common";
-  import { itemsFor, pick } from "../menus/dispatch";
+  import { checkOutLabel, itemsFor, pick } from "../menus/dispatch";
   import type { MenuItem, MenuTarget } from "../menus/types";
   import { openMenu } from "../state/overlays.svelte";
   import type { GraphProbe } from "../perf/graphProbe";
   import type { Probe } from "../perf/scrollProbe";
   import { hashMatch, needleOf, splitMatch } from "../search";
+  import { api } from "../ipc";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { CommitRow, RefLabel } from "../types";
@@ -302,6 +303,21 @@
     if (hit.row.kind !== "uncommitted" && (e.target as Element).closest(".hash")) copyHash(hit.row.hash);
   }
 
+  /**
+   * A double click on a local branch's label checks it out, as its menu's item does; on
+   * anything else (a remote branch's label or part of one, a tag, the row) it does nothing
+   * more than the clicks before it (selecting the row).
+   */
+  function onRowsDblClick(e: MouseEvent) {
+    const on = e.target as Element;
+    const slot = on.closest<HTMLElement>(".ref[data-slot]")?.dataset.slot;
+    if (slot === undefined || slot === "more" || on.closest(".remotes")) return;
+    const hit = rowAt(e);
+    const label = hit?.row.labels[Number(slot)];
+    if (!hit || label?.kind !== "branch") return;
+    checkOutLabel(label, hit.row, view.snapshot);
+  }
+
   function copyHash(hash: string) {
     navigator.clipboard.writeText(hash).then(
       () => toast("info", "Copied"),
@@ -392,18 +408,22 @@
     return tags && branches ? "Branches and tags" : tags ? "Tags" : "Branches";
   }
 
+  type Menu = { items: MenuItem[]; onPick: (id: string) => void; targets: MenuTarget[] };
+
   /**
    * The menu for what element `on` is in `row`: a label's (the remote part of a combined label
    * is the remote branch's; "+k" lists the hidden labels, each with its menu), else the row's,
-   * which ends with its labels' menus (so the keyboard reaches them from the row).
+   * which ends with its labels' menus (so the keyboard reaches them from the row). `targets`:
+   * what its items act on.
    */
-  function menuAt(on: Element, row: CommitRow): { items: MenuItem[]; onPick: (id: string) => void } {
+  function menuAt(on: Element, row: CommitRow): Menu {
     const snap = view.snapshot;
-    const single = (target: MenuTarget) => ({
+    const single = (target: MenuTarget): Menu => ({
       items: itemsFor(target, snap),
       onPick: (id: string) => pick(id, target, view.snapshot),
+      targets: [target],
     });
-    const ofRow = () => {
+    const ofRow = (): Menu => {
       const target: MenuTarget = { row, label: null };
       const labels = labelTargets(row, row.labels);
       if (labels.length === 0) return single(target);
@@ -419,9 +439,10 @@
           const [inner, innerId] = targetOf(id);
           pick(innerId, inner, view.snapshot);
         },
+        targets: [target, ...labels],
       };
     };
-    const several = (targets: MenuTarget[]) => {
+    const several = (targets: MenuTarget[]): Menu => {
       const { items, targetOf } = menusOf(targets);
       return {
         items,
@@ -429,6 +450,7 @@
           const [target, inner] = targetOf(id);
           pick(inner, target, view.snapshot);
         },
+        targets,
       };
     };
     const ref = on.closest<HTMLElement>(".ref[data-slot]");
@@ -444,6 +466,34 @@
     return single({ row, label });
   }
 
+  /** Whether `row` (as loaded now) still carries `label`, or the remote branch it stands for. */
+  function carries(row: CommitRow, label: RefLabel): boolean {
+    if (label.kind !== "remote") return row.labels.some((l) => l.kind === label.kind && l.name === label.name);
+    return row.labels.some(
+      (l) =>
+        (l.kind === "remote" && l.name === label.name) ||
+        (l.kind === "branch" && l.remotes.some((r) => `${r}/${l.name}` === label.name)),
+    );
+  }
+
+  /**
+   * Whether `targets` are all still there, as far as known (R26): each row's commit is still
+   * in the graph, with its labels on it where its row is loaded. Asked when the rows change.
+   */
+  function stillThere(targets: MenuTarget[]): () => Promise<boolean> {
+    const repoId = view.repoId;
+    return async () => {
+      for (const hash of new Set(targets.map((t) => t.row.hash))) {
+        const index = await api.findRow(repoId, hash).catch(() => undefined);
+        if (index === null) return false;
+        const row = index === undefined ? undefined : view.cache.get(index);
+        if (!row || row.hash !== hash) continue; // not known here: kept
+        for (const t of targets) if (t.row.hash === hash && t.label && !carries(row, t.label)) return false;
+      }
+      return true;
+    };
+  }
+
   /** Right-click on a row or a label: selects the row and opens the menu at the pointer. */
   function onRowsContextMenu(e: MouseEvent) {
     e.preventDefault();
@@ -452,8 +502,8 @@
     if (!hit) return;
     view.select(hit.row.hash, hit.index);
     scroller.focus({ preventScroll: true });
-    const { items, onPick } = menuAt(e.target as Element, hit.row);
-    openMenu({ x: e.clientX, y: e.clientY }, items, onPick, { repoId: view.repoId });
+    const { items, onPick, targets } = menuAt(e.target as Element, hit.row);
+    openMenu({ x: e.clientX, y: e.clientY }, items, onPick, { repoId: view.repoId, alive: stillThere(targets) });
   }
 
   /** The menu key or Shift+F10: the selected row's menu, below the start of its description. */
@@ -471,8 +521,12 @@
     }
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const { items, onPick } = menuAt(el, row);
-    openMenu({ x: r.left + 4, y: r.bottom }, items, onPick, { keyboard: true, repoId: view.repoId });
+    const { items, onPick, targets } = menuAt(el, row);
+    openMenu({ x: r.left + 4, y: r.bottom }, items, onPick, {
+      keyboard: true,
+      repoId: view.repoId,
+      alive: stillThere(targets),
+    });
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -559,7 +613,7 @@
     <GraphHeader {columns} />
 
     <div class="rows" style:height="{rowsHeight}px">
-      <!-- Clicks and hovers are handled here for every row; the grid itself takes the keys. -->
+      <!-- Clicks, double clicks and hovers are handled here for every row; the grid itself takes the keys. -->
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
       <div
         class="pool"
@@ -567,6 +621,7 @@
         style:height="{poolRows * ROW_H}px"
         style:transform="translateY({poolFirst * ROW_H}px)"
         onclick={onRowsClick}
+        ondblclick={onRowsDblClick}
         oncontextmenu={onRowsContextMenu}
         onpointerover={onRowsPointerOver}
       >

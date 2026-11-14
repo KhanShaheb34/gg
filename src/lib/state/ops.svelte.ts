@@ -3,10 +3,11 @@
 // shows how it went. The running operation itself is part of the repository's snapshot.
 
 import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
+import PullDialog from "../components/dialogs/PullDialog.svelte";
 import { api, CoreError } from "../ipc";
 import type { CoreErrorDto, Danger, DangerKind, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 import { app, notify, reportError, showLog, type ToastAction } from "./app.svelte";
-import { closeDialog, openDialog } from "./overlays.svelte";
+import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
 
 /**
@@ -17,7 +18,8 @@ import { findRepoView } from "./repo.svelte";
  * outcome's snapshot is applied to the repository's view. The notice: `done`, its message
  * with a button per hint; `failed`, its message with git's text folded below, the hints, and
  * a link to its command-log entries; `stopped` (git stopped on conflicts), none: the
- * conflict banner shows it. An error from the core is reported, and the promise rejects
+ * conflict banner shows it. A pull that needs to be told whether to merge or rebase (hint
+ * `choose_pull_mode`) shows that choice instead of a notice, and is sent again as chosen. An error from the core is reported, and the promise rejects
  * with it; errors with a code in `ownErrors` are not reported: the caller shows them (a
  * dialog shows a refused name beside its field).
  */
@@ -91,6 +93,12 @@ function withTokens(request: OpRequest, dangers: Danger[]): OpRequest {
 }
 
 function report(repoId: number, outcome: OpOutcome): void {
+  const choose = outcome.hints.find((h) => h.kind === "choose_pull_mode");
+  if (outcome.status === "failed" && choose) {
+    const upstream = findRepoView(repoId)?.loadedLabel(choose.branch)?.upstream ?? null;
+    showDialog(PullDialog, { repoId, branch: choose.branch, upstream, message: outcome.message });
+    return;
+  }
   const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint));
   const detail = outcome.detail ?? undefined;
   if (outcome.status === "done") {
@@ -139,9 +147,6 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
       return [{ label: "Force push…", danger: true, run: () => followUp(repoId, push) }];
     }
     case "choose_pull_mode":
-      return (["merge", "rebase"] as const).map((mode) => ({
-        label: `Pull with ${mode}`,
-        run: () => followUp(repoId, { op: "pull", branch: hint.branch, mode }),
-      }));
+      return []; // a dialog asks instead (see report)
   }
 }

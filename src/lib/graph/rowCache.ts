@@ -49,13 +49,18 @@ export class RowCache {
     return this.pages.get(page)?.[index - page * this.pageSize];
   }
 
-  /** The loaded row of commit `hash`, if any (a scan of the few pages kept). */
-  byHash(hash: string): CommitRow | undefined {
+  /** The first loaded row `match` holds for, if any (a scan of the few pages kept). */
+  find(match: (row: CommitRow) => boolean): CommitRow | undefined {
     for (const rows of this.pages.values()) {
-      const row = rows.find((r) => r.hash === hash);
+      const row = rows.find(match);
       if (row) return row;
     }
     return undefined;
+  }
+
+  /** The loaded row of commit `hash`, if any. */
+  byHash(hash: string): CommitRow | undefined {
+    return this.find((r) => r.hash === hash);
   }
 
   /** Whether every row of `first..=last` (clipped to the rows there are) is loaded. */

@@ -29,6 +29,23 @@ pub enum External {
     Url,
 }
 
+/// A page or file of gg itself that the settings screen opens (`open_app_link`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AppLink {
+    /// gg's home page, in the browser.
+    Home,
+    /// gg's source code, in the browser.
+    Source,
+    /// The settings file, shown in the file manager.
+    SettingsFile,
+}
+
+/// gg's home page.
+pub const HOME_PAGE: &str = "https://gg.shakirul.com";
+/// Where gg's source code is.
+pub const SOURCE_PAGE: &str = "https://github.com/KhanShaheb34/gg";
+
 /// The programs the user configured in the settings (`None`: the platform's own).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Programs<'a> {
@@ -39,8 +56,8 @@ pub struct Programs<'a> {
 impl RepoManager {
     /// Opens `path` (relative to the active worktree; the worktree folder itself when
     /// `None`) with `command` (the editor command from the settings: a program and its
-    /// arguments, split on whitespace with simple quotes, the path added as the last
-    /// argument). Without a command, a folder opens with the platform's opener, and a file
+    /// arguments, split on whitespace with simple quotes, the path where a word is `{path}`,
+    /// else added as the last argument). Without a command, a folder opens with the platform's opener, and a file
     /// opens as text on macOS; elsewhere the worktree folder opens instead and the returned
     /// note says so (see [`launch_plan`]). The program is started directly, never through
     /// a shell, and not waited for. Returns a note for the user, if any.
@@ -114,6 +131,36 @@ impl RepoManager {
             External::Url => unreachable!("handled above"),
         };
         self.start(plan, Some(setting))
+    }
+
+    /// Opens `link`: gg's home page or source code in the browser, or the settings file
+    /// `settings_file` in the file manager (its folder when no setting was saved yet;
+    /// `path_missing` when that is not there either). Returns a note for the user, if any.
+    pub fn open_app_link(&self, link: AppLink, settings_file: &Path) -> Result<Option<String>> {
+        let os = std::env::consts::OS;
+        match link {
+            AppLink::Home => self.start(url_plan(os, HOME_PAGE), None),
+            AppLink::Source => self.start(url_plan(os, SOURCE_PAGE), None),
+            AppLink::SettingsFile => {
+                let shown = if settings_file.is_file() {
+                    settings_file
+                } else {
+                    match settings_file.parent() {
+                        Some(folder) if folder.is_dir() => folder,
+                        _ => {
+                            return Err(CoreError::new(
+                                ErrorCode::PathMissing,
+                                format!(
+                                    "{} is not there yet: no setting has been saved.",
+                                    settings_file.display()
+                                ),
+                            ));
+                        }
+                    }
+                };
+                self.start(reveal_plan(os, shown)?, None)
+            }
+        }
     }
 
     /// The folder of worktree `path` of repository `repo_id` (canonical), if git lists it
@@ -409,12 +456,13 @@ fn explorer_line(option: Option<&str>, dir: &Path) -> Result<String> {
 /// operating system `os` (`std::env::consts::OS`), where they run, and a note for the user
 /// if something else than asked was opened.
 ///
-/// With `command` (its words, then the path) the editor gets the file. Without one, no
-/// file of the repository ever goes to the system's default application, which picks a
-/// program by file type and could run it (a `.command`, `.sh`, `.exe`, `.desktop`): on
-/// macOS a regular file opens as text (`open -t`); otherwise (a folder such as an `X.app`
-/// bundle, which `open` would start, or any file elsewhere) the worktree folder opens
-/// instead, with the note. Asked for the worktree itself (`.`), it opens without one.
+/// With `command` (its words, the path standing in for a word `{path}`, else added last)
+/// the editor gets the file. Without one, no file of the repository ever goes to the
+/// system's default application, which picks a program by file type and could run it (a
+/// `.command`, `.sh`, `.exe`, `.desktop`): on macOS a regular file opens as text (`open
+/// -t`); otherwise (a folder such as an `X.app` bundle, which `open` would start, or any
+/// file elsewhere) the worktree folder opens instead, with the note. Asked for the worktree
+/// itself (`.`), it opens without one.
 ///
 /// The opener gets the path as a plain argument; no shell (`cmd.exe`) is ever involved.
 fn launch_plan(os: &str, command: Option<&str>, root: &Path, file: Option<Target>) -> Result<Plan> {
@@ -423,10 +471,18 @@ fn launch_plan(os: &str, command: Option<&str>, root: &Path, file: Option<Target
         .transpose()?
         .unwrap_or_default();
     if !words.is_empty() {
+        check_path_words(&words)?;
         let path = file.map_or(root, |f| f.path);
         refuse_for_shell(&words[0], path)?;
-        let mut argv: Vec<OsString> = words.into_iter().map(OsString::from).collect();
-        argv.push(path.as_os_str().to_owned());
+        // `{path}` stands for the path where it is a word; else the path goes last.
+        let placed = words.iter().any(|w| w == PATH_WORD);
+        let mut argv: Vec<OsString> = words
+            .iter()
+            .map(|w| with_path(w, path.as_os_str()))
+            .collect();
+        if !placed {
+            argv.push(path.as_os_str().to_owned());
+        }
         return Ok(Plan {
             argv,
             cwd: root.to_owned(),
@@ -582,6 +638,11 @@ fn check_path_words(words: &[String]) -> Result<()> {
 /// own. A blank command is the platform's terminal.
 pub(crate) fn check_terminal_command(command: &str) -> Result<()> {
     check_path_words(&split_command(command, "terminal")?)
+}
+
+/// Checks an editor command as the settings save it, as [`check_terminal_command`] does.
+pub(crate) fn check_editor_command(command: &str) -> Result<()> {
+    check_path_words(&split_command(command, "editor")?)
 }
 
 /// Programs that read their arguments as commands of their own, by file name (lowercase).
@@ -1150,6 +1211,41 @@ mod tests {
             assert_eq!(plan.cwd, Path::new(dir));
             assert!(plan.console);
         }
+    }
+
+    /// The editor command follows the terminal command's `{path}` rule: a word `{path}`
+    /// stands for the file or folder, else it is added as the last argument; never inside
+    /// a word, never after an option that runs a command.
+    #[test]
+    fn an_editor_command_takes_the_path_where_path_stands() {
+        for os in ["macos", "linux", "windows"] {
+            assert_eq!(
+                plan_on(os, Some("idea --wait {path} --line 1"), Some("/r/a b.rs")),
+                (
+                    words(&["idea", "--wait", "/r/a b.rs", "--line", "1"]),
+                    false
+                )
+            );
+            assert_eq!(
+                plan_on(os, Some("code -w"), Some("/r/a.rs")),
+                (words(&["code", "-w", "/r/a.rs"]), false)
+            );
+            assert_eq!(
+                plan_on(os, Some("subl {path}"), None),
+                (words(&["subl", "/r"]), false)
+            );
+            for bad in ["code --goto={path}", "sh -c {path}"] {
+                let target = Target {
+                    path: Path::new("/r/a"),
+                    regular: true,
+                };
+                let err = launch_plan(os, Some(bad), Path::new("/r"), Some(target)).unwrap_err();
+                assert_eq!(err.code, ErrorCode::BadRequest, "{bad}");
+            }
+        }
+        assert!(check_editor_command("code 'x").is_err());
+        assert!(check_editor_command("code -w").is_ok());
+        assert!(check_editor_command("code --goto={path}").is_err());
     }
 
     /// A terminal command is split as the editor command is, never run through a shell; the

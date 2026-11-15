@@ -540,6 +540,22 @@ pub enum Theme {
     Dark,
 }
 
+/// How dates are shown (the graph, the details, the command log, tooltips). Serialized
+/// lowercase (`"standard"`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DateFormat {
+    /// Day, month and year, then the time: "12 Nov 2026 16:02" (what the app always showed).
+    #[default]
+    Standard,
+    /// How long ago: "3 days ago" (the date itself in tooltips).
+    Relative,
+    /// ISO 8601: "2026-11-12 16:02".
+    Iso,
+    /// The operating system's own format for the user's language and region.
+    Locale,
+}
+
 /// User settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -547,7 +563,8 @@ pub struct Settings {
     pub theme: Theme,
     /// Seconds between background fetches; 0 turns them off, otherwise 30..=86400.
     pub fetch_interval_secs: u32,
-    /// Program (and arguments) that opens files; `None` uses the system's default opener.
+    /// Program (and arguments) that opens files (`{path}` in it stands for the file or folder,
+    /// else it is added last); `None` uses the system's default opener.
     pub editor_command: Option<String>,
     /// Program (and arguments) that opens a terminal in a folder (`{path}` in it stands for the
     /// folder, else the folder is added last); `None` uses the platform's terminal.
@@ -555,6 +572,8 @@ pub struct Settings {
     /// Where new worktrees go by default, relative to the main worktree: `{repo}` is the
     /// main worktree's folder name, `{branch}` the branch made safe for a folder name.
     pub worktree_pattern: String,
+    /// How dates are shown.
+    pub date_format: DateFormat,
 }
 
 /// The default [`Settings::worktree_pattern`].
@@ -568,6 +587,7 @@ impl Default for Settings {
             editor_command: None,
             terminal_command: None,
             worktree_pattern: DEFAULT_WORKTREE_PATTERN.to_owned(),
+            date_format: DateFormat::Standard,
         }
     }
 }
@@ -1285,6 +1305,9 @@ pub struct AppState {
     /// Why settings and the session are not being saved (the settings file exists but could
     /// not be read); `None` when they are. `reset_settings` moves the file aside.
     pub settings_problem: Option<String>,
+    /// The file settings are kept in (`state.json` in the config folder; it may not exist
+    /// until something is saved).
+    pub settings_file: String,
     /// Why the git found is too old for the app (older than 2.29), said once; `None` when it
     /// is new enough or could not be read.
     pub git_problem: Option<String>,
@@ -1330,6 +1353,7 @@ mod tests {
             launch_path: Some("/l".into()),
             home_dir: Some("/h".into()),
             settings_problem: None,
+            settings_file: "/c/state.json".into(),
             git_problem: None,
             cli: CliState {
                 installed: Some("/b/gg".into()),
@@ -1344,16 +1368,26 @@ mod tests {
                 "recents": [{"path": "/r", "name": "r", "lastOpenedMs": 5}],
                 "session": {"tabs": ["/r"], "active": null},
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
-                             "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}"},
+                             "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
+                             "dateFormat": "standard"},
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,
+                "settingsFile": "/c/state.json",
                 "gitProblem": null,
                 "cli": {"installed": "/b/gg", "shadowedBy": null, "candidates": ["/b"]}
             })
         );
         assert_eq!(serde_json::from_value::<AppState>(v).unwrap(), state);
         assert_eq!(serde_json::to_value(Theme::Dark).unwrap(), "dark");
+        for (format, text) in [
+            (DateFormat::Standard, "standard"),
+            (DateFormat::Relative, "relative"),
+            (DateFormat::Iso, "iso"),
+            (DateFormat::Locale, "locale"),
+        ] {
+            assert_eq!(serde_json::to_value(format).unwrap(), text);
+        }
     }
 
     #[test]

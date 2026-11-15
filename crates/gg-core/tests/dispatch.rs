@@ -766,10 +766,11 @@ async fn launch_path_is_reported() {
             "recents": [],
             "session": {"tabs": [], "active": null},
             "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null, "terminalCommand": null,
-                         "worktreePattern": "../{repo}.worktrees/{branch}"},
+                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard"},
             "launchPath": null,
             "homeDir": home,
             "settingsProblem": null,
+            "settingsFile": none.config.path().join("state.json").to_string_lossy(),
             // The git installed here is new enough (M3).
             "gitProblem": null
         })
@@ -795,7 +796,7 @@ async fn session_and_settings_persist() {
     assert_eq!(
         settings,
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}"})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard"})
     );
     let err = h
         .fail(
@@ -821,8 +822,95 @@ async fn session_and_settings_persist() {
     assert_eq!(
         state["settings"],
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}"})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard"})
     );
+}
+
+/// "Reset to defaults" puts the settings back as a new install has them (the background
+/// fetch interval with them) and keeps the open tabs; the next start reads them so.
+#[tokio::test]
+async fn settings_go_back_to_their_defaults() {
+    let h = harness().await;
+    h.call("save_session", json!({"tabs": ["/a"], "active": "/a"}))
+        .await;
+    h.call(
+        "update_settings",
+        json!({"patch": {"theme": "dark", "fetchIntervalSecs": 60, "dateFormat": "iso",
+                         "editorCommand": "code", "worktreePattern": "../w/{branch}"}}),
+    )
+    .await;
+    let settings = h.call("restore_default_settings", json!({})).await;
+    let defaults = json!({"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
+                          "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
+                          "dateFormat": "standard"});
+    assert_eq!(settings, defaults);
+    let err = h
+        .fail("restore_default_settings", json!({"keep": "theme"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let again = Core::new(
+        h.config.path().to_path_buf(),
+        None,
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .unwrap();
+    let state = again.dispatch("get_app_state", json!({})).await.unwrap();
+    assert_eq!(state["settings"], defaults);
+    assert_eq!(state["session"]["tabs"], json!(["/a"]));
+}
+
+/// The settings screen's links: gg's home page and source code in the browser, and the
+/// settings file in the file manager (its folder until something was saved). Fixed
+/// addresses only: no address comes from the UI. Recorded, never started.
+#[tokio::test]
+async fn the_settings_screen_opens_gg_pages_and_the_settings_file() {
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let config = h.config.path().to_path_buf();
+    let state_file = config.join("state.json");
+    // Nothing saved yet: the config folder is shown.
+    assert_eq!(
+        h.call("open_app_link", json!({"link": "settingsFile"}))
+            .await,
+        json!({"note": null})
+    );
+    h.call("update_settings", json!({"patch": {"theme": "dark"}}))
+        .await;
+    h.call("open_app_link", json!({"link": "settingsFile"}))
+        .await;
+    h.call("open_app_link", json!({"link": "home"})).await;
+    h.call("open_app_link", json!({"link": "source"})).await;
+    let launched: Vec<Value> = recorded(&file);
+    assert_eq!(launched.len(), 4, "{launched:?}");
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            launched,
+            [
+                json!(["/usr/bin/open", "-R", config.to_string_lossy()]),
+                json!(["/usr/bin/open", "-R", state_file.to_string_lossy()]),
+                json!(["/usr/bin/open", "https://gg.shakirul.com"]),
+                json!(["/usr/bin/open", "https://github.com/KhanShaheb34/gg"]),
+            ]
+        );
+    }
+    for args in [
+        json!({"link": "url", "url": "https://example.com"}),
+        json!({"link": "https://example.com"}),
+        json!({}),
+    ] {
+        let err = h.fail("open_app_link", args.clone()).await;
+        assert_eq!(err.code, ErrorCode::BadRequest, "{args}");
+    }
+    // A config folder that is gone: said, nothing opened.
+    std::fs::remove_dir_all(&config).unwrap();
+    let err = h
+        .fail("open_app_link", json!({"link": "settingsFile"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::PathMissing, "{err:?}");
+    assert_eq!(recorded(&file).len(), 4);
 }
 
 #[tokio::test]

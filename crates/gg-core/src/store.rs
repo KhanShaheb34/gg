@@ -20,7 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::dto::{DEFAULT_WORKTREE_PATTERN, Recent, RepoPrefs, Session, Settings, Theme};
+use crate::dto::{
+    DEFAULT_WORKTREE_PATTERN, DateFormat, Recent, RepoPrefs, Session, Settings, Theme,
+};
 use crate::error::{CoreError, ErrorCode, Result};
 
 const FILE_NAME: &str = "state.json";
@@ -46,6 +48,7 @@ pub struct SettingsPatch {
     pub terminal_command: Option<Option<String>>,
     /// A blank pattern goes back to the default; any other must contain `{branch}`.
     pub worktree_pattern: Option<String>,
+    pub date_format: Option<DateFormat>,
 }
 
 /// A change to [`RepoPrefs`]: only the fields present are changed.
@@ -217,6 +220,20 @@ impl Store {
         self.lock().settings.clone()
     }
 
+    /// The settings file, `<config_dir>/state.json` (it may not exist yet).
+    pub fn file(&self) -> PathBuf {
+        self.dir.join(FILE_NAME)
+    }
+
+    /// Puts every setting back to its default ("Reset to defaults"); returns them. Recents,
+    /// the session, each repository's preferences and keys this version does not know stay.
+    pub fn restore_default_settings(&self) -> Result<Settings> {
+        self.change(|data| {
+            data.settings = Settings::default();
+            Ok(data.settings.clone())
+        })
+    }
+
     /// Puts the repository at `path` first in the recents, removing any other entry for the
     /// same folder, and keeps the newest 20. `path` is stored with symlinks resolved; the
     /// stored ones were stored that way, so they are compared as text and their folders are
@@ -326,6 +343,9 @@ impl Store {
                 format!("The fetch interval must be 0 (off) or 30 to 86400 seconds, not {secs}."),
             ));
         }
+        if let Some(Some(command)) = &patch.editor_command {
+            crate::launch::check_editor_command(command)?;
+        }
         if let Some(Some(command)) = &patch.terminal_command {
             crate::launch::check_terminal_command(command)?;
         }
@@ -359,6 +379,9 @@ impl Store {
             if let Some(command) = patch.terminal_command {
                 // A blank command means the platform's terminal, like `null`.
                 data.settings.terminal_command = command.filter(|c| !c.trim().is_empty());
+            }
+            if let Some(format) = patch.date_format {
+                data.settings.date_format = format;
             }
             if let Some(pattern) = patch.worktree_pattern {
                 // A blank pattern means the default.
@@ -502,6 +525,7 @@ impl StoreData {
                 terminal_command: field(settings, "terminalCommand"),
                 worktree_pattern: field(settings, "worktreePattern")
                     .unwrap_or(defaults.worktree_pattern),
+                date_format: field(settings, "dateFormat").unwrap_or(defaults.date_format),
             },
             repo_prefs,
         })
@@ -549,6 +573,7 @@ impl StoreData {
                     "editorCommand",
                     "terminalCommand",
                     "worktreePattern",
+                    "dateFormat",
                 ],
             )
             || lost_prefs
@@ -1366,6 +1391,129 @@ mod tests {
             .update_settings(patch(serde_json::json!({"terminalCommand": null})))
             .unwrap();
         assert_eq!(s.terminal_command, None);
+    }
+
+    /// The date format: "standard" (what the app always showed) by default, set, kept
+    /// across a reload, and a value this version does not know reads as the default.
+    #[test]
+    fn date_format_is_set_and_read_back() {
+        use crate::dto::DateFormat;
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.settings().date_format, DateFormat::Standard);
+        for (text, format) in [
+            ("relative", DateFormat::Relative),
+            ("iso", DateFormat::Iso),
+            ("locale", DateFormat::Locale),
+            ("standard", DateFormat::Standard),
+            ("iso", DateFormat::Iso),
+        ] {
+            let s = store
+                .update_settings(patch(serde_json::json!({ "dateFormat": text })))
+                .unwrap();
+            assert_eq!(s.date_format, format, "{text}");
+        }
+        assert_eq!(
+            Store::load(config.path()).settings().date_format,
+            DateFormat::Iso
+        );
+        assert!(
+            serde_json::from_value::<SettingsPatch>(serde_json::json!({"dateFormat": "roman"}))
+                .is_err(),
+            "an unknown format is refused"
+        );
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"dateFormat": "roman", "theme": "dark"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path()).settings();
+        assert_eq!(edited.date_format, DateFormat::Standard);
+        assert_eq!(edited.theme, Theme::Dark);
+    }
+
+    /// "Reset to defaults" puts every setting back as a new install has it, and keeps the
+    /// rest of the file: recents, the open tabs, each repository's preferences and keys this
+    /// version does not know.
+    #[test]
+    fn settings_go_back_to_their_defaults_and_nothing_else_does() {
+        let config = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"future": 1, "settings": {"futureSetting": "kept"}}"#,
+        )
+        .unwrap();
+        let store = Store::load(config.path());
+        store.add_recent(repo.path()).unwrap();
+        store
+            .save_session(Session {
+                tabs: vec!["/x".into()],
+                active: Some("/x".into()),
+            })
+            .unwrap();
+        store
+            .set_repo_prefs(
+                repo.path(),
+                serde_json::from_value(serde_json::json!({"mergeNoFf": false})).unwrap(),
+            )
+            .unwrap();
+        store
+            .update_settings(patch(serde_json::json!({
+                "theme": "dark",
+                "fetchIntervalSecs": 60,
+                "editorCommand": "code",
+                "terminalCommand": "kitty",
+                "worktreePattern": "../wt/{branch}",
+                "dateFormat": "relative",
+            })))
+            .unwrap();
+
+        let s = store.restore_default_settings().unwrap();
+        assert_eq!(s, Settings::default());
+        let again = Store::load(config.path());
+        assert_eq!(again.settings(), Settings::default());
+        assert_eq!(again.recents().len(), 1);
+        assert_eq!(again.session().tabs, vec!["/x".to_owned()]);
+        assert!(!again.repo_prefs(repo.path()).merge_no_ff);
+        let text = fs::read_to_string(config.path().join("state.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["future"], 1);
+        assert_eq!(json["settings"]["futureSetting"], "kept");
+    }
+
+    /// Where the settings are kept, for the settings screen to show.
+    #[test]
+    fn the_settings_file_is_state_json_in_the_config_folder() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.file(), config.path().join("state.json"));
+    }
+
+    /// The editor command is checked as the terminal command is when saved: quotes closed,
+    /// `{path}` a word of its own and never after an option that runs a command.
+    #[test]
+    fn editor_command_is_checked_when_saved() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        for (bad, says) in [
+            ("code 'unclosed", "quote that is not closed"),
+            ("code --goto={path}", "Write {path} as a separate word."),
+            ("sh -c {path}", "{path} cannot follow -c"),
+        ] {
+            let err = store
+                .update_settings(patch(serde_json::json!({ "editorCommand": bad })))
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{bad}");
+            assert!(err.message.contains(says), "{bad}: {}", err.message);
+        }
+        assert_eq!(store.settings().editor_command, None, "nothing was saved");
+        let s = store
+            .update_settings(patch(
+                serde_json::json!({"editorCommand": "idea --wait {path}"}),
+            ))
+            .unwrap();
+        assert_eq!(s.editor_command.as_deref(), Some("idea --wait {path}"));
     }
 
     #[test]

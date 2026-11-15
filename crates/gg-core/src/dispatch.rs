@@ -13,7 +13,7 @@ use crate::Core;
 use crate::dto::{AppState, Confirmed, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::LogFilter;
-use crate::launch::{External, Programs};
+use crate::launch::{AppLink, External, Programs};
 use crate::mask;
 use crate::store::{RepoPrefsPatch, SettingsPatch};
 
@@ -228,6 +228,12 @@ struct OpenedExternal {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AppLinkArgs {
+    link: AppLink,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InstallCliArgs {
     dir: PathBuf,
 }
@@ -273,6 +279,16 @@ impl Core {
                 let a: UpdateSettingsArgs = parse(cmd, args)?;
                 let settings = self
                     .blocking(move |core| core.store.update_settings(a.patch))
+                    .await?;
+                if let Ok(repos) = self.repos() {
+                    repos.set_fetch_interval(settings.fetch_interval_secs);
+                }
+                to_json(settings)
+            }
+            "restore_default_settings" => {
+                let NoArgs {} = parse(cmd, args)?;
+                let settings = self
+                    .blocking(|core| core.store.restore_default_settings())
                     .await?;
                 if let Ok(repos) = self.repos() {
                     repos.set_fetch_interval(settings.fetch_interval_secs);
@@ -480,6 +496,12 @@ impl Core {
                     .await?;
                 to_json(OpenedExternal { note })
             }
+            "open_app_link" => {
+                let a: AppLinkArgs = parse(cmd, args)?;
+                let file = self.store.file();
+                let note = self.repos()?.open_app_link(a.link, &file)?;
+                to_json(OpenedExternal { note })
+            }
             "install_cli" => {
                 let a: InstallCliArgs = parse(cmd, args)?;
                 to_json(
@@ -564,6 +586,7 @@ impl Core {
             launch_path: self.launch_path.clone(),
             home_dir: home_dir(),
             settings_problem: self.store.problem(),
+            settings_file: self.store.file().to_string_lossy().into_owned(),
             git_problem: self.repos().ok().and_then(|r| r.git_problem()),
             cli: self.cli_state(),
         }

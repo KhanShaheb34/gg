@@ -1536,6 +1536,7 @@ async fn worktree_files_and_commit_via_dispatch() {
                  "unstaged": true, "committable": true, "reason": null},
             ],
             "truncated": false,
+            "mergeMessage": null,
         })
     );
     let err = h
@@ -1566,4 +1567,5 @@ async fn worktree_files_and_commit_via_dispatch() {
         "{out:#}"
     );
     assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "add it");
+    assert_eq!(out["committed"], json!(repo.git(&["rev-parse", "HEAD"])));
 }

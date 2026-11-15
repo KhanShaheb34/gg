@@ -566,10 +566,54 @@ pub enum StdinPolicy {
     Bytes(Vec<u8>),
 }
 
+/// How many git children the app has running, per repository (counted by every runner of
+/// the app, which share it): the core never takes a lock file for stale while one of its own
+/// git commands may hold it.
+#[derive(Default)]
+pub(crate) struct LiveChildren(Mutex<std::collections::HashMap<u32, usize>>);
+
+impl LiveChildren {
+    fn change(&self, repo_id: u32, up: bool) {
+        let mut counts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let n = counts.entry(repo_id).or_default();
+        if up {
+            *n += 1;
+        } else {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                counts.remove(&repo_id);
+            }
+        }
+    }
+
+    fn of(&self, repo_id: u32) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&repo_id)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// One git child of a repository, counted while it lives (see [`LiveChildren`]).
+pub(crate) struct LiveChild {
+    live: Arc<LiveChildren>,
+    repo_id: u32,
+}
+
+impl Drop for LiveChild {
+    fn drop(&mut self) {
+        self.live.change(self.repo_id, false);
+    }
+}
+
 /// Runs git commands. Cheap to clone; clones share the command log.
 #[derive(Clone)]
 pub struct GitRunner {
     log: Arc<CommandLog>,
+    /// The git children running, per repository; shared by every clone.
+    live: Arc<LiveChildren>,
     /// `PATH` for git children, from the user's login shell when it could be read.
     path: Option<OsString>,
     tags: Tags,
@@ -611,6 +655,7 @@ impl GitRunner {
         if let Some(path) = login_path {
             let mut runner = Self {
                 log: log.clone(),
+                live: Arc::default(),
                 path: Some(path),
                 tags: Tags::default(),
                 stop: None,
@@ -624,6 +669,7 @@ impl GitRunner {
         }
         let mut runner = Self {
             log,
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -632,6 +678,22 @@ impl GitRunner {
         };
         runner.version = runner.check().await?;
         Ok(runner)
+    }
+
+    /// Counts a git child of this runner's repository while the returned value lives (see
+    /// [`LiveChildren`]); nothing for a runner of no repository.
+    pub(crate) fn live_child(&self) -> Option<LiveChild> {
+        let repo_id = self.tags.repo_id?;
+        self.live.change(repo_id, true);
+        Some(LiveChild {
+            live: self.live.clone(),
+            repo_id,
+        })
+    }
+
+    /// How many git children of repository `repo_id` the app has running now.
+    pub(crate) fn children_running(&self, repo_id: u32) -> usize {
+        self.live.of(repo_id)
     }
 
     /// This runner, logging its commands as run for repository `repo_id`.
@@ -713,6 +775,7 @@ impl GitRunner {
         args: &[&str],
         kind: CmdKind,
     ) -> Result<GitOutput> {
+        let _live = self.live_child();
         if let Some(stop) = &self.stop {
             return self.run_stoppable(cwd, args, kind, stop).await;
         }
@@ -892,6 +955,7 @@ impl GitRunner {
         on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
         cancel: Option<&tokio::sync::Notify>,
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        let _live = self.live_child();
         let exec = Exec {
             log: &self.log,
             tags: self.tags,
@@ -1647,6 +1711,7 @@ mod tests {
     async fn limited_commands_run_in_a_session_of_their_own() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -1691,6 +1756,7 @@ mod tests {
     fn sh_tool(log: Arc<CommandLog>, stop: Option<Arc<Stop>>) -> ToolRunner {
         let git = GitRunner {
             log,
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop,
@@ -1707,6 +1773,7 @@ mod tests {
     fn a_limited_run_is_a_small_future() {
         let git = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -1780,6 +1847,7 @@ mod tests {
         let repo = crate::testutil::TestRepo::new();
         let mut tool = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -1990,6 +2058,7 @@ mod tests {
     async fn every_command_runs_in_a_session_of_its_own_without_stdin() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -2036,6 +2105,7 @@ mod tests {
         let stop = Stop::new();
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: Some(stop.clone()),
@@ -2078,9 +2148,35 @@ mod tests {
     }
 
     /// A runner with no log of interest, for the time-limit tests.
+    /// The app's git children are counted per repository while they run (M5: a lock is
+    /// never taken for stale while one of them may hold it), by every clone of the runner.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn running_children_are_counted_per_repository() {
+        let repo = crate::testutil::TestRepo::new();
+        let base = plain_runner();
+        let runner = base.for_repo(7);
+        let other = base.for_repo(8);
+        assert_eq!(base.children_running(7), 0);
+        let slow = runner.run_unchecked(
+            repo.path(),
+            &["-c", "alias.nap=!sleep 0.5", "nap"],
+            CmdKind::Read,
+        );
+        let watch = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            (other.children_running(7), other.children_running(8))
+        };
+        let (out, during) = tokio::join!(slow, watch);
+        assert_eq!(out.unwrap().code, 0);
+        assert_eq!(during, (1, 0));
+        assert_eq!(base.children_running(7), 0, "counted down once it ended");
+    }
+
     fn plain_runner() -> GitRunner {
         GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -2162,6 +2258,7 @@ mod tests {
     async fn run_with_timeout_keeps_only_the_tail_of_large_output() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -2195,6 +2292,7 @@ mod tests {
     fn inherited_repo_vars_are_removed() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -2248,6 +2346,7 @@ mod tests {
         let log = CommandLog::new();
         let runner = GitRunner {
             log: log.clone(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -2412,6 +2511,7 @@ mod tests {
         let log = CommandLog::new();
         let runner = GitRunner {
             log: log.clone(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
@@ -2430,6 +2530,7 @@ mod tests {
     fn git_never_waits_for_an_editor() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,

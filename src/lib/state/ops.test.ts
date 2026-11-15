@@ -388,6 +388,14 @@ describe("hint buttons", () => {
     await vi.waitFor(() => expect(view.applySnapshot).toHaveBeenCalledWith(after));
   });
 
+  it("remove_index_lock: offers to remove the stale lock, in the worktree it is in, through the core's red confirmation (M5)", async () => {
+    const [remove] = await buttonsFor([{ kind: "remove_index_lock", path: "/r/.git/index.lock", worktree: "/r/wt" }], "failed");
+    expect(remove.label).toBe("Remove the lock file…");
+    expect(remove.danger).toBe(true);
+    await remove.run();
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "remove_index_lock", expectWorktree: "/r/wt" }, []);
+  });
+
   it("open_url: opens the page the core named (a pull request, a compare page) in the browser", async () => {
     const url = "https://github.com/octo/cat/pull/42";
     const [open] = await buttonsFor([{ kind: "open_url", url, label: "Open pull request" }]);

@@ -40,6 +40,7 @@
     delete_unmerged_branch_with_worktree: "Delete branch",
     prune_worktrees: "Prune",
     prune_worktrees_loses_commits: "Prune",
+    remove_index_lock: "Remove lock file",
   };
 
   const primary = $derived(dangers.length === 1 ? VERB[dangers[0].kind] : "Go ahead");

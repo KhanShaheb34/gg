@@ -238,6 +238,15 @@ function hintActions(repoId: number, hint: OpHint, worktree: string): ToastActio
       const { url, label } = hint;
       return [{ label, run: () => void openExternal(repoId, { target: "url", url }) }];
     }
+    case "remove_index_lock":
+      // The core asks to confirm, in red, naming the file and its age (M5).
+      return [
+        {
+          label: "Remove the lock file…",
+          danger: true,
+          run: () => followUp(repoId, { op: "remove_index_lock", expectWorktree: hint.worktree }),
+        },
+      ];
   }
 }
 

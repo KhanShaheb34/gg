@@ -47,6 +47,7 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
             .await?
             .into_iter()
             .collect(),
+        OpRequest::RemoveIndexLock { .. } => crate::ops::lock::danger(ctx).await?,
         // The others carry none.
         _ => Vec::new(),
     })

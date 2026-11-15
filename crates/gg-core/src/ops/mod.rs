@@ -11,6 +11,7 @@ mod commit;
 mod danger;
 mod explain;
 mod local;
+mod lock;
 mod network;
 pub(crate) mod order;
 mod pr;
@@ -687,6 +688,10 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
+        OpRequest::RemoveIndexLock { .. } => (
+            fixed("Remove the lock file index.lock".to_owned()),
+            body(move |ctx, dangers| Box::pin(async move { lock::remove(ctx, dangers).await })),
+        ),
         OpRequest::PrCreate {
             branch,
             base,
@@ -1204,6 +1209,11 @@ impl RepoManager {
         {
             return Ok((title, Ran::Refused(why)));
         }
+        if matches!(request, OpRequest::RemoveIndexLock { .. })
+            && let Some(why) = lock::refused(&ctx).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
         let dangers = dangers(&ctx, &request).await?;
         if !all_confirmed(&dangers, &confirmed) {
             return Ok((title, Ran::Unconfirmed(dangers)));
@@ -1216,6 +1226,11 @@ impl RepoManager {
         // Stopped by the user (R41): whatever the body made of it, the operation failed, with
         // what git said before it was ended; unless the body says what was done before the
         // Stop that stands (a commit made).
+        // A staging-area lock in the way is named, and offered for removal when stale (M5).
+        let step = match step {
+            Ok(step) if !stop.is_stopped() => lock::explain_failure(&ctx, step).await,
+            step => step,
+        };
         let step = if stop.is_stopped() && !ctx.kept() {
             let detail = match step {
                 Ok(Step::Failed { detail, .. } | Step::Stopped { detail, .. }) => detail,

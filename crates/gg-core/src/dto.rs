@@ -893,6 +893,13 @@ pub enum OpRequest {
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
+    /// Removes the active worktree's stale `index.lock` (M5): only one at least 10 minutes
+    /// old, while no git of the app's runs for the repository, a regular file, and only once
+    /// the `remove_index_lock` danger is confirmed with its token (the file as seen).
+    RemoveIndexLock {
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
+    },
     /// Opens a pull request of `branch` into `base`, a branch on remote `base_remote` (the
     /// base repository; `None`: the one `pr_suggest` names), through `gh`, with `title` (one
     /// line) and `body` (any text), as a draft with `draft`. The branch is pushed first (R38)
@@ -1011,7 +1018,8 @@ impl OpRequest {
             }
             | Self::Commit {
                 expect_worktree, ..
-            } => Some(expect_worktree),
+            }
+            | Self::RemoveIndexLock { expect_worktree } => Some(expect_worktree),
             Self::DeleteTag { .. }
             | Self::PushTag { .. }
             | Self::Push { .. }
@@ -1092,7 +1100,8 @@ impl OpRequest {
             }
             | Self::Commit {
                 expect_worktree, ..
-            } => Some(expect_worktree),
+            }
+            | Self::RemoveIndexLock { expect_worktree } => Some(expect_worktree),
             Self::DeleteTag { .. }
             | Self::PushTag { .. }
             | Self::Push { .. }
@@ -1152,6 +1161,9 @@ pub enum DangerKind {
     /// Pruning, when an entry to forget is a detached HEAD with commits on no branch, tag or
     /// remote: they are lost with it. Red.
     PruneWorktreesLosesCommits,
+    /// Removing a stale `index.lock` (M5): another git or an editor may still be using the
+    /// repository. Red; its token is the file as seen (path, modification time, size).
+    RemoveIndexLock,
 }
 
 /// What would be lost, said plainly, for the confirmation.
@@ -1220,6 +1232,12 @@ pub enum OpHint {
     OpenUrl {
         url: String,
         label: String,
+    },
+    /// Remove the stale lock file `path` of the staging area of worktree `worktree`
+    /// (`OpRequest::RemoveIndexLock`, which asks to confirm first).
+    RemoveIndexLock {
+        path: String,
+        worktree: String,
     },
 }
 

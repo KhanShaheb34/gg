@@ -149,3 +149,39 @@ test("stash_untracked_option: untracked files go into the stash only when asked"
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("");
   expect(gg.git("small", "show", "--name-only", "--format=", "stash@{0}^3").trim()).toBe("scratch.txt");
 });
+
+// A stale index.lock (M5), here in the way of applying a stash: the failure names it, and
+// "Remove the lock file…" removes it after a red confirmation; a fresh one is not offered.
+test("a stale index.lock is named, and removed only through a red confirmation", async ({ gg }) => {
+  const { page } = gg;
+  const dir = gg.repoPath("small");
+  const { utimesSync } = await import("node:fs");
+  const lock = path.join(dir, ".git", "index.lock");
+  writeFileSync(lock, "");
+  const old = new Date(Date.now() - 2 * 3600_000);
+  utimesSync(lock, old, old);
+  await page.goto("/");
+  await open(page, dir);
+  await row(page, 1).click({ button: "right" });
+  await item(page, "Check out this commit").click();
+  const failed = page.getByRole("alert").filter({ hasText: "index.lock" });
+  await expect(failed).toContainText("made 2 h ago");
+  await failed.getByRole("button", { name: "Remove the lock file…" }).click();
+  const confirm = page.getByRole("alertdialog");
+  await expect(confirm.getByTestId("dangers")).toContainText("another git process or an editor");
+  expect(existsSync(lock)).toBe(true);
+  await armed(page);
+  await confirm.getByRole("button", { name: "Remove lock file" }).click();
+  await expect(notice(page, "Removed the lock file")).toBeVisible();
+  expect(existsSync(lock)).toBe(false);
+  expect(existsSync(path.join(dir, ".git", "index"))).toBe(true);
+
+  // A fresh one: named, never offered.
+  writeFileSync(lock, "");
+  await row(page, 1).click({ button: "right" });
+  await item(page, "Check out this commit").click();
+  const fresh = page.getByRole("alert").filter({ hasText: "Another git process is working" });
+  await expect(fresh).toBeVisible();
+  await expect(fresh.getByRole("button", { name: "Remove the lock file…" })).toHaveCount(0);
+  expect(existsSync(lock)).toBe(true);
+});

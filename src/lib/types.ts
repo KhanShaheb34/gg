@@ -310,6 +310,7 @@ export type OpRequest =
   // Empty paths: nothing_to_do; blank message: bad_request.
   | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string }
   // base: a branch on baseRemote, the repository it goes to (null: the one pr_suggest names); every gh command names it
+  | { op: "remove_index_lock"; expectWorktree: string } // the active worktree's stale index.lock, once confirmed (M5)
   | { op: "pr_create"; branch: string; base: string; baseRemote: string | null; title: string; body: string; draft: boolean };
 
 /** What a new worktree checks out: an existing local branch, a new branch at a commit (full hash), or a commit, detached. */
@@ -351,7 +352,8 @@ export type DangerKind =
   | "remove_worktree_ignored_files" // an ordinary confirmation, not red: only ignored files, which git deletes
   | "delete_unmerged_branch_with_worktree" // red: the branch deleted after its worktree (R9)
   | "prune_worktrees" // an ordinary confirmation: the stale entries prune forgets
-  | "prune_worktrees_loses_commits"; // red: a stale detached entry's commits on no branch, tag or remote go
+  | "prune_worktrees_loses_commits" // red: a stale detached entry's commits on no branch, tag or remote go
+  | "remove_index_lock"; // red: a stale index.lock; another git or an editor may still be using the repository
 /**
  * token: the state the message was worked out from (R39); confirming sends it back with the
  * kind (`Confirmed`), and the core asks again if the state has changed since.
@@ -367,7 +369,8 @@ export type OpHint =
   | { kind: "choose_pull_mode"; branch: string }
   | { kind: "skip"; commit: string } // continuing came out empty: skip that commit
   | { kind: "make_active"; worktree: string } // the branch needed is checked out in that worktree
-  | { kind: "open_url"; url: string; label: string }; // an https page: the pull request, or the compare page
+  | { kind: "open_url"; url: string; label: string } // an https page: the pull request, or the compare page
+  | { kind: "remove_index_lock"; path: string; worktree: string }; // a stale staging-area lock of that worktree (M5)
 
 /** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
 export type OpOutcome = {

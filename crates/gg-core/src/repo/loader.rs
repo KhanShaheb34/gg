@@ -125,6 +125,10 @@ async fn load(mut guard: LoadGuard, sink: Arc<dyn EventSink>, args: Vec<String>)
         }
         // A reload that never caught up (a smaller view, or a failure) swaps in now.
         slot.promote_pending();
+        // A branch selection's stashes go in once their bases are known (R21): new rows.
+        if slot.current.log_read() {
+            slot.current.generation += 1;
+        }
         slot.load_failed = result.is_err();
         repo.loading.send_replace(None);
         guard.finished = true;

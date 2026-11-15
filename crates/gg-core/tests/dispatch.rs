@@ -104,12 +104,36 @@ async fn malformed_args_is_bad_request() {
         ("set_window_focused", json!({})),
         (
             "set_view_options",
-            json!({"repoId": 1, "options": {"branches": null, "showRemotes": true, "showTags": true, "showStashes": true}}),
+            json!({"repoId": 1, "options": {"branches": null, "showRemotes": true, "showTags": true, "showNotes": true}}),
         ),
     ] {
         let err = h.fail(cmd, args.clone()).await;
         assert_eq!(err.code, ErrorCode::BadRequest, "{cmd} {args}");
     }
+}
+
+/// I7 / R42: opening a folder of another worktree of a repository already open answers with
+/// that repository, whose tab acts on its own worktree, and says which worktree the folder
+/// was in, so the UI can say which folder the tab acts on. Its own folders say nothing.
+#[tokio::test]
+async fn opening_another_worktree_of_an_open_repository_says_so() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let hotfix = repo.add_worktree("hotfix");
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    assert_eq!(first["openedWorktree"], Value::Null);
+    let main = first["activeWorktree"].clone();
+
+    let again = h.call("open_repo", json!({ "path": hotfix })).await;
+    assert_eq!(again["repoId"], first["repoId"]);
+    assert_eq!(
+        again["activeWorktree"], main,
+        "the tab still acts on its own"
+    );
+    assert_eq!(again["openedWorktree"], json!(path_string(&hotfix)));
+    let same = h.call("open_repo", json!({ "path": repo.path() })).await;
+    assert_eq!(same["openedWorktree"], Value::Null);
 }
 
 #[tokio::test]
@@ -181,7 +205,9 @@ async fn open_then_rows_via_dispatch() {
     let changed = h
         .call("set_view_options", json!({"repoId": id, "options": opts}))
         .await;
-    assert_eq!(changed["viewOptions"], opts);
+    let mut shown = opts.clone();
+    shown["showStashes"] = json!(true);
+    assert_eq!(changed["viewOptions"], shown);
     let refreshed = h.call("refresh", json!({"repoId": id})).await;
     assert_eq!(refreshed["repoId"], *id);
     // No remotes: nothing to fetch, still `null`.
@@ -602,10 +628,12 @@ async fn launch_path_is_reported() {
         json!({
             "recents": [],
             "session": {"tabs": [], "active": null},
-            "settings": {"theme": "system", "fetchIntervalSecs": 300},
+            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null},
             "launchPath": null,
             "homeDir": home,
-            "settingsProblem": null
+            "settingsProblem": null,
+            // The git installed here is new enough (M3).
+            "gitProblem": null
         })
     );
 }
@@ -626,7 +654,10 @@ async fn session_and_settings_persist() {
             json!({"patch": {"theme": "dark", "fetchIntervalSecs": 0}}),
         )
         .await;
-    assert_eq!(settings, json!({"theme": "dark", "fetchIntervalSecs": 0}));
+    assert_eq!(
+        settings,
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
+    );
     let err = h
         .fail(
             "update_settings",
@@ -650,7 +681,7 @@ async fn session_and_settings_persist() {
     );
     assert_eq!(
         state["settings"],
-        json!({"theme": "dark", "fetchIntervalSecs": 0})
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
     );
 }
 
@@ -835,4 +866,162 @@ fn unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap();
     u64::try_from(since.as_millis()).unwrap()
+}
+
+/// `open_in_editor` refuses paths outside the worktree and runs the editor command from
+/// the settings (a program that does not exist here, so nothing is opened).
+#[tokio::test]
+async fn open_in_editor_uses_the_editor_command_setting() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+
+    let err = h
+        .fail("open_in_editor", json!({"repoId": id, "path": "../x"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    let patch = json!({"patch": {"editorCommand": "gg-no-such-editor --wait"}});
+    h.call("update_settings", patch).await;
+    let err = h
+        .fail("open_in_editor", json!({"repoId": id, "path": null}))
+        .await;
+    assert_eq!(err.code, ErrorCode::Io, "{err:?}");
+    assert!(err.message.contains("gg-no-such-editor"), "{err:?}");
+    let err = h
+        .fail("open_in_editor", json!({"repoId": 999, "path": null}))
+        .await;
+    assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
+}
+
+/// With launches recorded to a file (the dev server's `--record-editor-launches`), nothing is
+/// started: each launch is a line of JSON, the program and its arguments.
+#[tokio::test]
+async fn editor_launches_can_be_recorded_to_a_file() {
+    let repo = TestRepo::new();
+    repo.write("a b.txt", "x\n");
+    repo.commit_all("one");
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_editor_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    let patch = json!({"patch": {"editorCommand": "gg-no-such-editor --wait"}});
+    h.call("update_settings", patch).await;
+
+    let note = h
+        .call("open_in_editor", json!({"repoId": id, "path": "a b.txt"}))
+        .await;
+    assert_eq!(note, Value::Null);
+    h.call("open_in_editor", json!({"repoId": id, "path": null}))
+        .await;
+    let lines: Vec<Value> = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let root = dunce::canonicalize(repo.path()).unwrap();
+    assert_eq!(
+        lines,
+        [
+            json!(["gg-no-such-editor", "--wait", root.join("a b.txt")]),
+            json!(["gg-no-such-editor", "--wait", root]),
+        ]
+    );
+}
+
+/// R36: a credential in a URL (the `user:password@` part) never reaches the UI, wherever git
+/// or the config put it: a failed operation's message and output, the fetch state, errors.
+/// git hides credentials in the URLs it prints itself; a hook or a helper does not, so a
+/// pre-push hook and an upload-pack print one here.
+#[cfg(unix)]
+#[tokio::test]
+async fn credentials_in_urls_never_reach_the_ui() {
+    use std::os::unix::fs::PermissionsExt;
+    const SECRET: &str = "s3cr3t-t0ken";
+    // The line stays git's latest for a moment, so it goes out as a progress event (those are
+    // the latest line, at most ten a second).
+    let say = format!(
+        "echo \"could not reach https://user:{SECRET}@example.invalid/x.git\" >&2; sleep 0.3; exit 1"
+    );
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    let script = |path: &Path| {
+        std::fs::write(path, format!("#!/bin/sh\ncat >/dev/null &\n{say}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    script(&repo.path().join(".git/hooks/pre-push"));
+    let upload_pack = repo.dir.path().join("failing-upload-pack");
+    script(&upload_pack);
+    repo.git(&[
+        "config",
+        "remote.origin.uploadpack",
+        upload_pack.to_str().unwrap(),
+    ]);
+
+    let h = harness().await;
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+
+    // A failed push: git's message and output come back in the outcome.
+    let outcome = h
+        .call(
+            "run_op",
+            json!({"repoId": id, "clientId": "c", "clientSeq": 1, "confirmed": [],
+                   "request": {"op": "push", "branch": "main", "remote": "origin",
+                               "to": null, "force": false}}),
+        )
+        .await;
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    let detail = outcome["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("https://***@example.invalid"), "{outcome}");
+
+    // A failed fetch: its one-line reason and git's output are in the fetch state.
+    h.call("fetch", json!({"repoId": id})).await;
+    let failed = h
+        .sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["fetch"]["lastError"].is_string()
+        })
+        .await
+        .expect("the fetch failed");
+    assert!(
+        failed.1["fetch"]["lastErrorDetail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("https://***@example.invalid"),
+        "{}",
+        failed.1["fetch"]
+    );
+    let refreshed = h.call("refresh", json!({"repoId": id})).await;
+
+    // An error: a folder that does not exist, named in the error.
+    let missing = repo
+        .dir
+        .path()
+        .join(format!("https://user:{SECRET}@host/gone"));
+    let err = h.fail("open_repo", json!({"path": missing})).await;
+    assert!(err.message.contains("https://***@host/gone"), "{err:?}");
+    let err = serde_json::to_string(&err).unwrap();
+
+    // The push's progress lines (git's stderr as it comes) are events too.
+    assert!(
+        h.sink.events().iter().any(|(n, v)| n == "op-progress"
+            && v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("https://***@example.invalid"))),
+        "a progress line carried the masked URL"
+    );
+
+    let mut seen = vec![outcome.to_string(), refreshed.to_string(), err];
+    seen.extend(h.sink.events().iter().map(|(n, v)| format!("{n} {v}")));
+    for text in &seen {
+        assert!(
+            !text.contains(SECRET),
+            "the credential reached the UI: {text}"
+        );
+    }
 }

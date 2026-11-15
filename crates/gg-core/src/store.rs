@@ -1,5 +1,5 @@
-//! The persistent store: recent repositories, the open tabs and settings, kept in
-//! `<config_dir>/state.json`.
+//! The persistent store: recent repositories, the open tabs, settings and per-repository
+//! preferences, kept in `<config_dir>/state.json`.
 //!
 //! The file is read once, when the store is created; a missing file gives defaults. It is read
 //! field by field, so a value this version does not know gives that field's default; a file
@@ -10,6 +10,7 @@
 //! change is written at once and atomically (a temp file renamed over the old one); a change
 //! that cannot be written is an `Io` error and is not applied in memory either.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::dto::{Recent, Session, Settings, Theme};
+use crate::dto::{Recent, RepoPrefs, Session, Settings, Theme};
 use crate::error::{CoreError, ErrorCode, Result};
 
 const FILE_NAME: &str = "state.json";
@@ -37,6 +38,26 @@ const FETCH_INTERVAL_RANGE: std::ops::RangeInclusive<u32> = 30..=86_400;
 pub struct SettingsPatch {
     pub theme: Option<Theme>,
     pub fetch_interval_secs: Option<u32>,
+    /// `Some(None)` (JSON `null`) goes back to the system's default opener.
+    #[serde(default, deserialize_with = "present")]
+    pub editor_command: Option<Option<String>>,
+}
+
+/// A change to [`RepoPrefs`]: only the fields present are changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepoPrefsPatch {
+    pub merge_no_ff: Option<bool>,
+}
+
+/// Reads a field that is present, `null` included, as `Some`; a missing one stays `None`
+/// (through `default`).
+fn present<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
 }
 
 /// The contents of `state.json`. Read with [`StoreData::from_json`]: a missing or unreadable
@@ -47,6 +68,8 @@ struct StoreData {
     recents: Vec<Recent>,
     session: Session,
     settings: Settings,
+    /// By the repository's main worktree path, as recents store it.
+    repo_prefs: BTreeMap<String, RepoPrefs>,
 }
 
 /// Recents, session and settings, persisted in `<config_dir>/state.json`.
@@ -228,6 +251,29 @@ impl Store {
         })
     }
 
+    /// The preferences of the repository whose main worktree is `root` (defaults if none
+    /// were set). Keyed by the path with symlinks resolved, as recents are.
+    pub fn repo_prefs(&self, root: &Path) -> RepoPrefs {
+        let key = canonical(root).to_string_lossy().into_owned();
+        self.lock()
+            .repo_prefs
+            .get(&key)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Applies `patch` to the preferences of the repository at `root`; returns them.
+    pub fn set_repo_prefs(&self, root: &Path, patch: RepoPrefsPatch) -> Result<RepoPrefs> {
+        let key = canonical(root).to_string_lossy().into_owned();
+        self.change(|data| {
+            let prefs = data.repo_prefs.entry(key).or_default();
+            if let Some(no_ff) = patch.merge_no_ff {
+                prefs.merge_no_ff = no_ff;
+            }
+            Ok(*prefs)
+        })
+    }
+
     /// Applies `patch` and returns the new settings. `BadRequest` (and nothing changes) if
     /// `fetchIntervalSecs` is neither 0 nor within 30..=86400.
     pub fn update_settings(&self, patch: SettingsPatch) -> Result<Settings> {
@@ -245,6 +291,10 @@ impl Store {
             }
             if let Some(secs) = patch.fetch_interval_secs {
                 data.settings.fetch_interval_secs = secs;
+            }
+            if let Some(command) = patch.editor_command {
+                // A blank command means the default opener, like `null`.
+                data.settings.editor_command = command.filter(|c| !c.trim().is_empty());
             }
             Ok(data.settings.clone())
         })
@@ -343,6 +393,17 @@ impl StoreData {
         };
         let (session, settings) = (object("session"), object("settings"));
         let defaults = Settings::default();
+        let repo_prefs = object("repoPrefs")
+            .iter()
+            .filter_map(|(root, prefs)| {
+                let Value::Object(prefs) = prefs else {
+                    return None;
+                };
+                let merge_no_ff =
+                    field(prefs, "mergeNoFf").unwrap_or(RepoPrefs::default().merge_no_ff);
+                Some((root.clone(), RepoPrefs { merge_no_ff }))
+            })
+            .collect();
         Ok(Self {
             recents: list(&top, "recents"),
             session: Session {
@@ -353,7 +414,9 @@ impl StoreData {
                 theme: field(settings, "theme").unwrap_or(defaults.theme),
                 fetch_interval_secs: field(settings, "fetchIntervalSecs")
                     .unwrap_or(defaults.fetch_interval_secs),
+                editor_command: field(settings, "editorCommand"),
             },
+            repo_prefs,
         })
     }
 
@@ -373,24 +436,43 @@ impl StoreData {
             }
             _ => true,
         };
+        // Each repository's entry as one object of known fields.
+        let lost_prefs = match (top.get("repoPrefs"), known.get("repoPrefs")) {
+            (None, _) => false,
+            (Some(Value::Object(was)), Some(Value::Object(now))) => {
+                was.iter()
+                    .any(|(root, entry)| match (entry, now.get(root)) {
+                        (Value::Object(was), Some(Value::Object(now))) => {
+                            differs(was, now, "mergeNoFf")
+                        }
+                        _ => true,
+                    })
+            }
+            _ => true,
+        };
         differs(top, &known, "recents")
             || lost_inner("session", &["tabs", "active"])
-            || lost_inner("settings", &["theme", "fetchIntervalSecs"])
+            || lost_inner("settings", &["theme", "fetchIntervalSecs", "editorCommand"])
+            || lost_prefs
     }
 
-    /// `top` with this data's fields written over it: unknown keys at the top level and in
-    /// `session` and `settings` are kept.
+    /// `top` with this data's fields written over it: keys this version does not know, at
+    /// any depth inside objects (`session`, `settings`, a repository's preferences), are
+    /// kept.
     fn merged_into(&self, top: &Map<String, Value>) -> Map<String, Value> {
-        let mut merged = top.clone();
-        if let Ok(Value::Object(known)) = serde_json::to_value(self) {
-            for (key, value) in known {
-                match (merged.get_mut(&key), value) {
-                    (Some(Value::Object(old)), Value::Object(new)) => old.extend(new),
+        fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
+            for (key, value) in from {
+                match (into.get_mut(&key), value) {
+                    (Some(Value::Object(old)), Value::Object(new)) => merge(old, new),
                     (_, value) => {
-                        merged.insert(key, value);
+                        into.insert(key, value);
                     }
                 }
             }
+        }
+        let mut merged = top.clone();
+        if let Ok(Value::Object(known)) = serde_json::to_value(self) {
+            merge(&mut merged, known);
         }
         merged
     }
@@ -908,6 +990,83 @@ mod tests {
         assert_eq!(result.unwrap_err().code, ErrorCode::Io);
         assert!(store.problem().is_some());
         assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+    }
+
+    #[test]
+    fn editor_command_is_set_and_cleared() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.settings().editor_command, None);
+        let s = store
+            .update_settings(patch(serde_json::json!({"editorCommand": "code -w"})))
+            .unwrap();
+        assert_eq!(s.editor_command.as_deref(), Some("code -w"));
+        // A patch without it keeps it.
+        store
+            .update_settings(patch(serde_json::json!({"theme": "dark"})))
+            .unwrap();
+        assert_eq!(
+            Store::load(config.path())
+                .settings()
+                .editor_command
+                .as_deref(),
+            Some("code -w")
+        );
+        let s = store
+            .update_settings(patch(serde_json::json!({"editorCommand": null})))
+            .unwrap();
+        assert_eq!(s.editor_command, None);
+        let s = store
+            .update_settings(patch(serde_json::json!({"editorCommand": "  "})))
+            .unwrap();
+        assert_eq!(s.editor_command, None, "blank is the default opener");
+    }
+
+    /// Repository preferences are read field by field like the rest: a newer version's
+    /// keys inside an entry survive a save, and a value that falls back copies the file
+    /// aside first.
+    #[test]
+    fn repo_prefs_keep_unknown_keys_and_fall_back_one_value_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(
+            &path,
+            r#"{"repoPrefs": {"/a": {"mergeNoFf": false, "future": 1}, "/b": "junk"}}"#,
+        )
+        .unwrap();
+        let store = Store::load(dir.path());
+        assert!(!store.repo_prefs(Path::new("/a")).merge_no_ff);
+        assert!(store.repo_prefs(Path::new("/b")).merge_no_ff);
+        assert!(store.repo_prefs(Path::new("/c")).merge_no_ff);
+        store
+            .set_repo_prefs(
+                Path::new("/c"),
+                RepoPrefsPatch {
+                    merge_no_ff: Some(false),
+                },
+            )
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["repoPrefs"]["/a"],
+            serde_json::json!({"mergeNoFf": false, "future": 1})
+        );
+        assert_eq!(
+            saved["repoPrefs"]["/c"],
+            serde_json::json!({"mergeNoFf": false})
+        );
+        let aside = fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("state.json.before-")
+            })
+            .count();
+        assert_eq!(aside, 1, "the unreadable entry for /b was kept aside");
     }
 
     #[test]

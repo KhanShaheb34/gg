@@ -20,12 +20,17 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { formatDate, formatDateLong, groupDigits, shortHash } from "../format";
+  import { shown as shownName } from "../menus/common";
+  import { checkOutLabel, itemsFor, pick } from "../menus/dispatch";
+  import type { MenuItem, MenuTarget } from "../menus/types";
+  import { openMenu } from "../state/overlays.svelte";
   import type { GraphProbe } from "../perf/graphProbe";
   import type { Probe } from "../perf/scrollProbe";
   import { hashMatch, needleOf, splitMatch } from "../search";
+  import { api } from "../ipc";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
-  import type { CommitRow, RefLabel } from "../types";
+  import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
   import {
     alignSlackFor,
     autoGraphWidth,
@@ -45,7 +50,7 @@
   import { GraphColumns } from "./graphColumns.svelte";
   import { gridKey } from "./gridKeys";
   import { LanesCanvas, type RowSource } from "./lanesCanvas";
-  import RefLabels from "./RefLabels.svelte";
+  import RefLabels, { ownLabels } from "./RefLabels.svelte";
 
   let { view }: { view: RepoView } = $props();
 
@@ -249,8 +254,16 @@
     schedule();
   }
 
+  /** Where the graph's top edge was on screen at the last resize, px. */
+  let edgeTop: number | null = null;
+
   function onResize(height: number) {
     const before = viewportH;
+    // The top edge moved (the conflict banner came or went above): the rows stay where they
+    // are in the history; nothing scrolls.
+    const top = scroller.getBoundingClientRect().top;
+    const fromTop = edgeTop !== null && top !== edgeTop;
+    edgeTop = top;
     viewportH = Math.max(0, height - HEADER_H);
     view.viewportH = viewportH;
     // The pool grows as needed and is kept when the viewport shrinks (the details panel
@@ -259,7 +272,7 @@
     const n = neededSlots(viewportH);
     if (n > slots.length) slots = [...slots, ...Array.from({ length: n - slots.length }, () => new Slot())];
     else if (2 * n < slots.length) slots = slots.slice(0, n);
-    keepSelectionInView(before);
+    if (!fromTop) keepSelectionInView(before);
     frame(performance.now(), true);
   }
 
@@ -280,28 +293,59 @@
   }
 
   /**
-   * The row an event happened on (a click, a hover, a context menu): its index and its
-   * commit, or null when the event is not on a loaded row.
+   * The row an event happened on (a click, a hover, a context menu): its index and the commit
+   * it shows, or null when the event is not on a row showing one. What the row shows, not what
+   * the cache holds at its index: new rows can be in the cache a moment before they are drawn,
+   * and a menu must act on what was under the pointer.
    */
   export function rowAt(event: Event): { index: number; row: CommitRow } | null {
     const el = (event.target as Element | null)?.closest?.<HTMLElement>('[role="row"][data-index]');
     if (!el) return null;
     const index = Number(el.dataset.index);
-    const row = view.cache.get(index);
+    const row = slots.find((s) => s.index === index)?.row;
+    // The element says which commit it shows; if the data under it has moved on before the
+    // next frame draws it, the commit the user saw is the one meant.
+    const drawn = el.dataset.hash;
+    if (row && drawn !== undefined && row.hash !== drawn) {
+      const seen = view.cache.byHash(drawn);
+      return seen ? { index: seen.index, row: seen } : null;
+    }
     return row ? { index, row } : null;
   }
 
   function onRowsClick(e: MouseEvent) {
     const hit = rowAt(e);
-    if (!hit) return;
+    if (!hit) {
+      // A row still loading is selected as soon as it has loaded.
+      const index = (e.target as Element | null)?.closest?.<HTMLElement>('[role="row"][data-index]')?.dataset.index;
+      if (index !== undefined) void view.selectRow(Number(index));
+      return;
+    }
     view.select(hit.row.hash, hit.index);
-    if (hit.row.kind === "commit" && (e.target as Element).closest(".hash")) copyHash(hit.row.hash);
+    if (hit.row.kind !== "uncommitted" && (e.target as Element).closest(".hash")) copyHash(hit.row.hash);
+  }
+
+  /**
+   * A double click on a local branch's label checks it out, as its menu's item does; on
+   * anything else (a remote branch's label or part of one, a tag, the row) it does nothing
+   * more than the clicks before it (selecting the row).
+   */
+  function onRowsDblClick(e: MouseEvent) {
+    const on = e.target as Element;
+    const ref = on.closest<HTMLElement>(".ref[data-slot]");
+    const slot = ref?.dataset.slot;
+    if (slot === undefined || slot === "more" || on.closest(".remotes")) return;
+    const hit = rowAt(e);
+    const atSlot = hit?.row.labels[Number(slot)];
+    const label = atSlot?.name === ref?.dataset.ref ? atSlot : hit?.row.labels.find((l) => l.name === ref?.dataset.ref);
+    if (!hit || label?.kind !== "branch") return;
+    checkOutLabel(label, hit.row, view.snapshot);
   }
 
   function copyHash(hash: string) {
     navigator.clipboard.writeText(hash).then(
-      () => toast("info", "Copied"),
-      () => toast("error", "Could not copy the commit hash"),
+      () => toast("info", "Copied the hash."),
+      () => toast("error", "Could not copy the hash."),
     );
   }
 
@@ -317,7 +361,7 @@
     if (!r) return;
     let text: string | null = null;
     if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? r.subject : null;
-    else if (r.kind !== "commit") text = null;
+    else if (r.kind === "uncommitted") text = null;
     else if (el.classList.contains("date")) text = formatDateLong(r.time);
     else if (el.classList.contains("author")) text = `${r.author} <${r.email}>`;
     else text = r.hash;
@@ -327,7 +371,213 @@
     titledRow = r;
   }
 
+  // --- Context menus ----------------------------------------------------------------------
+  // One listener for every row (delegation): the row and label are found from the event.
+
+  /** When a menu was last opened from the keyboard: the contextmenu event that may follow is not another. */
+  let keyboardMenuAt = -Infinity;
+
+  /** A remote branch's label, for the remote part of a combined label (`main | origin`). */
+  function remoteLabel(local: RefLabel, remote: string): RefLabel {
+    return {
+      kind: "remote",
+      name: `${remote}/${local.name}`,
+      remotes: [],
+      current: false,
+      worktreePath: null,
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+    };
+  }
+
+  const KINDS = { branch: "Branch", remote: "Remote branch", tag: "Tag", stash: "Stash" } as const;
+
+  /**
+   * A menu holding the menus of several targets as submenus, one per target; ids of their
+   * items are prefixed with the target's index ("1:checkout").
+   */
+  function menusOf(targets: MenuTarget[]): { items: MenuItem[]; targetOf: (id: string) => [MenuTarget, string] } {
+    const prefixed = (items: MenuItem[], k: number): MenuItem[] =>
+      items.map((it) =>
+        "separator" in it ? it : { ...it, id: `${k}:${it.id}`, submenu: it.submenu && prefixed(it.submenu, k) },
+      );
+    return {
+      items: targets.map((t, k) => ({
+        id: `${k}`,
+        label: `${KINDS[t.label!.kind]} ${shownName(t.label!.name)}`,
+        submenu: prefixed(itemsFor(t, view.snapshot), k),
+      })),
+      targetOf: (id) => {
+        const at = id.indexOf(":");
+        return [targets[Number(id.slice(0, at))], id.slice(at + 1)];
+      },
+    };
+  }
+
+  /**
+   * The targets of `labels` of `row`, each followed by the remote branches a combined label
+   * stands for too (`main | origin` is also `origin/main`). Stash labels are the row's own.
+   */
+  function labelTargets(row: CommitRow, labels: RefLabel[]): MenuTarget[] {
+    return labels
+      .filter((label) => label.kind !== "stash")
+      .flatMap((label) => [{ row, label }, ...label.remotes.map((r) => ({ row, label: remoteLabel(label, r) }))]);
+  }
+
+  /** What the row-menu item listing `targets` is called: "Branches", "Tags", or both. */
+  function labelsItemName(targets: MenuTarget[]): string {
+    const tags = targets.some((t) => t.label!.kind === "tag");
+    const branches = targets.some((t) => t.label!.kind !== "tag");
+    return tags && branches ? "Branches and tags" : tags ? "Tags" : "Branches";
+  }
+
+  type Menu = { items: MenuItem[]; onPick: (id: string) => void; targets: MenuTarget[] };
+
+  /**
+   * The menu for what element `on` is in `row`: a label's (the remote part of a combined label
+   * is the remote branch's; "+k" lists the hidden labels, each with its menu), else the row's,
+   * which ends with its labels' menus (so the keyboard reaches them from the row). `targets`:
+   * what its items act on.
+   */
+  function menuAt(on: Element, row: CommitRow): Menu {
+    const snap = view.snapshot;
+    /**
+     * The repository as it is when an item is picked, but with HEAD as the menu showed it:
+     * the request is for the branch the menu named (M2; the core refuses it if HEAD has moved).
+     */
+    const picked = (): RepoSnapshot => ({ ...view.snapshot, head: snap.head });
+    const single = (target: MenuTarget): Menu => ({
+      items: itemsFor(target, snap),
+      onPick: (id: string) => pick(id, target, picked()),
+      targets: [target],
+    });
+    const ofRow = (): Menu => {
+      const target: MenuTarget = { row, label: null };
+      const labels = labelTargets(row, row.labels);
+      if (labels.length === 0) return single(target);
+      const { items, targetOf } = menusOf(labels);
+      return {
+        items: [
+          ...itemsFor(target, snap),
+          { separator: true } as const,
+          { id: "labels", label: labelsItemName(labels), submenu: items },
+        ],
+        onPick: (id: string) => {
+          if (!id.includes(":")) return pick(id, target, picked());
+          const [inner, innerId] = targetOf(id);
+          pick(innerId, inner, picked());
+        },
+        targets: [target, ...labels],
+      };
+    };
+    const several = (targets: MenuTarget[]): Menu => {
+      const { items, targetOf } = menusOf(targets);
+      return {
+        items,
+        onPick: (id: string) => {
+          const [target, inner] = targetOf(id);
+          pick(inner, target, picked());
+        },
+        targets,
+      };
+    };
+    const ref = on.closest<HTMLElement>(".ref[data-slot]");
+    const slot = ref?.dataset.slot;
+    if (slot === undefined) return ofRow();
+    if (slot === "more") return several(labelTargets(row, row.labels.slice(ownLabels(row.labels.length))));
+    // The label the user right-clicked, by the name it shows (its slot, if they agree).
+    const named = ref?.dataset.ref;
+    const atSlot = row.labels[Number(slot)];
+    const label = atSlot && (named === undefined || atSlot.name === named) ? atSlot : row.labels.find((l) => l.name === named);
+    if (!label) return ofRow();
+    if (on.closest(".remotes") && label.remotes.length > 0) {
+      const remotes = label.remotes.map((r) => ({ row, label: remoteLabel(label, r) }));
+      return remotes.length === 1 ? single(remotes[0]) : several(remotes);
+    }
+    return single({ row, label });
+  }
+
+  /** Whether `row` (as loaded now) still carries `label`, or the remote branch it stands for. */
+  function carries(row: CommitRow, label: RefLabel): boolean {
+    if (label.kind !== "remote") return row.labels.some((l) => l.kind === label.kind && l.name === label.name);
+    return row.labels.some(
+      (l) =>
+        (l.kind === "remote" && l.name === label.name) ||
+        (l.kind === "branch" && l.remotes.some((r) => `${r}/${l.name}` === label.name)),
+    );
+  }
+
+  /**
+   * Whether `targets` are all still there, as far as known (R26): each row's commit is still
+   * in the graph, with its labels on it where its row is loaded. Asked when the rows change.
+   */
+  function stillThere(targets: MenuTarget[]): () => Promise<boolean> {
+    const repoId = view.repoId;
+    return async () => {
+      for (const hash of new Set(targets.map((t) => t.row.hash))) {
+        const index = await api.findRow(repoId, hash).catch(() => undefined);
+        if (index === null) return false;
+        const row = index === undefined ? undefined : view.cache.get(index);
+        if (!row || row.hash !== hash) continue; // not known here: kept
+        for (const t of targets) if (t.row.hash === hash && t.label && !carries(row, t.label)) return false;
+      }
+      return true;
+    };
+  }
+
+  /** Right-click on a row or a label: selects the row and opens the menu at the pointer. */
+  function onRowsContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    if (performance.now() - keyboardMenuAt < 500) return;
+    const hit = rowAt(e);
+    if (!hit) return;
+    view.select(hit.row.hash, hit.index);
+    scroller.focus({ preventScroll: true });
+    const { items, onPick, targets } = menuAt(e.target as Element, hit.row);
+    openMenu({ x: e.clientX, y: e.clientY }, items, onPick, { repoId: view.repoId, alive: stillThere(targets) });
+  }
+
+  /**
+   * The menu key or Shift+F10: the selected row's menu, below the start of its description.
+   * The row is the selected commit's, found by its hash (I6, R42): the selection's index can
+   * point at another commit for a moment after the rows change. Its drawn row must show that
+   * commit too; if it does not (yet), no menu opens.
+   */
+  async function openMenuForSelection() {
+    keyboardMenuAt = performance.now();
+    const hash = view.selectedHash;
+    const selected = hash === null ? undefined : view.cache.byHash(hash);
+    if (hash === null || !selected) return;
+    view.scrollToRow(selected.index);
+    await tick();
+    const drawn = () => {
+      const row = view.cache.byHash(hash);
+      const el = row ? scroller.querySelector<HTMLElement>(`[role="row"][data-index="${row.index}"]`) : null;
+      return row && el && el.dataset.hash === hash ? { row, el: el.querySelector<HTMLElement>(".desc") } : null;
+    };
+    let found = drawn();
+    if (!found?.el) {
+      await new Promise((r) => requestAnimationFrame(r));
+      found = drawn();
+    }
+    if (!found?.el || view.selectedHash !== hash) return;
+    const { row, el } = found;
+    const r = el.getBoundingClientRect();
+    const { items, onPick, targets } = menuAt(el, row);
+    openMenu({ x: r.left + 4, y: r.bottom }, items, onPick, {
+      keyboard: true,
+      repoId: view.repoId,
+      alive: stillThere(targets),
+    });
+  }
+
   function onKeydown(e: KeyboardEvent) {
+    if (e.target === scroller && (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey))) {
+      e.preventDefault();
+      void openMenuForSelection();
+      return;
+    }
     // Only plain keys on the grid itself: the shell's shortcuts and the splitters keep theirs.
     if (e.target !== scroller || e.metaKey || e.ctrlKey || e.altKey) return;
     const move = gridKey(e.key, {
@@ -406,7 +656,7 @@
     <GraphHeader {columns} />
 
     <div class="rows" style:height="{rowsHeight}px">
-      <!-- Clicks and hovers are handled here for every row; the grid itself takes the keys. -->
+      <!-- Clicks, double clicks and hovers are handled here for every row; the grid itself takes the keys. -->
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
       <div
         class="pool"
@@ -414,6 +664,8 @@
         style:height="{poolRows * ROW_H}px"
         style:transform="translateY({poolFirst * ROW_H}px)"
         onclick={onRowsClick}
+        ondblclick={onRowsDblClick}
+        oncontextmenu={onRowsContextMenu}
         onpointerover={onRowsPointerOver}
       >
         <canvas class="lanes" data-testid="graph-canvas" aria-hidden="true" bind:this={canvas}></canvas>
@@ -424,14 +676,15 @@
           {@const hit = r !== undefined && needle !== null && hits.has(slot.index)}
           {@const subj = hit ? splitMatch(r!.subject, needle!) : null}
           {@const auth = hit ? splitMatch(r!.author, needle!) : null}
-          {@const short = r?.kind === "commit" ? shortHash(r.hash) : ""}
-          {@const hashMarked = hit && r!.kind === "commit" ? hashMatch(r!.hash, needle) : 0}
+          {@const short = r && r.kind !== "uncommitted" ? shortHash(r.hash) : ""}
+          {@const hashMarked = hit && r!.kind !== "uncommitted" ? hashMatch(r!.hash, needle) : 0}
           <div
             class="row"
             role="row"
             id={slot.index >= 0 ? `gg-${view.repoId}-${slot.index}` : undefined}
             hidden={slot.index < 0}
             data-index={slot.index >= 0 ? slot.index : undefined}
+            data-hash={r?.hash}
             aria-rowindex={slot.index >= 0 ? slot.index + 2 : undefined}
             aria-selected={r !== undefined && r.hash === view.selectedHash}
             aria-busy={r === undefined}
@@ -439,6 +692,7 @@
             class:merge={r?.isMerge}
             class:head={r?.isHead}
             class:uncommitted={r?.kind === "uncommitted"}
+            class:stash={r?.kind === "stash"}
             style:transform="translateY({(slot.index - poolFirst) * ROW_H}px)"
             style:--c={r ? `var(--lane-${r.color % LANE_COLORS})` : undefined}
           >
@@ -457,7 +711,7 @@
               >
             </div>
             <div class="cell date" role="gridcell">
-              {r?.kind === "commit" ? formatDate(r.time) : ""}
+              {r && r.kind !== "uncommitted" ? formatDate(r.time) : ""}
             </div>
             <div class="cell author" role="gridcell"
               ><span>{auth ? auth[0] : (r?.author ?? "")}</span><mark>{auth ? auth[1] : ""}</mark><span
@@ -629,6 +883,10 @@
   .uncommitted .subject {
     color: var(--text-muted);
     font-style: italic;
+  }
+
+  .stash .subject {
+    color: var(--text-muted);
   }
 
   .date {

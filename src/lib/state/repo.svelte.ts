@@ -7,7 +7,7 @@
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
-import type { RepoSnapshot, RowsPage, ViewOptions } from "../types";
+import type { RefLabel, RepoSnapshot, RowsPage, ViewOptions } from "../types";
 import { CommitDetailsLoader } from "./details.svelte";
 import { SearchState } from "./search.svelte";
 import { DEFAULT_OPTIONS, readOptions, sameOptions, visible, writeOptions } from "./viewOptionsStore";
@@ -24,12 +24,16 @@ const MAX_SWAP_ATTEMPTS = 3;
 const RESTORE_HOLD_MS = 2000;
 /** The least time a refresh shows as running, so that a quick one is still seen. */
 const MIN_REFRESH_MS = 400;
+/** Least time between two looks the conflict banner asks for (`recheck`). */
+const RECHECK_MS = 1000;
 /** How long a fetch shows as starting when the core does not report it running. */
 const FETCH_START_MS = 3000;
 
 /** The newer of two snapshots of one repository (`b` when they are alike). */
 function newer(a: RepoSnapshot | null, b: RepoSnapshot): RepoSnapshot {
-  if (!a || b.generation > a.generation) return b;
+  if (!a) return b;
+  if (b.seq !== a.seq) return b.seq > a.seq ? b : a;
+  if (b.generation > a.generation) return b;
   if (b.generation < a.generation) return a;
   return b.totalRows >= a.totalRows ? b : a;
 }
@@ -59,9 +63,12 @@ function placeholder(repoId: number): RepoSnapshot {
     remoteBranches: [],
     remotes: [],
     worktrees: [],
-    status: { changed: 0, untracked: 0, conflicted: 0 },
-    viewOptions: { branches: null, showRemotes: true, showTags: true },
+    status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
+    viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
+    op: null,
+    inProgress: null,
+    seq: 0,
   };
 }
 
@@ -140,6 +147,16 @@ export class RepoView {
   /** When the fetch asked for here was asked for (ms since the epoch), while it is watched. */
   private fetchAskedAt = 0;
   private fetchWatched = false;
+  /**
+   * The row `selectRow` will select once it has loaded; any other selection drops it. With
+   * `hash`, that commit wherever it is; else the row at `index`, of `generation` if set.
+   * `madeIn`: the generation of the rows it was asked in.
+   */
+  private wanted: { index: number; hash: string | null; generation: number | null; madeIn: number } | null = null;
+  /** Page loads that failed so far (see `selectRow`). */
+  private rowFailures = 0;
+  /** When `recheck` last looked (performance.now()). */
+  private lastRecheck = -Infinity;
 
   constructor(repoId: number, initial?: RepoSnapshot) {
     this.repoId = repoId;
@@ -158,6 +175,7 @@ export class RepoView {
   }
 
   select(hash: string | null, index: number | null = null): void {
+    this.wanted = null;
     this.selectedHash = hash;
     this.selectedIndex = hash === null ? null : index;
   }
@@ -181,14 +199,48 @@ export class RepoView {
     this.onChange?.();
   }
 
-  /** Scrolls row `index` into view and selects it once its row is loaded. */
-  async selectRow(index: number, center = false): Promise<void> {
+  /**
+   * Scrolls row `index` into view and selects it once its row is loaded (a click on a row
+   * still loading, a key, a search hit), unless another row was selected meanwhile. `of`:
+   * what the caller means, when it knows: the commit (`hash`: "go to parent"), found again by
+   * its hash if the rows are replaced meanwhile, else dropped; the rows (`generation`: a
+   * search hit), dropped if they are replaced. Without either, the index is all there is (a
+   * click on a row still loading) and it stands in the rows that replace them. A wish whose
+   * row did not load (its page failed) is dropped, so a later load cannot select it.
+   */
+  async selectRow(index: number, center = false, of: { hash?: string; generation?: number } = {}): Promise<void> {
     this.scrollToRow(index, center);
     const cache = this.cache;
+    const wish = { index, hash: of.hash ?? null, generation: of.generation ?? null, madeIn: cache.rowsGeneration };
+    this.wanted = wish;
+    const failures = this.rowFailures;
     if (!cache.get(index)) await cache.ensure(index, index);
-    if (cache !== this.cache) return;
-    const row = cache.get(index);
-    if (row) this.select(row.hash, index);
+    this.selectWanted();
+    // Not loaded because loading failed (not because the rows changed meanwhile): dropped.
+    if (this.wanted === wish && this.rowFailures > failures && !this.cache.get(index)) this.wanted = null;
+  }
+
+  /**
+   * Selects the row `selectRow` asked for once it is loaded: when its page arrives, or in the
+   * rows that replaced the ones it was asked in (the first rows of a repository being
+   * opened, say; see `selectRow` for when it is dropped instead).
+   */
+  private selectWanted(): void {
+    const wish = this.wanted;
+    if (wish === null) return;
+    const replaced = this.cache.rowsGeneration !== wish.madeIn;
+    if (wish.hash !== null) {
+      const row = this.cache.byHash(wish.hash);
+      if (row) this.select(row.hash, row.index);
+      else if (replaced) this.wanted = null;
+      return;
+    }
+    if (wish.generation !== null && this.cache.rowsGeneration !== wish.generation) {
+      this.wanted = null;
+      return;
+    }
+    const row = this.cache.get(wish.index);
+    if (row) this.select(row.hash, wish.index);
   }
 
   // --- View options -------------------------------------------------------------------------
@@ -373,6 +425,18 @@ export class RepoView {
   private syncAgain = false;
 
   /**
+   * Looks at the repository again (as `sync`), at most once every RECHECK_MS: for a change
+   * no watcher reports, such as a conflicted file resolved in an editor, when the user comes
+   * back to the conflict banner.
+   */
+  recheck(): void {
+    const now = performance.now();
+    if (now - this.lastRecheck < RECHECK_MS) return;
+    this.lastRecheck = now;
+    void this.sync();
+  }
+
+  /**
    * Re-reads the repository without showing progress, as when the window comes back: the
    * working tree may have changed meanwhile, and only the git dir is watched. Errors are
    * not shown; the next refresh the user asks for says. Overlapping calls coalesce.
@@ -444,6 +508,9 @@ export class RepoView {
    */
   async applySnapshot(s: RepoSnapshot): Promise<void> {
     if (this.disposed || s.repoId !== this.repoId) return;
+    // The core numbers its snapshots of a repository (R14): an older one (an operation's
+    // outcome overtaken by an event, say) would undo what a newer one showed.
+    if (s.seq < this.snapshot.seq || (this.incoming !== null && s.seq < this.incoming.seq)) return;
     if (!this.restoreChecked && s.rootPath) this.restoreOptions(s);
     if (this.hold) {
       this.holdBack(s);
@@ -503,6 +570,7 @@ export class RepoView {
     await Promise.all([
       next.ensure(first, first + SWAP_PREFETCH_ROWS),
       selectedIndex === null ? null : next.ensure(selectedIndex, selectedIndex),
+      this.wanted === null ? null : next.ensure(this.wanted.index, this.wanted.index),
     ]);
     if (token !== this.applyToken || this.disposed) return;
 
@@ -541,6 +609,13 @@ export class RepoView {
     this.swap(this.incoming ?? target, next, Math.max(0, top + scrolled), selected, selectedIndex);
   }
 
+  /** The label of local branch `name` on a loaded row, if any (with its ahead and behind counts). */
+  loadedLabel(name: string): RefLabel | undefined {
+    let found: RefLabel | undefined;
+    this.cache.find((row) => (found = row.labels.find((l) => l.kind === "branch" && l.name === name)) !== undefined);
+    return found;
+  }
+
   /** Stops following the repository and drops its rows. */
   dispose(): void {
     this.disposed = true;
@@ -575,12 +650,15 @@ export class RepoView {
     this.cache = cache;
     if (this.optionsSending === null) this.revealSelection = false;
     if (this.selectedHash !== null) {
-      if (this.selectedHash !== found) this.selectedIndex = null; // selected meanwhile: row unknown
+      // Selected meanwhile (a click while the rows were loading): its row in the new ones, if
+      // loaded there (the rows on screen are), else unknown.
+      if (this.selectedHash !== found) this.selectedIndex = cache.byHash(this.selectedHash)?.index ?? null;
       else if (foundIndex === null) this.select(null);
       else this.selectedIndex = foundIndex;
     }
     this.scrollTop = scrollTop;
     this.pendingScroll = scrollTop;
+    this.selectWanted();
     this.show(s);
   }
 
@@ -623,9 +701,14 @@ export class RepoView {
     const cache = new RowCache((gen, start, count) => this.fetchPage(gen, start, count));
     cache.reset(generation, totalRows);
     cache.onUpdate = () => {
-      if (this.cache === cache) this.onChange?.();
+      if (this.cache !== cache) return;
+      this.selectWanted();
+      this.onChange?.();
     };
-    cache.onError = (e) => console.warn(`could not load rows of repository ${this.repoId}`, e);
+    cache.onError = (e) => {
+      this.rowFailures++;
+      console.warn(`could not load rows of repository ${this.repoId}`, e);
+    };
     return cache;
   }
 
@@ -653,6 +736,11 @@ export function repoView(repoId: number, initial?: RepoSnapshot): RepoView {
   if (!view) views.set(repoId, (view = new RepoView(repoId, initial)));
   else if (initial) void view.applySnapshot(initial);
   return view;
+}
+
+/** The view of open repository `repoId`, if it has one (never makes one). */
+export function findRepoView(repoId: number): RepoView | undefined {
+  return views.get(repoId);
 }
 
 /** Disposes of the view of `repoId` (its tab closed). */

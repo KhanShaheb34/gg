@@ -5,9 +5,12 @@
 
 mod dispatch;
 pub mod dto;
+mod editor;
 pub mod error;
 pub mod git;
 pub mod graph;
+mod mask;
+pub mod ops;
 pub mod repo;
 pub mod store;
 #[cfg(any(test, feature = "testutil"))]
@@ -20,6 +23,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use error::{CoreError, ErrorCode, Result};
+
+/// Whether this build carries the test helpers and test-only hooks (`testutil`: temp
+/// repositories, operation delays, a body that panics on request). The app refuses to be
+/// built for release with them.
+pub const TEST_HOOKS: bool = cfg!(feature = "testutil");
 
 use git::runner::{CommandLog, GitRunner};
 use repo::RepoManager;
@@ -87,6 +95,8 @@ impl Core {
         runner: Result<GitRunner>,
     ) -> Arc<Self> {
         let store = Store::load(&config_dir);
+        // Every event leaves the core with credentials in URLs masked (R36).
+        let sink: Arc<dyn EventSink> = Arc::new(mask::MaskingSink(sink));
         let repos = runner.map(|runner| {
             let repos = RepoManager::new(runner, sink.clone());
             repos.set_fetch_interval(store.settings().fetch_interval_secs);
@@ -156,6 +166,14 @@ impl Core {
         self.perf().log = path;
     }
 
+    /// From now on, editor launches are appended to `file` instead of run (see
+    /// [`RepoManager::record_editor_launches_to`]); nothing without git.
+    pub fn record_editor_launches_to(&self, file: Option<PathBuf>) {
+        if let Ok(repos) = self.repos() {
+            repos.record_editor_launches_to(file);
+        }
+    }
+
     /// Every perf mark so far, oldest first.
     pub fn perf_marks(&self) -> Vec<(String, f64)> {
         self.perf().marks.clone()
@@ -201,7 +219,7 @@ impl Core {
     }
 }
 
-fn lock_ignoring_poison<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock_ignoring_poison<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 

@@ -79,7 +79,16 @@ impl TestRepo {
         repo.git(&["config", "user.name", "Test"]);
         repo.git(&["config", "user.email", "test@example.com"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
+        repo.no_background_maintenance();
         repo
+    }
+
+    /// Stops git from starting `git maintenance` / `gc --auto` in the background after
+    /// commits, fetches and merges: detached processes that outlive the command, compete
+    /// for the repository's locks and slow everything under load.
+    fn no_background_maintenance(&self) {
+        self.git(&["config", "maintenance.auto", "false"]);
+        self.git(&["config", "gc.auto", "0"]);
     }
 
     fn in_new_tempdir(name: &str) -> Self {
@@ -163,6 +172,25 @@ impl TestRepo {
         self.git(&["rev-parse", "HEAD"])
     }
 
+    /// `git stash push <args>` with the next commit date; returns the new stash's commit hash.
+    pub fn stash(&self, args: &[&str]) -> String {
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        self.stash_os(&args)
+    }
+
+    /// Like [`TestRepo::stash`], with arguments that need not be UTF-8 (a stash message with
+    /// odd bytes).
+    pub fn stash_os(&self, args: &[&OsStr]) -> String {
+        let (_, date) = self.next_commit_slot();
+        let mut all = vec![OsStr::new("stash"), OsStr::new("push"), OsStr::new("-q")];
+        all.extend_from_slice(args);
+        self.git_with(
+            &all,
+            &[("GIT_AUTHOR_DATE", &date), ("GIT_COMMITTER_DATE", &date)],
+        );
+        self.git(&["rev-parse", "refs/stash"])
+    }
+
     /// Checks out `branch` (created at HEAD if missing) in a new linked worktree next to
     /// the repository; returns the worktree path.
     pub fn add_worktree(&self, branch: &str) -> PathBuf {
@@ -228,6 +256,7 @@ impl TestRepo {
     pub fn clone_as_remote(&self) -> TestRepo {
         let origin = Self::in_new_tempdir("origin.git");
         origin.git(&["init", "-q", "--bare", "-b", "main"]);
+        origin.no_background_maintenance();
         self.git_with(
             &[
                 OsStr::new("remote"),
@@ -241,6 +270,28 @@ impl TestRepo {
         self.git(&["push", "-q", "origin", "--tags"]);
         self.git(&["fetch", "-q", "origin"]);
         origin
+    }
+
+    /// A clone of `remote` (a repository made by [`TestRepo::clone_as_remote`]), as another
+    /// user's: its own temp directory, the same identity, and commit dates and file names
+    /// that do not collide with the original's.
+    pub fn clone_of(remote: &TestRepo) -> TestRepo {
+        let repo = Self::in_new_tempdir("clone");
+        repo.commits.store(1000, Ordering::SeqCst);
+        repo.git_with(
+            &[
+                OsStr::new("clone"),
+                OsStr::new("-q"),
+                remote.path().as_os_str(),
+                OsStr::new("."),
+            ],
+            &[],
+        );
+        repo.git(&["config", "user.name", "Test"]);
+        repo.git(&["config", "user.email", "test@example.com"]);
+        repo.git(&["config", "commit.gpgsign", "false"]);
+        repo.no_background_maintenance();
+        repo
     }
 
     fn commit_with(&self, msg: &str, env: &[(&str, &str)]) -> String {
@@ -317,6 +368,14 @@ impl TestRepo {
             .status()
             .is_ok_and(|s| s.success())
     }
+}
+
+/// What git's global config is in tests, so that no test reads the developer's (the
+/// core's runner uses it in test builds; see `GitRunner`): the platform's null device,
+/// which reads as empty. No file is made, so there is nothing another user could put
+/// config into.
+pub fn empty_git_config() -> &'static Path {
+    Path::new(if cfg!(windows) { "NUL" } else { "/dev/null" })
 }
 
 /// An [`EventSink`] that records every event, for tests.

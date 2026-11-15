@@ -7,15 +7,20 @@ import type {
   BodyHits,
   CommandRecord,
   CommitDetails,
+  Confirmed,
   CoreErrorDto,
+  OpOutcome,
+  OpenedRepo,
+  OpRequest,
   Recent,
+  RepoPrefs,
   RepoSnapshot,
   RowsPage,
   Settings,
   ViewOptions,
 } from "./types";
 
-export type EventName = "repo-changed" | "repo-error" | "paths-opened";
+export type EventName = "repo-changed" | "repo-error" | "paths-opened" | "op-progress";
 
 /** Files or folders dragged onto the window (Tauri only). `drop` carries their paths. */
 export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "drop"; paths: string[] };
@@ -253,6 +258,24 @@ export function onEvent<T>(name: EventName, handler: (payload: T) => void): () =
   return transport().listen(name, handler as Handler);
 }
 
+/**
+ * This page load's name for the numbers below (R28): a reload, or another window, numbers
+ * from 1 again under a new one, so the core never waits for numbers it will not get.
+ */
+const clientId =
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/** The number of the last operation sent to each repository (R28); a new id starts at 1. */
+const clientSeqs = new Map<number, number>();
+
+function nextClientSeq(repoId: number): number {
+  const n = (clientSeqs.get(repoId) ?? 0) + 1;
+  clientSeqs.set(repoId, n);
+  return n;
+}
+
 export const api = {
   getAppState: () => call<AppState>("get_app_state"),
   async saveSession(tabs: string[], active: string | null): Promise<void> {
@@ -264,7 +287,7 @@ export const api = {
   async resetSettings(): Promise<void> {
     await call("reset_settings");
   },
-  openRepo: (path: string) => call<RepoSnapshot>("open_repo", { path }),
+  openRepo: (path: string) => call<OpenedRepo>("open_repo", { path }),
   async closeRepo(repoId: number): Promise<void> {
     await call("close_repo", { repoId });
   },
@@ -291,8 +314,33 @@ export const api = {
   async perfMark(name: string, ms: number): Promise<void> {
     await call("perf_mark", { name, ms });
   },
-  /** Git commands run after the one with id `sinceId` (0: all kept), oldest first. */
-  commandLog: (sinceId: number) => call<CommandRecord[]>("command_log", { sinceId }),
+  /**
+   * Git commands run after the one with id `sinceId` (0: all kept), oldest first; only those of
+   * repository `repoId`, or only writes, if asked.
+   */
+  commandLog: (sinceId: number, options: { repoId?: number; writesOnly?: boolean } = {}) =>
+    call<CommandRecord[]>("command_log", { sinceId, ...options }),
+  /**
+   * Runs an operation once the ones before it on that repository are done. Each is numbered
+   * in the order it is sent, per repository, so that the core queues them in that order
+   * even when two reach it in the other (R28).
+   */
+  runOp: (repoId: number, request: OpRequest, confirmed: Confirmed[] = []) =>
+    call<OpOutcome>("run_op", { repoId, request, confirmed, clientId, clientSeq: nextClientSeq(repoId) }),
+  /**
+   * Stops operation `opId` of repository `repoId` if it still runs (R41): the git command it
+   * runs is ended with what it started, and its `runOp` resolves as failed, "Stopped.".
+   * Resolves to whether it was running.
+   */
+  stopOp: (repoId: number, opId: number) => call<boolean>("stop_op", { repoId, opId }),
+  getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
+  setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
+  /**
+   * Opens `path` (relative to the worktree), or the worktree folder when null, in the editor.
+   * Resolves to a note to show when something else was opened (no editor command is set:
+   * the worktree folder instead of the file), else null.
+   */
+  openInEditor: (repoId: number, path: string | null) => call<string | null>("open_in_editor", { repoId, path }),
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */

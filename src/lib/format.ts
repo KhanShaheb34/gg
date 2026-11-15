@@ -122,3 +122,63 @@ export function groupDigits(n: number): string {
   for (let i = digits.length; i > 0; i -= 3) out = digits.slice(Math.max(0, i - 3), i) + (out ? `,${out}` : "");
   return (n < 0 ? "-" : "") + out;
 }
+
+/**
+ * `arg` as a POSIX shell would need it written: as is when it holds only characters no shell
+ * treats specially, else in single quotes (an embedded quote as '\''). For display and copying
+ * only: the app never runs anything through a shell.
+ */
+export function shellQuote(arg: string): string {
+  // Safe characters only, and not first a character zsh expands there (=word, ~user).
+  if (/^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(arg)) return arg;
+  return `'${arg.replaceAll("'", "'\\''")}'`;
+}
+
+/** The command line of git with `args`, quoted for a shell ("git commit -m 'Fix it'"). */
+export function commandLine(args: string[]): string {
+  return ["git", ...args].map(shellQuote).join(" ");
+}
+
+/**
+ * The lines of a command's output as a terminal would leave them: a line redrawn with
+ * carriage returns (git's progress) shows its last state; a CRLF ending is one line end.
+ * Characters that would hide or rearrange text are made visible (see visibleText); tabs stay.
+ */
+export function outputLines(text: string): string[] {
+  if (text === "") return [];
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines.map((line) => {
+    const body = line.endsWith("\r") ? line.slice(0, -1) : line;
+    const last = body.slice(body.lastIndexOf("\r") + 1);
+    return last.split("\t").map(visibleText).join("\t");
+  });
+}
+
+/** How long something took: "120 ms", "12.3 s", "1 min 4 s". */
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const secs = Math.round(ms / 1000);
+  return `${Math.floor(secs / 60)} min ${secs % 60} s`;
+}
+
+/** The local time of day of `ms` (epoch milliseconds): "09:05:07". */
+export function clockTime(ms: number): string {
+  const d = new Date(ms);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+/**
+ * Whether `subject` is git's own message for merging `name` ("Merge branch 'name'", "Merge
+ * remote-tracking branch 'name'", "Merge tag 'name'", "Merge commit 'name'", each optionally
+ * followed by " into <branch>"), which only repeats a headline that names it.
+ */
+export function repeatsMergeName(subject: string, name: string): boolean {
+  for (const kind of ["branch", "remote-tracking branch", "tag", "commit"]) {
+    const head = `Merge ${kind} '${name}'`;
+    if (subject === head) return true;
+    if (subject.startsWith(`${head} into `) && !/\s/.test(subject.slice(head.length + 6))) return true;
+  }
+  return false;
+}

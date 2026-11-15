@@ -2,14 +2,15 @@
 //! read so far with their layout, and everything derived from them (labels, rows, search).
 //! Pure and synchronous: no git, no I/O, no async.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::dto::{
-    CommitRow, FetchState, HeadInfo, RefKind, RefLabel, RepoSnapshot, RowKind, ViewOptions,
-    WorktreeInfo, WorktreeStatus,
+    CommitRow, FetchState, HeadInfo, InProgress, RefKind, RefLabel, RepoSnapshot, RowKind,
+    ViewOptions, WorktreeInfo, WorktreeStatus,
 };
 use crate::git::log::{Commit, LOG_FORMAT, log_args};
 use crate::git::refs::RefInfo;
+use crate::git::stash::Stash;
 use crate::graph::{LaneAllocator, RowLayout};
 
 /// Hash of the synthetic row that stands for the active worktree's uncommitted changes.
@@ -29,6 +30,20 @@ pub struct RepoInfo {
     pub worktrees: Vec<WorktreeInfo>,
     /// Status of the active worktree.
     pub status: WorktreeStatus,
+    /// What git is stopped in, in the active worktree; read with the status.
+    pub in_progress: Option<InProgress>,
+    /// The stashes, newest first.
+    pub stashes: Vec<Stash>,
+}
+
+/// What [`RepoState::update`] changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Update {
+    Nothing,
+    /// Only what git is stopped in: the rows are as they were.
+    InProgressOnly,
+    /// Something the rows show (labels, the uncommitted row) may have changed.
+    Rows,
 }
 
 /// The fixed facts about an open repository that a snapshot repeats.
@@ -59,6 +74,12 @@ pub struct RepoState {
     labels: HashMap<String, Vec<RefLabel>>,
     /// Commit hash → paths of worktrees detached there.
     detached: HashMap<String, Vec<String>>,
+    /// Commit of each stash shown → its base: a stash's row has that one parent. With all
+    /// branches shown, every stash (they are tips of the log); with a branch selection, the
+    /// stashes whose base is a loaded commit (R21), put in memory.
+    stash_bases: HashMap<String, String>,
+    /// The index and untracked commits of the stashes shown, which never become rows.
+    stash_helpers: HashSet<String>,
 }
 
 impl RepoState {
@@ -76,7 +97,10 @@ impl RepoState {
             uncommitted: None,
             labels: HashMap::new(),
             detached: HashMap::new(),
+            stash_bases: HashMap::new(),
+            stash_helpers: HashSet::new(),
         };
+        state.rebuild_stashes();
         state.relayout();
         state.rebuild_labels();
         state
@@ -90,25 +114,35 @@ impl RepoState {
         &self.view
     }
 
-    /// Arguments of the `git log` that lists this state's commits.
+    /// Arguments of the `git log` that lists this state's commits: with all branches shown,
+    /// the stashes are tips too, by commit (their index and untracked commits come with
+    /// them, and [`RepoState::append`] leaves those out).
     pub fn log_args(&self) -> Vec<String> {
-        log_args(&self.view, &names(&self.info.refs, RefKind::Remote))
+        let mut args = log_args(&self.view, &names(&self.info.refs, RefKind::Remote));
+        let stashes = tip_stashes(&self.info, &self.view);
+        let end = args.len() - 1; // before the final `--`
+        args.splice(end..end, stashes.iter().map(|s| s.hash.clone()));
+        args
     }
 
     /// Whether the view selects any commit at all (an empty repository selects none).
     pub fn has_tips(&self) -> bool {
-        !tips(&self.info, &self.view).is_empty()
+        !tips(&self.info, &self.view).is_empty() || !tip_stashes(&self.info, &self.view).is_empty()
     }
 
     /// Appends commits read from the log (newest first) and lays them out. Returns `true`
     /// when this inserted the uncommitted row at index 0 (HEAD's commit arrived in a view
-    /// that does not select it directly), shifting every row index.
+    /// that does not select it directly), shifting every row index. A stash's commit gets
+    /// its base as its only parent; its index and untracked commits are left out.
     pub fn append(&mut self, commits: Vec<Commit>) -> bool {
         self.commits.reserve(commits.len());
         self.layouts.reserve(commits.len());
-        for commit in commits {
-            if self.index.contains_key(&commit.hash) {
+        for mut commit in commits {
+            if self.index.contains_key(&commit.hash) || self.stash_helpers.contains(&commit.hash) {
                 continue; // git lists each commit once; never index one twice
+            }
+            if let Some(base) = self.stash_bases.get(&commit.hash) {
+                commit.parents = vec![base.clone()];
             }
             self.layouts
                 .push(self.allocator.push(&commit.hash, &commit.parents));
@@ -123,21 +157,94 @@ impl RepoState {
         false
     }
 
-    /// Replaces refs, worktrees, status and view options (normalized against the new refs),
-    /// keeping the commits. Returns whether anything changed; the caller decides whether that
-    /// needs a new generation.
-    pub fn update(&mut self, info: RepoInfo, view: ViewOptions) -> bool {
+    /// Replaces refs, worktrees, status, in-progress state and view options (normalized
+    /// against the new refs), keeping the commits. Returns what changed; only
+    /// [`Update::Rows`] can change the rows (the caller decides whether that needs a new
+    /// generation).
+    pub fn update(&mut self, info: RepoInfo, view: ViewOptions) -> Update {
         let view = normalize_view(view, &info);
         if info == self.info && view == self.view {
-            return false;
+            return Update::Nothing;
         }
+        let rows_same = view == self.view
+            && info.head == self.info.head
+            && info.refs == self.info.refs
+            && info.remotes == self.info.remotes
+            && info.worktrees == self.info.worktrees
+            && info.status == self.info.status
+            && self.stashes_shown(&info, &view) == self.stashes_shown(&self.info, &self.view);
         self.info = info;
         self.view = view;
-        if self.wanted_uncommitted() != self.uncommitted {
+        if rows_same {
+            return Update::InProgressOnly;
+        }
+        let old_bases = std::mem::take(&mut self.stash_bases);
+        self.rebuild_stashes();
+        let stash_rows_change = old_bases.len() != self.stash_bases.len()
+            || old_bases.keys().any(|w| !self.stash_bases.contains_key(w));
+        if stash_rows_change {
+            self.replace_stash_rows(&old_bases);
+            self.relayout();
+        } else if self.wanted_uncommitted() != self.uncommitted {
             self.relayout();
         }
         self.rebuild_labels();
-        true
+        Update::Rows
+    }
+
+    /// Takes out the rows of the stashes in `old_bases` that are no longer shown, and puts in
+    /// rows for the stashes shown now that have none, each above its base, among the rows
+    /// as old as it (as `git log --date-order` would list it). [`RepoState::needs_reload`]
+    /// has checked that this is all that changes. Call [`RepoState::relayout`] after.
+    fn replace_stash_rows(&mut self, old_bases: &HashMap<String, String>) {
+        let gone: HashSet<&str> = old_bases
+            .keys()
+            .filter(|w| !self.stash_bases.contains_key(*w))
+            .map(String::as_str)
+            .collect();
+        self.commits.retain(|c| !gone.contains(c.hash.as_str()));
+        let mut index = index_of(&self.commits);
+        // Place in the stash list (0 the newest) by stash commit.
+        let place: HashMap<&str, usize> = self
+            .info
+            .stashes
+            .iter()
+            .enumerate()
+            .map(|(n, s)| (s.hash.as_str(), n))
+            .collect();
+        for (n, st) in self.info.stashes.iter().enumerate() {
+            if !self.stash_bases.contains_key(&st.hash) || index.contains_key(&st.hash) {
+                continue;
+            }
+            let Some(&base) = index.get(&st.base) else {
+                continue; // not loaded: needs_reload asked for the log instead
+            };
+            let base = base as usize;
+            // `--date-order` goes by committer time; for equal times git keeps the order of
+            // the tips it was given, the stashes newest first (R33): above an older stash.
+            let at = self.commits[..base]
+                .iter()
+                .position(|c| {
+                    c.commit_time < st.commit_time
+                        || (c.commit_time == st.commit_time
+                            && place.get(c.hash.as_str()).is_some_and(|&m| m > n))
+                })
+                .unwrap_or(base);
+            self.commits.insert(
+                at,
+                Commit {
+                    hash: st.hash.clone(),
+                    parents: vec![st.base.clone()],
+                    author: st.author.clone(),
+                    email: st.email.clone(),
+                    time: st.time,
+                    commit_time: st.commit_time,
+                    subject: st.subject.clone(),
+                },
+            );
+            index = index_of(&self.commits);
+        }
+        self.index = index;
     }
 
     /// Whether moving to `info` and `view` needs the log read again, because the set of
@@ -145,12 +252,87 @@ impl RepoState {
     /// (or will have, once its load finishes): a selected tip went away, or a new tip is not
     /// a known commit. HEAD needs no rule of its own: with all branches shown it is one of
     /// the tips, and with selected branches it is not part of the log at all.
-    pub fn needs_reload(&self, info: &RepoInfo, view: &ViewOptions) -> bool {
+    ///
+    /// Stashes are tips too, but a stash saved, dropped, shown or hidden is put in or taken
+    /// out in memory ([`RepoState::update`]) when that is all that changes: a new stash's
+    /// base is a loaded commit, and every other loaded commit stays reachable without the
+    /// stashes that go. Not while the log is `loading`: its commits are not all there yet.
+    pub fn needs_reload(&self, info: &RepoInfo, view: &ViewOptions, loading: bool) -> bool {
         let view = normalize_view(view.clone(), info);
         let old = tips(&self.info, &self.view);
         let new = tips(info, &view);
-        let known = |hash: &str| old.contains(hash) || self.index.contains_key(hash);
-        old.iter().any(|t| !new.contains(t)) || new.iter().any(|t| !known(t))
+        // With a branch selection, stashes are no tips: they come and go in memory (R21).
+        let old_stashes: BTreeSet<&str> = tip_stashes(&self.info, &self.view)
+            .iter()
+            .map(|s| s.hash.as_str())
+            .collect();
+        let new_stashes = tip_stashes(info, &view);
+        let known = |hash: &str| {
+            old.contains(hash) || old_stashes.contains(hash) || self.index.contains_key(hash)
+        };
+        if old.iter().any(|t| !new.contains(t)) || new.iter().any(|t| !known(t)) {
+            return true;
+        }
+        let added: Vec<&Stash> = new_stashes
+            .iter()
+            .filter(|s| !old_stashes.contains(s.hash.as_str()))
+            .collect();
+        let gone: Vec<&str> = old_stashes
+            .iter()
+            .copied()
+            .filter(|w| !new_stashes.iter().any(|s| s.hash == *w))
+            .collect();
+        if added.is_empty() && gone.is_empty() {
+            return false;
+        }
+        if loading {
+            return true;
+        }
+        // A stash commit that is also something else (a branch's tip, a loaded commit) has
+        // its index and untracked commits as rows, or should have: read the log.
+        let odd_new = added.iter().any(|s| {
+            self.index.contains_key(&s.hash)
+                || new.contains(s.hash.as_str())
+                || !self.index.contains_key(&s.base)
+        });
+        let odd_gone = gone
+            .iter()
+            .any(|w| new.contains(w) || !self.index.contains_key(*w));
+        if odd_new || odd_gone {
+            return true;
+        }
+        if gone.is_empty() {
+            return false;
+        }
+        let starts = new
+            .iter()
+            .copied()
+            .chain(new_stashes.iter().map(|s| s.hash.as_str()))
+            .chain(added.iter().map(|s| s.base.as_str()));
+        !self.reaches_all_but(starts, &gone)
+    }
+
+    /// Whether walking parents from `starts` reaches every loaded commit except those in
+    /// `gone`, and none of those.
+    fn reaches_all_but<'a>(&self, starts: impl Iterator<Item = &'a str>, gone: &[&str]) -> bool {
+        let mut seen = vec![false; self.commits.len()];
+        let mut stack: Vec<usize> = starts
+            .filter_map(|h| self.index.get(h).map(|&i| i as usize))
+            .collect();
+        while let Some(i) = stack.pop() {
+            if std::mem::replace(&mut seen[i], true) {
+                continue;
+            }
+            for p in &self.commits[i].parents {
+                if let Some(&j) = self.index.get(p) {
+                    stack.push(j as usize);
+                }
+            }
+        }
+        self.commits
+            .iter()
+            .zip(&seen)
+            .all(|(c, &seen)| seen != gone.contains(&c.hash.as_str()))
     }
 
     pub fn total_rows(&self) -> u32 {
@@ -253,9 +435,12 @@ impl RepoState {
             remote_branches,
             remotes: self.info.remotes.clone(),
             worktrees: self.info.worktrees.clone(),
-            status: self.info.status,
+            status: self.info.status.clone(),
             view_options: self.view.clone(),
             fetch: fetch.clone(),
+            op: None,
+            in_progress: self.info.in_progress.clone(),
+            seq: 0,
         }
     }
 
@@ -268,7 +453,7 @@ impl RepoState {
         let layout = &self.layouts[i as usize];
         let offset = self.row_offset();
         if i < offset {
-            let status = self.info.status;
+            let status = &self.info.status;
             let n = status.changed.saturating_add(status.untracked);
             return CommitRow {
                 index: i,
@@ -291,7 +476,11 @@ impl RepoState {
         let c = &self.commits[(i - offset) as usize];
         CommitRow {
             index: i,
-            kind: RowKind::Commit,
+            kind: if self.stash_bases.contains_key(&c.hash) {
+                RowKind::Stash
+            } else {
+                RowKind::Commit
+            },
             hash: c.hash.clone(),
             parents: c.parents.clone(),
             author: c.author.clone(),
@@ -337,8 +526,68 @@ impl RepoState {
         in_view.then_some(head)
     }
 
+    /// Puts in the rows of the stashes a branch selection shows now that its log has been
+    /// read whole: those whose base is one of its commits (R21). Returns whether the rows
+    /// changed. With all branches shown the stashes came with the log: nothing to do.
+    pub fn log_read(&mut self) -> bool {
+        if self.view.branches.is_none() {
+            return false;
+        }
+        let wanted = self.stashes_shown(&self.info, &self.view);
+        let had: BTreeSet<&str> = self.stash_bases.keys().map(String::as_str).collect();
+        if wanted
+            .iter()
+            .map(|s| s.hash.as_str())
+            .collect::<BTreeSet<_>>()
+            == had
+        {
+            return false;
+        }
+        let old_bases = std::mem::take(&mut self.stash_bases);
+        self.rebuild_stashes();
+        self.replace_stash_rows(&old_bases);
+        self.relayout();
+        self.rebuild_labels();
+        true
+    }
+
+    /// The stashes shown with `info` and `view`, given the commits loaded: with all branches,
+    /// every stash (when stashes are shown); with a branch selection, those whose base is a
+    /// loaded commit (and whose own commit is no other row).
+    fn stashes_shown<'a>(&self, info: &'a RepoInfo, view: &ViewOptions) -> Vec<&'a Stash> {
+        if !view.show_stashes {
+            return Vec::new();
+        }
+        if view.branches.is_none() {
+            return info.stashes.iter().collect();
+        }
+        info.stashes
+            .iter()
+            .filter(|s| {
+                self.index.contains_key(&s.base)
+                    && (!self.index.contains_key(&s.hash) || self.stash_bases.contains_key(&s.hash))
+            })
+            .collect()
+    }
+
+    /// The stashes' commits and helper commits, for the stashes this view shows.
+    fn rebuild_stashes(&mut self) {
+        let shown = self.stashes_shown(&self.info, &self.view);
+        let bases: HashMap<String, String> = shown
+            .iter()
+            .map(|s| (s.hash.clone(), s.base.clone()))
+            .collect();
+        let helpers: HashSet<String> = shown
+            .iter()
+            .flat_map(|s| s.index_parent.iter().chain(&s.untracked_parent))
+            .cloned()
+            .collect();
+        self.stash_bases = bases;
+        self.stash_helpers = helpers;
+    }
+
     fn rebuild_labels(&mut self) {
-        self.labels = build_labels(&self.info, &self.view);
+        self.labels = build_labels(&self.info, &self.view, &self.stash_bases);
         self.detached.clear();
         for wt in &self.info.worktrees {
             if let (None, Some(head)) = (&wt.branch, &wt.head) {
@@ -367,9 +616,28 @@ pub fn normalize_view(mut view: ViewOptions, info: &RepoInfo) -> ViewOptions {
     view
 }
 
+/// The stashes that are tips of the log for `view`: all of them when it shows all branches
+/// and stashes, else none (a branch selection shows stashes in memory; R21).
+fn tip_stashes<'a>(info: &'a RepoInfo, view: &ViewOptions) -> &'a [Stash] {
+    if view.branches.is_none() && view.show_stashes {
+        &info.stashes
+    } else {
+        &[]
+    }
+}
+
+/// Commit hash → position, for `commits`.
+fn index_of(commits: &[Commit]) -> HashMap<String, u32> {
+    commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.hash.clone(), i as u32))
+        .collect()
+}
+
 /// HEAD's hash when the active worktree has changes to show as the uncommitted row.
 fn uncommitted_parent(info: &RepoInfo) -> Option<String> {
-    let s = info.status;
+    let s = &info.status;
     let dirty = s.changed > 0 || s.untracked > 0 || s.conflicted > 0;
     dirty.then(|| info.head.hash.clone()).flatten()
 }
@@ -398,6 +666,7 @@ fn tips<'a>(info: &'a RepoInfo, view: &ViewOptions) -> BTreeSet<&'a str> {
                 RefKind::Branch => true,
                 RefKind::Remote => view.show_remotes,
                 RefKind::Tag => view.show_tags,
+                RefKind::Stash => false,
             })
             .map(|r| r.hash.as_str())
             .chain(info.head.hash.as_deref())
@@ -426,9 +695,13 @@ fn split_remote<'a>(name: &'a str, remotes: &[String]) -> Option<(&'a str, &'a s
 }
 
 /// Labels per commit hash: branches (the current one first, then by name), then remote
-/// branches, then tags, by name. A branch absorbs the remote branches of the same name at
+/// branches, then tags, by name, then stashes (`stash@{n}`). A branch absorbs the remote branches of the same name at
 /// the same commit. Remote and tag labels are left out when the view hides them.
-fn build_labels(info: &RepoInfo, view: &ViewOptions) -> HashMap<String, Vec<RefLabel>> {
+fn build_labels(
+    info: &RepoInfo,
+    view: &ViewOptions,
+    stashes_shown: &HashMap<String, String>,
+) -> HashMap<String, Vec<RefLabel>> {
     // (commit, branch name) → remotes whose branch of that name is at that commit.
     let mut remotes_at: HashMap<(&str, &str), Vec<String>> = HashMap::new();
     if view.show_remotes {
@@ -479,9 +752,25 @@ fn build_labels(info: &RepoInfo, view: &ViewOptions) -> HashMap<String, Vec<RefL
                 plain_label(r)
             }
             RefKind::Tag if view.show_tags => plain_label(r),
-            RefKind::Remote | RefKind::Tag => continue,
+            RefKind::Remote | RefKind::Tag | RefKind::Stash => continue,
         };
         labels.entry(r.hash.clone()).or_default().push(label);
+    }
+    for st in info
+        .stashes
+        .iter()
+        .filter(|s| stashes_shown.contains_key(&s.hash))
+    {
+        labels.entry(st.hash.clone()).or_default().push(RefLabel {
+            kind: RefKind::Stash,
+            name: st.selector.clone(),
+            remotes: Vec::new(),
+            current: false,
+            worktree_path: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+        });
     }
     for list in labels.values_mut() {
         list.sort_by(|a, b| (a.kind, !a.current, &a.name).cmp(&(b.kind, !b.current, &b.name)));
@@ -537,6 +826,7 @@ mod tests {
             author: author.into(),
             email: format!("{}@example.com", author.to_lowercase()),
             time: 1_700_000_000,
+            commit_time: 1_700_000_000,
             subject: subject.into(),
         }
     }
@@ -586,6 +876,8 @@ mod tests {
             remotes: vec![],
             worktrees: vec![worktree("/repo", 'd', Some("main"), true)],
             status: WorktreeStatus::default(),
+            in_progress: None,
+            stashes: Vec::new(),
         }
     }
 
@@ -594,6 +886,7 @@ mod tests {
             branches: None,
             show_remotes: true,
             show_tags: true,
+            show_stashes: true,
         }
     }
 
@@ -608,6 +901,7 @@ mod tests {
             changed,
             untracked,
             conflicted: 0,
+            conflicted_paths: Vec::new(),
         };
         info
     }
@@ -710,22 +1004,44 @@ mod tests {
     }
 
     #[test]
+    fn a_change_of_in_progress_state_alone_leaves_the_rows() {
+        let mut s = loaded(info());
+        let mut stopped = info();
+        stopped.in_progress = Some(crate::dto::InProgress {
+            kind: crate::dto::InProgressKind::Merge,
+            files: Vec::new(),
+            file_count: 0,
+            step: None,
+            total: None,
+            subject: None,
+            incoming: None,
+            rebasing: None,
+            commit: None,
+            empty: false,
+        });
+        assert_eq!(s.update(stopped.clone(), all()), Update::InProgressOnly);
+        assert_eq!(s.info().in_progress, stopped.in_progress);
+        assert_eq!(s.update(stopped, all()), Update::Nothing);
+        assert_eq!(s.update(dirty(info(), 1, 0), all()), Update::Rows);
+    }
+
+    #[test]
     fn update_toggles_the_uncommitted_row_and_relayouts() {
         let mut s = loaded(info());
         let clean_rows = s.rows(0, 10);
-        assert!(s.update(dirty(info(), 1, 0), all()));
+        assert_eq!(s.update(dirty(info(), 1, 0), all()), Update::Rows);
         assert_eq!(s.total_rows(), 5);
         assert_eq!(s.rows(0, 1)[0].kind, RowKind::Uncommitted);
         assert_eq!(s.rows(0, 10)[1..].len(), 4);
         // Only the subject changes when the count does.
         let before = s.rows(0, 10);
-        assert!(s.update(dirty(info(), 4, 0), all()));
+        assert_eq!(s.update(dirty(info(), 4, 0), all()), Update::Rows);
         let after = s.rows(0, 10);
         assert_eq!(after[0].subject, "Uncommitted changes (4)");
         assert_eq!(after[1..], before[1..]);
-        assert!(s.update(info(), all()));
+        assert_eq!(s.update(info(), all()), Update::Rows);
         assert_eq!(s.rows(0, 10), clean_rows);
-        assert!(!s.update(info(), all()), "nothing changed");
+        assert_eq!(s.update(info(), all()), Update::Nothing, "nothing changed");
     }
 
     #[test]
@@ -814,14 +1130,15 @@ mod tests {
             show_remotes: false,
             ..all()
         };
-        assert!(s.update(i.clone(), no_remotes));
+        assert_eq!(s.update(i.clone(), no_remotes), Update::Rows);
         assert!(s.rows(0, 1)[0].labels[0].remotes.is_empty());
         assert_eq!(label_names(&s, 3), [(RefKind::Tag, "v1".into())]);
         let no_tags = ViewOptions {
             show_tags: false,
+            show_stashes: true,
             ..all()
         };
-        assert!(s.update(i, no_tags));
+        assert_eq!(s.update(i, no_tags), Update::Rows);
         assert_eq!(label_names(&s, 3), [(RefKind::Remote, "origin/old".into())]);
     }
 
@@ -871,6 +1188,7 @@ mod tests {
             i,
             ViewOptions {
                 show_tags: false,
+                show_stashes: true,
                 ..all()
             },
             1,
@@ -953,42 +1271,43 @@ mod tests {
     fn reload_only_when_reachable_commits_may_change() {
         let s = loaded(info());
         let same = info();
-        assert!(!s.needs_reload(&same, &all()));
+        assert!(!s.needs_reload(&same, &all(), false));
 
         // A new branch at a loaded commit: same commits.
         let mut i = info();
         i.refs.push(rf(RefKind::Branch, "side", 'b'));
-        assert!(!s.needs_reload(&i, &all()));
+        assert!(!s.needs_reload(&i, &all(), false));
         // A tag moved between loaded commits while another ref keeps the old tip.
         let mut i = info();
         i.refs[1].hash = h('a');
         i.refs.push(rf(RefKind::Branch, "keep", 'c'));
-        assert!(!s.needs_reload(&i, &all()));
+        assert!(!s.needs_reload(&i, &all(), false));
 
         // A new commit.
         let mut i = info();
         i.refs[0].hash = h('e');
         i.head.hash = Some(h('e'));
-        assert!(s.needs_reload(&i, &all()));
+        assert!(s.needs_reload(&i, &all(), false));
         // A branch deleted: its commits may go.
         let mut i = info();
         i.refs.remove(1);
-        assert!(s.needs_reload(&i, &all()));
+        assert!(s.needs_reload(&i, &all(), false));
         // Showing fewer refs drops tips.
         let mut i = info();
         i.refs.push(rf(RefKind::Tag, "only-tag", 'f'));
         let with_tag = RepoState::new(i.clone(), all(), 1);
         let no_tags = ViewOptions {
             show_tags: false,
+            show_stashes: true,
             ..all()
         };
-        assert!(with_tag.needs_reload(&i, &no_tags));
+        assert!(with_tag.needs_reload(&i, &no_tags, false));
         // Selecting one branch.
         let feature = ViewOptions {
             branches: Some(vec!["feature".into()]),
             ..all()
         };
-        assert!(s.needs_reload(&info(), &feature));
+        assert!(s.needs_reload(&info(), &feature, false));
     }
 
     #[test]
@@ -999,17 +1318,20 @@ mod tests {
         let mut i = info();
         i.head.hash = Some(h('a'));
         assert!(
-            !s.needs_reload(&i, &feature),
+            !s.needs_reload(&i, &feature, false),
             "HEAD moved to a loaded commit"
         );
         // HEAD is not part of a selected-branches log, so where it goes cannot matter.
         i.head.hash = Some(h('b'));
         assert!(
-            !s.needs_reload(&i, &feature),
+            !s.needs_reload(&i, &feature, false),
             "HEAD moved outside the selection"
         );
         i.head.hash = Some(h('e'));
-        assert!(!s.needs_reload(&i, &feature), "HEAD moved to a new commit");
+        assert!(
+            !s.needs_reload(&i, &feature, false),
+            "HEAD moved to a new commit"
+        );
     }
 
     fn feature_view() -> ViewOptions {
@@ -1040,8 +1362,8 @@ mod tests {
         let fetch = FetchState::default();
         assert_eq!(s.snapshot(&identity(), false, &fetch).max_lane, 0);
         // Going clean and dirty again changes nothing either.
-        assert!(s.update(info(), feature_view()));
-        assert!(s.update(dirty(info(), 2, 0), feature_view()));
+        assert_eq!(s.update(info(), feature_view()), Update::Rows);
+        assert_eq!(s.update(dirty(info(), 2, 0), feature_view()), Update::Rows);
         assert_eq!(s.rows(0, 10), clean.rows(0, 10));
     }
 
@@ -1087,14 +1409,14 @@ mod tests {
     #[test]
     fn pending_state_with_same_tips_needs_no_reload() {
         let pending = RepoState::new(info(), all(), 1);
-        assert!(!pending.needs_reload(&info(), &all()));
+        assert!(!pending.needs_reload(&info(), &all(), false));
         let mut i = dirty(info(), 1, 0);
         i.refs.push(rf(RefKind::Branch, "same-tip", 'd'));
-        assert!(!pending.needs_reload(&i, &all()));
+        assert!(!pending.needs_reload(&i, &all(), false));
         let mut i = info();
         i.refs.push(rf(RefKind::Branch, "new-tip", 'b'));
         assert!(
-            pending.needs_reload(&i, &all()),
+            pending.needs_reload(&i, &all(), false),
             "b is not known to be reachable yet"
         );
     }
@@ -1121,6 +1443,252 @@ mod tests {
         );
         assert!(s.has_tips());
         assert!(s.log_args().contains(&"refs/remotes/origin/dev".to_owned()));
+    }
+
+    /// Stash `w` (`stash@{n}`) on `base`, with index commit `i` and untracked commit `u`.
+    fn stash(w: char, n: u32, base: char, i: char, u: Option<char>) -> Stash {
+        Stash {
+            hash: h(w),
+            selector: format!("stash@{{{n}}}"),
+            base: h(base),
+            index_parent: Some(h(i)),
+            untracked_parent: u.map(h),
+            author: "Ada".into(),
+            email: "ada@example.com".into(),
+            time: 1_700_000_100,
+            commit_time: 1_700_000_100,
+            subject: format!("WIP on main: stash {w}"),
+        }
+    }
+
+    /// The commit git lists for stash `s`, with all its parents, and its helpers: the index
+    /// commit (on the base) and the untracked commit (a root).
+    fn stash_commits(s: &Stash) -> Vec<Commit> {
+        let mut w = Commit {
+            hash: s.hash.clone(),
+            parents: vec![s.base.clone()],
+            author: s.author.clone(),
+            email: s.email.clone(),
+            time: s.time,
+            commit_time: s.commit_time,
+            subject: s.subject.clone(),
+        };
+        let mut out = Vec::new();
+        let index = s.index_parent.clone().unwrap();
+        w.parents.push(index.clone());
+        out.push(Commit {
+            hash: index,
+            parents: vec![s.base.clone()],
+            subject: "index on main".into(),
+            ..w.clone()
+        });
+        if let Some(u) = &s.untracked_parent {
+            w.parents.push(u.clone());
+            out.push(Commit {
+                hash: u.clone(),
+                parents: vec![],
+                subject: "untracked files on main".into(),
+                ..w.clone()
+            });
+        }
+        out.insert(0, w);
+        out
+    }
+
+    fn with_stashes(stashes: Vec<Stash>) -> RepoInfo {
+        RepoInfo { stashes, ..info() }
+    }
+
+    fn no_stashes() -> ViewOptions {
+        ViewOptions {
+            show_stashes: false,
+            ..all()
+        }
+    }
+
+    /// `history()` as git lists it with the stashes of `info` as extra tips (each newer than
+    /// every commit), into a state for `view`.
+    fn loaded_with(info: RepoInfo, view: ViewOptions) -> RepoState {
+        let mut s = RepoState::new(info.clone(), view, 1);
+        let mut log: Vec<Commit> = Vec::new();
+        if s.view().show_stashes && s.view().branches.is_none() {
+            for st in &info.stashes {
+                log.extend(stash_commits(st));
+            }
+        }
+        log.extend(history());
+        s.append(log);
+        s
+    }
+
+    #[test]
+    fn a_stash_is_one_row_with_one_parent_and_its_label() {
+        let st = stash('w', 0, 'd', 'i', Some('u'));
+        let s = loaded_with(with_stashes(vec![st.clone()]), all());
+        assert_eq!(
+            s.total_rows(),
+            5,
+            "w, d, c, b, a: no index or untracked row"
+        );
+        let rows = s.rows(0, 10);
+        let w = &rows[0];
+        assert_eq!((w.kind, w.hash.as_str()), (RowKind::Stash, h('w').as_str()));
+        assert_eq!(w.parents, [h('d')]);
+        assert!(!w.is_merge && !w.is_head);
+        assert_eq!(w.subject, "WIP on main: stash w");
+        assert_eq!(w.time, 1_700_000_100);
+        assert_eq!(label_names(&s, 0), [(RefKind::Stash, "stash@{0}".into())]);
+        assert!(rows[1..].iter().all(|r| r.kind == RowKind::Commit));
+        assert_eq!(s.find_row(&h('i')), None);
+        assert_eq!(s.find_row(&h('u')), None);
+        // One line, from the stash down to its base.
+        assert_eq!(
+            w.edges,
+            vec![crate::graph::Edge {
+                from: 0,
+                to: 0,
+                color: 0,
+                half: EdgeHalf::Bottom
+            }]
+        );
+        assert_eq!(rows[1].lane, 0);
+        assert_eq!(
+            s.snapshot(&identity(), false, &FetchState::default())
+                .max_lane,
+            1
+        );
+        // The log lists it, before the separator.
+        let args = s.log_args();
+        let w_at = args
+            .iter()
+            .position(|a| *a == h('w'))
+            .expect("stash is a tip");
+        assert!(w_at < args.len() - 1);
+        assert!(s.body_search_args("x").unwrap().contains(&h('w')));
+    }
+
+    #[test]
+    fn a_stash_on_a_commit_no_branch_has_keeps_that_commit() {
+        // e (on a) is on no branch; only the stash leads to it.
+        let st = stash('w', 0, 'e', 'i', None);
+        let mut s = RepoState::new(with_stashes(vec![st.clone()]), all(), 1);
+        let mut log = stash_commits(&st);
+        log.push(commit('e', &['a'], "Gone branch", "Ada"));
+        log.extend(history());
+        s.append(log);
+        let hashes: Vec<String> = s.rows(0, 10).into_iter().map(|r| r.hash).collect();
+        assert_eq!(hashes, [h('w'), h('e'), h('d'), h('c'), h('b'), h('a')]);
+        assert_eq!(s.rows(0, 1)[0].parents, [h('e')]);
+    }
+
+    #[test]
+    fn hidden_stashes_are_no_tips_rows_or_labels() {
+        let i = with_stashes(vec![stash('w', 0, 'd', 'i', None)]);
+        let s = loaded_with(i.clone(), no_stashes());
+        assert_eq!(s.total_rows(), 4);
+        assert!(!s.log_args().contains(&h('w')));
+        assert!(
+            s.rows(0, 10)
+                .iter()
+                .all(|r| r.labels.iter().all(|l| l.kind != RefKind::Stash))
+        );
+        // A branch selection shows no stashes either.
+        let feature = loaded_with(i, feature_view());
+        assert!(!feature.log_args().contains(&h('w')));
+    }
+
+    #[test]
+    fn search_treats_stash_rows_like_commits() {
+        let s = loaded_with(with_stashes(vec![stash('w', 0, 'd', 'i', None)]), all());
+        assert_eq!(s.search("stash@{0}"), [0]);
+        assert_eq!(s.search("stash w"), [0]);
+        assert_eq!(s.search("ada"), [0, 1, 3]);
+    }
+
+    #[test]
+    fn a_new_stash_on_a_loaded_commit_is_added_without_a_reload() {
+        let mut s = loaded(info());
+        let before = s.rows(0, 10);
+        let st = stash('w', 0, 'd', 'i', None);
+        let i = with_stashes(vec![st]);
+        assert!(!s.needs_reload(&i, &all(), false));
+        assert!(s.needs_reload(&i, &all(), true), "not while the log loads");
+        assert_eq!(s.update(i.clone(), all()), Update::Rows);
+        assert_eq!(s.total_rows(), 5);
+        assert_eq!(s.rows(0, 10), loaded_with(i.clone(), all()).rows(0, 10));
+        assert_eq!(s.rows(1, 10).len(), before.len());
+        // On a commit not loaded: the log must be read.
+        let mut i = info();
+        i.stashes = vec![stash('w', 0, 'e', 'i', None)];
+        assert!(loaded(info()).needs_reload(&i, &all(), false));
+    }
+
+    /// R33: stashes saved in the same second (equal committer times) are ordered by their
+    /// place in the stash list, newest first, whether put in memory or loaded with the log
+    /// (git keeps the order of the tips it is given for equal times; the newest is given
+    /// first).
+    #[test]
+    fn stashes_saved_in_the_same_second_go_newest_first() {
+        let older = with_stashes(vec![stash('v', 0, 'd', 'j', None)]);
+        let mut s = loaded_with(older, all());
+        // A second stash on the same commit, in the same second: it is stash@{0} now.
+        let both = with_stashes(vec![
+            stash('w', 0, 'd', 'i', None),
+            stash('v', 1, 'd', 'j', None),
+        ]);
+        assert!(!s.needs_reload(&both, &all(), false));
+        assert_eq!(s.update(both.clone(), all()), Update::Rows);
+        let hashes: Vec<String> = s.rows(0, 3).into_iter().map(|r| r.hash).collect();
+        assert_eq!(hashes, [h('w'), h('v'), h('d')]);
+        assert_eq!(s.rows(0, 10), loaded_with(both, all()).rows(0, 10));
+    }
+
+    #[test]
+    fn a_dropped_stash_goes_without_a_reload_unless_its_base_goes_too() {
+        let two = with_stashes(vec![
+            stash('w', 0, 'd', 'i', None),
+            stash('v', 1, 'b', 'j', Some('u')),
+        ]);
+        let mut s = loaded_with(two.clone(), all());
+        assert_eq!(s.total_rows(), 6);
+        // Dropping stash@{0}: v becomes stash@{0}, w's row goes.
+        let one = with_stashes(vec![stash('v', 0, 'b', 'j', Some('u'))]);
+        assert!(!s.needs_reload(&one, &all(), false));
+        assert!(s.needs_reload(&one, &all(), true));
+        assert_eq!(s.update(one.clone(), all()), Update::Rows);
+        assert_eq!(s.rows(0, 10), loaded_with(one.clone(), all()).rows(0, 10));
+        assert_eq!(label_names(&s, 0), [(RefKind::Stash, "stash@{0}".into())]);
+        // A renumbering alone (same stashes, new selectors) changes labels only.
+        let renumbered = with_stashes(vec![stash('v', 3, 'b', 'j', Some('u'))]);
+        assert!(!s.needs_reload(&renumbered, &all(), true));
+        assert_eq!(s.update(renumbered, all()), Update::Rows);
+        assert_eq!(label_names(&s, 0), [(RefKind::Stash, "stash@{3}".into())]);
+        assert_eq!(s.update(info(), all()), Update::Rows);
+        assert_eq!(s.rows(0, 10), loaded(info()).rows(0, 10));
+
+        // A stash whose base only it leads to: its commits go too, so the log is read again.
+        let st = stash('w', 0, 'e', 'i', None);
+        let mut s = RepoState::new(with_stashes(vec![st.clone()]), all(), 1);
+        let mut log = stash_commits(&st);
+        log.push(commit('e', &['a'], "Gone branch", "Ada"));
+        log.extend(history());
+        s.append(log);
+        assert!(s.needs_reload(&info(), &all(), false));
+    }
+
+    #[test]
+    fn showing_and_hiding_stashes_needs_no_reload() {
+        let i = with_stashes(vec![
+            stash('w', 0, 'd', 'i', Some('u')),
+            stash('v', 1, 'b', 'j', None),
+        ]);
+        let mut s = loaded_with(i.clone(), all());
+        assert!(!s.needs_reload(&i, &no_stashes(), false));
+        assert_eq!(s.update(i.clone(), no_stashes()), Update::Rows);
+        assert_eq!(s.rows(0, 10), loaded(i.clone()).rows(0, 10));
+        assert!(!s.needs_reload(&i, &all(), false));
+        assert_eq!(s.update(i.clone(), all()), Update::Rows);
+        assert_eq!(s.rows(0, 10), loaded_with(i, all()).rows(0, 10));
     }
 
     #[test]

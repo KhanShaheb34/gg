@@ -11,7 +11,7 @@
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { DEFAULT_SPLIT, infoWidth, splitFor } from "../detailsLayout";
+  import { DEFAULT_SPLIT, DETAILS_MIN_H, infoWidth, panelHeight, splitFor } from "../detailsLayout";
   import { formatDateLong, groupDigits, shortHash } from "../format";
   import { api, CoreError } from "../ipc";
   import { toast } from "../state/app.svelte";
@@ -19,7 +19,17 @@
   import ChangedFiles from "./ChangedFiles.svelte";
   import Splitter from "./Splitter.svelte";
 
-  let { view }: { view: RepoView } = $props();
+  type Props = {
+    view: RepoView;
+    /** The repository view's height, px. */
+    hostH: number;
+    /** The most this panel may take, px: what the graph's minimum (under the banner) and the log leave. */
+    room: number;
+    /** The height shown (0 while closed), for the panel below it. */
+    shown?: number;
+  };
+
+  let { view, hostH, room, shown = $bindable(0) }: Props = $props();
 
   const loader = $derived(view.details);
 
@@ -39,9 +49,7 @@
   type FileView = "tree" | "list";
   const STORAGE_KEY = "gg.details.v1";
   const DEFAULT_H = 280;
-  const MIN_H = 120;
-  /** Room the graph keeps above the panel, px (matches the graph area's min-height). */
-  const MIN_GRAPH_H = 160;
+  const MIN_H = DETAILS_MIN_H;
 
   /** Share of the repository view the panel takes at most until the user sizes it. */
   const DEFAULT_SHARE = 0.45;
@@ -77,17 +85,18 @@
   }
 
   let panel: HTMLElement | undefined = $state();
-  /** The tallest the panel may be now: the repository view's height less the graph's minimum. */
-  let room = $state(Infinity);
-  /** The repository view's height, px. */
-  let hostH = $state(Infinity);
   /**
-   * The height shown: the chosen one, as far as the window allows; until the user chooses
-   * one, 280 px or 45 % of the repository view, whichever is less.
+   * The height shown: the chosen one, as far as the window allows (the graph keeps its
+   * minimum); until the user chooses one, 280 px or 45 % of the repository view, whichever
+   * is less.
    */
   const height = $derived(
-    Math.max(MIN_H, Math.min(prefs.height ?? Math.min(DEFAULT_H, Math.round(hostH * DEFAULT_SHARE)), room)),
+    panelHeight(prefs.height ?? Math.min(DEFAULT_H, Math.round(hostH * DEFAULT_SHARE)), MIN_H, room),
   );
+  $effect(() => {
+    // Its top border shows even at no height.
+    shown = hash ? Math.max(height, 1) : 0;
+  });
 
   /** The panel's width, px. */
   let panelW = $state(0);
@@ -98,8 +107,6 @@
     const host = panel?.parentElement;
     if (!host) return;
     const measure = () => {
-      hostH = host.clientHeight;
-      room = host.clientHeight - MIN_GRAPH_H;
       panelW = host.clientWidth;
     };
     measure();
@@ -111,7 +118,7 @@
   let resizeFrom = 0;
   const resizer = {
     onstart: () => (resizeFrom = height),
-    onmove: (dy: number) => (prefs.height = Math.max(MIN_H, Math.min(room, Math.round(resizeFrom - dy)))),
+    onmove: (dy: number) => (prefs.height = Math.max(MIN_H, Math.min(Math.max(room, MIN_H), Math.round(resizeFrom - dy)))),
     onend: save,
     onreset: () => {
       prefs.height = null;
@@ -176,8 +183,8 @@
     if (selection && !selection.isCollapsed && hashEl?.contains(selection.anchorNode)) return;
     if (!hash) return;
     navigator.clipboard.writeText(hash).then(
-      () => toast("info", "Copied"),
-      () => toast("error", "Could not copy the commit hash"),
+      () => toast("info", "Copied the hash."),
+      () => toast("error", "Could not copy the hash."),
     );
   }
 
@@ -202,14 +209,14 @@
       }
       if (view.snapshot.generation !== generation) continue;
       if (index === null) {
-        toast("info", "That commit is not shown in the graph");
+        toast("info", "That commit is not shown in the graph.");
         return;
       }
-      await view.selectRow(index, true);
+      await view.selectRow(index, true, { hash: target });
       focusGraph(panel?.parentElement);
       return;
     }
-    toast("info", "The graph changed while looking for that commit; try again");
+    toast("info", "The graph changed while looking for that commit; try again.");
   }
 
   function focusGraph(host: Element | null | undefined) {
@@ -421,8 +428,9 @@
     display: grid;
     /* The user's split (--info-w, see detailsLayout.ts); the files take the rest. */
     grid-template-columns: var(--info-w, 44%) minmax(0, 1fr);
-    flex: 0 1 auto;
-    min-height: 120px;
+    flex: none;
+    min-height: 0;
+    overflow: hidden;
     border-top: 1px solid var(--border);
     background: var(--bg);
   }

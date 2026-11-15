@@ -5,10 +5,11 @@
 // `window.__GG_DEV_URL__`, set before any app script runs.
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test as base, type Page } from "@playwright/test";
+import type { OpOutcome, OpRequest } from "../src/lib/types";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DEVSERVER = path.join(ROOT, "target", "debug", "gg-devserver");
@@ -53,7 +54,12 @@ function advanceClock(dir: string, tick: number): void {
   clocks.set(dir, Math.max(clocks.get(dir) ?? 0, tick));
 }
 
-function gitIn(dir: string): Git {
+/** Who makes the commits of a fixture git: Ada, unless said otherwise. */
+type Identity = { name: string; email: string };
+const ADA: Identity = { name: "Ada Lovelace", email: "ada@example.com" };
+const GRACE: Identity = { name: "Grace Hopper", email: "grace@example.com" };
+
+function gitIn(dir: string, who: Identity = ADA): Git {
   return (...args) => {
     const tick = clocks.get(dir) ?? 0;
     clocks.set(dir, tick + 1);
@@ -64,10 +70,10 @@ function gitIn(dir: string): Git {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...isolatedEnv(),
-        GIT_AUTHOR_NAME: "Ada Lovelace",
-        GIT_AUTHOR_EMAIL: "ada@example.com",
-        GIT_COMMITTER_NAME: "Ada Lovelace",
-        GIT_COMMITTER_EMAIL: "ada@example.com",
+        GIT_AUTHOR_NAME: who.name,
+        GIT_AUTHOR_EMAIL: who.email,
+        GIT_COMMITTER_NAME: who.name,
+        GIT_COMMITTER_EMAIL: who.email,
         GIT_AUTHOR_DATE: when,
         GIT_COMMITTER_DATE: when,
       },
@@ -94,6 +100,11 @@ export function makeRepo(
   };
   script(gitIn(dir), write, dir);
   return dir;
+}
+
+/** The second clone beside fixture repository `dir` that pushes to its remote (`routine`). */
+export function otherClone(dir: string): string {
+  return path.join(path.dirname(dir), `${path.basename(dir)}-other`);
 }
 
 /** Subject of commit `i` (1 = oldest) of the `big` fixture. */
@@ -202,7 +213,130 @@ const REPOS: Record<string, RepoScript> = {
       `Generate the module scaffolding\n\nEvery package gets a src folder with typed exports, so the\nbuild can check them before bundling.\n\n${body}\n\nSee https://example.com/docs/modules for the layout.`,
     );
   },
-  /** A repository without commits. */
+  /**
+   * For cherry-picks, oldest first: "Initial commit" (greeting.txt "hello"); on `topic`, "Add
+   * topic notes" (topic.txt) and "Greet from topic" (greeting.txt changed); on `integration`,
+   * "Prepare integration" and "Merge branch 'feature' into integration", which brings in
+   * "Build the feature" (feature.txt) from `feature`; on `main` (checked out), "Greet from
+   * main", which changes greeting.txt otherwise: picking "Greet from topic" conflicts. The
+   * repository has an identity for the commits the app makes.
+   */
+  picks(git, write) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const commit = (files: Record<string, string>, subject: string) => {
+      for (const [file, content] of Object.entries(files)) write(file, content);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit({ "greeting.txt": "hello\n", "README.md": "picks\n" }, "Initial commit");
+    git("switch", "-q", "-c", "topic");
+    commit({ "topic.txt": "topic notes\n" }, "Add topic notes");
+    commit({ "greeting.txt": "hello from topic\n" }, "Greet from topic");
+    git("switch", "-q", "-c", "integration", "main");
+    commit({ "integration.txt": "base\n" }, "Prepare integration");
+    git("switch", "-q", "-c", "feature", "main");
+    commit({ "feature.txt": "feature\n" }, "Build the feature");
+    git("switch", "-q", "integration");
+    git("merge", "-q", "--no-ff", "-m", "Merge branch 'feature' into integration", "feature");
+    git("switch", "-q", "main");
+    commit({ "greeting.txt": "hello from main\n" }, "Greet from main");
+  },
+  /**
+   * Conflicts (spec §5.6). 40 commits of history first ("Earlier work 1".."40", so the graph
+   * scrolls), then "Base" with `app.txt`, `style.css` and `src/module-01.ts`..`12.ts`.
+   * From Base: `feature/x` changes `app.txt` and `style.css` ("Rework the feature");
+   * `wide` changes every module ("Rename across modules"); `topic` has five commits, "Topic
+   * one".."Topic five", of which two and four change `app.txt` and `style.css`. `main` then
+   * changes all of those files ("Rework on main"): merging `feature/x` into main conflicts in
+   * 2 files, `wide` in 12, and rebasing `topic` onto main stops at steps 2 and 4. `main` is
+   * checked out; the repository has an identity for the commits git makes.
+   */
+  conflicts(git, write) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    for (let i = 1; i <= 40; i++) {
+      write("history.txt", `step ${i}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", `Earlier work ${i}`);
+    }
+    const modules = Array.from({ length: 12 }, (_, i) => `src/module-${String(i + 1).padStart(2, "0")}.ts`);
+    const commit = (files: Record<string, string>, subject: string) => {
+      for (const [file, content] of Object.entries(files)) write(file, content);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit(
+      { "app.txt": "app base\n", "style.css": "body {}\n", ...Object.fromEntries(modules.map((m) => [m, "base\n"])) },
+      "Base",
+    );
+    git("switch", "-q", "-c", "feature/x");
+    commit({ "app.txt": "app from feature\n", "style.css": "body { color: teal; }\n" }, "Rework the feature");
+    git("switch", "-q", "-c", "wide", "main");
+    commit(Object.fromEntries(modules.map((m) => [m, "renamed on wide\n"])), "Rename across modules");
+    git("switch", "-q", "-c", "topic", "main");
+    commit({ "topic-1.txt": "one\n" }, "Topic one");
+    commit({ "app.txt": "app from topic\n" }, "Topic two");
+    commit({ "topic-3.txt": "three\n" }, "Topic three");
+    commit({ "style.css": "body { color: plum; }\n" }, "Topic four");
+    commit({ "topic-5.txt": "five\n" }, "Topic five");
+    git("switch", "-q", "main");
+    commit(
+      {
+        "app.txt": "app from main\n",
+        "style.css": "body { color: navy; }\n",
+        ...Object.fromEntries(modules.map((m) => [m, "changed on main\n"])),
+      },
+      "Rework on main",
+    );
+  },
+  /**
+   * The staging routine (spec §5.3), with a bare `origin` beside it (`routine-origin.git`)
+   * and a second clone of that (`routine-other`, see `otherClone`) that pushes to it, to move
+   * the remote. Oldest first: "Initial commit" on `main`; "Prepare staging" on `staging`;
+   * "Add login form" and "Validate login" on `feature/login` (from `staging`); all three
+   * pushed with upstreams. Then the other clone pushes "Hotfix one" and "Hotfix two" to
+   * `staging`, and this repository fetches: `staging` is 2 behind `origin/staging`, not
+   * ahead. `main` is checked out. The other clone's commits are Grace Hopper's; this one's,
+   * and those git makes here, Ada Lovelace's.
+   */
+  routine(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const commit = (file: string, subject: string) => {
+      write(file, `${subject}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit("README.md", "Initial commit");
+    git("switch", "-q", "-c", "staging");
+    commit("staging.txt", "Prepare staging");
+    git("switch", "-q", "-c", "feature/login");
+    commit("login/form.txt", "Add login form");
+    commit("login/validate.txt", "Validate login");
+    git("switch", "-q", "main");
+    git("init", "-q", "--bare", "-b", "main", "../routine-origin.git");
+    git("remote", "add", "origin", "../routine-origin.git");
+    git("push", "-q", "-u", "origin", "main", "staging", "feature/login");
+
+    const other = otherClone(dir);
+    git("clone", "-q", "../routine-origin.git", other);
+    // Someone else's commits.
+    const there = gitIn(other, GRACE);
+    advanceClock(other, clocks.get(dir) ?? 0);
+    there("switch", "-q", "staging");
+    for (const subject of ["Hotfix one", "Hotfix two"]) {
+      writeFileSync(path.join(other, `${subject.replace(" ", "-")}.txt`), `${subject}\n`);
+      there("add", "-A");
+      there("commit", "-q", "-m", subject);
+    }
+    there("push", "-q", "origin", "staging");
+    advanceClock(dir, clocks.get(other) ?? 0);
+    git("fetch", "-q", "origin");
+  },
   /** A shallow clone (depth 2) of three commits, "One" to "Three": "Two" is where its history is cut. */
   shallow(git, _write, dir) {
     const source = makeRepo(
@@ -221,6 +355,7 @@ const REPOS: Record<string, RepoScript> = {
     git("fetch", "-q", "--depth", "2", `file://${source}`, "main");
     git("reset", "-q", "--hard", "FETCH_HEAD");
   },
+  /** A repository without commits. */
   empty(git) {
     git("init", "-q", "-b", "main");
   },
@@ -256,6 +391,30 @@ const REPOS: Record<string, RepoScript> = {
     });
     advanceClock(dir, 601);
     git("reset", "-q", "--hard");
+  },
+  /**
+   * 300 linear commits on `main` ("Big commit 1" the oldest) and two stashes, both newer than
+   * every commit: `stash@{1}` "On main: Keep the parser draft" on `main` with an untracked
+   * file, and `stash@{0}` "WIP on (no branch): …" on commit 150, which no branch has after
+   * it (its base is on `main`, so only the stash's own row is extra).
+   */
+  stashes(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    execFileSync("git", ["fast-import", "--quiet"], {
+      cwd: dir,
+      input: linearHistory(300),
+      stdio: ["pipe", "ignore", "pipe"],
+      env: isolatedEnv(),
+    });
+    advanceClock(dir, 301);
+    git("reset", "-q", "--hard");
+    write("log.txt", "draft\n");
+    write("draft.txt", "untracked draft\n");
+    git("stash", "push", "-q", "--include-untracked", "--message=Keep the parser draft");
+    git("checkout", "-q", "--detach", "main~150");
+    write("log.txt", "older idea\n");
+    git("stash", "push", "-q");
+    git("checkout", "-q", "main");
   },
   /**
    * 48 commits on `main`, `develop`, `feature/search`, `feature/ui`, `release/1.0` and a merged
@@ -342,14 +501,30 @@ function killGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): voi
   }
 }
 
+/** Where the devserver of config folder `configDir` records editor launches (it never starts one). */
+function editorRecord(configDir: string): string {
+  return path.join(path.dirname(configDir), "editor-launches.jsonl");
+}
+
 /**
  * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
- * debug build unless `binary` names another.
+ * debug build unless `binary` names another. The debug build records editor launches instead
+ * of starting an editor (see `GG.editorLaunches`).
  */
 export function startDevserver(configDir: string, home: string, binary = DEVSERVER): Promise<Devserver> {
   const child = spawn(
     binary,
-    ["--port", "0", "--config-dir", configDir, "--allow-origin", VITE_ORIGIN, "--exit-on-stdin-eof"],
+    [
+      "--port",
+      "0",
+      "--config-dir",
+      configDir,
+      "--allow-origin",
+      VITE_ORIGIN,
+      "--exit-on-stdin-eof",
+      // The perf runs' release build (built on its own) need not know it.
+      ...(binary === DEVSERVER ? ["--record-editor-launches", editorRecord(configDir)] : []),
+    ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
     // server quits, though it is detached.
@@ -422,18 +597,43 @@ export async function stopDevserver(server: Devserver): Promise<void> {
 }
 
 /** The close button of the tab named `name` (hidden from assistive technology; see TabBar). */
+type Unheaded<R> = R extends { expectHead: unknown } ? Omit<R, "expectHead"> & Partial<Pick<R, "expectHead">> : R;
+/**
+ * A request as a test writes it: one on the current branch may leave out `expectHead`, which
+ * `runOp` fills in with HEAD as the active tab shows it when the request is sent, as a menu
+ * would (R39).
+ */
+export type Asked = Unheaded<OpRequest>;
+
+/** Runs `request` through the app's own runOp (the module the page loaded), in the active tab. */
+export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
+  return page.evaluate(async (req) => {
+    const ops = await import("/src/lib/state/ops.svelte.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+    const id = app.activeRepoId!;
+    const onHead = ["reset", "merge", "rebase", "cherry_pick", "revert", "pull", "continue", "abort", "skip"];
+    const full = onHead.includes(req.op) && !("expectHead" in req) ? { ...req, expectHead: findRepoView(id)!.snapshot.head } : req;
+    return ops.runOp(id, full as OpRequest);
+  }, request);
+}
+
 export function closeButton(page: Page, name: string) {
   return page.getByRole("tab", { name, exact: true }).locator("xpath=..").locator(".close");
 }
 
 export type GG = {
   page: Page;
-  /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`, `details`), created on first use. */
+  /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`, `details`, `stashes`…), created on first use. */
   repoPath(name: string): string;
   /** Path of a plain (non-repository) folder `name`, created on first use. */
   folder(name: string): string;
   /** Runs git in fixture repository `name`; returns stdout. */
   git(name: string, ...args: string[]): string;
+  /** Runs git in folder `dir` (a clone beside a fixture, say); returns stdout. */
+  gitAt(dir: string, ...args: string[]): string;
+  /** The editor launches asked for so far (program and arguments each), oldest first; none is started. */
+  editorLaunches(): string[][];
 };
 
 /**
@@ -490,7 +690,22 @@ export const test = base.extend<{ gg: GG }>({
         return run(...args);
       };
 
-      await use({ page, repoPath, folder, git });
+      const gitAt = (dir: string, ...args: string[]) => {
+        let run = gits.get(dir);
+        if (!run) gits.set(dir, (run = gitIn(dir)));
+        return run(...args);
+      };
+
+      const editorLaunches = (): string[][] => {
+        const file = editorRecord(path.join(root, "config"));
+        if (!existsSync(file)) return [];
+        return readFileSync(file, "utf8")
+          .split("\n")
+          .filter((l) => l !== "")
+          .map((l) => JSON.parse(l) as string[]);
+      };
+
+      await use({ page, repoPath, folder, git, gitAt, editorLaunches });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

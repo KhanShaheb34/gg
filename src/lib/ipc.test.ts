@@ -67,10 +67,37 @@ describe("HTTP transport", () => {
     ]);
   });
 
+  it("passes on the note open_in_editor returns", async () => {
+    vi.stubGlobal("fetch", respond({ ok: "No editor command is set, so the worktree folder was opened" }));
+    await expect(api.openInEditor(1, "a.txt")).resolves.toBe("No editor command is set, so the worktree folder was opened");
+    vi.stubGlobal("fetch", respond({ ok: null }));
+    await expect(api.openInEditor(1, null)).resolves.toBeNull();
+  });
+
+  it("numbers each repository's operations in the order they are sent (R28)", async () => {
+    const ABORT = { op: "abort", expectHead: { branch: "main", hash: null } } as const;
+    const fetchMock = respond({ ok: null });
+    vi.stubGlobal("fetch", fetchMock);
+    const sent = [api.runOp(71, ABORT), api.runOp(72, ABORT), api.runOp(71, ABORT)];
+    await Promise.all(sent);
+    const seqs = fetchMock.mock.calls.map((c) => {
+      const body = JSON.parse((c as unknown as [string, RequestInit])[1].body as string);
+      return [body.args.repoId, body.args.clientSeq, body.args.clientId];
+    });
+    // One client id for this page load, random enough that a reload does not reuse it.
+    const id = seqs[0][2];
+    expect(id).toMatch(/^[0-9a-z-]{8,}$/);
+    expect(seqs).toEqual([
+      [71, 1, id],
+      [72, 1, id],
+      [71, 2, id],
+    ]);
+  });
+
   it("names every command's arguments as the core expects", async () => {
     const fetchMock = respond({ ok: null });
     vi.stubGlobal("fetch", fetchMock);
-    const options = { branches: null, showRemotes: true, showTags: false };
+    const options = { branches: null, showRemotes: true, showTags: false, showStashes: true };
 
     await api.updateSettings({ theme: "dark" });
     await api.removeRecent("/r");
@@ -84,6 +111,20 @@ describe("HTTP transport", () => {
     await api.refresh(1);
     await api.perfMark("first-rows", 12.5);
     await api.commandLog(4);
+    await api.commandLog(0, { repoId: 2, writesOnly: true });
+    await api.runOp(2, { op: "create_branch", name: "x", at: "abc", checkout: false });
+    await api.runOp(2, { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null } }, [{ kind: "hard_reset", token: "t" }]);
+    await api.runOp(
+      2,
+      { op: "push", branch: "b", remote: "origin", to: null, force: true },
+      [{ kind: "force_push", token: "abc" }],
+    );
+    await api.runOp(2, { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } });
+    await api.stopOp(2, 9);
+    await api.getRepoPrefs(2);
+    await api.setRepoPrefs(2, { mergeNoFf: false });
+    await api.openInEditor(2, null);
+    await api.openInEditor(2, "src/a b.ts");
 
     const bodies = fetchMock.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));
     expect(bodies).toEqual([
@@ -99,6 +140,35 @@ describe("HTTP transport", () => {
       { cmd: "refresh", args: { repoId: 1 } },
       { cmd: "perf_mark", args: { name: "first-rows", ms: 12.5 } },
       { cmd: "command_log", args: { sinceId: 4 } },
+      { cmd: "command_log", args: { sinceId: 0, repoId: 2, writesOnly: true } },
+      {
+        cmd: "run_op",
+        args: {
+          repoId: 2,
+          request: { op: "create_branch", name: "x", at: "abc", checkout: false },
+          confirmed: [],
+          clientId: expect.any(String), clientSeq: 1,
+        },
+      },
+      {
+        cmd: "run_op",
+        args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null } }, confirmed: [{ kind: "hard_reset", token: "t" }], clientId: expect.any(String), clientSeq: 2 },
+      },
+      {
+        cmd: "run_op",
+        args: {
+          repoId: 2,
+          request: { op: "push", branch: "b", remote: "origin", to: null, force: true },
+          confirmed: [{ kind: "force_push", token: "abc" }],
+          clientId: expect.any(String), clientSeq: 3,
+        },
+      },
+      { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } }, confirmed: [], clientId: expect.any(String), clientSeq: 4 } },
+      { cmd: "stop_op", args: { repoId: 2, opId: 9 } },
+      { cmd: "get_repo_prefs", args: { repoId: 2 } },
+      { cmd: "set_repo_prefs", args: { repoId: 2, patch: { mergeNoFf: false } } },
+      { cmd: "open_in_editor", args: { repoId: 2, path: null } },
+      { cmd: "open_in_editor", args: { repoId: 2, path: "src/a b.ts" } },
     ]);
   });
 });

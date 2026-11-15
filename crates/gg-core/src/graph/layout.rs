@@ -316,6 +316,30 @@ mod tests {
         assert_eq!(a.max_lane(), 1);
     }
 
+    /// A stash row has its base as its one parent (its index and untracked commits are left
+    /// out before layout): one short lane that joins its base, like a branch of one commit,
+    /// and no lanes for the helpers.
+    #[test]
+    fn graph_stash_row_joins_its_base() {
+        let mut a = LaneAllocator::new();
+        let w = push(&mut a, "W", &["B"]);
+        let c = push(&mut a, "C", &["B"]);
+        let b = push(&mut a, "B", &["A"]);
+        let a_row = push(&mut a, "A", &[]);
+        assert_row(&w, 0, 0, &[bottom(0, 0, 0)]);
+        assert_row(&c, 1, 1, &[full(0, 0), bottom(1, 1, 1)]);
+        assert_row(&b, 0, 0, &[top(0, 0, 0), top(1, 0, 1), bottom(0, 0, 0)]);
+        assert_row(&a_row, 0, 0, &[top(0, 0, 0)]);
+        assert_eq!(a.max_lane(), 1);
+        check_invariants(&[w, c, b, a_row]);
+
+        // With all three parents, the helpers would hold two more lanes open.
+        let mut a = LaneAllocator::new();
+        let w = push(&mut a, "W", &["B", "I", "U"]);
+        assert_eq!(w.edges.len(), 3);
+        assert_eq!(a.max_lane(), 2);
+    }
+
     #[test]
     fn graph_missing_parent_dangles() {
         let mut a = LaneAllocator::new();

@@ -6,6 +6,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gg_core::{Core, CoreError, ErrorCode, EventSink};
+
+// A release build of the app never carries gg-core's test helpers and hooks. (Test builds of
+// the workspace can: cargo unifies the features of gg-core's own dev-dependency on itself.)
+#[cfg(not(debug_assertions))]
+const _: () = assert!(
+    !gg_core::TEST_HOOKS,
+    "gg-core's `testutil` feature must not be built into the release app"
+);
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::OnceCell;
@@ -179,7 +187,11 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// scrolls a few px every frame, like a trackpad; with `GG_PERF_SCROLL=pages` it loads every
 /// page of rows once without scrolling (to tell the memory of loading rows from that of
 /// drawing them); with `GG_PERF_SCROLL=jump3` it scrolls top to bottom three times, marking
-/// `pass-1`..`pass-3` after each (memory over repeated scrolls). Every mode also records the page's errors, unhandled rejections, CSP
+/// `pass-1`..`pass-3` after each (memory over repeated scrolls); with `GG_PERF_SCROLL=actions`
+/// it times right-click, menu, dialog and operation feedback (`actionsProbe.ts`; it creates
+/// branches, so only on a throwaway repository); with `GG_PERF_SCROLL=walk` it uses the app
+/// through its menus, dialogs, banner and log (`walkProbe.ts`; a throwaway repository made by
+/// its driver only). Every mode also records the page's errors, unhandled rejections, CSP
 /// violations and console errors and warnings in `window.__GG_PAGE_ERRORS__`, which the
 /// probe reports as `page-error` marks. `None` otherwise.
 #[cfg(any(test, feature = "perf"))]
@@ -190,6 +202,8 @@ fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<String> {
         "smooth" => "\"smooth\"",
         "pages" => "\"pages\"",
         "jump3" => "\"jump3\"",
+        "actions" => "\"actions\"",
+        "walk" => "\"walk\"",
         _ => return None,
     };
     Some(format!(
@@ -330,6 +344,10 @@ mod tests {
             assert!(script.contains("unhandledrejection"), "{mode}");
             assert!(script.contains("console[level]"), "{mode}");
         }
+        let actions = perf_scroll_script(Some("actions".into())).unwrap();
+        assert!(actions.contains("__GG_PERF_SCROLL__ = \"actions\""));
+        let walk = perf_scroll_script(Some("walk".into())).unwrap();
+        assert!(walk.contains("__GG_PERF_SCROLL__ = \"walk\""));
         let pages = perf_scroll_script(Some("pages".into())).unwrap();
         assert!(pages.contains("__GG_PERF_SCROLL__ = \"pages\""));
         assert_eq!(perf_scroll_script(None), None);

@@ -3,13 +3,14 @@
 //!
 //! A fetch the user asks for runs like one in a terminal, hooks included, and runs for as long
 //! as git keeps reporting progress. A scheduled fetch happens without anyone asking, so it
+//! runs no auto-maintenance and writes no commit-graph (R42),
 //! never runs the repository's hooks and is killed after a fixed time.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedMutexGuard};
 use tokio::time::Instant;
 
 use crate::dto::FetchState;
@@ -30,6 +31,57 @@ pub(super) const FETCH_CAP: Duration = Duration::from_secs(2 * 60 * 60);
 const MAX_DETAIL: usize = 8 * 1024;
 /// Where scheduled fetches look for hooks: nowhere.
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+/// What a scheduled fetch sets besides, so that it writes into the repository nothing but
+/// what it fetched (R18, R42): git's auto-maintenance (gc, repack, a commit-graph), which a
+/// fetch otherwise runs past its thresholds, and the commit-graph `fetch.writeCommitGraph`
+/// asks for. With `--no-auto-maintenance` after `fetch` (git 2.29 and later).
+const NO_MAINTENANCE: [&str; 6] = [
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "fetch.writeCommitGraph=false",
+];
+
+/// What a scheduled fetch holds from before it shows as running until it ends: the lock
+/// that tells others it runs, and its cancel signal, already stored in `scheduled_cancel`.
+/// Both are in place before `running` is set. A scheduled fetch can still pass its check
+/// (nothing waits for the turn) just before an operation or a user's fetch takes the turn,
+/// and store its signal just after that one has cancelled: the operation then finds the
+/// fetch skipping itself (it checks again before git starts), and a user's fetch that finds
+/// it `running` cancels it and waits again rather than taking it as covering itself.
+struct Scheduled {
+    _running: OwnedMutexGuard<()>,
+    cancel: Arc<Notify>,
+}
+
+/// Whether [`RepoManager::start_fetch`] ran a fetch, with its result.
+enum Started {
+    Ran(Result<()>),
+    No(Busy),
+}
+
+/// Why no fetch was started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Busy {
+    /// Another fetch is running.
+    Running,
+    /// The repository has no remotes.
+    Nothing,
+    /// The repository was closed.
+    Closed,
+}
+
+/// Clears `user_fetch` when dropped: when the task of a fetch the user asked for ends,
+/// whether it ran, did not (no remotes, closed, one already running) or panicked.
+struct ClearUserFetch(Arc<Repo>);
+
+impl Drop for ClearUserFetch {
+    fn drop(&mut self) {
+        self.0.user_fetch.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Who started a fetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,17 +120,59 @@ impl Schedule {
 }
 
 impl RepoManager {
-    /// Runs `git fetch --all --prune`, then refreshes. `fetch.running` is set (and
+    /// Runs `git fetch --all --prune`, then refreshes. It takes its turn in the repository's
+    /// operation queue: it waits for the operations asked for before it (counted in their
+    /// `op.queued`), and the ones asked for after it wait for it. `fetch.running` is set (and
     /// `repo-changed` emitted) before git starts; when it ends, `lastAtMs`, `lastError`
     /// (see [`fetch_error`]; "Fetch timed out" once git has written nothing for 120 s; `None`
     /// after a success) and `lastErrorDetail` (git's whole stderr) are set and emitted. git
     /// runs with `--progress`, so a long fetch that is getting somewhere keeps running. Only
     /// an unknown (or meanwhile closed) repository is an `Err`; a failed fetch, or a failed
     /// refresh after it, is `Ok`. Does nothing for a repository without remotes or while a
-    /// fetch is running. The fetch runs on its own task, so dropping the returned future does
-    /// not stop it and `running` is always cleared.
+    /// fetch is running or waiting for its turn. The fetch runs on its own task, so dropping
+    /// the returned future does not stop it and `running` is always cleared. While it waits
+    /// or runs, closing the repository is refused as `busy`, as during an operation.
     pub async fn fetch(self: &Arc<Self>, repo_id: u32) -> Result<()> {
         self.fetch_by(repo_id, Initiator::User).await
+    }
+
+    /// Makes the next fetch the user asks for panic once it has its turn (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn panic_next_fetch(&self) {
+        self.fetch_panic.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes every scheduled fetch pause this long once it shows as running, before it goes
+    /// on (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_scheduled_fetch_gap(&self, gap: Duration) {
+        self.scheduled_fetch_gap_ms
+            .store(crate::repo::manager::duration_ms(gap), Ordering::Relaxed);
+    }
+
+    /// Makes the next task that passes `point` stop there until released (tests only).
+    /// Points: "scheduled-fetch-checked" (a scheduled fetch has found nothing waiting, before
+    /// it stores its cancel signal) and "user-fetch-cancelled" (a user's fetch has its turn
+    /// and has cancelled any scheduled fetch, before it starts).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn pause_at(&self, point: &'static str) -> crate::repo::manager::PausePoint {
+        let pause = crate::repo::manager::PausePoint::default();
+        lock(&self.pauses).insert(point, pause.clone());
+        pause
+    }
+
+    /// Stops at `point` if a test asked to (see [`RepoManager::pause_at`]).
+    async fn pass(&self, point: &'static str) {
+        #[cfg(any(test, feature = "testutil"))]
+        {
+            let pause = lock(&self.pauses).remove(point);
+            if let Some(pause) = pause {
+                pause.reached.notify_one();
+                pause.release.notified().await;
+            }
+        }
+        #[cfg(not(any(test, feature = "testutil")))]
+        let _ = point;
     }
 
     /// Sets how long a fetch the user asked for may run in any case (tests only; normally
@@ -101,13 +195,96 @@ impl RepoManager {
 
     async fn fetch_by(self: &Arc<Self>, repo_id: u32, initiator: Initiator) -> Result<()> {
         let repo = self.get(repo_id)?;
+        // A git too old for the scheduled fetch's options would fail every time; the app says
+        // so once (M3) instead.
+        if initiator == Initiator::Schedule && self.git_problem().is_some() {
+            return Ok(());
+        }
+        match initiator {
+            // A fetch the user asks for waits for the operations asked for before it, and
+            // holds up the ones asked for after it: it never runs beside one. It waits on
+            // its own task, so a caller that goes away leaves no count behind.
+            Initiator::User => {
+                if repo.user_fetch.swap(true, Ordering::SeqCst) {
+                    // The one waiting or running covers this one.
+                    return Ok(());
+                }
+                let m = self.clone();
+                let task = tokio::spawn(async move {
+                    // However this task ends (a panic included), a fetch asked for later runs.
+                    let _clear = ClearUserFetch(repo.clone());
+                    repo.op_waiting.fetch_add(1, Ordering::SeqCst);
+                    m.op_queue_changed(&repo).await;
+                    let turn = repo.op_queue.lock().await;
+                    repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
+                    let done = loop {
+                        m.cancel_scheduled_fetch(&repo).await;
+                        m.pass("user-fetch-cancelled").await;
+                        #[cfg(any(test, feature = "testutil"))]
+                        if m.fetch_panic.swap(false, Ordering::SeqCst) {
+                            panic!("test: the fetch panicked");
+                        }
+                        // With the turn held, only a scheduled fetch can be running: one that
+                        // passed its check before this took the turn, and stored its cancel
+                        // signal after the cancel above. It covers nothing: cancel it too.
+                        match m.start_fetch(repo.clone(), None).await {
+                            Started::No(Busy::Running) => continue,
+                            Started::No(Busy::Nothing) => break Ok(()),
+                            Started::No(Busy::Closed) => {
+                                break Err(unknown_repo(repo.identity.repo_id));
+                            }
+                            Started::Ran(done) => break done,
+                        }
+                    };
+                    drop(turn);
+                    done
+                });
+                task.await.unwrap_or(Ok(()))
+            }
+            // A scheduled one is skipped while an operation runs or waits, and cancelled
+            // when one takes its turn while it runs (see `cancel_scheduled_fetch`); the next
+            // one comes an interval later.
+            Initiator::Schedule => {
+                if repo.op_waiting.load(Ordering::SeqCst) > 0 || repo.op_queue.try_lock().is_err() {
+                    return Ok(());
+                }
+                self.pass("scheduled-fetch-checked").await;
+                let running = repo.scheduled_running.clone().lock_owned().await;
+                let cancel = Arc::new(Notify::new());
+                *lock(&repo.scheduled_cancel) = Some(cancel.clone());
+                let scheduled = Scheduled {
+                    _running: running,
+                    cancel: cancel.clone(),
+                };
+                let started = self.start_fetch(repo.clone(), Some(scheduled)).await;
+                forget_cancel(&repo, &cancel);
+                match started {
+                    Started::Ran(done) => done,
+                    Started::No(Busy::Closed) => Err(unknown_repo(repo.identity.repo_id)),
+                    Started::No(_) => Ok(()),
+                }
+            }
+        }
+    }
+
+    /// Marks a fetch of `repo` as running and runs it (see [`RepoManager::fetch`]): a
+    /// scheduled one with what it holds, else one the user asked for. Runs nothing when
+    /// another fetch is running, the repository has no remotes, or it is closed.
+    async fn start_fetch(
+        self: &Arc<Self>,
+        repo: Arc<Repo>,
+        scheduled: Option<Scheduled>,
+    ) -> Started {
         let started = {
             let mut slot = repo.slot.write().await;
             if slot.closed {
-                return Err(unknown_repo(repo_id));
+                return Started::No(Busy::Closed);
             }
-            if slot.fetch.running || slot.target().info().remotes.is_empty() {
-                return Ok(());
+            if slot.fetch.running {
+                return Started::No(Busy::Running);
+            }
+            if slot.target().info().remotes.is_empty() {
+                return Started::No(Busy::Nothing);
             }
             slot.fetch.running = true;
             slot.snapshot_to_emit(&repo.identity, repo.is_loading())
@@ -115,19 +292,56 @@ impl RepoManager {
         *lock(&repo.fetched_at) = Instant::now();
         repo.publish(self.sink.as_ref(), started);
         // No await between setting `running` and spawning: once set, the task clears it.
-        let task = tokio::spawn(self.clone().run_fetch(repo, initiator));
-        task.await.unwrap_or(Ok(()))
+        let task = tokio::spawn(self.clone().run_fetch(repo, scheduled));
+        Started::Ran(task.await.unwrap_or(Ok(())))
     }
 
-    /// Runs git for a fetch whose `running` is set, records the outcome and refreshes.
-    async fn run_fetch(self: Arc<Self>, repo: Arc<Repo>, initiator: Initiator) -> Result<()> {
+    /// Stops the scheduled fetch of `repo` running now, if any, and waits for it to end (git
+    /// is asked to stop, then killed; see [`GitRunner::run_cancellable`]): called by an
+    /// operation, or a fetch the user asked for, that has just taken its turn, so that
+    /// nothing of ours runs beside it. The cancelled fetch shows no error.
+    ///
+    /// [`GitRunner::run_cancellable`]: crate::git::runner::GitRunner::run_cancellable
+    pub(crate) async fn cancel_scheduled_fetch(&self, repo: &Repo) {
+        if let Some(cancel) = lock(&repo.scheduled_cancel).take() {
+            cancel.notify_one();
+        }
+        let _ended = repo.scheduled_running.lock().await;
+    }
+
+    /// Runs git for a fetch whose `running` is set, records the outcome and refreshes. A
+    /// scheduled fetch can be cancelled (see [`RepoManager::cancel_scheduled_fetch`]): then
+    /// the fetch state is left as it was before it, and nothing is refreshed.
+    async fn run_fetch(self: Arc<Self>, repo: Arc<Repo>, held: Option<Scheduled>) -> Result<()> {
         let repo_id = repo.identity.repo_id;
+        let scheduled = held.is_some();
+        let initiator = if scheduled {
+            Initiator::Schedule
+        } else {
+            Initiator::User
+        };
+        #[cfg(any(test, feature = "testutil"))]
+        if scheduled {
+            let gap = self.scheduled_fetch_gap_ms.load(Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(gap)).await;
+        }
+        let cancel = held
+            .as_ref()
+            .map_or_else(|| Arc::new(Notify::new()), |h| h.cancel.clone());
+        // An operation or a user's fetch that has taken its turn since: this one does not
+        // start (it may have signalled the cancel too).
+        let skip = scheduled
+            && (repo.op_waiting.load(Ordering::SeqCst) > 0 || repo.op_queue.try_lock().is_err());
         let no_hooks = format!("core.hooksPath={NULL_DEVICE}");
-        let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 3);
+        let mut args: Vec<&str> = Vec::with_capacity(FETCH_ARGS.len() + 10);
         if initiator == Initiator::Schedule {
             args.extend(["-c", no_hooks.as_str()]);
+            args.extend(NO_MAINTENANCE);
         }
         args.extend(FETCH_ARGS);
+        if initiator == Initiator::Schedule {
+            args.push("--no-auto-maintenance");
+        }
         let timeout = Duration::from_millis(self.fetch_timeout_ms.load(Ordering::Relaxed));
         let limit = match initiator {
             Initiator::User => {
@@ -139,10 +353,38 @@ impl RepoManager {
             Initiator::Schedule => TimeLimit::total(timeout),
         };
         // On timeout git and the transport helpers it started are killed.
-        let run = repo
-            .runner
-            .run_with_timeout(&repo.worktree, &args, CmdKind::Write, limit)
-            .await;
+        let run = if skip {
+            None
+        } else {
+            Some(
+                repo.runner
+                    .run_cancellable(&repo.worktree, &args, CmdKind::Write, limit, &cancel)
+                    .await,
+            )
+        };
+        if scheduled {
+            forget_cancel(&repo, &cancel);
+        }
+        let cancelled = match &run {
+            None => true,
+            Some(Ok(Err(gave_up))) => gave_up.limit == Expired::Cancelled,
+            _ => false,
+        };
+        if cancelled {
+            let ended = {
+                let mut slot = repo.slot.write().await;
+                slot.fetch.running = false;
+                if slot.closed {
+                    return Err(unknown_repo(repo_id));
+                }
+                slot.snapshot_to_emit(&repo.identity, repo.is_loading())
+            };
+            repo.publish(self.sink.as_ref(), ended);
+            return Ok(());
+        }
+        let Some(run) = run else {
+            return Ok(());
+        };
         let (error, detail) = match run {
             Ok(Err(gave_up)) => {
                 let stderr = without_progress(&gave_up.stderr);
@@ -167,6 +409,10 @@ impl RepoManager {
         };
         let finished = {
             let mut slot = repo.slot.write().await;
+            if initiator == Initiator::User {
+                // From here on, a fetch asked for is a new one.
+                repo.user_fetch.store(false, Ordering::SeqCst);
+            }
             slot.fetch = FetchState {
                 running: false,
                 last_error: error,
@@ -182,7 +428,7 @@ impl RepoManager {
         // The watcher also sees the fetch's ref updates and refreshes ~300 ms later; that
         // second refresh finds nothing new and emits nothing. This one is kept so that the
         // state is current when `fetch` returns.
-        match self.refresh(repo_id).await {
+        match self.refresh_now(repo_id).await {
             Err(e) if e.code == ErrorCode::UnknownRepo => Err(e),
             _ => Ok(()),
         }
@@ -242,6 +488,15 @@ impl RepoManager {
             }
         }
         next
+    }
+}
+
+/// Removes `cancel` from `repo`'s `scheduled_cancel` if it is still there (not a later
+/// scheduled fetch's).
+fn forget_cancel(repo: &Repo, cancel: &Arc<Notify>) {
+    let mut stored = lock(&repo.scheduled_cancel);
+    if stored.as_ref().is_some_and(|c| Arc::ptr_eq(c, cancel)) {
+        *stored = None;
     }
 }
 
@@ -332,6 +587,7 @@ fn timed_out(expired: Expired) -> String {
     match expired {
         Expired::Idle(idle) => format!("Fetch timed out: no output from git for {}", span(idle)),
         Expired::Total(total) => format!("Fetch timed out: still running after {}", span(total)),
+        Expired::Cancelled => "Fetch cancelled".to_owned(),
     }
 }
 
@@ -375,7 +631,7 @@ fn without_progress(stderr: &str) -> String {
 }
 
 /// Current time in unix milliseconds.
-fn unix_ms() -> i64 {
+pub(super) fn unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))

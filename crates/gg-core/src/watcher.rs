@@ -3,7 +3,9 @@
 //!
 //! Watched: the common git dir itself, non-recursively (`HEAD`, `index`, `packed-refs`,
 //! `FETCH_HEAD`, `config`, ...), and `refs/` and `worktrees/` recursively while they exist.
-//! Linked worktrees keep their `HEAD` and `index` under `worktrees/<name>/`. Changes under
+//! Linked worktrees keep their `HEAD` and `index` under `worktrees/<name>/`. A stopped
+//! merge, cherry-pick or revert (`MERGE_HEAD`, ...) and a rebase (`rebase-merge/`,
+//! `rebase-apply/`) appear and go away directly in the git dir, or in a linked worktree's. Changes under
 //! `objects/` and `logs/` and to `*.lock` files are ignored, so a `git gc` or a large fetch
 //! does not look like a stream of changes.
 //!
@@ -240,6 +242,12 @@ mod tests {
             "FETCH_HEAD",
             "ORIG_HEAD",
             "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "rebase-merge",
+            "rebase-merge/msgnum",
+            "rebase-apply",
+            "rebase-apply/next",
             "config",
             "refs",
             "refs/heads/main",
@@ -250,6 +258,9 @@ mod tests {
             "worktrees/wt",
             "worktrees/wt/HEAD",
             "worktrees/wt/index",
+            "worktrees/wt/MERGE_HEAD",
+            "worktrees/wt/rebase-merge",
+            "worktrees/wt/rebase-merge/msgnum",
             "worktrees/logs/HEAD",
             "",
         ] {

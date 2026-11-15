@@ -9,6 +9,12 @@
 //!
 //! Idle costs nothing: each repository's watcher wakes only on a change. Fetching and its
 //! schedule live in `repo/fetch.rs`.
+//!
+//! Operations (`ops/`) queue on their own per-repository mutex, `op_queue`, which only
+//! operations take: reads, view-option changes and refreshes never wait for an operation,
+//! however long its network command runs. An operation takes `refresh_lock` only to publish
+//! its start and for its final refresh; while it runs, refreshes the watcher asks for are
+//! folded into that final refresh (see [`RepoManager::refresh`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,23 +28,29 @@ use tokio::time::Instant;
 
 use crate::EventSink;
 use crate::dto::{
-    BodyHits, CommitDetails, FetchState, RepoSnapshot, RowsPage, ViewOptions, WorktreeStatus,
+    BodyHits, CommitDetails, FetchState, InProgress, RepoSnapshot, RowsPage, RunningOp,
+    ViewOptions, WorktreeStatus,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::details::read_details;
+use crate::git::progress::read_in_progress_with;
 use crate::git::refs::{read_head, read_refs, read_remotes};
 use crate::git::runner::{CmdKind, GitRunner};
-use crate::git::status::{STATUS_ARGS, read_status};
+use crate::git::stash::read_stashes;
+use crate::git::status::{STATUS_ARGS, read_status_and_conflicts};
 use crate::git::worktrees::read_worktrees;
-use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule};
+use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule, unix_ms};
 use crate::repo::loader::start_load;
-use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, normalize_view};
+use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, Update, normalize_view};
 use crate::watcher::{RepoWatcher, watch_git_dir_reporting};
+
+/// How long an operation's final refresh waits for the working tree's status.
+const OP_STATUS_WAIT: Duration = Duration::from_secs(2);
 
 /// Opens repositories and keeps their state. Create one per app with [`RepoManager::new`].
 pub struct RepoManager {
     runner: GitRunner,
-    pub(super) sink: Arc<dyn EventSink>,
+    pub(crate) sink: Arc<dyn EventSink>,
     pub(super) repos: Mutex<HashMap<u32, Arc<Repo>>>,
     next_id: AtomicU32,
     /// Fetch interval and window focus.
@@ -66,6 +78,42 @@ pub struct RepoManager {
     /// repository waits for that one instead of reading and watching it a second time; the
     /// receiver's sender is dropped when that open ends.
     opening: Mutex<HashMap<PathBuf, watch::Receiver<()>>>,
+    /// Id of the last operation asked for, across repositories.
+    last_op_id: AtomicU64,
+    /// Tests only: how long every operation waits after its git commands, in milliseconds.
+    #[cfg(any(test, feature = "testutil"))]
+    op_delay_ms: AtomicU64,
+    /// Tests only: the next operation's body panics after running.
+    #[cfg(any(test, feature = "testutil"))]
+    op_panic: AtomicBool,
+    /// Tests only: refreshes folded into an operation's final refresh so far.
+    #[cfg(any(test, feature = "testutil"))]
+    folded_refreshes: AtomicU64,
+    /// Tests only: the next fetch the user asks for panics once it has its turn.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) fetch_panic: AtomicBool,
+    /// Tests only: how long a scheduled fetch pauses once it shows as running, before it
+    /// goes on, in milliseconds.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) scheduled_fetch_gap_ms: AtomicU64,
+    /// When set, editor launches are appended to this file instead of run (the dev server's
+    /// `--record-editor-launches`, for the UI's tests).
+    pub(crate) editor_record: Mutex<Option<PathBuf>>,
+    /// Tests only: when set, editor launches are recorded here instead of run.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(crate) editor_launches: Mutex<Option<Vec<Vec<String>>>>,
+    /// Tests only: points where the next task to pass waits (see `pause_at`).
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) pauses: Mutex<HashMap<&'static str, PausePoint>>,
+}
+
+/// Tests only: a point in the core where the next task to pass stops. `reached` is
+/// signalled when one arrives; it goes on once `release` is.
+#[cfg(any(test, feature = "testutil"))]
+#[derive(Clone, Default)]
+pub struct PausePoint {
+    pub reached: Arc<Notify>,
+    pub release: Arc<Notify>,
 }
 
 impl Drop for RepoManager {
@@ -77,15 +125,15 @@ impl Drop for RepoManager {
 }
 
 /// One open repository.
-pub(super) struct Repo {
-    pub(super) identity: RepoIdentity,
+pub(crate) struct Repo {
+    pub(crate) identity: RepoIdentity,
     /// The main worktree.
     root: PathBuf,
     /// The active worktree; every command runs here.
-    pub(super) worktree: PathBuf,
+    pub(crate) worktree: PathBuf,
     common_dir: PathBuf,
-    /// Runs this repository's commands.
-    pub(super) runner: GitRunner,
+    /// Runs this repository's commands (logged as this repository's).
+    pub(crate) runner: GitRunner,
     pub(super) slot: RwLock<Slot>,
     /// The id of the log load that is running, if any. Set and cleared while holding the
     /// `slot` write lock, except by a load that dies, which clears its own id.
@@ -108,6 +156,8 @@ pub(super) struct Repo {
     errors: Mutex<HeldErrors>,
     /// The last status read failed (said once, until one succeeds again).
     status_failed: AtomicBool,
+    /// The last stash read failed (and was reported).
+    stashes_failed: AtomicBool,
     /// No status read is running or wanted, and one has ended (see
     /// [`RepoManager::wait_status`]).
     status_idle: watch::Sender<bool>,
@@ -117,6 +167,25 @@ pub(super) struct Repo {
     status_seq: AtomicU64,
     /// The body search running, if any; a newer one aborts it.
     body_search: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Operations take turns here, in the order they were asked for (the mutex is fair;
+    /// numbered requests join it in their numbers' order, see `op_order`).
+    pub(crate) op_queue: tokio::sync::Mutex<()>,
+    /// Operations waiting for their turn.
+    pub(crate) op_waiting: AtomicU32,
+    /// The order numbered requests join `op_queue` in (R28).
+    pub(crate) op_order: crate::ops::order::ClientOrders,
+    /// How the app named the commit coming in to the merge or rebase it started last (R32).
+    pub(crate) incoming_name: Mutex<Option<crate::git::progress::KnownIncoming>>,
+    /// The operation running its body, by id, and its Stop (R41).
+    pub(crate) running_stop: Mutex<Option<(u64, Arc<crate::git::runner::Stop>)>>,
+    /// A fetch the user asked for is waiting for its turn or running; another one asked for
+    /// meanwhile returns at once.
+    pub(super) user_fetch: AtomicBool,
+    /// Stops the scheduled fetch running now, if any (R13).
+    pub(super) scheduled_cancel: Mutex<Option<Arc<Notify>>>,
+    /// Held by a scheduled fetch from before it shows as running until it ends;
+    /// cancelling one waits for it.
+    pub(super) scheduled_running: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -135,6 +204,7 @@ struct HeldErrors {
     load: Option<serde_json::Value>,
     live_updates: Option<serde_json::Value>,
     status: Option<serde_json::Value>,
+    stashes: Option<serde_json::Value>,
 }
 
 /// What a held `repo-error` is about.
@@ -146,6 +216,8 @@ pub(super) enum ErrorKind {
     LiveUpdates,
     /// `git status` failed or took too long.
     Status,
+    /// The stash list could not be read.
+    Stashes,
 }
 
 /// The state lock's contents.
@@ -163,7 +235,13 @@ pub(super) struct Slot {
     pub(super) fetch: FetchState,
     /// The repository was closed; no load may start and no refresh may apply.
     pub(super) closed: bool,
-    /// Sequence number of the last snapshot built for emitting.
+    /// The operation running, if any. Set and cleared while holding `refresh_lock` too.
+    op: Option<RunningOp>,
+    /// A status read that ended while an operation ran, with its read number: kept for the
+    /// operation's final refresh rather than applied mid-operation.
+    held_status: Option<(u64, TreeState)>,
+    /// Sequence number of the last snapshot built for emitting (or for an operation's
+    /// outcome): the snapshots' `seq`.
     emit_seq: u64,
 }
 
@@ -182,12 +260,17 @@ impl Slot {
     }
 
     /// The served state's snapshot, except that `viewOptions` are the newest ones asked for,
-    /// even while the reload they started is still loading.
+    /// even while the reload they started is still loading, and `inProgress` and `status` are
+    /// the newest read (read together, they must agree; neither depends on the rows).
     fn snapshot(&self, id: &RepoIdentity, loading: bool) -> RepoSnapshot {
         let mut snapshot = self.current.snapshot(id, loading, &self.fetch);
         if let Some(pending) = &self.pending {
             snapshot.view_options = pending.view().clone();
+            snapshot.in_progress.clone_from(&pending.info().in_progress);
+            snapshot.status.clone_from(&pending.info().status);
         }
+        snapshot.op.clone_from(&self.op);
+        snapshot.seq = self.emit_seq;
         snapshot
     }
 
@@ -197,15 +280,51 @@ impl Slot {
             || (self.load_id != 0 && repo.abandoned_load.load(Ordering::SeqCst) == self.load_id)
     }
 
-    /// A snapshot to emit, stamped so that emits arriving out of order can be dropped.
+    /// A snapshot to emit, stamped (and its `seq` set) so that emits arriving out of order
+    /// can be dropped.
     pub(super) fn snapshot_to_emit(&mut self, id: &RepoIdentity, loading: bool) -> Stamped {
         self.emit_seq += 1;
         Stamped(self.emit_seq, self.snapshot(id, loading))
+    }
+
+    /// `to_emit` if there is a change to emit, with the snapshot to return (the emitted one,
+    /// or else the snapshot as it is).
+    fn emitted_or_current(
+        &mut self,
+        id: &RepoIdentity,
+        loading: bool,
+        changed: bool,
+    ) -> (Option<Stamped>, RepoSnapshot) {
+        if changed {
+            let stamped = self.snapshot_to_emit(id, loading);
+            let snapshot = stamped.1.clone();
+            (Some(stamped), snapshot)
+        } else {
+            (None, self.snapshot(id, loading))
+        }
     }
 }
 
 /// A snapshot and its emit sequence number.
 pub(super) struct Stamped(u64, RepoSnapshot);
+
+/// What a status read gives: the working tree's changes and what git is stopped in, read
+/// together so that they land together.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TreeState {
+    status: WorktreeStatus,
+    in_progress: Option<InProgress>,
+}
+
+impl TreeState {
+    /// The tree state `info` carries.
+    fn of(info: &RepoInfo) -> Self {
+        Self {
+            status: info.status.clone(),
+            in_progress: info.in_progress.clone(),
+        }
+    }
+}
 
 impl Repo {
     /// Emits `repo-error` with `payload`, or, while nobody has asked for this repository yet,
@@ -226,6 +345,7 @@ impl Repo {
             ErrorKind::Load => held.load = Some(payload),
             ErrorKind::LiveUpdates => held.live_updates = Some(payload),
             ErrorKind::Status => held.status = Some(payload),
+            ErrorKind::Stashes => held.stashes = Some(payload),
         }
     }
 
@@ -236,6 +356,7 @@ impl Repo {
             ErrorKind::Load => held.load = None,
             ErrorKind::LiveUpdates => held.live_updates = None,
             ErrorKind::Status => held.status = None,
+            ErrorKind::Stashes => held.stashes = None,
         }
     }
 
@@ -251,11 +372,17 @@ impl Repo {
                 held.live_updates.take(),
                 held.load.take(),
                 held.status.take(),
+                held.stashes.take(),
             ]
         };
         for payload in held.into_iter().flatten() {
             sink.emit("repo-error", payload);
         }
+    }
+
+    /// Whether the repository has been closed.
+    pub(crate) async fn is_closed(&self) -> bool {
+        self.slot.read().await.closed
     }
 
     pub(super) fn is_loading(&self) -> bool {
@@ -279,14 +406,43 @@ impl Repo {
         }
     }
 
-    /// Reads what the rows need (HEAD, refs, remotes, worktrees), with `status` as the
-    /// status.
-    async fn read_info(&self, status: WorktreeStatus) -> Result<RepoInfo> {
-        read_info(&self.runner, &self.worktree, status).await
+    /// Reads what the rows need (HEAD, refs, remotes, worktrees, stashes), with `tree` as the
+    /// status and in-progress state. Stashes that cannot be read are none (see
+    /// [`Repo::stashes_read`]).
+    async fn read_info(&self, sink: &dyn EventSink, tree: TreeState) -> Result<RepoInfo> {
+        let (info, stash_error) = read_info(&self.runner, &self.worktree, tree).await?;
+        self.stashes_read(sink, stash_error);
+        Ok(info)
+    }
+
+    /// Notes how reading the stash list went: a failure is reported once with `repo-error`
+    /// (until a read succeeds again), and the repository goes on without stashes.
+    fn stashes_read(&self, sink: &dyn EventSink, error: Option<CoreError>) {
+        match error {
+            None => {
+                if self.stashes_failed.swap(false, Ordering::SeqCst) {
+                    self.clear_held_error(ErrorKind::Stashes);
+                }
+            }
+            Some(reason) => {
+                if !self.stashes_failed.swap(true, Ordering::SeqCst) {
+                    self.report_error(
+                        sink,
+                        ErrorKind::Stashes,
+                        stashes_unavailable(self.identity.repo_id, reason),
+                    );
+                }
+            }
+        }
     }
 }
 
 impl RepoManager {
+    /// Why the git found is too old for the app (M3), if it is.
+    pub fn git_problem(&self) -> Option<String> {
+        self.runner.version_problem()
+    }
+
     pub fn new(runner: GitRunner, sink: Arc<dyn EventSink>) -> Arc<Self> {
         Arc::new(Self {
             runner,
@@ -305,6 +461,22 @@ impl RepoManager {
             #[cfg(any(test, feature = "testutil"))]
             status_delay_ms: AtomicU64::new(0),
             opening: Mutex::new(HashMap::new()),
+            last_op_id: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testutil"))]
+            op_delay_ms: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testutil"))]
+            op_panic: AtomicBool::new(false),
+            #[cfg(any(test, feature = "testutil"))]
+            folded_refreshes: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testutil"))]
+            fetch_panic: AtomicBool::new(false),
+            #[cfg(any(test, feature = "testutil"))]
+            scheduled_fetch_gap_ms: AtomicU64::new(0),
+            editor_record: Mutex::new(None),
+            #[cfg(any(test, feature = "testutil"))]
+            editor_launches: Mutex::new(None),
+            #[cfg(any(test, feature = "testutil"))]
+            pauses: Mutex::new(HashMap::new()),
         })
     }
 
@@ -314,16 +486,30 @@ impl RepoManager {
     /// row comes in when it is known (see [`RepoManager::wait_status`]).
     /// Opening any path of an already open repository returns that repository's snapshot.
     pub async fn open(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
+        Ok(self.open_as(path, true).await?.0)
+    }
+
+    /// Like [`RepoManager::open`], also saying when `path` is in another worktree of a
+    /// repository already open, whose tab acts on its own worktree (R42; switching worktrees
+    /// is Plan 3): then that other worktree's path comes back too.
+    pub async fn open_noting_worktree(
+        self: &Arc<Self>,
+        path: &Path,
+    ) -> Result<(RepoSnapshot, Option<String>)> {
         self.open_as(path, true).await
     }
 
     /// Like [`RepoManager::open`], for a repository the UI has not asked for yet (opened
     /// ahead at start): its `repo-error`s are held until a later `open` adopts it.
     pub async fn open_in_background(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
-        self.open_as(path, false).await
+        Ok(self.open_as(path, false).await?.0)
     }
 
-    async fn open_as(self: &Arc<Self>, path: &Path, adopt: bool) -> Result<RepoSnapshot> {
+    async fn open_as(
+        self: &Arc<Self>,
+        path: &Path,
+        adopt: bool,
+    ) -> Result<(RepoSnapshot, Option<String>)> {
         if !path.exists() {
             return Err(CoreError::new(
                 ErrorCode::PathMissing,
@@ -340,7 +526,9 @@ impl RepoManager {
                 if adopt {
                     repo.adopt(self.sink.as_ref());
                 }
-                return Ok(repo.snapshot().await);
+                let other =
+                    (location.worktree != repo.worktree).then(|| path_string(&location.worktree));
+                return Ok((repo.snapshot().await, other));
             }
             let waiting = {
                 let mut opening = lock(&self.opening);
@@ -365,7 +553,8 @@ impl RepoManager {
         };
 
         let runner = self.runner.clone();
-        let info = read_info(&runner, &location.worktree, WorktreeStatus::default()).await?;
+        let (info, stash_error) =
+            read_info(&runner, &location.worktree, TreeState::default()).await?;
         let root = info
             .worktrees
             .iter()
@@ -384,6 +573,7 @@ impl RepoManager {
             branches: None,
             show_remotes: true,
             show_tags: true,
+            show_stashes: true,
         };
         let repo = Arc::new(Repo {
             identity: RepoIdentity {
@@ -398,7 +588,7 @@ impl RepoManager {
             root,
             worktree: location.worktree,
             common_dir: location.common_dir,
-            runner,
+            runner: runner.for_repo(id),
             slot: RwLock::new(Slot {
                 current: RepoState::new(info, view, 1),
                 pending: None,
@@ -406,6 +596,8 @@ impl RepoManager {
                 load_failed: false,
                 fetch: FetchState::default(),
                 closed: false,
+                op: None,
+                held_status: None,
                 emit_seq: 0,
             }),
             loading: watch::channel(None).0,
@@ -421,11 +613,21 @@ impl RepoManager {
                 ..HeldErrors::default()
             }),
             status_failed: AtomicBool::new(false),
+            stashes_failed: AtomicBool::new(false),
             status_idle: watch::channel(false).0,
             status_reader: Mutex::new(StatusReader::default()),
             status_seq: AtomicU64::new(0),
             body_search: Mutex::new(None),
+            op_queue: tokio::sync::Mutex::new(()),
+            op_waiting: AtomicU32::new(0),
+            op_order: Default::default(),
+            incoming_name: Mutex::new(None),
+            running_stop: Mutex::new(None),
+            user_fetch: AtomicBool::new(false),
+            scheduled_cancel: Mutex::new(None),
+            scheduled_running: Arc::new(tokio::sync::Mutex::new(())),
         });
+        repo.stashes_read(self.sink.as_ref(), stash_error);
 
         // Nobody else can hold this lock yet; holding it while registering the repository
         // means no query sees it before its load has started.
@@ -447,7 +649,8 @@ impl RepoManager {
             if adopt {
                 existing.adopt(self.sink.as_ref());
             }
-            return Ok(existing.snapshot().await);
+            let other = (repo.worktree != existing.worktree).then(|| path_string(&repo.worktree));
+            return Ok((existing.snapshot().await, other));
         }
         if slot.current.has_tips() {
             start_load(&repo, &mut slot, &self.sink);
@@ -463,7 +666,7 @@ impl RepoManager {
         self.start_schedule();
         // Status beside the log.
         self.request_status(&repo);
-        Ok(snapshot)
+        Ok((snapshot, None))
     }
 
     /// Sets how long `git status` may take (tests only; normally 60 s).
@@ -509,8 +712,8 @@ impl RepoManager {
             loop {
                 lock(&repo.status_reader).again = false;
                 let seq = repo.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
-                if let Some(status) = m.read_status_now(&repo).await {
-                    let _ = m.apply_status(&repo, status, seq).await;
+                if let Some(tree) = m.read_status_now(&repo).await {
+                    let _ = m.apply_status(&repo, tree, seq).await;
                 }
                 let mut reader = lock(&repo.status_reader);
                 if !reader.again || lock(&m.repos).get(&repo.identity.repo_id).is_none() {
@@ -522,9 +725,10 @@ impl RepoManager {
         });
     }
 
-    /// Reads the working tree's status, giving up after the status timeout. A failure is
-    /// said once, as `repo-error`, until a read succeeds again: `None`.
-    async fn read_status_now(&self, repo: &Repo) -> Option<WorktreeStatus> {
+    /// Reads the working tree's status and what git is stopped in (one more cheap read,
+    /// using the status's conflicted paths), giving up after the status timeout. A failure
+    /// is said once, as `repo-error`, until a read succeeds again: `None`.
+    async fn read_status_now(&self, repo: &Repo) -> Option<TreeState> {
         let timeout = Duration::from_millis(self.status_timeout_ms.load(Ordering::Relaxed));
         let started = std::time::Instant::now();
         let read = tokio::time::timeout(timeout, async {
@@ -533,14 +737,31 @@ impl RepoManager {
                 let delay = self.status_delay_ms.load(Ordering::Relaxed);
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
-            read_status(&repo.runner, &repo.worktree).await
+            let (status, conflicted) =
+                read_status_and_conflicts(&repo.runner, &repo.worktree).await?;
+            let known = lock(&repo.incoming_name).clone();
+            let in_progress =
+                read_in_progress_with(&repo.runner, &repo.worktree, conflicted, known.as_ref())
+                    .await?;
+            if in_progress.is_none() && known.is_some() {
+                // What the app started has ended: its name is not for whatever comes next.
+                // Unless a newer one was remembered while this read ran.
+                let mut name = lock(&repo.incoming_name);
+                if *name == known {
+                    *name = None;
+                }
+            }
+            Ok::<_, CoreError>(TreeState {
+                status,
+                in_progress,
+            })
         })
         .await;
         let reason = match read {
-            Ok(Ok(status)) => {
+            Ok(Ok(tree)) => {
                 repo.status_failed.store(false, Ordering::SeqCst);
                 repo.clear_held_error(ErrorKind::Status);
-                return Some(status);
+                return Some(tree);
             }
             Ok(Err(e)) => e,
             Err(_) => {
@@ -563,25 +784,51 @@ impl RepoManager {
         None
     }
 
-    /// Applies `status` from read number `seq`, unless a newer read has started since: the
-    /// uncommitted row appears, changes or goes, in a new generation. Takes `refresh_lock`
-    /// only for this, which involves no git.
-    async fn apply_status(&self, repo: &Arc<Repo>, status: WorktreeStatus, seq: u64) -> Result<()> {
+    /// Applies `tree` (status and in-progress state) from read number `seq`, unless a newer
+    /// read has started since: the uncommitted row appears, changes or goes, in a new
+    /// generation, and a change of either is emitted. While an operation runs it is held
+    /// for the operation's final refresh instead. Takes `refresh_lock` only for this, which
+    /// involves no git.
+    async fn apply_status(&self, repo: &Arc<Repo>, tree: TreeState, seq: u64) -> Result<()> {
         let _serial = repo.refresh_lock.lock().await;
         if repo.status_seq.load(Ordering::SeqCst) != seq {
             return Ok(());
         }
+        {
+            let mut slot = repo.slot.write().await;
+            if slot.op.is_some() {
+                // Shown with the operation's end, not before it.
+                slot.held_status = Some((seq, tree));
+                return Ok(());
+            }
+        }
         let mut info = repo.slot.read().await.target().info().clone();
-        if info.status == status {
+        if TreeState::of(&info) == tree {
             return Ok(());
         }
-        info.status = status;
-        self.apply(repo, info, None).await.map(|_| ())
+        info.status = tree.status;
+        info.in_progress = tree.in_progress;
+        self.apply(repo, info, None, None).await.map(|_| ())
     }
 
-    /// Closes a repository and stops its background load and its watcher.
+    /// Closes a repository and stops its background load and its watcher. `busy` while an
+    /// operation runs on it or waits for its turn: reopened, the repository would get a
+    /// queue of its own, and two operations could run on it at once.
     pub async fn close(&self, repo_id: u32) -> Result<()> {
-        let repo = lock(&self.repos)
+        let repo = self.get(repo_id)?;
+        // Held until the repository is marked closed: an operation that takes its turn
+        // after this finds it closed and runs nothing.
+        let idle = repo.op_queue.try_lock().ok();
+        if idle.is_none() || repo.op_waiting.load(Ordering::SeqCst) > 0 {
+            let fetching =
+                repo.user_fetch.load(Ordering::SeqCst) && repo.slot.read().await.op.is_none();
+            return Err(if fetching {
+                busy_with_fetch()
+            } else {
+                busy_with_op()
+            });
+        }
+        lock(&self.repos)
             .remove(&repo_id)
             .ok_or_else(|| unknown_repo(repo_id))?;
         drop(lock(&repo.watcher).take());
@@ -604,6 +851,14 @@ impl RepoManager {
 
     pub async fn snapshot(&self, repo_id: u32) -> Result<RepoSnapshot> {
         Ok(self.get(repo_id)?.snapshot().await)
+    }
+
+    /// The snapshot of an operation's outcome that published nothing (it needed
+    /// confirmation or was refused): as it is, under a `seq` of its own.
+    pub(crate) async fn outcome_snapshot(&self, repo: &Repo) -> RepoSnapshot {
+        let mut slot = repo.slot.write().await;
+        slot.emit_seq += 1;
+        slot.snapshot(&repo.identity, repo.is_loading())
     }
 
     /// Rows `start..start + count` of `generation`, clamped to the rows there are (at most
@@ -748,7 +1003,7 @@ impl RepoManager {
         let repo = self.get(repo_id)?;
         let _serial = repo.refresh_lock.lock().await;
         let info = repo.slot.read().await.target().info().clone();
-        self.apply(&repo, info, Some(o)).await
+        self.apply(&repo, info, Some(o), None).await
     }
 
     /// Re-reads HEAD, refs and worktrees and applies them (emitting at once), then asks for
@@ -760,18 +1015,192 @@ impl RepoManager {
     /// but the returned snapshot already carries the new view options. Overlapping calls
     /// coalesce: a call made while another runs waits for it, and then at most one more
     /// refresh runs for all the calls that waited.
+    ///
+    /// While an operation runs, the refresh is left to the refresh the operation ends with,
+    /// which starts after it; the snapshot as it is returns at once. So the result of an
+    /// operation arrives once, with its end, and never half-done. This holds for the
+    /// refreshes the watcher asks for (usually for the operation's own changes) and for the
+    /// ones the UI asks for (when the window regains focus). It is checked under
+    /// `refresh_lock`, which an operation holds when it publishes its start, so no refresh
+    /// started before an operation can apply after the operation has begun changing the
+    /// repository.
     pub async fn refresh(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
         let repo = self.get(repo_id)?;
+        self.refresh_repo(&repo, true).await
+    }
+
+    /// Like [`RepoManager::refresh`], also while an operation runs: for a fetch, which only
+    /// moves remote-tracking branches.
+    pub(super) async fn refresh_now(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
+        let repo = self.get(repo_id)?;
+        self.refresh_repo(&repo, false).await
+    }
+
+    /// [`RepoManager::refresh`] of `repo`; with `fold_into_op`, not while an operation runs.
+    async fn refresh_repo(
+        self: &Arc<Self>,
+        repo: &Arc<Repo>,
+        fold_into_op: bool,
+    ) -> Result<RepoSnapshot> {
         repo.refresh_wanted.store(true, Ordering::SeqCst);
         let _serial = repo.refresh_lock.lock().await;
+        if fold_into_op && repo.slot.read().await.op.is_some() {
+            // `refresh_wanted` stays set; the operation's final refresh clears it.
+            #[cfg(any(test, feature = "testutil"))]
+            self.folded_refreshes.fetch_add(1, Ordering::SeqCst);
+            return Ok(repo.snapshot().await);
+        }
         if !repo.refresh_wanted.swap(false, Ordering::SeqCst) {
             // A refresh that started after this call was made has already run.
             return Ok(repo.snapshot().await);
         }
-        let status = repo.slot.read().await.target().info().status;
-        let info = repo.read_info(status).await?;
-        let snapshot = self.apply(&repo, info, None).await?;
-        self.request_status(&repo);
+        let tree = TreeState::of(repo.slot.read().await.target().info());
+        let info = repo.read_info(self.sink.as_ref(), tree).await?;
+        let snapshot = self.apply(repo, info, None, None).await?;
+        self.request_status(repo);
+        Ok(snapshot)
+    }
+
+    /// How many refreshes have been folded into an operation's final refresh (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn folded_refreshes(&self) -> u64 {
+        self.folded_refreshes.load(Ordering::SeqCst)
+    }
+
+    /// Next operation id (they start at 1).
+    pub(crate) fn next_op_id(&self) -> u64 {
+        self.last_op_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Makes every operation wait this long after its git commands, before its refresh
+    /// (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_op_delay(&self, delay: Duration) {
+        self.op_delay_ms
+            .store(duration_ms(delay), Ordering::Relaxed);
+    }
+
+    /// Makes the next operation's body panic once it has run, after its test delay (tests
+    /// only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn panic_next_op(&self) {
+        self.op_panic.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the body that just ran is to panic (see [`RepoManager::panic_next_op`]).
+    #[cfg(any(test, feature = "testutil"))]
+    pub(crate) fn take_op_panic(&self) -> bool {
+        self.op_panic.swap(false, Ordering::SeqCst)
+    }
+
+    /// The test delay of [`RepoManager::set_op_delay`]; zero outside tests.
+    pub(crate) fn op_delay(&self) -> Duration {
+        #[cfg(any(test, feature = "testutil"))]
+        {
+            Duration::from_millis(self.op_delay_ms.load(Ordering::Relaxed))
+        }
+        #[cfg(not(any(test, feature = "testutil")))]
+        {
+            Duration::ZERO
+        }
+    }
+
+    /// How long a network operation may stay silent, and run in any case: as a fetch the
+    /// user asked for.
+    pub(crate) fn net_limit(&self) -> crate::git::runner::TimeLimit {
+        crate::git::runner::TimeLimit::idle(
+            Duration::from_millis(self.fetch_timeout_ms.load(Ordering::Relaxed)),
+            Duration::from_millis(self.fetch_cap_ms.load(Ordering::Relaxed)),
+        )
+    }
+
+    /// Marks operation `id` (`title`) as running on `repo` and emits `repo-changed`.
+    /// `unknown_repo` once the repository is closed.
+    pub(crate) async fn start_op(&self, repo: &Repo, id: u64, title: &str) -> Result<()> {
+        let _serial = repo.refresh_lock.lock().await;
+        let started = {
+            let mut slot = repo.slot.write().await;
+            if slot.closed {
+                return Err(unknown_repo(repo.identity.repo_id));
+            }
+            slot.held_status = None;
+            slot.op = Some(RunningOp {
+                id,
+                title: title.to_owned(),
+                started_at_ms: unix_ms(),
+                queued: repo.op_waiting.load(Ordering::SeqCst),
+            });
+            slot.snapshot_to_emit(&repo.identity, repo.is_loading())
+        };
+        repo.publish(self.sink.as_ref(), started);
+        Ok(())
+    }
+
+    /// Emits `repo-changed` with the running operation's new count of waiting requests,
+    /// if it changed.
+    pub(crate) async fn op_queue_changed(&self, repo: &Repo) {
+        let changed = {
+            let mut slot = repo.slot.write().await;
+            let waiting = repo.op_waiting.load(Ordering::SeqCst);
+            match slot.op.as_mut() {
+                Some(op) if op.queued != waiting => op.queued = waiting,
+                _ => return,
+            }
+            slot.snapshot_to_emit(&repo.identity, repo.is_loading())
+        };
+        repo.publish(self.sink.as_ref(), changed);
+    }
+
+    /// Ends operation `id` on `repo`: refreshes (covering every refresh asked for until
+    /// now, the ones folded while it ran included) and clears `op` in the same
+    /// `repo-changed`. The working tree's status is read first and waited for up to
+    /// [`OP_STATUS_WAIT`], so that the snapshot returned (the operation's outcome) and that
+    /// event carry the status after the operation; a status that takes longer lands later,
+    /// in its own `repo-changed`, as after any refresh. If the repository cannot be read,
+    /// `op` is still cleared, and the snapshot is the last one read. `unknown_repo` once
+    /// closed.
+    pub(crate) async fn finish_op(
+        self: &Arc<Self>,
+        repo: &Arc<Repo>,
+        id: u64,
+    ) -> Result<RepoSnapshot> {
+        // Reads numbered above `floor` start after the operation's changes.
+        let floor = repo.status_seq.load(Ordering::SeqCst);
+        self.request_status(repo);
+        let mut idle = repo.status_idle.subscribe();
+        let _ = tokio::time::timeout(OP_STATUS_WAIT, idle.wait_for(|idle| *idle)).await;
+
+        let serial = repo.refresh_lock.lock().await;
+        repo.refresh_wanted.store(false, Ordering::SeqCst);
+        let tree = {
+            let mut slot = repo.slot.write().await;
+            let held = slot.held_status.take().filter(|(seq, _)| *seq > floor);
+            held.map_or_else(|| TreeState::of(slot.target().info()), |(_, tree)| tree)
+        };
+        let snapshot = match repo.read_info(self.sink.as_ref(), tree).await {
+            Ok(info) => self.apply(repo, info, None, Some(id)).await?,
+            Err(_) => {
+                let (to_emit, snapshot) = {
+                    let mut slot = repo.slot.write().await;
+                    if slot.closed {
+                        return Err(unknown_repo(repo.identity.repo_id));
+                    }
+                    let mine = slot.op.as_ref().is_some_and(|op| op.id == id);
+                    if mine {
+                        slot.op = None;
+                    }
+                    slot.emitted_or_current(&repo.identity, repo.is_loading(), mine)
+                };
+                if let Some(stamped) = to_emit {
+                    repo.publish(self.sink.as_ref(), stamped);
+                }
+                drop(serial);
+                // The status read (if it came) was not applied: read it again.
+                self.request_status(repo);
+                return Ok(snapshot);
+            }
+        };
+        drop(serial);
         Ok(snapshot)
     }
 
@@ -801,14 +1230,20 @@ impl RepoManager {
         Some((repo.common_dir.clone(), repo.root.clone()))
     }
 
+    /// The `PATH` programs are found with: the login shell's, as for git, if it was read.
+    pub(crate) fn login_path(&self) -> Option<std::ffi::OsString> {
+        self.runner.login_path().cloned()
+    }
+
     /// The runner used for this repository's commands.
     pub fn runner(&self, repo_id: u32) -> Option<GitRunner> {
         self.get(repo_id).ok().map(|r| r.runner.clone())
     }
 
-    /// Refreshes `repo_id` in the background (if there is a runtime to do it on). Errors have
-    /// no one to go to: a closed repository is expected, and anything else shows up on the
-    /// next refresh the user asks for.
+    /// Refreshes `repo_id` in the background (if there is a runtime to do it on), for a
+    /// change the watcher saw (see [`RepoManager::refresh`]). Errors have no one
+    /// to go to: a closed repository is expected, and anything else shows up on the next
+    /// refresh the user asks for.
     pub(super) fn spawn_refresh(self: &Arc<Self>, repo_id: u32) {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let m = self.clone();
@@ -846,7 +1281,7 @@ impl RepoManager {
         }
     }
 
-    pub(super) fn get(&self, repo_id: u32) -> Result<Arc<Repo>> {
+    pub(crate) fn get(&self, repo_id: u32) -> Result<Arc<Repo>> {
         lock(&self.repos)
             .get(&repo_id)
             .cloned()
@@ -862,13 +1297,15 @@ impl RepoManager {
 
     /// Applies newly read `info` and, if given, new view options (else the current ones):
     /// starts a reload when the commits may change, otherwise updates labels and the
-    /// uncommitted row in place. Emits `repo-changed` if anything visible changed. Callers
-    /// hold `refresh_lock`.
+    /// uncommitted row in place. With `op_done`, also clears that operation, if it is the one
+    /// running. Emits `repo-changed` if anything visible changed. Callers hold
+    /// `refresh_lock`.
     async fn apply(
         &self,
         repo: &Arc<Repo>,
         info: RepoInfo,
         view: Option<ViewOptions>,
+        op_done: Option<u64>,
     ) -> Result<RepoSnapshot> {
         let (to_emit, snapshot) = {
             let mut slot = repo.slot.write().await;
@@ -877,7 +1314,8 @@ impl RepoManager {
             }
             let view = view.unwrap_or_else(|| slot.target().view().clone());
             let view = normalize_view(view, &info);
-            let changed = if slot.load_incomplete(repo) || slot.target().needs_reload(&info, &view)
+            let changed = if slot.load_incomplete(repo)
+                || slot.target().needs_reload(&info, &view, repo.is_loading())
             {
                 let next = RepoState::new(info, view, 0);
                 let has_tips = next.has_tips();
@@ -896,22 +1334,25 @@ impl RepoManager {
                 }
                 true
             } else if let Some(pending) = slot.pending.as_mut() {
-                // Not served yet: nothing visible changes until it replaces `current`.
+                // Not served yet: nothing visible changes until it replaces `current`, except
+                // the in-progress state and the status, which the snapshot takes from it.
+                let before = TreeState::of(pending.info());
                 pending.update(info, view);
-                false
+                TreeState::of(pending.info()) != before
             } else {
-                let changed = slot.current.update(info, view);
-                if changed {
+                let update = slot.current.update(info, view);
+                if update == Update::Rows {
                     slot.current.generation += 1;
                 }
-                changed
+                update != Update::Nothing
             };
-            let loading = repo.is_loading();
-            let snapshot = slot.snapshot(&repo.identity, loading);
-            (
-                changed.then(|| slot.snapshot_to_emit(&repo.identity, loading)),
-                snapshot,
-            )
+            let op_cleared =
+                op_done.is_some_and(|id| slot.op.as_ref().is_some_and(|op| op.id == id));
+            if op_cleared {
+                slot.op = None;
+            }
+            let changed = changed || op_cleared;
+            slot.emitted_or_current(&repo.identity, repo.is_loading(), changed)
         };
         if let Some(stamped) = to_emit {
             repo.publish(self.sink.as_ref(), stamped);
@@ -1038,30 +1479,55 @@ struct Location {
     common_dir: PathBuf,
 }
 
-/// Head, refs, remotes and worktrees, read concurrently in `worktree`, with `status` as the
-/// status.
+/// Head, refs, remotes, worktrees and stashes, read concurrently in `worktree`, with `tree`
+/// as the status and in-progress state. Stashes that cannot be read (a corrupt
+/// `refs/stash`) are none, and the error comes back beside the info: the repository is
+/// usable without them.
 async fn read_info(
     runner: &GitRunner,
     worktree: &Path,
-    status: WorktreeStatus,
-) -> Result<RepoInfo> {
-    let (head, refs, remotes, worktrees) = tokio::join!(
+    tree: TreeState,
+) -> Result<(RepoInfo, Option<CoreError>)> {
+    let (head, refs, remotes, worktrees, stashes) = tokio::join!(
         read_head(runner, worktree),
         read_refs(runner, worktree),
         read_remotes(runner, worktree),
         read_worktrees(runner, worktree),
+        read_stashes(runner, worktree),
     );
     let mut worktrees = worktrees?;
     for wt in &mut worktrees {
         wt.path = path_string(&canonical(Path::new(&wt.path)));
     }
-    Ok(RepoInfo {
-        head: head?,
-        refs: refs?,
-        remotes: remotes?,
-        worktrees,
-        status,
-    })
+    let (stashes, stash_error) = match stashes {
+        Ok(stashes) => (stashes, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    Ok((
+        RepoInfo {
+            head: head?,
+            refs: refs?,
+            remotes: remotes?,
+            worktrees,
+            status: tree.status,
+            in_progress: tree.in_progress,
+            stashes,
+        },
+        stash_error,
+    ))
+}
+
+/// The `repo-error` payload saying that the stashes could not be read.
+fn stashes_unavailable(repo_id: u32, reason: CoreError) -> serde_json::Value {
+    let mut error = CoreError::new(
+        reason.code,
+        format!(
+            "Could not read the stashes, so none are shown: {}",
+            reason.message
+        ),
+    );
+    error.detail = reason.detail;
+    serde_json::json!({ "repoId": repo_id, "error": error })
 }
 
 /// The `repo-error` payload saying that the working tree's changes could not be read.
@@ -1111,7 +1577,21 @@ fn bare_repo() -> CoreError {
     )
 }
 
-pub(super) fn unknown_repo(repo_id: u32) -> CoreError {
+fn busy_with_fetch() -> CoreError {
+    CoreError::new(
+        ErrorCode::Busy,
+        "A fetch is running on this repository. Close it once the fetch is done.",
+    )
+}
+
+fn busy_with_op() -> CoreError {
+    CoreError::new(
+        ErrorCode::Busy,
+        "An operation is running on this repository. Close it once the operation is done.",
+    )
+}
+
+pub(crate) fn unknown_repo(repo_id: u32) -> CoreError {
     CoreError::new(
         ErrorCode::UnknownRepo,
         format!("No open repository has id {repo_id}."),
@@ -1140,6 +1620,66 @@ mod tests {
             "Live updates are unavailable for this repository: Could not watch x."
         );
         assert_eq!(payload["error"]["detail"], "os said no");
+    }
+
+    /// While a reload is pending, the snapshot takes what git is stopped in from it, and the
+    /// working tree's status with it: the two are read together and must agree (a merge
+    /// ended outside the app must not leave the old conflict count to show as leftovers).
+    #[test]
+    fn a_pending_reload_gives_the_snapshot_its_status_and_in_progress_together() {
+        use crate::dto::{InProgress, InProgressKind, WorktreeStatus};
+        let stopped = RepoInfo {
+            status: WorktreeStatus {
+                changed: 2,
+                conflicted: 2,
+                conflicted_paths: vec!["a.txt".into(), "b.txt".into()],
+                ..Default::default()
+            },
+            in_progress: Some(InProgress {
+                kind: InProgressKind::Merge,
+                files: Vec::new(),
+                file_count: 2,
+                step: None,
+                total: None,
+                subject: None,
+                incoming: None,
+                rebasing: None,
+                commit: None,
+                empty: false,
+            }),
+            ..Default::default()
+        };
+        let done = RepoInfo {
+            status: WorktreeStatus::default(),
+            in_progress: None,
+            ..Default::default()
+        };
+        let view = ViewOptions {
+            branches: None,
+            show_remotes: true,
+            show_tags: true,
+            show_stashes: true,
+        };
+        let slot = Slot {
+            current: RepoState::new(stopped, view.clone(), 1),
+            pending: Some(RepoState::new(done, view, 0)),
+            load_id: 1,
+            load_failed: false,
+            fetch: FetchState::default(),
+            closed: false,
+            op: None,
+            held_status: None,
+            emit_seq: 0,
+        };
+        let id = RepoIdentity {
+            repo_id: 1,
+            name: "r".into(),
+            root_path: "/r".into(),
+            active_worktree: "/r".into(),
+        };
+        let snap = slot.snapshot(&id, true);
+        assert_eq!(snap.in_progress, None);
+        assert_eq!(snap.status, WorktreeStatus::default());
     }
 
     /// A load that ends without finishing (a panic, an abort) while it is still the newest

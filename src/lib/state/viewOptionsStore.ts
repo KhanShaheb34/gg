@@ -6,11 +6,11 @@ import type { ViewOptions } from "../types";
 /** localStorage key prefix of the view options remembered per repository path. */
 const OPTIONS_KEY = "gg.view.v1:";
 
-export const DEFAULT_OPTIONS: ViewOptions = { branches: null, showRemotes: true, showTags: true };
+export const DEFAULT_OPTIONS: ViewOptions = { branches: null, showRemotes: true, showTags: true, showStashes: true };
 
 export function sameOptions(a: ViewOptions | undefined, b: ViewOptions | undefined): boolean {
   if (!a || !b) return a === b;
-  if (a.showRemotes !== b.showRemotes || a.showTags !== b.showTags) return false;
+  if (a.showRemotes !== b.showRemotes || a.showTags !== b.showTags || a.showStashes !== b.showStashes) return false;
   if (a.branches === null || b.branches === null) return a.branches === b.branches;
   return a.branches.length === b.branches.length && a.branches.every((n, i) => n === b.branches![i]);
 }
@@ -25,7 +25,10 @@ export function readOptions(path: string): ViewOptions | null {
     const validBranches =
       branches === null || (Array.isArray(branches) && branches.every((b) => typeof b === "string"));
     if (!validBranches || typeof o.showRemotes !== "boolean" || typeof o.showTags !== "boolean") return null;
-    return { branches: branches as string[] | null, showRemotes: o.showRemotes, showTags: o.showTags };
+    // Remembered before stashes were shown: shown.
+    const showStashes = o.showStashes === undefined ? true : o.showStashes;
+    if (typeof showStashes !== "boolean") return null;
+    return { branches: branches as string[] | null, showRemotes: o.showRemotes, showTags: o.showTags, showStashes };
   } catch {
     return null;
   }

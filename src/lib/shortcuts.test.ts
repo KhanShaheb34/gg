@@ -80,3 +80,21 @@ describe("shortcutFor elsewhere (Ctrl)", () => {
     expect(pc(key("r", { metaKey: true }))).toBeNull();
   });
 });
+
+describe("the notices shortcut", () => {
+  it("F6 alone moves to the newest notice, on every platform", () => {
+    expect(shortcutFor(key("F6"), true)).toEqual({ kind: "notices" });
+    expect(shortcutFor(key("F6"), false)).toEqual({ kind: "notices" });
+    expect(shortcutFor(key("F6", { shiftKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("F6", { metaKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "notices" })).toBe(false);
+  });
+
+  it("Cmd+Shift+L shows or hides the command log (Ctrl+Shift+L elsewhere)", () => {
+    expect(shortcutFor(key("L", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "log" });
+    expect(shortcutFor(key("l", { ctrlKey: true, shiftKey: true }), false)).toEqual({ kind: "log" });
+    expect(shortcutFor(key("l", { metaKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("l", { ctrlKey: true, shiftKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "log" })).toBe(false);
+  });
+});

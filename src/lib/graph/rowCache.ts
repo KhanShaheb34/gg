@@ -43,10 +43,29 @@ export class RowCache {
     this.totalRows = totalRows;
   }
 
+  /** The generation whose rows these are. */
+  get rowsGeneration(): number {
+    return this.generation;
+  }
+
   /** Row `index`, if loaded. */
   get(index: number): CommitRow | undefined {
     const page = Math.floor(index / this.pageSize);
     return this.pages.get(page)?.[index - page * this.pageSize];
+  }
+
+  /** The first loaded row `match` holds for, if any (a scan of the few pages kept). */
+  find(match: (row: CommitRow) => boolean): CommitRow | undefined {
+    for (const rows of this.pages.values()) {
+      const row = rows.find(match);
+      if (row) return row;
+    }
+    return undefined;
+  }
+
+  /** The loaded row of commit `hash`, if any. */
+  byHash(hash: string): CommitRow | undefined {
+    return this.find((r) => r.hash === hash);
   }
 
   /** Whether every row of `first..=last` (clipped to the rows there are) is loaded. */

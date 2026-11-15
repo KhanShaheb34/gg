@@ -50,7 +50,15 @@ impl Harness {
     /// Opens `path`, waits for the log to load and the status to be read, and returns the
     /// snapshot.
     async fn open(&self, path: &Path) -> RepoSnapshot {
-        let snap = self.m.open(path).await.expect("open");
+        let snap = self.m.open(path).await.unwrap_or_else(|e| {
+            panic!(
+                "open {} failed: {:?}: {}\n{}",
+                path.display(),
+                e.code,
+                e.message,
+                e.detail.as_deref().unwrap_or("(no detail)")
+            )
+        });
         self.wait(snap.repo_id).await;
         tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
             .await
@@ -195,6 +203,7 @@ async fn new_worktree_triggers_refresh() {
     let status = std::process::Command::new("git")
         .args(["checkout", "-q", "--detach"])
         .current_dir(&wt)
+        .env("GIT_CONFIG_GLOBAL", gg_core::testutil::empty_git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .status()
         .unwrap();
@@ -208,6 +217,110 @@ async fn new_worktree_triggers_refresh() {
         changed.is_some(),
         "detached linked worktree never showed up"
     );
+}
+
+/// `main` and `other` both change `clash.txt` after `base`. HEAD on `main`.
+fn clashing(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("other");
+    repo.checkout("other");
+    repo.write("clash.txt", "other\n");
+    repo.commit_all("other side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+}
+
+/// Runs git in `dir` (a linked worktree) with the test repository's isolation.
+fn git_in(dir: &Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", gg_core::testutil::empty_git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_EDITOR", "true")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// A merge started and aborted in a terminal shows up and goes away by the watcher alone,
+/// in the main worktree and in a linked one (whose state files live under
+/// `.git/worktrees/<name>/`).
+#[tokio::test]
+async fn in_progress_changes_arrive_by_the_watcher() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    assert!(!repo.git_succeeds(&["merge", "other"]));
+    let changed = h
+        .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
+        .await
+        .expect("the merge showed up");
+    assert_eq!(changed.in_progress.unwrap().paths(), ["clash.txt"]);
+    repo.git(&["merge", "--abort"]);
+    assert!(
+        h.changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_none()
+            && s.status.conflicted == 0)
+            .await
+            .is_some(),
+        "the merge went away"
+    );
+
+    let wt = repo.add_worktree("linked");
+    let h = harness().await;
+    let id = h.open(&wt).await.repo_id;
+    assert!(!git_in(&wt, &["merge", "other"]));
+    assert!(
+        repo.path()
+            .join(".git/worktrees/wt-linked/MERGE_HEAD")
+            .exists()
+    );
+    let changed = h
+        .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
+        .await
+        .expect("the linked worktree's merge showed up");
+    assert_eq!(changed.in_progress.unwrap().paths(), ["clash.txt"]);
+    assert!(git_in(&wt, &["merge", "--abort"]));
+    assert!(
+        h.changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_none())
+            .await
+            .is_some(),
+        "the linked worktree's merge went away"
+    );
+}
+
+/// A merge stopped before committing that changes nothing in the working tree (`-s ours`):
+/// the status and the rows stay the same, and the change of state is still published,
+/// under the same generation.
+#[tokio::test]
+async fn in_progress_change_alone_is_published() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    repo.git(&["merge", "--no-commit", "--no-ff", "-s", "ours", "other"]);
+    h.m.refresh(id).await.unwrap();
+    let changed = h
+        .changed(id, CHANGE_TIMEOUT, |s| s.in_progress.is_some())
+        .await
+        .expect("published");
+    assert_eq!(changed.status, snap.status, "the status did not change");
+    assert!(changed.in_progress.unwrap().files.is_empty());
+    // The rows did not change: no new generation (the UI would refetch them all).
+    assert_eq!(changed.generation, snap.generation);
+    assert!(changed.seq > snap.seq);
+    let rows =
+        h.m.rows(id, snap.generation, 0, 10)
+            .await
+            .expect("same rows");
+    assert_eq!(rows.rows.len() as u32, snap.total_rows);
 }
 
 #[tokio::test]
@@ -296,6 +409,10 @@ async fn watcher_ignores_objects_logs_and_lock_files() {
     }
     let (fired, on_change) = counter();
     let _watcher = watch_git_dir(git_dir, on_change).unwrap();
+    // The OS may still report the set-up above (FSEvents delivers with latency): let that
+    // pass, and count only what follows.
+    tokio::time::sleep(QUIET_WINDOW).await;
+    fired.store(0, Ordering::SeqCst);
 
     std::fs::write(git_dir.join("objects/ab/cdef"), "blob").unwrap();
     std::fs::create_dir_all(git_dir.join("objects/pack")).unwrap();
@@ -885,9 +1002,16 @@ async fn scheduled_fetch_never_runs_hooks() {
         [
             "-c".to_owned(),
             format!("core.hooksPath={null}"),
+            "-c".into(),
+            "gc.auto=0".into(),
+            "-c".into(),
+            "maintenance.auto=false".into(),
+            "-c".into(),
+            "fetch.writeCommitGraph=false".into(),
             "fetch".into(),
             "--all".into(),
-            "--prune".into()
+            "--prune".into(),
+            "--no-auto-maintenance".into()
         ]
     );
 
@@ -896,6 +1020,69 @@ async fn scheduled_fetch_never_runs_hooks() {
     other.git(&["push", "-q", "origin", "main"]);
     h.m.fetch(id).await.unwrap();
     assert!(marker.exists(), "the user's fetch ran the hook");
+}
+
+/// I5 / R42: a scheduled fetch never runs git's auto-maintenance in the user's repository
+/// (no repack, no commit-graph), whatever the repository's config asks for; it writes only
+/// what the fetch brings. Here the config would have a plain `git fetch` repack its two packs
+/// and write a commit-graph.
+#[tokio::test]
+async fn scheduled_fetch_never_runs_auto_maintenance() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&["repack", "-q", "-d"]);
+    repo.commit("two");
+    repo.git(&["repack", "-q", "-d"]);
+    let origin = repo.clone_as_remote();
+    let other = second_clone(&origin);
+    let fetched = other.commit("pushed");
+    other.git(&["push", "-q", "origin", "main"]);
+    for (key, value) in [
+        ("gc.auto", "1"),
+        ("gc.autoPackLimit", "1"),
+        ("gc.autoDetach", "false"),
+        ("gc.writeCommitGraph", "true"),
+        ("maintenance.auto", "true"),
+        ("maintenance.autoDetach", "false"),
+        ("fetch.writeCommitGraph", "true"),
+        ("fetch.unpackLimit", "1000"),
+    ] {
+        repo.git(&["config", key, value]);
+    }
+    let objects = repo.path().join(".git/objects");
+    let packs = || {
+        let mut names: Vec<String> = std::fs::read_dir(objects.join("pack"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".pack"))
+            .collect();
+        names.sort();
+        names
+    };
+    let before = packs();
+    assert_eq!(before.len(), 2, "{before:?}");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    h.m.set_fetch_interval(1);
+    let done = h
+        .changed(id, TIMEOUT, |s| {
+            s.total_rows == 3 && !s.fetch.running && s.fetch.last_at_ms.is_some()
+        })
+        .await;
+    h.m.set_fetch_interval(0);
+    assert!(done.is_some(), "no scheduled fetch");
+    assert!(h.m.find_row(id, &fetched).await.unwrap().is_some());
+    assert_eq!(packs(), before, "no repack");
+    assert!(
+        !objects.join("info/commit-graph").exists(),
+        "no commit-graph"
+    );
+    assert!(
+        !objects.join("info/commit-graphs").exists(),
+        "no commit-graph chain"
+    );
 }
 
 // ---------------------------------------------------------------------------------------

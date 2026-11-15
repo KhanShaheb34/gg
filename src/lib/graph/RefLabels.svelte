@@ -2,11 +2,21 @@
   A commit's ref labels: compact pills tinted with the row's lane colour (`--c`, set on the
   row). A branch at the same commit as its remote branches is one pill (`main | origin`); the
   branch checked out in the active worktree is bold with a ring, like HEAD's node; tags are
-  outlined. Never wraps; the description cell clips what does not fit.
+  outlined; stashes (`stash@{0}`) have a colour of their own, not the lane's, and a dotted
+  edge. Never wraps; the description cell clips what does not fit. The graph finds the label
+  a right-click is on by its `data-slot` (a slot's index, or "more" for the "+k" pill).
 -->
 <script lang="ts" module>
   /** Label slots per row: rows are recycled while scrolling, and so are their labels. */
   const SLOTS = [0, 1, 2] as const;
+
+  /**
+   * How many of `count` labels have a slot of their own: all of up to 3; else 2, and a "+k"
+   * pill stands for the rest.
+   */
+  export function ownLabels(count: number): number {
+    return count <= SLOTS.length ? count : SLOTS.length - 1;
+  }
 </script>
 
 <script lang="ts">
@@ -28,11 +38,12 @@
    * Labels with a slot of their own: all of up to 3; else 2, and "+k" for the rest, whose
    * tooltip describes each hidden label as a shown one's does.
    */
-  const own = $derived(labels.length <= SLOTS.length ? labels.length : SLOTS.length - 1);
+  const own = $derived(ownLabels(labels.length));
   const rest = $derived(labels.length - own);
 
   function title(label: RefLabel): string {
-    const parts = [label.kind === "tag" ? `Tag ${label.name}` : label.kind === "remote" ? `Remote branch ${label.name}` : `Branch ${label.name}`];
+    const kinds = { tag: "Tag", remote: "Remote branch", stash: "Stash", branch: "Branch" } as const;
+    const parts = [`${kinds[label.kind]} ${label.name}`];
     if (label.current) parts.push("checked out");
     if (label.remotes.length > 0) parts.push(`same commit on ${label.remotes.join(", ")}`);
     if (label.upstream && (label.ahead > 0 || label.behind > 0)) {
@@ -63,6 +74,7 @@
     class="ref {label?.kind ?? ''}"
     class:current={label?.current}
     hidden={!label}
+    data-slot={k}
     data-ref={label?.name}
     data-current={label?.current}
     title={label ? title(label) : undefined}
@@ -74,6 +86,10 @@
       <g class="i-tag">
         <path d="M1.2 1.2h3.6l4 4-3.6 3.6-4-4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
         <circle cx="3.4" cy="3.4" r="0.8" fill="currentColor" />
+      </g>
+      <g class="i-stash">
+        <path d="M1.3 4.2h7.4v4.3H1.3zM2.2 1.6h5.6l.9 2.6H1.3z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
+        <path d="M3.6 6.2h2.8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
       </g>
       <g class="i-branch">
         <circle cx="3" cy="2" r="1.25" fill="currentColor" />
@@ -97,7 +113,7 @@
     </svg>
   </span>
 {/each}
-<span class="ref more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(title).join("\n")}
+<span class="ref more" data-slot="more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(title).join("\n")}
   >+{rest}</span
 >
 <span
@@ -150,7 +166,8 @@
 
   .current .i-current,
   .tag:not(.current) .i-tag,
-  .ref:not(.current):not(.tag) .i-branch {
+  .stash .i-stash,
+  .ref:not(.current):not(.tag):not(.stash) .i-branch {
     display: inline;
   }
 
@@ -182,6 +199,13 @@
 
   .tag {
     background: transparent;
+  }
+
+  /* A stash belongs to no lane: its own colour, a dotted edge. */
+  .stash {
+    --c: var(--stash);
+    border-style: dotted;
+    font-weight: 500;
   }
 
   .worktree {

@@ -5,10 +5,14 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use gg_core::dto::{FileChange, FileStatus, ViewOptions, WorktreeStatus};
+use gg_core::dto::{
+    ConflictFile, ConflictState, FileChange, FileStatus, InProgress, InProgressKind, ViewOptions,
+    WorktreeStatus,
+};
 use gg_core::error::ErrorCode;
 use gg_core::git::details::read_details;
 use gg_core::git::log::{Commit, LogParser, log_args, read_log};
+use gg_core::git::progress::read_in_progress;
 use gg_core::git::refs::{RefKind, read_head, read_refs, read_remotes};
 use gg_core::git::runner::{CmdKind, CommandLog, GitRunner};
 use gg_core::git::status::read_status;
@@ -26,6 +30,7 @@ fn all_refs() -> ViewOptions {
         branches: None,
         show_remotes: true,
         show_tags: true,
+        show_stashes: true,
     }
 }
 
@@ -160,6 +165,7 @@ async fn read_log_empty_repo_is_ok_without_batches() {
             branches: Some(vec!["main".into()]),
             show_remotes: false,
             show_tags: false,
+            show_stashes: true,
         },
     ] {
         let batches = log_batches(&git, repo.path(), &log_args(&opts, &[])).await;
@@ -197,6 +203,7 @@ async fn read_log_with_files_named_like_revisions() {
         branches: Some(vec!["main".into()]),
         show_remotes: false,
         show_tags: false,
+        show_stashes: true,
     };
     let commits = log_batches(&git, repo.path(), &log_args(&opts, &[]))
         .await
@@ -235,6 +242,7 @@ async fn read_log_unknown_branch_is_git_failed() {
         branches: Some(vec!["nope".into()]),
         show_remotes: false,
         show_tags: false,
+        show_stashes: true,
     };
     let err = read_log(&git, repo.path(), &log_args(&opts, &[]), |_| {
         panic!("no batches expected")
@@ -252,6 +260,7 @@ async fn read_log_selected_branches() {
         branches: Some(vec!["feature".into()]),
         show_remotes: false,
         show_tags: false,
+        show_stashes: true,
     };
     let commits = log_batches(&git, h.repo.path(), &log_args(&opts, &[]))
         .await
@@ -480,7 +489,8 @@ async fn status_counts() {
         WorktreeStatus {
             changed: 0,
             untracked: 0,
-            conflicted: 0
+            conflicted: 0,
+            conflicted_paths: vec![]
         }
     );
 
@@ -493,7 +503,8 @@ async fn status_counts() {
         WorktreeStatus {
             changed: 1,
             untracked: 2,
-            conflicted: 0
+            conflicted: 0,
+            conflicted_paths: vec![]
         }
     );
 
@@ -524,7 +535,8 @@ async fn status_counts_conflicts() {
         WorktreeStatus {
             changed: 1,
             untracked: 0,
-            conflicted: 1
+            conflicted: 1,
+            conflicted_paths: vec!["c.txt".to_owned()]
         }
     );
 }
@@ -807,4 +819,688 @@ async fn details_never_runs_external_diff_or_textconv() {
             rec.args
         );
     }
+}
+
+// ---- In-progress states ----
+
+/// `main` and `feature` both change `clash.txt` after `base`: `feature` in three commits,
+/// "feat one" to "feat three", `main` in one. HEAD on `main`.
+fn clashing(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    for (i, name) in ["one", "two", "three"].iter().enumerate() {
+        repo.write("clash.txt", format!("feature {i}\n"));
+        repo.commit_all(&format!("feat {name}"));
+    }
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+}
+
+async fn in_progress(repo: &TestRepo) -> Option<InProgress> {
+    read_in_progress(&runner().await, repo.path())
+        .await
+        .expect("read_in_progress")
+}
+
+fn stopped(
+    kind: InProgressKind,
+    conflicted: &[&str],
+    step: Option<(u32, u32)>,
+    subject: &str,
+) -> Option<InProgress> {
+    Some(InProgress {
+        kind,
+        // Nothing resolved yet: each still has git's conflict markers.
+        files: conflicted
+            .iter()
+            .map(|p| ConflictFile {
+                path: (*p).to_owned(),
+                state: ConflictState::Markers,
+            })
+            .collect(),
+        file_count: conflicted.len() as u32,
+        step: step.map(|(s, _)| s),
+        total: step.map(|(_, t)| t),
+        subject: Some(subject.to_owned()),
+        incoming: None,
+        rebasing: None,
+        commit: None,
+        empty: false,
+    })
+}
+
+/// `state` with what is coming in (`incoming`) and, for a rebase, the branch being rebased.
+fn coming(state: Option<InProgress>, incoming: &str, rebasing: Option<&str>) -> Option<InProgress> {
+    state.map(|s| InProgress {
+        incoming: Some(incoming.to_owned()),
+        rebasing: rebasing.map(str::to_owned),
+        ..s
+    })
+}
+
+/// `state`, stopped on commit `commit` (R40).
+fn on(state: Option<InProgress>, commit: &str) -> Option<InProgress> {
+    state.map(|s| InProgress {
+        commit: Some(commit.to_owned()),
+        ..s
+    })
+}
+
+#[tokio::test]
+async fn no_state_is_none() {
+    let repo = TestRepo::new();
+    assert_eq!(in_progress(&repo).await, None, "empty repository");
+    clashing(&repo);
+    assert_eq!(in_progress(&repo).await, None);
+    // Conflicts that leave nothing to continue are not a state git is stopped in.
+    assert!(!repo.git_succeeds(&["cherry-pick", "--no-commit", "feature"]));
+    assert_eq!(in_progress(&repo).await, None);
+}
+
+#[tokio::test]
+async fn merge_in_progress_is_read() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    assert_eq!(
+        in_progress(&repo).await,
+        coming(
+            stopped(
+                InProgressKind::Merge,
+                &["clash.txt"],
+                None,
+                "Merge branch 'feature'"
+            ),
+            "feature",
+            None
+        )
+    );
+
+    // Stopped before committing, without conflicts: in progress, nothing conflicted.
+    repo.git(&["merge", "--abort"]);
+    repo.branch("side");
+    repo.checkout("side");
+    repo.commit("on side");
+    repo.checkout("main");
+    repo.git(&["merge", "--no-commit", "--no-ff", "side"]);
+    assert_eq!(
+        in_progress(&repo).await,
+        coming(
+            stopped(InProgressKind::Merge, &[], None, "Merge branch 'side'"),
+            "side",
+            None
+        )
+    );
+}
+
+#[tokio::test]
+async fn rebase_in_progress_is_read() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    repo.checkout("feature");
+    let one = repo.git(&["rev-parse", "feature~2"]);
+    assert!(!repo.git_succeeds(&["rebase", "main"]));
+    assert_eq!(
+        in_progress(&repo).await,
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Rebase,
+                    &["clash.txt"],
+                    Some((1, 3)),
+                    "feat one"
+                ),
+                "main",
+                Some("feature")
+            ),
+            &one
+        )
+    );
+}
+
+#[tokio::test]
+async fn rebase_reports_step_and_total() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    repo.checkout("feature");
+    let (one, two) = (
+        repo.git(&["rev-parse", "feature~2"]),
+        repo.git(&["rev-parse", "feature~1"]),
+    );
+    // The merge backend (rebase-merge/msgnum, end).
+    assert!(!repo.git_succeeds(&["rebase", "main"]));
+    repo.write("clash.txt", "resolved\n");
+    repo.git(&["add", "clash.txt"]);
+    assert!(!repo.git_succeeds(&["rebase", "--continue"]));
+    assert_eq!(
+        in_progress(&repo).await,
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Rebase,
+                    &["clash.txt"],
+                    Some((2, 3)),
+                    "feat two"
+                ),
+                "main",
+                Some("feature")
+            ),
+            &two
+        )
+    );
+    repo.git(&["rebase", "--abort"]);
+
+    // The apply backend (rebase-apply/next, last), which leaves no MERGE_MSG: the subject
+    // is the stopped commit's.
+    assert!(!repo.git_succeeds(&["rebase", "--apply", "main"]));
+    assert_eq!(
+        in_progress(&repo).await,
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Rebase,
+                    &["clash.txt"],
+                    Some((1, 3)),
+                    "feat one"
+                ),
+                "main",
+                Some("feature")
+            ),
+            &one
+        )
+    );
+    repo.write("clash.txt", "resolved\n");
+    repo.git(&["add", "clash.txt"]);
+    assert!(!repo.git_succeeds(&["rebase", "--continue"]));
+    assert_eq!(
+        in_progress(&repo).await.and_then(|p| p.step.zip(p.total)),
+        Some((2, 3))
+    );
+}
+
+#[tokio::test]
+async fn cherry_pick_in_progress_is_read() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    assert!(!repo.git_succeeds(&["cherry-pick", "feature~2"]));
+    let picked = repo.git(&["rev-parse", "feature~2"]);
+    assert_eq!(
+        in_progress(&repo).await,
+        on(
+            coming(
+                stopped(InProgressKind::CherryPick, &["clash.txt"], None, "feat one"),
+                &picked[..8],
+                None
+            ),
+            &picked
+        )
+    );
+}
+
+#[tokio::test]
+async fn revert_in_progress_is_read() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    repo.checkout("feature");
+    assert!(!repo.git_succeeds(&["revert", "--no-edit", "feature~2"]));
+    let reverted = repo.git(&["rev-parse", "feature~2"]);
+    assert_eq!(
+        in_progress(&repo).await,
+        on(
+            coming(
+                stopped(
+                    InProgressKind::Revert,
+                    &["clash.txt"],
+                    None,
+                    "Revert \"feat one\""
+                ),
+                &reverted[..8],
+                None
+            ),
+            &reverted
+        )
+    );
+}
+
+/// R32: what a merge brings in is named by the refs at that commit, a local branch before a
+/// remote one before a tag, else its 8-character hash. Started outside the app.
+#[tokio::test]
+async fn a_merge_names_what_comes_in() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let feature = repo.git(&["rev-parse", "feature"]);
+    let incoming = |repo: &TestRepo| {
+        let repo = repo.path().to_path_buf();
+        async move {
+            read_in_progress(&runner().await, &repo)
+                .await
+                .expect("read_in_progress")
+                .and_then(|p| p.incoming)
+        }
+    };
+    repo.git(&["update-ref", "refs/remotes/origin/feature", &feature]);
+    repo.git(&["tag", "v1", &feature]);
+    repo.git(&["tag", "-a", "-m", "annotated", "v2", &feature]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some("feature"));
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["branch", "-D", "feature"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some("origin/feature"));
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/feature"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some("v1"));
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["tag", "-d", "v1"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(
+        incoming(&repo).await.as_deref(),
+        Some("v2"),
+        "an annotated tag"
+    );
+    repo.git(&["merge", "--abort"]);
+
+    repo.git(&["tag", "-d", "v2"]);
+    assert!(!repo.git_succeeds(&["merge", &feature]));
+    assert_eq!(incoming(&repo).await.as_deref(), Some(&feature[..8]));
+}
+
+#[tokio::test]
+async fn conflicted_paths_with_spaces_and_unicode() {
+    let repo = TestRepo::new();
+    let names = [
+        "a b.txt",
+        "\u{fc}/\u{f1} \u{e9}.txt",
+        "[ab].txt",
+        "gone.txt",
+    ];
+    for name in names {
+        repo.write(name, "base\n");
+    }
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    for name in names {
+        repo.write(name, "feature\n");
+    }
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    for name in &names[..3] {
+        repo.write(name, "main\n");
+    }
+    repo.git(&["rm", "-q", "--", "gone.txt"]);
+    repo.commit_all("main side");
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    let state = in_progress(&repo).await.expect("a merge");
+    // Sorted, relative to the worktree, unquoted; the file deleted on one side included.
+    assert_eq!(
+        state.paths(),
+        [
+            "[ab].txt",
+            "a b.txt",
+            "gone.txt",
+            "\u{fc}/\u{f1} \u{e9}.txt"
+        ]
+    );
+}
+
+/// The state of each file of the merge in `repo` (path, state), in path order.
+async fn states(repo: &TestRepo) -> Vec<(String, ConflictState)> {
+    in_progress(repo)
+        .await
+        .expect("a merge")
+        .files
+        .into_iter()
+        .map(|f| (f.path, f.state))
+        .collect()
+}
+
+fn st(path: &str, state: ConflictState) -> (String, ConflictState) {
+    (path.to_owned(), state)
+}
+
+/// `main` and `feature` both change each of `names` after `base` (each from `base\n` to
+/// "<side>\n"); the merge of `feature` stopped.
+fn both_changed(repo: &TestRepo, names: &[&str]) {
+    for name in names {
+        repo.write(name, "base\n");
+    }
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    for name in names {
+        repo.write(name, "feature\n");
+    }
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    for name in names {
+        repo.write(name, "main\n");
+    }
+    repo.commit_all("main side");
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+}
+
+/// A conflicted text file whose conflict markers are gone is resolved (still unmerged until
+/// it is staged); one that still has a `<<<<<<<` or `>>>>>>>` line is not. A Markdown
+/// underline of `=======` is no marker. Names git would quote (a double quote, a tab) and
+/// one that looks like a report line are read as they are.
+#[tokio::test]
+async fn resolved_files_are_told_from_ones_with_markers() {
+    use ConflictState::{Markers, Resolved};
+    let repo = TestRepo::new();
+    let names = ["clash.txt", "a: 1: b.txt", "say \"hi\"\tthere.md"];
+    both_changed(&repo, &names);
+    let all_marked = vec![
+        st("a: 1: b.txt", Markers),
+        st("clash.txt", Markers),
+        st("say \"hi\"\tthere.md", Markers),
+    ];
+    assert_eq!(states(&repo).await, all_marked);
+
+    repo.write("clash.txt", "resolved\n");
+    repo.write("say \"hi\"\tthere.md", "Title\n=======\n\nText.\n");
+    assert_eq!(
+        states(&repo).await,
+        [
+            st("a: 1: b.txt", Markers),
+            st("clash.txt", Resolved),
+            st("say \"hi\"\tthere.md", Resolved),
+        ]
+    );
+
+    // Only the closing marker left: still not resolved. Eight `<` are no marker.
+    repo.write("a: 1: b.txt", "<<<<<<<< not one\nkept\n>>>>>>> feature\n");
+    assert_eq!(states(&repo).await[0], st("a: 1: b.txt", Markers));
+    repo.write("a: 1: b.txt", "<<<<<<<< not one\n");
+    let state = in_progress(&repo).await.expect("a merge");
+    assert_eq!(state.file_count, 3, "unmerged until staged");
+    assert!(state.files.iter().all(|f| f.state == Resolved), "{state:?}");
+}
+
+/// What `git diff --check` cannot see: a binary conflict (git keeps one side, no markers)
+/// and a file deleted on one side are undecided; a text file marked `-diff` (a lock file)
+/// with markers in it has markers; `conflict-marker-size` is honoured.
+#[tokio::test]
+async fn binary_deleted_and_undiffed_conflicts_are_not_taken_for_resolved() {
+    use ConflictState::{Markers, Resolved, Undecided};
+    let repo = TestRepo::new();
+    repo.write(
+        ".gitattributes",
+        "*.lock -diff\nwide.txt conflict-marker-size=10\n",
+    );
+    repo.write("image.bin", "base\0\x01");
+    repo.write("gone.txt", "base\n");
+    for name in ["deps.lock", "wide.txt"] {
+        repo.write(name, "base\n");
+    }
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("image.bin", "feature\0\x02");
+    repo.write("gone.txt", "feature\n");
+    for name in ["deps.lock", "wide.txt"] {
+        repo.write(name, "feature\n");
+    }
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("image.bin", "main\0\x03");
+    repo.git(&["rm", "-q", "--", "gone.txt"]);
+    for name in ["deps.lock", "wide.txt"] {
+        repo.write(name, "main\n");
+    }
+    repo.commit_all("main side");
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    assert_eq!(
+        states(&repo).await,
+        [
+            st("deps.lock", Markers),
+            st("gone.txt", Undecided),
+            st("image.bin", Undecided),
+            st("wide.txt", Markers),
+        ]
+    );
+    // A run of 7 is no marker where the size is 10.
+    repo.write("wide.txt", "<<<<<<< x\n>>>>>>> y\n");
+    repo.write("deps.lock", "resolved\n");
+    assert_eq!(
+        states(&repo).await,
+        [
+            st("deps.lock", Resolved),
+            st("gone.txt", Undecided),
+            st("image.bin", Undecided),
+            st("wide.txt", Resolved),
+        ]
+    );
+}
+
+/// Conflicts nothing in progress explains (a stash pop's) are named in the status, at most
+/// 200 of them.
+#[tokio::test]
+async fn status_names_conflicted_files() {
+    let repo = TestRepo::new();
+    for i in 0..205 {
+        repo.write(&format!("f{i:03}.txt"), "base\n");
+    }
+    repo.commit_all("base");
+    for i in 0..205 {
+        repo.write(&format!("f{i:03}.txt"), "stashed\n");
+    }
+    repo.git(&["stash", "-q"]);
+    for i in 0..205 {
+        repo.write(&format!("f{i:03}.txt"), "committed\n");
+    }
+    repo.commit_all("moved on");
+    assert!(!repo.git_succeeds(&["stash", "pop"]));
+    let status = read_status(&runner().await, repo.path()).await.unwrap();
+    assert_eq!(status.conflicted, 205);
+    assert_eq!(status.conflicted_paths.len(), 200);
+    assert_eq!(status.conflicted_paths[0], "f000.txt");
+    assert_eq!(status.conflicted_paths[199], "f199.txt");
+}
+
+/// A merge started in a terminal shows in the snapshot after the next refresh, with the
+/// working tree's status.
+#[tokio::test]
+async fn state_started_outside_the_app_is_detected() {
+    use gg_core::repo::RepoManager;
+    use gg_core::testutil::RecordingSink;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let sink = Arc::new(RecordingSink::default());
+    let m = RepoManager::new(runner().await, sink.clone());
+    let id = m.open(repo.path()).await.unwrap().repo_id;
+    let wait = Duration::from_secs(20);
+    tokio::time::timeout(wait, m.wait_status(id)).await.unwrap();
+    assert_eq!(m.snapshot(id).await.unwrap().in_progress, None);
+
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    m.refresh(id).await.unwrap();
+    let changed = sink
+        .wait_for(wait, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && !v["inProgress"].is_null()
+        })
+        .await
+        .expect("a repo-changed with the merge in progress");
+    assert_eq!(changed.1["inProgress"]["kind"], "merge");
+    assert_eq!(
+        changed.1["inProgress"]["files"][0],
+        serde_json::json!({"path": "clash.txt", "state": "markers"})
+    );
+    assert_eq!(changed.1["inProgress"]["fileCount"], 1);
+    assert_eq!(changed.1["status"]["conflicted"], 1);
+    let snap = m.snapshot(id).await.unwrap();
+    assert_eq!(
+        snap.in_progress,
+        coming(
+            stopped(
+                InProgressKind::Merge,
+                &["clash.txt"],
+                None,
+                "Merge branch 'feature'"
+            ),
+            "feature",
+            None
+        )
+    );
+
+    repo.git(&["merge", "--abort"]);
+    m.refresh(id).await.unwrap();
+    sink.wait_for(wait, |name, v| {
+        name == "repo-changed"
+            && v["repoId"] == id
+            && v["inProgress"].is_null()
+            && v["status"]["conflicted"] == 0
+    })
+    .await
+    .expect("a repo-changed without it");
+}
+
+// ---------------------------------------------------------------------------------------
+// stashes
+
+/// Subjects keep whatever git stores: unicode, a unit separator (the field separator) and
+/// what git made of bytes that are not UTF-8 (the parser's lossy decoding of raw bytes is
+/// unit-tested in `git::stash`). Parents, selectors, author and time come through, and a
+/// stash with untracked files has its third parent.
+#[cfg(unix)]
+#[tokio::test]
+async fn stash_list_parses_subjects_with_odd_bytes() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    use gg_core::git::stash::read_stashes;
+
+    let repo = TestRepo::new();
+    let git = runner().await;
+    assert!(
+        read_stashes(&git, repo.path()).await.unwrap().is_empty(),
+        "no commit, no stash"
+    );
+    let base = repo.commit("one");
+    assert!(read_stashes(&git, repo.path()).await.unwrap().is_empty());
+
+    repo.write("file-0.txt", "changed\n");
+    let odd: &[u8] = b"m\xc3\xbcsli \x1f split \xff\xfe end";
+    let mut message = b"--message=".to_vec();
+    message.extend_from_slice(odd);
+    let plain = repo.stash_os(&[OsStr::from_bytes(&message)]);
+    repo.write("file-0.txt", "changed again\n");
+    repo.write("new.txt", "untracked\n");
+    let with_untracked = repo.stash(&["--include-untracked"]);
+
+    let stashes = read_stashes(&git, repo.path()).await.unwrap();
+    assert_eq!(stashes.len(), 2, "{stashes:?}");
+    let (newest, older) = (&stashes[0], &stashes[1]);
+
+    assert_eq!(newest.hash, with_untracked);
+    assert_eq!(newest.selector, "stash@{0}");
+    assert_eq!(newest.base, base);
+    let parents = repo.git(&["rev-list", "--parents", "-n", "1", &with_untracked]);
+    let parents: Vec<&str> = parents.split(' ').skip(1).collect();
+    assert_eq!(parents.len(), 3, "{parents:?}");
+    assert_eq!(newest.index_parent.as_deref(), Some(parents[1]));
+    assert_eq!(newest.untracked_parent.as_deref(), Some(parents[2]));
+    assert_eq!(newest.author, "Test");
+    assert_eq!(newest.email, "test@example.com");
+    assert_eq!(newest.time, 1_700_000_000 + 2 * 60);
+    assert!(
+        newest.subject.starts_with("WIP on main: "),
+        "{}",
+        newest.subject
+    );
+
+    assert_eq!(older.hash, plain);
+    assert_eq!(older.selector, "stash@{1}");
+    assert_eq!(older.base, base);
+    assert!(older.index_parent.is_some());
+    assert_eq!(older.untracked_parent, None);
+    assert_eq!(older.time, 1_700_000_000 + 60);
+    // git stores a message that is not UTF-8 as if it were Latin-1 (`\xff\xfe` is "ÿþ"):
+    // the subject is what git stores, the separator inside it included.
+    assert_eq!(older.subject, "On main: müsli \u{1f} split ÿþ end");
+    let stored = repo.git(&["log", "-1", "--format=%s", &plain]);
+    assert_eq!(older.subject, stored);
+}
+
+/// `main` and `feature` change `clash.txt`; `feature` then adds `other.txt` in a second
+/// commit. A cherry-pick of both stops on the first; the user resolves it and commits by
+/// hand, which ends the pick of that commit (no `CHERRY_PICK_HEAD`) but not the sequence.
+fn sequence_committed_by_hand(repo: &TestRepo, verb: &str) {
+    repo.write("clash.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.commit_all("feat clash");
+    repo.write("other.txt", "other\n");
+    repo.commit_all("feat other");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+    if verb == "cherry-pick" {
+        assert!(!repo.git_succeeds(&["cherry-pick", "feature~1", "feature"]));
+    } else {
+        // Reverting feature's commits on feature: the older one clashes with the newer.
+        repo.checkout("feature");
+        repo.write("clash.txt", "feature again\n");
+        repo.commit_all("feat again");
+        assert!(!repo.git_succeeds(&["revert", "--no-edit", "HEAD~2", "HEAD~1"]));
+    }
+    repo.write("clash.txt", "resolved\n");
+    repo.git(&["add", "clash.txt"]);
+    repo.git(&["commit", "-q", "--no-edit"]);
+    assert!(!in_git_dir_has(repo, "CHERRY_PICK_HEAD") && !in_git_dir_has(repo, "REVERT_HEAD"));
+    assert!(in_git_dir_has(repo, "sequencer"));
+}
+
+fn in_git_dir_has(repo: &TestRepo, name: &str) -> bool {
+    repo.path().join(".git").join(name).exists()
+}
+
+/// A cherry-pick or revert sequence whose current commit was committed by hand is still
+/// in progress (git status says so): its kind comes from the sequencer's next command. Its
+/// subject is unknown: the sequencer's current line names the commit already made by hand
+/// (Task 5 review, item 9).
+#[tokio::test]
+async fn sequence_committed_by_hand_is_still_in_progress() {
+    for (verb, kind) in [
+        ("cherry-pick", InProgressKind::CherryPick),
+        ("revert", InProgressKind::Revert),
+    ] {
+        let repo = TestRepo::new();
+        sequence_committed_by_hand(&repo, verb);
+        let state = in_progress(&repo).await.expect(verb);
+        assert_eq!(state.kind, kind);
+        assert!(state.files.is_empty());
+        assert_eq!(state.subject, None, "{verb}: {state:?}");
+    }
+}
+
+/// `git am` stopped on a patch is not something the app continues or aborts: not reported.
+#[tokio::test]
+async fn am_in_progress_is_not_reported() {
+    let repo = TestRepo::new();
+    clashing(&repo);
+    let patches = repo.dir.path().join("patches");
+    let patches = patches.to_str().unwrap();
+    repo.git(&["format-patch", "-q", "-1", "feature~2", "-o", patches]);
+    let patch = fs::read_dir(patches)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(!repo.git_succeeds(&["am", patch.to_str().unwrap()]));
+    assert!(in_git_dir_has(&repo, "rebase-apply"));
+    assert_eq!(in_progress(&repo).await, None);
 }

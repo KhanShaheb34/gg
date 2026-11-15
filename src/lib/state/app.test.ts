@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppState, CoreErrorDto, RepoSnapshot } from "../types";
+import type { AppState, CoreErrorDto, OpenedRepo } from "../types";
 
 // The core is mocked; CoreError stays the real class so `instanceof` checks behave.
 vi.mock("../ipc", async (importOriginal) => {
@@ -37,16 +37,17 @@ function appState(overrides: Partial<AppState> = {}): AppState {
   return {
     recents: [],
     session: { tabs: [], active: null },
-    settings: { theme: "system", fetchIntervalSecs: 300 },
+    settings: { theme: "system", fetchIntervalSecs: 300, editorCommand: null },
     launchPath: null,
     homeDir: null,
     settingsProblem: null,
+    gitProblem: null,
     ...overrides,
   };
 }
 
-function snapshot(repoId: number, rootPath: string): RepoSnapshot {
-  return { repoId, rootPath, name: rootPath.split("/").pop() ?? rootPath } as RepoSnapshot;
+function snapshot(repoId: number, rootPath: string): OpenedRepo {
+  return { repoId, rootPath, activeWorktree: rootPath, name: rootPath.split("/").pop() ?? rootPath, openedWorktree: null } as OpenedRepo;
 }
 
 function coreError(code: CoreErrorDto["code"], message: string) {
@@ -56,7 +57,7 @@ function coreError(code: CoreErrorDto["code"], message: string) {
 /** The core: each path below is a repository with a fixed id; anything else is not. */
 const REPOS: Record<string, number> = { "/r/a": 1, "/r/b": 2, "/r/c": 3 };
 
-function fakeOpenRepo(path: string): Promise<RepoSnapshot> {
+function fakeOpenRepo(path: string): Promise<OpenedRepo> {
   const root = path.replace(/\/+$/, "");
   const id = REPOS[root];
   if (id === undefined) return Promise.reject(coreError("not_a_repo", "This folder is not a git repository."));
@@ -73,7 +74,7 @@ beforeEach(async () => {
   vi.mocked(ipc.api.openRepo).mockReset().mockImplementation(fakeOpenRepo);
   vi.mocked(ipc.api.updateSettings)
     .mockReset()
-    .mockImplementation(async (patch) => ({ theme: "system", fetchIntervalSecs: 300, ...patch }));
+    .mockImplementation(async (patch) => ({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, ...patch }));
   vi.mocked(ipc.api.removeRecent).mockReset().mockResolvedValue([]);
   vi.mocked(ipc.api.pickFolder).mockReset().mockResolvedValue(null);
   vi.mocked(ipc.api.takeOpenedPaths).mockReset().mockResolvedValue([]);
@@ -92,6 +93,22 @@ describe("openPath", () => {
     await s.openPath("/r/a/");
     expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2]);
     expect(s.app.activeRepoId).toBe(1);
+  });
+
+  it("says which folder the tab works in when the folder opened is another worktree of it (R42)", async () => {
+    await s.openPath("/r/a");
+    expect(s.app.toasts).toEqual([]);
+    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), openedWorktree: "/r/a-hotfix" });
+    await s.openPath("/r/a-hotfix");
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
+    expect(s.app.activeRepoId).toBe(1);
+    expect(s.app.toasts).toEqual([
+      expect.objectContaining({
+        kind: "info",
+        persistent: true,
+        message: "/r/a-hotfix is another worktree of a, which is open already: its tab works in /r/a.",
+      }),
+    ]);
   });
 
   it("shows the core's message as an error toast and adds no tab", async () => {
@@ -148,9 +165,33 @@ describe("closeTab", () => {
     expect(ipc.api.closeRepo).toHaveBeenCalledTimes(3);
   });
 
+  it("closeActiveTab pressed again while the active tab is still closing closes the next one", async () => {
+    let release: () => void = () => {};
+    vi.mocked(ipc.api.closeRepo).mockImplementationOnce(() => new Promise((r) => (release = () => r(undefined))));
+    // The last tab is active: closing it makes its left neighbour active.
+    const first = s.closeActiveTab();
+    const second = s.closeActiveTab();
+    release();
+    await Promise.all([first, second]);
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
+    expect(s.app.activeRepoId).toBe(1);
+  });
+
   it("keeps the active tab when another one closes", async () => {
     await s.closeTab(1);
     expect(s.app.activeRepoId).toBe(3);
+  });
+
+  it("keeps a tab whose repository is busy, and says why plainly", async () => {
+    const busy = "An operation is running in b: close it once it has finished.";
+    vi.mocked(ipc.api.closeRepo).mockRejectedValueOnce(coreError("busy", busy));
+    s.activate(2);
+    const saves = vi.mocked(ipc.api.saveSession).mock.calls.length;
+    await s.closeTab(2);
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2, 3]);
+    expect(s.app.activeRepoId).toBe(2);
+    expect(s.app.toasts).toEqual([expect.objectContaining({ kind: "info", message: busy })]);
+    expect(ipc.api.saveSession).toHaveBeenCalledTimes(saves);
   });
 });
 
@@ -213,8 +254,15 @@ describe("init", () => {
     expect(s.app.ready).toBe(true);
   });
 
+  it("says once, plainly, that the git found is too old (M3)", async () => {
+    const said = "Git 2.29 or newer is needed; found 2.25.1. Some actions and the background fetch fail with it: install a newer git, then restart the app.";
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ gitProblem: said }));
+    await s.init();
+    expect(s.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: said, persistent: true })]);
+  });
+
   it("is ready, and shows each tab in the saved order, as its repository opens", async () => {
-    const answers = new Map<string, (s: RepoSnapshot) => void>();
+    const answers = new Map<string, (s: OpenedRepo) => void>();
     vi.mocked(ipc.api.openRepo).mockImplementation((path) => new Promise((r) => answers.set(path, r)));
     vi.mocked(ipc.api.getAppState).mockResolvedValue(
       appState({ session: { tabs: ["/r/a", "/r/b", "/r/c"], active: "/r/b" } }),
@@ -246,7 +294,7 @@ describe("init", () => {
   });
 
   it("a tab the user picks while others are still opening stays active", async () => {
-    let answerB: (s: RepoSnapshot) => void = () => {};
+    let answerB: (s: OpenedRepo) => void = () => {};
     vi.mocked(ipc.api.openRepo).mockImplementation((path) =>
       path === "/r/b" ? new Promise((r) => (answerB = r)) : fakeOpenRepo(path),
     );
@@ -262,7 +310,7 @@ describe("init", () => {
   });
 
   it("a save while tabs are still reopening keeps the ones not open yet at their places", async () => {
-    let answerB: (s: RepoSnapshot) => void = () => {};
+    let answerB: (s: OpenedRepo) => void = () => {};
     vi.mocked(ipc.api.openRepo).mockImplementation((path) =>
       path === "/r/b" ? new Promise((r) => (answerB = r)) : fakeOpenRepo(path),
     );
@@ -283,7 +331,7 @@ describe("init", () => {
 
   it("a launch path that is also a session tab keeps its place in the session", async () => {
     // The session's own open of /r/b answers last, after the launch path's.
-    const waiting: ((s: RepoSnapshot) => void)[] = [];
+    const waiting: ((s: OpenedRepo) => void)[] = [];
     let bCalls = 0;
     vi.mocked(ipc.api.openRepo).mockImplementation((path) => {
       if (path === "/r/c" || (path === "/r/b" && bCalls++ > 0)) return fakeOpenRepo(path);
@@ -297,7 +345,7 @@ describe("init", () => {
     // A save while /r/a and the session's own /r/b are still opening: /r/b once.
     await s.openPath("/r/c");
     expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/b", "/r/a", "/r/c"], "/r/c");
-    for (const answer of waiting) answer({} as RepoSnapshot);
+    for (const answer of waiting) answer({} as OpenedRepo);
     await done;
     expect(s.app.tabs.map((t) => t.repoId)).toEqual([2, 1, 3]);
     expect(ipc.api.saveSession).toHaveBeenLastCalledWith(["/r/b", "/r/a", "/r/c"], "/r/c");
@@ -333,11 +381,11 @@ describe("init", () => {
   it("takes recents and settings from the stored state", async () => {
     const recents = [{ path: "/r/b", name: "b", lastOpenedMs: 5 }];
     vi.mocked(ipc.api.getAppState).mockResolvedValue(
-      appState({ recents, settings: { theme: "dark", fetchIntervalSecs: 60 } }),
+      appState({ recents, settings: { theme: "dark", fetchIntervalSecs: 60, editorCommand: null } }),
     );
     await s.init();
     expect(s.app.recents).toEqual(recents);
-    expect(s.app.settings).toEqual({ theme: "dark", fetchIntervalSecs: 60 });
+    expect(s.app.settings).toEqual({ theme: "dark", fetchIntervalSecs: 60, editorCommand: null });
   });
 
   it("shows an error toast and stays usable when the core cannot be reached", async () => {
@@ -438,23 +486,23 @@ describe("settings that cannot be saved", () => {
     await s.setTheme("dark");
     expect(s.app.toasts).toHaveLength(1);
     expect(s.app.toasts[0]).toMatchObject({ kind: "error", persistent: true, detail: problem });
-    expect(s.app.toasts[0].action?.label).toBe("Reset settings");
+    expect(s.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Reset settings"]);
   });
 
   it("Reset settings moves the file aside through the core, then the notice goes", async () => {
     vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ settingsProblem: problem }));
     vi.mocked(ipc.api.resetSettings).mockResolvedValue(undefined);
     await s.init();
-    await s.app.toasts[0].action!.run();
+    await s.app.toasts[0].actions![0].run();
     expect(ipc.api.resetSettings).toHaveBeenCalledTimes(1);
-    expect(s.app.toasts.map((t) => t.message)).toEqual(["Settings reset: saving again"]);
+    expect(s.app.toasts.map((t) => t.message)).toEqual(["Settings reset: saving again."]);
   });
 
   it("a reset that fails keeps the notice and says why", async () => {
     vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ settingsProblem: problem }));
     vi.mocked(ipc.api.resetSettings).mockRejectedValue(coreError("io", "Could not move /c/state.json aside"));
     await s.init();
-    await s.app.toasts[0].action!.run();
+    await s.app.toasts[0].actions![0].run();
     expect(s.app.toasts).toHaveLength(2);
     expect(s.app.toasts[0].persistent).toBe(true);
     expect(s.app.toasts[1]).toMatchObject({ kind: "error", message: "Could not reset settings: Could not move /c/state.json aside" });
@@ -482,7 +530,7 @@ describe("theme", () => {
     const answers: (() => void)[] = [];
     vi.mocked(ipc.api.updateSettings).mockImplementation(
       (patch) =>
-        new Promise((resolve) => answers.push(() => resolve({ theme: "system", fetchIntervalSecs: 300, ...patch }))),
+        new Promise((resolve) => answers.push(() => resolve({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, ...patch }))),
     );
     const light = s.setTheme("light");
     const dark = s.setTheme("dark");

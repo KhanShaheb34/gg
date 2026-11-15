@@ -15,6 +15,12 @@ pub enum ErrorCode {
     StaleGeneration,
     BadRequest,
     Io,
+    /// A branch or tag name that git would not take, or that is taken.
+    BadName,
+    /// The repository is busy with something that must finish first.
+    Busy,
+    /// There was nothing to do (nothing to commit, already up to date).
+    NothingToDo,
 }
 
 /// An error with a code for the UI to branch on, a one-line `message` for humans and an

@@ -11,12 +11,15 @@ export type CoreErrorDto = {
     | "unknown_repo"
     | "stale_generation"
     | "bad_request"
-    | "io";
+    | "io"
+    | "bad_name" // a branch or tag name git would not take, or one that is taken
+    | "busy"
+    | "nothing_to_do";
   message: string;
   detail: string | null;
 };
 
-export type ViewOptions = { branches: string[] | null; showRemotes: boolean; showTags: boolean }; // branches null = all
+export type ViewOptions = { branches: string[] | null; showRemotes: boolean; showTags: boolean; showStashes: boolean }; // branches null = all
 export type WorktreeInfo = {
   path: string;
   head: string | null;
@@ -25,7 +28,8 @@ export type WorktreeInfo = {
   locked: boolean;
   prunable: boolean;
 };
-export type WorktreeStatus = { changed: number; untracked: number; conflicted: number };
+/** `conflictedPaths`: the conflicted paths, sorted, the first 200 of them. */
+export type WorktreeStatus = { changed: number; untracked: number; conflicted: number; conflictedPaths: string[] };
 /** `lastError`: why the last fetch failed, in one line; `lastErrorDetail`: git's whole stderr of it. */
 export type FetchState = {
   running: boolean;
@@ -51,11 +55,47 @@ export type RepoSnapshot = {
   status: WorktreeStatus;
   viewOptions: ViewOptions;
   fetch: FetchState;
+  /** The operation running on this repository; `queued`: requests waiting behind it. */
+  op: { id: number; title: string; startedAtMs: number; queued: number } | null;
+  inProgress: InProgress | null;
+  /** Grows by one per repository with each snapshot that changes anything and each operation outcome; drop older ones. */
+  seq: number;
 };
+
+/**
+ * What `open_repo` answers: the repository's snapshot and, when the folder asked for is in
+ * another worktree of a repository already open, that worktree (its tab acts on its own,
+ * `activeWorktree`; R42).
+ */
+export type OpenedRepo = RepoSnapshot & { openedWorktree: string | null };
+
+/** A merge, rebase, cherry-pick or revert git stopped in. */
+export type InProgress = {
+  kind: "merge" | "rebase" | "cherry-pick" | "revert";
+  files: ConflictFile[]; // the conflicted files, relative to the worktree, sorted: the first 200
+  fileCount: number; // how many are conflicted in all
+  step: number | null; // rebase only
+  total: number | null; // rebase only
+  subject: string | null; // what is being applied: the incoming branch or the commit's subject
+  // what comes in (R32): merge, the branch or ref merged; rebase, what it goes onto; cherry-pick/revert, the 8-char hash
+  incoming: string | null;
+  rebasing: string | null; // rebase only: the branch being rebased
+  // rebase, cherry-pick or revert: the commit git stopped on, in full (what a skip is for, R40)
+  commit: string | null;
+  // that commit has no changes left (nothing conflicted, everything as HEAD has it): continuing
+  // would be refused as empty; skip it, or abort
+  empty: boolean;
+};
+
+/**
+ * A conflicted file. `markers`: it still has a conflict-marker line; `undecided`: git kept one
+ * side (binary, deleted or added on one side) or it cannot be judged; `resolved`: no marker left.
+ */
+export type ConflictFile = { path: string; state: "markers" | "undecided" | "resolved" };
 
 export type Edge = { from: number; to: number; color: number; half: "top" | "bottom" | "full" };
 export type RefLabel = {
-  kind: "branch" | "remote" | "tag";
+  kind: "branch" | "remote" | "tag" | "stash"; // stash: name "stash@{0}"
   name: string;
   remotes: string[]; // branch only: remotes whose same-named branch is at this commit
   current: boolean; // checked out in the active worktree
@@ -66,7 +106,7 @@ export type RefLabel = {
 };
 export type CommitRow = {
   index: number;
-  kind: "commit" | "uncommitted";
+  kind: "commit" | "uncommitted" | "stash";
   hash: string;
   parents: string[];
   author: string;
@@ -108,7 +148,10 @@ export type CommitDetails = {
   shallowBoundary: boolean;
 };
 
-export type Settings = { theme: "system" | "light" | "dark"; fetchIntervalSecs: number }; // default system, 300; 0 = off
+/** Defaults: system, 300 (0 = off), null (the system's default opener). */
+export type Settings = { theme: "system" | "light" | "dark"; fetchIntervalSecs: number; editorCommand: string | null };
+/** Kept per repository. Default: mergeNoFf true. */
+export type RepoPrefs = { mergeNoFf: boolean };
 export type Recent = { path: string; name: string; lastOpenedMs: number };
 export type AppState = {
   recents: Recent[];
@@ -117,9 +160,14 @@ export type AppState = {
   launchPath: string | null;
   homeDir: string | null; // the user's home folder, for showing paths as ~/…
   settingsProblem: string | null; // why settings are not being saved (unreadable file); null when they are
+  gitProblem: string | null; // the git found is too old (before 2.29), said once; null when it is not
 };
 
-/** One git command the core ran (`command_log`); `args` excludes the injected `-c` options. */
+/**
+ * One git command the core ran (`command_log`); `args` excludes the injected `-c` options. The
+ * userinfo of URLs in `args`, `stdout` and `stderr` is masked by the core ("https://***@host/…"),
+ * as in every message, outcome, event and error it hands the UI (R36).
+ */
 export type CommandRecord = {
   id: number;
   kind: "read" | "write";
@@ -130,4 +178,88 @@ export type CommandRecord = {
   exitCode: number;
   stdout: string;
   stderr: string;
+  repoId: number | null; // the repository it ran for
+  opId: number | null; // the operation it was part of
+  opTitle: string | null; // that operation's title, once it has one
 };
+
+export type MergeTarget = { kind: "branch" | "remote" | "commit"; name: string }; // name: branch, "origin/x" or full hash
+
+/** What HEAD points at: the branch (null when detached) and the commit (null before the first). */
+export type HeadInfo = RepoSnapshot["head"];
+
+/**
+ * One operation for `run_op`. A request on the branch checked out carries `expectHead`: HEAD as
+ * the UI showed it when the user asked (R39); the core refuses it, running nothing, if another
+ * branch is checked out by its turn (reset, continue, abort and skip: also if the commit moved).
+ */
+export type OpRequest =
+  | { op: "checkout_branch"; branch: string; fastForward: boolean }
+  | { op: "checkout_remote"; remoteBranch: string; localName: string }
+  | { op: "checkout_commit"; hash: string }
+  | { op: "create_branch"; name: string; at: string; checkout: boolean }
+  | { op: "rename_branch"; branch: string; newName: string }
+  | { op: "delete_branch"; branch: string }
+  | { op: "merge"; target: MergeTarget; noFf: boolean; squash: boolean; noCommit: boolean; expectHead: HeadInfo }
+  | { op: "rebase"; onto: string; expectHead: HeadInfo } // onto: local or remote branch name
+  | { op: "cherry_pick"; hash: string; mainline: number | null; noCommit: boolean; expectHead: HeadInfo }
+  | { op: "revert"; hash: string; mainline: number | null; expectHead: HeadInfo }
+  | { op: "reset"; hash: string; mode: "soft" | "mixed" | "hard"; expectHead: HeadInfo }
+  | { op: "create_tag"; name: string; hash: string; message: string | null }
+  | { op: "delete_tag"; name: string; remote: string | null } // remote set = also delete there
+  | { op: "push_tag"; name: string; remote: string }
+  // to: null = the branch of the same name on the remote (R38); else the branch's upstream there,
+  // picked in the Push dialog. An existing upstream is never changed; one is set if there is none.
+  // force: with lease, the force_push danger's token once confirmed (R11)
+  | { op: "push"; branch: string; remote: string; to: string | null; force: boolean }
+  | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase"; expectHead: HeadInfo }
+  | { op: "fetch_into_local"; remoteBranch: string; localName: string }
+  | { op: "delete_remote_branch"; remote: string; branch: string }
+  | { op: "stash_save"; message: string | null; includeUntracked: boolean }
+  | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string } // stash commit hash
+  | { op: "stash_branch"; stash: string; name: string }
+  | { op: "continue"; evenWithMarkers: boolean; expectHead: HeadInfo } // R31: true = go ahead though files still have conflict markers
+  | { op: "abort"; expectHead: HeadInfo } // always the abort danger first
+  // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge): `commit`, else
+  // refused (R40); a rebase's skip with other uncommitted changes asks first (skip_discards)
+  | { op: "skip"; expectHead: HeadInfo; commit: string };
+
+export type DangerKind =
+  | "force_push"
+  | "hard_reset"
+  | "delete_unmerged_branch"
+  | "delete_remote_branch"
+  | "drop_stash"
+  | "abort"
+  | "skip_discards";
+/**
+ * token: the state the message was worked out from (R39); confirming sends it back with the
+ * kind (`Confirmed`), and the core asks again if the state has changed since.
+ */
+export type Danger = { kind: DangerKind; message: string; detail: string | null; token: string | null };
+/** A danger the user confirmed, as `run_op`'s `confirmed` lists it. */
+export type Confirmed = { kind: DangerKind; token: string | null };
+export type OpHint =
+  | { kind: "push"; branch: string; remote: string } // to the branch of the same name there
+  | { kind: "fetch" }
+  | { kind: "pull"; branch: string }
+  | { kind: "force_push"; branch: string; remote: string; to: string | null } // where the rejected push went
+  | { kind: "choose_pull_mode"; branch: string }
+  | { kind: "skip"; commit: string }; // continuing came out empty: skip that commit
+
+/** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
+export type OpOutcome = {
+  opId: number;
+  status: "done" | "stopped" | "failed" | "needs_confirmation";
+  title: string; // "Merge feature/x into staging"
+  message: string; // one plain line for the notice
+  detail: string | null; // git's own output on failure
+  logFrom: number; // command-log ids of the operation's writes (0, 0 if none ran)
+  logTo: number;
+  dangers: Danger[]; // non-empty only for needs_confirmation
+  hints: OpHint[];
+  snapshot: RepoSnapshot; // after the operation and its refresh; after pull / fetch_into_local maybe before the log reload (a repo-changed with a higher seq follows)
+};
+
+/** `op-progress` event: the latest progress line of a network operation (at most 10 a second). */
+export type OpProgress = { repoId: number; opId: number; line: string };

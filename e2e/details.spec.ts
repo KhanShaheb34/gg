@@ -155,7 +155,7 @@ test("the hash is copied when clicked", async ({ gg, context }) => {
   await open(page, gg.repoPath("details"));
   await rowWith(page, "Main work").click();
   await panel(page).getByTestId("details-hash").click();
-  await expect(page.getByText("Copied", { exact: true })).toBeVisible();
+  await expect(page.getByText("Copied the hash.", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(hashOf(gg, "Main work"));
 });
 
@@ -668,4 +668,21 @@ test("the commit where a shallow clone's history is cut is not called a root com
   await open(page, gg.repoPath("shallow"));
   await rowWith(page, "Two").click();
   await expect(panel(page).getByTestId("details-parents")).toHaveText("Not available (shallow clone)");
+});
+
+test("dragging the details panel's edge selects no text on the way", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await page.getByRole("grid", { name: "Commits" }).locator('[data-index="2"] .subject').click();
+  const details = page.getByTestId("commit-details");
+  await expect(details).toBeVisible();
+  const splitter = details.getByRole("separator", { name: "Resize details panel" });
+  const box = (await splitter.boundingBox())!;
+  await page.mouse.move(box.x + 100, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 100, 0, { steps: 6 });
+  await page.mouse.move(box.x + 100, box.y + 200, { steps: 6 });
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
 });

@@ -1,11 +1,12 @@
 //! `GitRunner` is the only place the app spawns `git`. Every command gets the same
 //! non-interactive environment and leading `-c` options, and lands in the `CommandLog`.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -13,8 +14,9 @@ use serde::Serialize;
 use tokio::process::{Child, Command};
 
 use crate::error::{CoreError, ErrorCode, Result};
+use crate::mask::mask_userinfo;
 
-/// Number of commands the log keeps; older ones are dropped.
+/// Number of reads, and separately of writes, the log keeps; older ones are dropped.
 const LOG_CAPACITY: usize = 500;
 /// Longest stdout/stderr text kept per log record, in bytes.
 const MAX_LOG_TEXT: usize = 16 * 1024;
@@ -24,12 +26,15 @@ const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(unix)]
 const READ_GRACE: Duration = Duration::from_millis(500);
 
-/// Environment for every git child: never prompt, never open an editor or pager, never
-/// take optional locks, and keep messages in a stable (C) locale.
-const GIT_ENV: [(&str, &str); 5] = [
+/// Environment for every git child: never prompt, never open an editor (for messages, rebase
+/// todo lists or merge messages) or pager, never take optional locks, and keep messages in a
+/// stable (C) locale.
+const GIT_ENV: [(&str, &str); 7] = [
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_OPTIONAL_LOCKS", "0"),
     ("GIT_EDITOR", "true"),
+    ("GIT_SEQUENCE_EDITOR", "true"),
+    ("GIT_MERGE_AUTOEDIT", "no"),
     ("GIT_PAGER", "cat"),
     ("LC_ALL", "C"),
 ];
@@ -103,6 +108,8 @@ pub enum Expired {
     Total(Duration),
     /// It wrote nothing for `idle`.
     Idle(Duration),
+    /// It was cancelled (see [`GitRunner::run_cancellable`]).
+    Cancelled,
 }
 
 /// A command [`GitRunner::run_with_timeout`] gave up on: the limit it ran into and the tail
@@ -112,6 +119,94 @@ pub struct TimedOut {
     pub limit: Expired,
     pub stdout: Vec<u8>,
     pub stderr: String,
+}
+
+/// How long a cancelled command has to stop before it is killed.
+pub const CANCEL_GRACE: Duration = Duration::from_secs(1);
+/// How long a killed command's output may take to end; past it, it is left (something it
+/// started that left its process group holds it open).
+const KILLED_GRACE: Duration = Duration::from_secs(2);
+
+/// The oldest git the app works with: `--no-auto-maintenance` (scheduled fetches) came in
+/// 2.29; `--end-of-options` in 2.24.
+pub const MIN_GIT: (u32, u32) = (2, 29);
+
+/// `(major, minor, patch)` of `git --version`'s output ("git version 2.54.0 (Apple
+/// Git-157)", "git version 2.25.1.windows.1"), if it has one.
+pub fn parse_git_version(text: &str) -> Option<(u32, u32, u32)> {
+    let word = text.split_whitespace().nth(2)?;
+    let mut parts = word.split('.').map(|p| {
+        p.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u32>()
+            .ok()
+    });
+    Some((
+        parts.next()??,
+        parts.next()??,
+        parts.next().flatten().unwrap_or(0),
+    ))
+}
+
+/// Why `version` is too old for the app (M3), if it is.
+pub fn version_problem(version: (u32, u32, u32)) -> Option<String> {
+    ((version.0, version.1) < MIN_GIT).then(|| {
+        format!(
+            "Git {}.{} or newer is needed; found {}.{}.{}. Some actions and the background \
+             fetch fail with it: install a newer git, then restart the app.",
+            MIN_GIT.0, MIN_GIT.1, version.0, version.1, version.2
+        )
+    })
+}
+
+/// Said for a command (and an operation) the user stopped.
+pub const STOPPED: &str = "Stopped.";
+
+/// The user's Stop for one operation's git commands (R41): once stopped, the command running
+/// is ended with everything it started (its process group: SIGTERM, then SIGKILL after
+/// [`CANCEL_GRACE`]), and no further command starts. Cheap to share.
+#[derive(Default)]
+pub struct Stop {
+    stopped: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl Stop {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Stops the operation's commands; harmless if it was stopped before.
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once stopped (at once if it was before).
+    async fn stopped(&self) {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_stopped() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+/// The error of a command that was stopped, or not started because its operation was.
+fn stopped_error(detail: &str) -> CoreError {
+    let err = CoreError::new(ErrorCode::Io, STOPPED);
+    if detail.trim().is_empty() {
+        err
+    } else {
+        err.with_detail(detail)
+    }
 }
 
 /// Most bytes [`GitRunner::run_with_timeout`] keeps of stdout and of stderr: the last ones.
@@ -150,16 +245,38 @@ pub struct CommandRecord {
     pub stdout: String,
     /// Always kept, truncated to 16 KiB.
     pub stderr: String,
+    /// The open repository it ran for, if any (not while a repository is being opened).
+    pub repo_id: Option<u32>,
+    /// The operation it was part of, if any.
+    pub op_id: Option<u64>,
+    /// That operation's title ("Merge feature/x into main"), once it has one. Filled when
+    /// records are served.
+    pub op_title: Option<String>,
 }
 
-/// Ring buffer of the last 500 git commands. Ids start at 1 and increase by one.
+/// The last 500 reads and, separately, the last 500 writes, so that a write stays findable
+/// however many reads come after it. Ids start at 1 and increase by one across both.
 pub struct CommandLog {
     inner: Mutex<LogInner>,
 }
 
 struct LogInner {
     next_id: u64,
-    records: VecDeque<CommandRecord>,
+    reads: VecDeque<CommandRecord>,
+    writes: VecDeque<CommandRecord>,
+    /// Operations' titles by id, the newest [`2 * LOG_CAPACITY`](LOG_CAPACITY) of them.
+    op_titles: BTreeMap<u64, String>,
+}
+
+/// Which records [`CommandLog::query`] returns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogFilter {
+    /// Only records with a greater id.
+    pub since_id: u64,
+    /// Only records of this repository.
+    pub repo_id: Option<u32>,
+    /// Only writes.
+    pub writes_only: bool,
 }
 
 impl CommandLog {
@@ -167,21 +284,79 @@ impl CommandLog {
         Arc::new(Self {
             inner: Mutex::new(LogInner {
                 next_id: 1,
-                records: VecDeque::with_capacity(LOG_CAPACITY),
+                reads: VecDeque::with_capacity(LOG_CAPACITY),
+                writes: VecDeque::with_capacity(LOG_CAPACITY),
+                op_titles: BTreeMap::new(),
             }),
         })
     }
 
     /// Records with an id greater than `id`, oldest first. `since(0)` returns everything kept.
     pub fn since(&self, id: u64) -> Vec<CommandRecord> {
+        self.query(LogFilter {
+            since_id: id,
+            ..LogFilter::default()
+        })
+    }
+
+    /// Gives operation `op_id` its title, which its records are served with.
+    pub fn name_op(&self, op_id: u64, title: &str) {
+        let mut inner = self.lock();
+        inner.op_titles.insert(op_id, title.to_owned());
+        while inner.op_titles.len() > 2 * LOG_CAPACITY {
+            inner.op_titles.pop_first();
+        }
+    }
+
+    /// The records `filter` selects, oldest first, each with its operation's title.
+    pub fn query(&self, filter: LogFilter) -> Vec<CommandRecord> {
         let inner = self.lock();
-        let start = inner.records.partition_point(|r| r.id <= id);
-        inner.records.range(start..).cloned().collect()
+        let after = |ring: &VecDeque<CommandRecord>| {
+            let start = ring.partition_point(|r| r.id <= filter.since_id);
+            ring.range(start..)
+                .filter(|r| filter.repo_id.is_none_or(|id| r.repo_id == Some(id)))
+                .map(|r| CommandRecord {
+                    op_title: r.op_id.and_then(|id| inner.op_titles.get(&id).cloned()),
+                    ..r.clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        let writes = after(&inner.writes);
+        if filter.writes_only {
+            return writes;
+        }
+        let reads = after(&inner.reads);
+        // Merged by id: each ring is in id order.
+        let mut merged = Vec::with_capacity(reads.len() + writes.len());
+        let (mut r, mut w) = (reads.into_iter().peekable(), writes.into_iter().peekable());
+        loop {
+            let next = match (r.peek(), w.peek()) {
+                (Some(a), Some(b)) if a.id < b.id => r.next(),
+                (Some(_), Some(_)) | (None, Some(_)) => w.next(),
+                (Some(_), None) => r.next(),
+                (None, None) => break,
+            };
+            merged.extend(next);
+        }
+        merged
+    }
+
+    /// Ids of the first and last write of operation `op_id` still kept, if any.
+    pub fn op_writes(&self, op_id: u64) -> Option<(u64, u64)> {
+        let inner = self.lock();
+        let mut ids = inner
+            .writes
+            .iter()
+            .filter(|r| r.op_id == Some(op_id))
+            .map(|r| r.id);
+        let first = ids.next()?;
+        Some((first, ids.next_back().unwrap_or(first)))
     }
 
     #[allow(clippy::too_many_arguments)]
     fn push(
         &self,
+        tags: Tags,
         kind: CmdKind,
         cwd: &Path,
         args: &[&str],
@@ -195,26 +370,36 @@ impl CommandLog {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
         let duration_ms = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
+        // A credential in a remote URL never reaches the log.
         let stdout = match kind {
-            CmdKind::Write => truncate_text(String::from_utf8_lossy(stdout).into_owned()),
+            CmdKind::Write => {
+                truncate_text(mask_userinfo(&String::from_utf8_lossy(stdout)).into_owned())
+            }
             CmdKind::Read => String::new(),
         };
         let mut inner = self.lock();
         let id = inner.next_id;
         inner.next_id += 1;
-        if inner.records.len() == LOG_CAPACITY {
-            inner.records.pop_front();
+        let ring = match kind {
+            CmdKind::Read => &mut inner.reads,
+            CmdKind::Write => &mut inner.writes,
+        };
+        if ring.len() == LOG_CAPACITY {
+            ring.pop_front();
         }
-        inner.records.push_back(CommandRecord {
+        ring.push_back(CommandRecord {
             id,
             kind,
             cwd: cwd.to_string_lossy().into_owned(),
-            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            args: args.iter().map(|a| mask_userinfo(a).into_owned()).collect(),
             started_at_ms: now_ms - i64::from(duration_ms),
             duration_ms,
             exit_code,
             stdout,
-            stderr: truncate_text(stderr.to_owned()),
+            stderr: truncate_text(mask_userinfo(stderr).into_owned()),
+            repo_id: tags.repo_id,
+            op_id: tags.op_id,
+            op_title: None,
         });
     }
 
@@ -282,12 +467,24 @@ fn truncate_text(mut s: String) -> String {
     s
 }
 
+/// What a runner's log records are tagged with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Tags {
+    repo_id: Option<u32>,
+    op_id: Option<u64>,
+}
+
 /// Runs git commands. Cheap to clone; clones share the command log.
 #[derive(Clone)]
 pub struct GitRunner {
     log: Arc<CommandLog>,
     /// `PATH` for git children, from the user's login shell when it could be read.
     path: Option<OsString>,
+    tags: Tags,
+    /// The Stop of the operation this runner runs for, if any (see [`Stop`]).
+    stop: Option<Arc<Stop>>,
+    /// The git version found at start, when it could be read.
+    version: Option<(u32, u32, u32)>,
 }
 
 impl GitRunner {
@@ -316,25 +513,58 @@ impl GitRunner {
         login_path: Option<OsString>,
     ) -> Result<Self> {
         if let Some(path) = login_path {
-            let runner = Self {
+            let mut runner = Self {
                 log: log.clone(),
                 path: Some(path),
+                tags: Tags::default(),
+                stop: None,
+                version: None,
             };
-            if runner.check().await.is_ok() {
+            if let Ok(version) = runner.check().await {
+                runner.version = version;
                 return Ok(runner);
             }
         }
-        let runner = Self { log, path: None };
-        runner.check().await?;
+        let mut runner = Self {
+            log,
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+        };
+        runner.version = runner.check().await?;
         Ok(runner)
     }
 
-    /// Runs `git --version`; `GitNotFound` unless it succeeds.
-    async fn check(&self) -> Result<()> {
+    /// This runner, logging its commands as run for repository `repo_id`.
+    pub fn for_repo(&self, repo_id: u32) -> Self {
+        let mut runner = self.clone();
+        runner.tags.repo_id = Some(repo_id);
+        runner
+    }
+
+    /// This runner, logging its commands as part of operation `op_id`, whose commands
+    /// `stop` ends (see [`Stop`]).
+    pub(crate) fn for_op(&self, op_id: u64, stop: Arc<Stop>) -> Self {
+        let mut runner = self.clone();
+        runner.tags.op_id = Some(op_id);
+        runner.stop = Some(stop);
+        runner
+    }
+
+    /// Why the git found is too old for the app (M3), if it is; checked once, at start.
+    pub fn version_problem(&self) -> Option<String> {
+        self.version.and_then(version_problem)
+    }
+
+    /// Runs `git --version`; `GitNotFound` unless it succeeds. Its version, if readable.
+    async fn check(&self) -> Result<Option<(u32, u32, u32)>> {
         let mut cmd = self.command(None, &["--version"]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         match cmd.output().await {
-            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) if out.status.success() => {
+                Ok(parse_git_version(&String::from_utf8_lossy(&out.stdout)))
+            }
             Ok(out) => Err(
                 CoreError::new(ErrorCode::GitNotFound, "git --version failed")
                     .with_detail(String::from_utf8_lossy(&out.stderr)),
@@ -357,13 +587,16 @@ impl GitRunner {
     }
 
     /// Runs git in `cwd` and returns its output whatever the exit code. Errs only when git
-    /// could not be started.
+    /// could not be started, or when the operation it runs for was stopped (see [`Stop`]).
     pub async fn run_unchecked(
         &self,
         cwd: &Path,
         args: &[&str],
         kind: CmdKind,
     ) -> Result<GitOutput> {
+        if let Some(stop) = &self.stop {
+            return self.run_stoppable(cwd, args, kind, stop).await;
+        }
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -371,8 +604,16 @@ impl GitRunner {
             Ok(out) => {
                 let code = out.status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-                self.log
-                    .push(kind, cwd, args, started, code, &out.stdout, &stderr);
+                self.log.push(
+                    self.tags,
+                    kind,
+                    cwd,
+                    args,
+                    started,
+                    code,
+                    &out.stdout,
+                    &stderr,
+                );
                 Ok(GitOutput {
                     stdout: out.stdout,
                     stderr,
@@ -382,7 +623,86 @@ impl GitRunner {
             Err(e) => {
                 let err = spawn_error(cwd, e);
                 self.log
-                    .push(kind, cwd, args, started, -1, b"", &err.message);
+                    .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
+                Err(err)
+            }
+        }
+    }
+
+    /// [`GitRunner::run_unchecked`] for an operation's command, which `stop` can end: it is
+    /// not started once stopped; stopped while it runs, its process group (git and what it
+    /// started: a hook, a signing program) is asked to end, then killed. Both err with
+    /// [`STOPPED`] (the output so far as detail), and the command is logged with exit -1.
+    async fn run_stoppable(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        stop: &Stop,
+    ) -> Result<GitOutput> {
+        if stop.is_stopped() {
+            return Err(stopped_error(""));
+        }
+        let started = Instant::now();
+        let mut cmd = self.command(Some(cwd), args);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = cmd.spawn().map_err(|e| {
+            let err = spawn_error(cwd, e);
+            self.log
+                .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
+            err
+        })?;
+        let group = child.id();
+        let output = child.wait_with_output();
+        tokio::pin!(output);
+        let finished = tokio::select! {
+            out = &mut output => Some(out),
+            () = stop.stopped() => None,
+        };
+        let out = match finished {
+            Some(out) => out,
+            None => {
+                let (stdout, stderr) = match end_group(group, &mut output).await {
+                    Some(Ok(out)) => (
+                        out.stdout,
+                        String::from_utf8_lossy(&out.stderr).into_owned(),
+                    ),
+                    _ => (Vec::new(), String::new()),
+                };
+                let note = if stderr.is_empty() {
+                    STOPPED.to_owned()
+                } else {
+                    format!("{}\n{STOPPED}", stderr.trim_end())
+                };
+                self.log
+                    .push(self.tags, kind, cwd, args, started, -1, &stdout, &note);
+                return Err(stopped_error(&stderr));
+            }
+        };
+        match out {
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                self.log.push(
+                    self.tags,
+                    kind,
+                    cwd,
+                    args,
+                    started,
+                    code,
+                    &out.stdout,
+                    &stderr,
+                );
+                Ok(GitOutput {
+                    stdout: out.stdout,
+                    stderr,
+                    code,
+                })
+            }
+            Err(e) => {
+                let err = spawn_error(cwd, e);
+                self.log
+                    .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
                 Err(err)
             }
         }
@@ -393,14 +713,16 @@ impl GitRunner {
     /// are kept (the pipes are still read to the end), and it gives up when `limit` is
     /// reached. Then git and everything it started (a remote helper, ssh) are killed, the
     /// command is logged as timed out, and the result is `Ok(Err(limit hit))`. On Unix git
-    /// runs in its own process group for this; elsewhere only git itself is killed.
+    /// runs in a session (and so a process group) of its own, without a controlling
+    /// terminal, as every git child does; elsewhere only git itself is killed. An operation's
+    /// Stop cancels it too (see [`Stop`]).
     ///
     /// The group's id is git's pid, taken at spawn. On timeout the group is killed even when
     /// git has already exited (a helper it started still holding its output open): a group
-    /// id is not reused while the group has members. Then git is waited for. Its own group
-    /// also means that, under a terminal, a helper that tries to read the terminal (an ssh
-    /// passphrase prompt; git's own prompts are off) is stopped rather than prompting, until
-    /// the timeout kills it. In the app there is no terminal and such a prompt fails at once.
+    /// id is not reused while the group has members. Then git is waited for. Without a
+    /// controlling terminal, a helper that wants to ask on the terminal (an ssh passphrase
+    /// or host-key prompt; git's own prompts are off) cannot open it and fails at once,
+    /// whether or not the app was started from a terminal. Askpass helpers still work.
     pub async fn run_with_timeout(
         &self,
         cwd: &Path,
@@ -408,17 +730,61 @@ impl GitRunner {
         kind: CmdKind,
         limit: TimeLimit,
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_with_progress(cwd, args, kind, limit, &|_| {})
+            .await
+    }
+
+    /// [`GitRunner::run_with_timeout`] that also hands each chunk of stderr to `on_stderr`
+    /// as it arrives (git writes its progress there).
+    pub async fn run_with_progress(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+        on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_limited(cwd, args, kind, limit, on_stderr, None)
+            .await
+    }
+
+    /// [`GitRunner::run_with_timeout`] that also stops when `cancel` is notified: then git
+    /// and what it started are asked to stop (SIGTERM on Unix, so git removes its lock
+    /// files), killed if still there after [`CANCEL_GRACE`], and the result is
+    /// `Ok(Err(..))` with [`Expired::Cancelled`].
+    pub async fn run_cancellable(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+        cancel: &tokio::sync::Notify,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_limited(cwd, args, kind, limit, &|_| {}, Some(cancel))
+            .await
+    }
+
+    async fn run_limited(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+        on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
+        cancel: Option<&tokio::sync::Notify>,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
         use tokio::io::AsyncReadExt;
 
+        if self.stop.as_ref().is_some_and(|s| s.is_stopped()) {
+            return Err(stopped_error(""));
+        }
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(unix)]
-        cmd.process_group(0);
         let fail = |e: io::Error| {
             let err = spawn_error(cwd, e);
             self.log
-                .push(kind, cwd, args, started, -1, b"", &err.message);
+                .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
             err
         };
         let mut child = cmd.spawn().map_err(fail)?;
@@ -450,6 +816,7 @@ impl GitRunner {
                     while let Ok(n @ 1..) = p.read(&mut buf).await {
                         lock_tail(&err).push(&buf[..n]);
                         output_seen();
+                        on_stderr(&buf[..n]);
                     }
                 }
             };
@@ -477,15 +844,53 @@ impl GitRunner {
                 }
             }
         };
-        let finished = tokio::select! {
-            done = run => Ok(done),
-            hit = expired => Err(hit),
+        let cancelled = async {
+            let stopped = async {
+                match &self.stop {
+                    Some(stop) => stop.stopped().await,
+                    None => std::future::pending().await,
+                }
+            };
+            match cancel {
+                Some(cancel) => tokio::select! {
+                    () = cancel.notified() => {}
+                    () = stopped => {}
+                },
+                None => stopped.await,
+            }
+        };
+        let expired = async {
+            tokio::select! {
+                hit = expired => hit,
+                () = cancelled => Expired::Cancelled,
+            }
+        };
+        let finished = {
+            tokio::pin!(run);
+            let finished = tokio::select! {
+                done = &mut run => Ok(done),
+                hit = expired => Err(hit),
+            };
+            // Cancelled: ask git to stop, so that it removes its lock files, and give it a
+            // moment before it is killed with the rest.
+            #[cfg(unix)]
+            if let Err(Expired::Cancelled) = finished
+                && let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok())
+            {
+                // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+                unsafe {
+                    libc::killpg(pid, libc::SIGTERM);
+                }
+                let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
+            }
+            finished
         };
         match finished {
             Ok((out, err, Ok(status))) => {
                 let code = status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&err).into_owned();
-                self.log.push(kind, cwd, args, started, code, &out, &stderr);
+                self.log
+                    .push(self.tags, kind, cwd, args, started, code, &out, &stderr);
                 Ok(Ok(GitOutput {
                     stdout: out,
                     stderr,
@@ -529,8 +934,16 @@ impl GitRunner {
         let started = Instant::now();
         cmd.spawn().map_err(|e| {
             let err = spawn_error(cwd, e);
-            self.log
-                .push(CmdKind::Read, cwd, args, started, -1, b"", &err.message);
+            self.log.push(
+                self.tags,
+                CmdKind::Read,
+                cwd,
+                args,
+                started,
+                -1,
+                b"",
+                &err.message,
+            );
             err
         })
     }
@@ -544,8 +957,16 @@ impl GitRunner {
         exit_code: i32,
         stderr: &str,
     ) {
-        self.log
-            .push(CmdKind::Read, cwd, args, started, exit_code, b"", stderr);
+        self.log.push(
+            self.tags,
+            CmdKind::Read,
+            cwd,
+            args,
+            started,
+            exit_code,
+            b"",
+            stderr,
+        );
     }
 
     /// Records a command started at `started` with [`GitRunner::run_unchecked`] that was
@@ -553,13 +974,23 @@ impl GitRunner {
     /// "timed out".
     pub(crate) fn log_timed_out(&self, cwd: &Path, args: &[&str], kind: CmdKind, started: Instant) {
         self.log
-            .push(kind, cwd, args, started, -1, b"", "timed out");
+            .push(self.tags, kind, cwd, args, started, -1, b"", "timed out");
     }
 
     pub fn log(&self) -> &Arc<CommandLog> {
         &self.log
     }
 
+    /// The `PATH` git children get (the login shell's), if it was read.
+    pub(crate) fn login_path(&self) -> Option<&OsString> {
+        self.path.as_ref()
+    }
+
+    /// Every git child: the environment and leading options above, stdin null, and (Unix)
+    /// a session of its own (R15, R41): no controlling terminal, so nothing git starts (a
+    /// hook, ssh, a signing program) can open `/dev/tty` and wait there when the app was
+    /// started from a terminal; it fails at once instead. The session leader (git) also leads
+    /// a new process group whose id is its pid: what a time limit or a Stop ends.
     fn command(&self, cwd: Option<&Path>, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.args(LEADING_ARGS)
@@ -567,6 +998,19 @@ impl GitRunner {
             .envs(GIT_ENV)
             .stdin(Stdio::null())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            // SAFETY: the closure runs in the forked child before exec and only calls
+            // setsid, which is async-signal-safe and touches no memory of the parent.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         for var in INHERITED_REPO_VARS {
             cmd.env_remove(var);
         }
@@ -574,11 +1018,45 @@ impl GitRunner {
         if let Some(path) = &self.path {
             cmd.env("PATH", path);
         }
+        // Test builds only (the app refuses `testutil` in a release build): the developer's
+        // global and system config must not change what tests see.
+        #[cfg(feature = "testutil")]
+        cmd.env("GIT_CONFIG_GLOBAL", crate::testutil::empty_git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_SYSTEM");
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
         cmd
     }
+}
+
+/// Ends the process group `group` (git's pid) of a stopped command whose output (not yet
+/// polled to its end) is `output`, and returns that output if it ends: SIGTERM, so git
+/// removes its lock files, then SIGKILL if it has not ended after [`CANCEL_GRACE`], then up
+/// to [`KILLED_GRACE`] for the pipes to close. Elsewhere than on Unix, nothing is returned
+/// and git itself is killed when `output` is dropped.
+async fn end_group<F: std::future::Future + Unpin>(
+    group: Option<u32>,
+    output: &mut F,
+) -> Option<F::Output> {
+    #[cfg(unix)]
+    if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
+        // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+        unsafe {
+            libc::killpg(pid, libc::SIGTERM);
+        }
+        if let Ok(out) = tokio::time::timeout(CANCEL_GRACE, &mut *output).await {
+            return Some(out);
+        }
+        // SAFETY: as above.
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+        return tokio::time::timeout(KILLED_GRACE, output).await.ok();
+    }
+    let _ = (group, output);
+    None
 }
 
 /// The `GitFailed` error for a git command that exited with `code`: the first non-empty
@@ -767,6 +1245,169 @@ mod tests {
         assert!(text.ends_with("line 19999\n"));
     }
 
+    /// R15: a command run with a time limit (every network command) runs in a session of
+    /// its own, so it has no controlling terminal: ssh cannot open `/dev/tty` and wait there
+    /// when the app was started from a terminal. Seen from a shell git starts (an alias),
+    /// which shares git's session.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn limited_commands_run_in_a_session_of_their_own() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let alias = format!("alias.probe=!echo $$ > '{}'; sleep 3", pidfile.display());
+        let cwd = dir.path().to_path_buf();
+        let run = tokio::spawn(async move {
+            runner
+                .run_with_timeout(
+                    &cwd,
+                    &["-c", &alias, "probe"],
+                    CmdKind::Read,
+                    TimeLimit::total(Duration::from_secs(20)),
+                )
+                .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the alias ran");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        // SAFETY: getsid only reads a process's session id.
+        let (theirs, ours) = unsafe { (libc::getsid(pid), libc::getsid(0)) };
+        assert!(theirs > 0, "the shell is running");
+        assert_ne!(theirs, ours, "git runs in a session of its own");
+        let out = run.await.unwrap().unwrap().expect("finished");
+        assert_eq!(out.code, 0);
+    }
+
+    /// M3: the version is read from `git --version`, and one older than 2.29 is a problem
+    /// said once, plainly.
+    #[test]
+    fn git_versions_are_read_and_old_ones_said() {
+        assert_eq!(
+            parse_git_version("git version 2.54.0 (Apple Git-157)\n"),
+            Some((2, 54, 0))
+        );
+        assert_eq!(
+            parse_git_version("git version 2.25.1.windows.1"),
+            Some((2, 25, 1))
+        );
+        assert_eq!(parse_git_version("git version 2.29"), Some((2, 29, 0)));
+        assert_eq!(parse_git_version("nonsense"), None);
+        assert_eq!(version_problem((2, 29, 0)), None);
+        assert_eq!(version_problem((3, 0, 0)), None);
+        let said = version_problem((2, 25, 1)).unwrap();
+        assert!(
+            said.starts_with("Git 2.29 or newer is needed; found 2.25.1."),
+            "{said}"
+        );
+    }
+
+    /// R41: every git child, not only network ones, runs in a session of its own (no
+    /// controlling terminal: a hook or a signing program that would wait on `/dev/tty`
+    /// fails at once), with stdin null.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_command_runs_in_a_session_of_its_own_without_stdin() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let alias = format!(
+            "alias.probe=!echo $$ > '{}'; sleep 2; cat; echo read-stdin",
+            pidfile.display()
+        );
+        let cwd = dir.path().to_path_buf();
+        let run = tokio::spawn(async move {
+            runner
+                .run_unchecked(&cwd, &["-c", &alias, "probe"], CmdKind::Read)
+                .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the alias ran");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        // SAFETY: getsid only reads a process's session id.
+        let (theirs, ours) = unsafe { (libc::getsid(pid), libc::getsid(0)) };
+        assert!(theirs > 0, "the shell is running");
+        assert_ne!(theirs, ours, "git runs in a session of its own");
+        let out = run.await.unwrap().unwrap();
+        assert_eq!(out.code, 0);
+        // stdin is null: `cat` read nothing and ended.
+        assert_eq!(out.text(), "read-stdin\n");
+    }
+
+    /// A stopped operation's runner starts nothing more; one stopped while git runs ends it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stopped_runner_ends_its_command_and_starts_no_other() {
+        let stop = Stop::new();
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: Some(stop.clone()),
+            version: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_path_buf();
+        let started = Instant::now();
+        let run = tokio::spawn({
+            let runner = runner.clone();
+            let cwd = cwd.clone();
+            async move {
+                runner
+                    .run_unchecked(
+                        &cwd,
+                        &["-c", "alias.wait=!sleep 30", "wait"],
+                        CmdKind::Write,
+                    )
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop.stop();
+        let err = run.await.unwrap().expect_err("stopped");
+        assert_eq!(err.message, STOPPED);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let logged = runner.log().since(0);
+        assert_eq!(logged.last().map(|r| r.exit_code), Some(-1));
+        let err = runner
+            .run_unchecked(&cwd, &["--version"], CmdKind::Read)
+            .await
+            .expect_err("not started");
+        assert_eq!(err.message, STOPPED);
+        assert_eq!(
+            runner.log().since(0).len(),
+            logged.len(),
+            "nothing more ran"
+        );
+    }
+
     /// Output past the tail is read (so git is never blocked on a full pipe) and dropped.
     #[cfg(unix)]
     #[tokio::test]
@@ -774,6 +1415,9 @@ mod tests {
         let runner = GitRunner {
             log: CommandLog::new(),
             path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
         };
         let dir = tempfile::tempdir().unwrap();
         // git prints back a 300 KiB config value given on its command line.
@@ -803,6 +1447,9 @@ mod tests {
         let runner = GitRunner {
             log: CommandLog::new(),
             path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
         };
         let cmd = runner.command(None, &["status"]);
         let removed: Vec<_> = cmd
@@ -852,6 +1499,9 @@ mod tests {
         let runner = GitRunner {
             log: log.clone(),
             path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
         };
         runner.log_timed_out(
             Path::new("/r"),
@@ -881,6 +1531,179 @@ mod tests {
         assert_eq!(err.to_string(), "nope");
     }
 
+    fn record(log: &CommandLog, tags: Tags, kind: CmdKind, arg: &str) {
+        log.push(
+            tags,
+            kind,
+            Path::new("/r"),
+            &[arg],
+            Instant::now(),
+            0,
+            b"out",
+            "",
+        );
+    }
+
+    /// Writes have their own ring: 600 reads after a write leave it kept, with ids still
+    /// global and increasing; filters by repository and writes only.
+    #[test]
+    fn writes_are_kept_apart_from_reads() {
+        let log = CommandLog::new();
+        let op = Tags {
+            repo_id: Some(1),
+            op_id: Some(7),
+        };
+        record(&log, op, CmdKind::Write, "branch");
+        record(&log, op, CmdKind::Write, "checkout");
+        for i in 0..600 {
+            let repo = Tags {
+                repo_id: Some(1 + i % 2),
+                op_id: None,
+            };
+            record(&log, repo, CmdKind::Read, "status");
+        }
+        record(&log, Tags::default(), CmdKind::Write, "fetch");
+
+        let all = log.since(0);
+        assert_eq!(all.len(), 3 + LOG_CAPACITY);
+        assert!(all.windows(2).all(|w| w[0].id < w[1].id));
+        assert_eq!(all[0].args, ["branch"]);
+        assert_eq!(all[0].stdout, "out");
+        assert_eq!(all.last().unwrap().id, 603);
+        let filter = |since_id, repo_id, writes_only| {
+            log.query(LogFilter {
+                since_id,
+                repo_id,
+                writes_only,
+            })
+        };
+        let writes: Vec<u64> = filter(0, None, true).iter().map(|r| r.id).collect();
+        assert_eq!(writes, [1, 2, 603]);
+        assert_eq!(filter(1, None, true).len(), 2);
+        assert_eq!(filter(0, Some(1), true).len(), 2);
+        let repo2 = filter(0, Some(2), false);
+        assert_eq!(repo2.len(), LOG_CAPACITY / 2);
+        assert!(
+            repo2
+                .iter()
+                .all(|r| r.repo_id == Some(2) && r.kind == CmdKind::Read)
+        );
+        assert_eq!(log.op_writes(7), Some((1, 2)));
+        assert_eq!(log.op_writes(8), None);
+    }
+
+    /// A credential in a remote URL (`https://user:token@host/…`) never reaches the log:
+    /// the userinfo is masked in the arguments and in the output kept.
+    #[test]
+    fn credentials_in_urls_are_masked_in_the_log() {
+        let log = CommandLog::new();
+        log.push(
+            Tags::default(),
+            CmdKind::Write,
+            Path::new("/r"),
+            &[
+                "push",
+                "https://ada:ghp_SECRET@github.com/o/r.git",
+                "refs/heads/main",
+            ],
+            Instant::now(),
+            128,
+            b"To https://x-access-token:SECRET2@example.com/o/r.git\n",
+            "fatal: unable to access 'https://SECRET3@host:8443/r/': 403\nssh://git@h/x and git@h:y\n",
+        );
+        let r = &log.since(0)[0];
+        assert_eq!(r.args[1], "https://***@github.com/o/r.git");
+        assert_eq!(r.args[2], "refs/heads/main");
+        assert_eq!(r.stdout, "To https://***@example.com/o/r.git\n");
+        assert_eq!(
+            r.stderr,
+            "fatal: unable to access 'https://***@host:8443/r/': 403\nssh://***@h/x and git@h:y\n"
+        );
+        for text in [&r.args[1], &r.stdout, &r.stderr] {
+            assert!(!text.contains("SECRET"), "{text}");
+        }
+    }
+
+    /// The operation a record belongs to is served with its title, once the operation has
+    /// one (records logged before it was titled get it too).
+    #[test]
+    fn records_carry_their_operations_title() {
+        let log = CommandLog::new();
+        let op = Tags {
+            repo_id: Some(1),
+            op_id: Some(7),
+        };
+        record(&log, op, CmdKind::Read, "rev-parse");
+        log.name_op(7, "Merge feature/x into main");
+        record(&log, op, CmdKind::Write, "merge");
+        record(&log, Tags::default(), CmdKind::Read, "status");
+        let titles: Vec<Option<String>> = log.since(0).into_iter().map(|r| r.op_title).collect();
+        assert_eq!(
+            titles,
+            [
+                Some("Merge feature/x into main".to_owned()),
+                Some("Merge feature/x into main".to_owned()),
+                None
+            ]
+        );
+        // Titles of operations long gone are not kept forever.
+        for id in 100..(100 + 2 * LOG_CAPACITY as u64 + 10) {
+            log.name_op(id, "x");
+        }
+        assert!(log.lock().op_titles.len() <= 2 * LOG_CAPACITY);
+    }
+
+    #[test]
+    fn runners_tag_what_they_log() {
+        let log = CommandLog::new();
+        let runner = GitRunner {
+            log: log.clone(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+        };
+        let op = runner.for_repo(4).for_op(9, Stop::new());
+        op.log_timed_out(Path::new("/r"), &["push"], CmdKind::Write, Instant::now());
+        runner.log_timed_out(Path::new("/r"), &["fetch"], CmdKind::Write, Instant::now());
+        let records = log.since(0);
+        assert_eq!((records[0].repo_id, records[0].op_id), (Some(4), Some(9)));
+        assert_eq!((records[1].repo_id, records[1].op_id), (None, None));
+    }
+
+    #[test]
+    fn git_never_waits_for_an_editor() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+        };
+        let cmd = runner.command(None, &["rebase"]);
+        let env: Vec<(String, String)> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        for (var, value) in [
+            ("GIT_EDITOR", "true"),
+            ("GIT_SEQUENCE_EDITOR", "true"),
+            ("GIT_MERGE_AUTOEDIT", "no"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+        ] {
+            assert!(
+                env.iter().any(|(k, v)| k == var && v == value),
+                "{var}={value} missing"
+            );
+        }
+    }
+
     #[test]
     fn command_record_serializes_camel_case() {
         let rec = CommandRecord {
@@ -893,12 +1716,18 @@ mod tests {
             exit_code: 0,
             stdout: String::new(),
             stderr: String::new(),
+            repo_id: Some(3),
+            op_id: None,
+            op_title: None,
         };
         let json = serde_json::to_value(&rec).unwrap();
         assert_eq!(json["kind"], "write");
         assert_eq!(json["startedAtMs"], 5);
         assert_eq!(json["durationMs"], 2);
         assert_eq!(json["exitCode"], 0);
+        assert_eq!(json["repoId"], 3);
+        assert_eq!(json["opId"], serde_json::Value::Null);
+        assert_eq!(json["opTitle"], serde_json::Value::Null);
         assert_eq!(serde_json::to_value(CmdKind::Read).unwrap(), "read");
     }
 

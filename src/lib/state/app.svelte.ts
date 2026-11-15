@@ -1,21 +1,41 @@
 // The app shell's state: open tabs, recents, settings and toasts, and the actions on them.
 // Every change to the tabs (or the active one) is saved as the session.
 
+import { shortenPath } from "../format";
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
-import type { CoreErrorDto, Recent, RepoSnapshot, Settings } from "../types";
+import type { CoreErrorDto, OpenedRepo, Recent, RepoSnapshot, Settings } from "../types";
+import { setLogOpen } from "./commandLog.svelte";
 import { disposeRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
 export type ToastKind = "info" | "error";
-/** A notice. A persistent one stays until dismissed; `action` is a button on it. */
+/**
+ * A button on a notice. Clicking it dismisses the notice, unless `keepOpen` (then `run`
+ * dismisses it when done). `danger`: it destroys something.
+ */
+export type ToastAction = { label: string; run: () => void | Promise<void>; danger?: boolean; keepOpen?: boolean };
+/**
+ * A notice. A persistent one stays until dismissed. `detail` (git's own text, say) shows
+ * below the message, or behind a disclosure with `foldDetail`. `actions` are buttons on it;
+ * `link` a quieter one after them ("Show log").
+ */
 export type Toast = {
   id: number;
   kind: ToastKind;
   message: string;
   detail?: string;
+  foldDetail?: boolean;
   persistent?: boolean;
-  action?: { label: string; run: () => Promise<void> };
+  /**
+   * With `persistent`: it stays until dismissed, one of its buttons is used, or an operation
+   * after `opId` runs on repository `repoId` (what its buttons offer may no longer hold).
+   */
+  until?: { repoId: number; opId: number };
+  /** With `persistent`: it also goes once this says what it offers no longer applies. */
+  holds?: () => boolean;
+  actions?: ToastAction[];
+  link?: ToastAction;
 };
 
 export const app = $state({
@@ -35,6 +55,8 @@ export const app = $state({
   gitMissing: false,
   /** The user's home folder, for showing paths as `~/…`. */
   homeDir: null as string | null,
+  /** The command-log entries asked for last ("Show log" on a notice): from id `from` on. */
+  logRequest: null as { repoId: number; from: number } | null,
 });
 
 let nextToastId = 1;
@@ -44,11 +66,34 @@ export function toast(kind: ToastKind, message: string, detail?: string): void {
   app.toasts.push(detail ? { id: nextToastId++, kind, message, detail } : { id: nextToastId++, kind, message });
 }
 
-/** Shows a notice that stays until it is dismissed (or its action succeeds). */
-function notice(message: string, detail: string, action: NonNullable<Toast["action"]>): number {
+/**
+ * Moves the focus to the newest notice: its first button (Push…, Show log), else its dismiss
+ * button. False when there is none.
+ */
+export function focusNewestNotice(): boolean {
+  const notices = document.querySelectorAll<HTMLElement>("[data-notices] .toast");
+  const newest = notices[notices.length - 1];
+  const button = newest?.querySelector<HTMLElement>("button");
+  if (!button) return false;
+  button.focus();
+  return true;
+}
+
+/** Shows `notice`; returns its id. */
+export function notify(notice: Omit<Toast, "id">): number {
   const id = nextToastId++;
-  app.toasts.push({ id, kind: "error", message, detail, persistent: true, action });
+  app.toasts.push({ ...notice, id });
   return id;
+}
+
+/**
+ * Opens the command log at the entry holding command `from` of repository `repoId` (its tab
+ * comes to the front): "Show log" on a notice. The panel goes there and highlights it.
+ */
+export function showLog(repoId: number, from: number): void {
+  app.logRequest = { repoId, from };
+  activate(repoId);
+  setLogOpen(true);
 }
 
 /**
@@ -56,18 +101,28 @@ function notice(message: string, detail: string, action: NonNullable<Toast["acti
  * Said once, with a way to move the file aside and save again.
  */
 function reportSettingsProblem(problem: string): void {
-  const id = notice("Settings are not being saved", problem, {
-    label: "Reset settings",
-    run: async () => {
-      try {
-        await api.resetSettings();
-      } catch (e) {
-        reportError(e, "Could not reset settings");
-        return;
-      }
-      dismissToast(id);
-      toast("info", "Settings reset: saving again");
-    },
+  const id = notify({
+    kind: "error",
+    message: "Settings are not being saved",
+    detail: problem,
+    persistent: true,
+    actions: [
+      {
+        label: "Reset settings",
+        // The notice stays if the reset fails.
+        keepOpen: true,
+        run: async () => {
+          try {
+            await api.resetSettings();
+          } catch (e) {
+            reportError(e, "Could not reset settings");
+            return;
+          }
+          dismissToast(id);
+          toast("info", "Settings reset: saving again.");
+        },
+      },
+    ],
   });
 }
 
@@ -76,7 +131,7 @@ export function dismissToast(id: number): void {
 }
 
 /** Reports a failed core call: git missing switches the app to its no-git panel. */
-function reportError(e: unknown, prefix?: string): void {
+export function reportError(e: unknown, prefix?: string): void {
   if (e instanceof CoreError && e.code === "git_not_found") {
     app.gitMissing = true;
     return;
@@ -123,7 +178,23 @@ async function openTab(path: string): Promise<boolean> {
   }
   addTab(snapshot);
   show(snapshot.repoId);
+  noteOtherWorktree(snapshot);
   return true;
+}
+
+/**
+ * Says so when a folder opened is in another worktree of a repository already open: its tab
+ * acts on its own worktree, which the notice names (R42; switching worktrees is Plan 3).
+ */
+function noteOtherWorktree(opened: OpenedRepo): void {
+  if (opened.openedWorktree === null) return;
+  const there = shortenPath(opened.openedWorktree, app.homeDir);
+  const here = shortenPath(opened.activeWorktree, app.homeDir);
+  notify({
+    kind: "info",
+    message: `${there} is another worktree of ${opened.name}, which is open already: its tab works in ${here}.`,
+    persistent: true,
+  });
 }
 
 /** Where each tab reopened from the session goes: its place in the saved order. */
@@ -247,8 +318,30 @@ export function activateIndex(index: number): void {
   if (tab) activate(tab.repoId);
 }
 
-/** Closes a tab; closing the active one activates its right-hand neighbour, else its left. */
+/** Tabs being closed: the core has been asked and has not answered yet. */
+const closing = new Set<number>();
+
+/**
+ * Closes a tab; closing the active one activates its right-hand neighbour, else its left.
+ * The core is asked first: while an operation (or a fetch the user asked for) runs in the
+ * repository it refuses, and the tab stays, with a notice saying why.
+ */
 export async function closeTab(repoId: number): Promise<void> {
+  if (closing.has(repoId) || !app.tabs.some((t) => t.repoId === repoId)) return;
+  closing.add(repoId);
+  try {
+    await api.closeRepo(repoId);
+  } catch (e) {
+    if (e instanceof CoreError && e.code === "busy") {
+      toast("info", e.message);
+      return;
+    }
+    // Already gone from the core is what closing wanted; anything else is said, and the
+    // tab goes all the same.
+    if (!(e instanceof CoreError && e.code === "unknown_repo")) reportError(e);
+  } finally {
+    closing.delete(repoId);
+  }
   const at = app.tabs.findIndex((t) => t.repoId === repoId);
   if (at < 0) return;
   app.tabs.splice(at, 1);
@@ -257,12 +350,26 @@ export async function closeTab(repoId: number): Promise<void> {
   }
   saveSession();
   disposeRepoView(repoId);
-  try {
-    await api.closeRepo(repoId);
-  } catch (e) {
-    // Already gone from the core is what closing wanted.
-    if (!(e instanceof CoreError && e.code === "unknown_repo")) reportError(e);
+}
+
+/**
+ * Closes the active tab (Cmd+W). Pressed again while it is still closing, it closes the tab
+ * that will be active once that one has gone, as if the first close had already finished.
+ */
+export function closeActiveTab(): Promise<void> {
+  let at = app.tabs.findIndex((t) => t.repoId === app.activeRepoId);
+  if (at < 0) return Promise.resolve();
+  // Step to the neighbour each closing tab will hand the activity to (right, else left).
+  const gone = new Set<number>();
+  while (closing.has(app.tabs[at].repoId)) {
+    gone.add(app.tabs[at].repoId);
+    const right = app.tabs.findIndex((t, i) => i > at && !gone.has(t.repoId));
+    const left = app.tabs.findLastIndex((t, i) => i < at && !gone.has(t.repoId));
+    const next = right >= 0 ? right : left;
+    if (next < 0) return Promise.resolve();
+    at = next;
   }
+  return closeTab(app.tabs[at].repoId);
 }
 
 export async function removeRecent(path: string): Promise<void> {
@@ -324,6 +431,8 @@ export async function init(): Promise<void> {
     if (e instanceof CoreError && e.code === "git_not_found") app.gitMissing = true;
   });
   if (state.settingsProblem) reportSettingsProblem(state.settingsProblem);
+  // A git too old for the app: said once, plainly, rather than by each action failing (M3).
+  if (state.gitProblem) notify({ kind: "error", message: state.gitProblem, persistent: true });
   app.recents = state.recents;
   app.settings = state.settings;
   app.homeDir = state.homeDir;
@@ -359,7 +468,9 @@ export async function init(): Promise<void> {
   const launchRank = launch === null ? -1 : tabs.indexOf(launch);
   const openLaunch = async (path: string) => {
     try {
-      opened(path, await api.openRepo(path), launchRank >= 0 ? launchRank : undefined);
+      const snapshot = await api.openRepo(path);
+      opened(path, snapshot, launchRank >= 0 ? launchRank : undefined);
+      noteOtherWorktree(snapshot);
     } catch (e) {
       reportError(e);
     }

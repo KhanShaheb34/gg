@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Core;
-use crate::dto::{AppState, Session, ViewOptions};
+use crate::dto::{AppState, Confirmed, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::store::SettingsPatch;
+use crate::git::runner::LogFilter;
+use crate::mask;
+use crate::store::{RepoPrefsPatch, SettingsPatch};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +91,66 @@ struct FocusArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CommandLogArgs {
     since_id: u64,
+    #[serde(default)]
+    repo_id: Option<u32>,
+    #[serde(default)]
+    writes_only: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunOpArgs {
+    repo_id: u32,
+    request: OpRequest,
+    /// The dangers the user confirmed, each with its token.
+    confirmed: Vec<Confirmed>,
+    /// The page load (or window) that numbers its requests (R28).
+    client_id: String,
+    /// The UI's number for this request, per repository and client (R28).
+    client_seq: u64,
+}
+
+/// What `open_repo` returns: the repository's snapshot, and the worktree the path asked for
+/// is in when that is another worktree of a repository already open (its tab acts on its
+/// own, `activeWorktree`; R42).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Opened {
+    #[serde(flatten)]
+    snapshot: crate::dto::RepoSnapshot,
+    opened_worktree: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StopOpArgs {
+    repo_id: u32,
+    /// The operation to stop (`RunningOp.id`): nothing happens if another one runs by then.
+    op_id: u64,
+}
+
+/// Just the numbering of a `run_op`, read before the rest so that a request whose other
+/// arguments are wrong still gives up its number.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunOpNumber {
+    repo_id: u32,
+    client_id: String,
+    client_seq: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepoPrefsArgs {
+    repo_id: u32,
+    patch: RepoPrefsPatch,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenInEditorArgs {
+    repo_id: u32,
+    path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,7 +164,17 @@ impl Core {
     /// Runs command `cmd` with `args` (a JSON object) and returns its result as JSON. The
     /// commands and their arguments and results are the Commands table of the boundary
     /// types; `fetch` returns as soon as the fetch has started.
+    ///
+    /// Credentials in URLs are masked in the result (see [`crate::mask`]) and in errors.
     pub async fn dispatch(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
+        match self.run_command(cmd, args).await {
+            Ok(value) if mask::masks_result_of(cmd) => Ok(mask::mask_json(value)),
+            Ok(value) => Ok(value),
+            Err(e) => Err(e.masked()),
+        }
+    }
+
+    async fn run_command(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
         match cmd {
             "get_app_state" => {
                 let NoArgs {} = parse(cmd, args)?;
@@ -146,14 +218,18 @@ impl Core {
             }
             "open_repo" => {
                 let a: OpenRepoArgs = parse(cmd, args)?;
-                let snapshot = self.repos()?.open(&a.path).await?;
+                let (snapshot, opened_worktree) =
+                    self.repos()?.open_noting_worktree(&a.path).await?;
                 // The repository is open either way; a recent that cannot be saved is only
                 // missing from the next start's list.
                 let root = snapshot.root_path.clone();
                 let _ = self
                     .blocking(move |core| core.store.add_recent(Path::new(&root)))
                     .await;
-                to_json(snapshot)
+                to_json(Opened {
+                    snapshot,
+                    opened_worktree,
+                })
             }
             "close_repo" => {
                 let a: RepoArgs = parse(cmd, args)?;
@@ -219,7 +295,60 @@ impl Core {
             }
             "command_log" => {
                 let a: CommandLogArgs = parse(cmd, args)?;
-                to_json(self.log.since(a.since_id))
+                to_json(self.log.query(LogFilter {
+                    since_id: a.since_id,
+                    repo_id: a.repo_id,
+                    writes_only: a.writes_only,
+                }))
+            }
+            "run_op" => {
+                let number = serde_json::from_value::<RunOpNumber>(args.clone()).ok();
+                let a: RunOpArgs = match parse(cmd, args) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        if let (Some(n), Ok(repos)) = (number, self.repos()) {
+                            repos.release_number(n.repo_id, &n.client_id, n.client_seq);
+                        }
+                        return Err(e);
+                    }
+                };
+                to_json(
+                    self.repos()?
+                        .run_op_in_order(
+                            a.repo_id,
+                            &a.client_id,
+                            a.client_seq,
+                            a.request,
+                            &a.confirmed,
+                        )
+                        .await?,
+                )
+            }
+            "stop_op" => {
+                let a: StopOpArgs = parse(cmd, args)?;
+                to_json(self.repos()?.stop_op(a.repo_id, a.op_id)?)
+            }
+            "get_repo_prefs" => {
+                let a: RepoArgs = parse(cmd, args)?;
+                let root = self.repo_root(a.repo_id)?;
+                to_json(self.store.repo_prefs(&root))
+            }
+            "set_repo_prefs" => {
+                let a: RepoPrefsArgs = parse(cmd, args)?;
+                let root = self.repo_root(a.repo_id)?;
+                to_json(
+                    self.blocking(move |core| core.store.set_repo_prefs(&root, a.patch))
+                        .await?,
+                )
+            }
+            "open_in_editor" => {
+                let a: OpenInEditorArgs = parse(cmd, args)?;
+                let command = self.store.settings().editor_command;
+                let note = self
+                    .repos()?
+                    .open_in_editor(a.repo_id, a.path.as_deref(), command.as_deref())
+                    .await?;
+                to_json(note)
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;
@@ -250,6 +379,21 @@ impl Core {
             })
     }
 
+    /// The main worktree of open repository `repo_id`: what its preferences are kept by.
+    fn repo_root(&self, repo_id: u32) -> Result<PathBuf> {
+        let repos = self.repos()?;
+        repos.check_open(repo_id)?;
+        repos
+            .git_dirs(repo_id)
+            .map(|(_, root)| root)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::UnknownRepo,
+                    format!("No open repository has id {repo_id}."),
+                )
+            })
+    }
+
     fn app_state(&self) -> AppState {
         AppState {
             recents: self.store.recents(),
@@ -258,6 +402,7 @@ impl Core {
             launch_path: self.launch_path.clone(),
             home_dir: home_dir(),
             settings_problem: self.store.problem(),
+            git_problem: self.repos().ok().and_then(|r| r.git_problem()),
         }
     }
 }

@@ -1,19 +1,50 @@
 <!--
-  The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s; hovering
-  the stack holds them all. A persistent one stays until dismissed; one with an action shows
-  it as a button.
+  The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s (10 s too
+  for any with buttons); hovering the stack, or keyboard focus inside it, holds them all. A
+  persistent one stays until dismissed or one of its buttons is used; one that offers what to
+  do next after an operation (`until`) also goes once a later operation runs there. Its
+  buttons follow the message; a folded detail (git's own text) opens below. F6 moves the focus
+  to the newest one; Tab reaches the stack after the page.
 -->
 <script lang="ts">
-  import { app, dismissToast, type Toast } from "../state/app.svelte";
+  import { visibleText } from "../format";
+  import { app, dismissToast, type Toast, type ToastAction } from "../state/app.svelte";
+  import { findRepoView } from "../state/repo.svelte";
 
   const LIFETIME_MS = { info: 4_000, error: 10_000 } as const;
+  const WITH_BUTTONS_MS = 10_000;
 
-  let held = $state(false);
+  let hovered = $state(false);
+  let focused = $state(false);
+  const held = $derived(hovered || focused);
+  let stack: HTMLDivElement;
+
+  // A focused toast that goes (dismissed) takes the focus with it, without a focusout.
+  $effect(() => {
+    void app.toasts.length;
+    if (focused && !stack.contains(document.activeElement)) focused = false;
+  });
+  // A notice offering what to do after an operation goes once a later one runs there.
+  $effect(() => {
+    for (const toast of app.toasts) {
+      if (!toast.until) continue;
+      const op = findRepoView(toast.until.repoId)?.snapshot.op;
+      if (op && op.id > toast.until.opId) dismissToast(toast.id);
+    }
+  });
+  // One whose offer depends on the repository's state goes once that no longer holds (a
+  // Skip once git has moved on: R40).
+  $effect(() => {
+    for (const toast of app.toasts) if (toast.holds && !toast.holds()) dismissToast(toast.id);
+  });
+
+  /** Toasts whose folded detail is open. */
+  let unfolded: Set<number> = $state(new Set());
 
   /** Removes `toast` once it has been shown, unhovered, for its lifetime. */
   function expire(_node: HTMLElement, toast: Toast) {
     if (toast.persistent) return;
-    let left: number = LIFETIME_MS[toast.kind];
+    let left: number = toast.actions?.length ? WITH_BUTTONS_MS : LIFETIME_MS[toast.kind];
     let started = Date.now();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const run = () => {
@@ -32,14 +63,29 @@
       return pause;
     });
   }
+
+  function press(toast: Toast, action: ToastAction) {
+    if (!action.keepOpen) dismissToast(toast.id);
+    void action.run();
+  }
+
+  function toggleDetail(id: number) {
+    const next = new Set(unfolded);
+    if (!next.delete(id)) next.add(id);
+    unfolded = next;
+  }
 </script>
 
 <div
   class="stack"
+  bind:this={stack}
   role="region"
   aria-label="Notifications"
-  onmouseenter={() => (held = true)}
-  onmouseleave={() => (held = false)}
+  data-notices
+  onmouseenter={() => (hovered = true)}
+  onmouseleave={() => (hovered = false)}
+  onfocusin={() => (focused = true)}
+  onfocusout={(e) => (focused = e.currentTarget.contains(e.relatedTarget as Node | null))}
 >
   {#each app.toasts as toast (toast.id)}
     <div class="toast {toast.kind}" role={toast.kind === "error" ? "alert" : "status"} use:expire={toast}>
@@ -61,13 +107,46 @@
       <div class="body selectable">
         <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
              what is around it. -->
-        <p class="message"><bdi>{toast.message}</bdi></p>
-        {#if toast.detail}
+        <p class="message"><bdi>{visibleText(toast.message)}</bdi></p>
+        {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}
-        {#if toast.action}
-          {@const action = toast.action}
-          <button class="action" onclick={() => action.run()}>{action.label}</button>
+        {#if toast.actions?.length || toast.link || (toast.detail && toast.foldDetail)}
+          <!-- Buttons and links wrap as two groups, never one of them alone. -->
+          <div class="row">
+            {#if toast.actions?.length}
+              <span class="group">
+                {#each toast.actions as action, i (i)}
+                  <button class="action" class:danger={action.danger} onclick={() => press(toast, action)}
+                    >{action.label}</button
+                  >
+                {/each}
+              </span>
+            {/if}
+            {#if (toast.detail && toast.foldDetail) || toast.link}
+            <span class="group">
+            {#if toast.detail && toast.foldDetail}
+              <button
+                class="link"
+                aria-expanded={unfolded.has(toast.id)}
+                onclick={() => toggleDetail(toast.id)}
+              >
+                <svg class="chevron" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                  <path d="M2.5 1.5 5.5 4l-3 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                Git output
+              </button>
+            {/if}
+            {#if toast.link}
+              {@const link = toast.link}
+              <button class="link" onclick={() => press(toast, link)}>{link.label}</button>
+            {/if}
+            </span>
+            {/if}
+          </div>
+          {#if toast.detail && toast.foldDetail && unfolded.has(toast.id)}
+            <pre class="output selectable">{toast.detail}</pre>
+          {/if}
         {/if}
       </div>
       <button class="dismiss" aria-label="Dismiss notification" onclick={() => dismissToast(toast.id)}>
@@ -83,7 +162,8 @@
   .stack {
     position: fixed;
     right: 16px;
-    bottom: 16px;
+    /* Above the command log while it is open (it sets --log-h), so it never hides the entry a notice's Show log went to. */
+    bottom: calc(16px + var(--log-h, 0px));
     z-index: 50;
     display: flex;
     flex-direction: column;
@@ -140,8 +220,22 @@
     line-clamp: 4;
   }
 
-  .action {
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
     margin-top: 8px;
+  }
+
+  .group {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .action {
     padding: 3px 10px;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
@@ -156,6 +250,58 @@
 
   .action:active {
     background: var(--bg-pressed);
+  }
+
+  .action.danger {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border-strong));
+    color: var(--danger);
+  }
+
+  .action.danger:hover {
+    background: var(--danger-tint);
+  }
+
+  /* Quieter than a button: text in the accent colour. */
+  .link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--accent);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+  }
+
+  .link:hover {
+    background: var(--bg-hover);
+  }
+
+  .chevron {
+    transition: transform 120ms var(--ease);
+  }
+
+  .link[aria-expanded="true"] .chevron {
+    transform: rotate(90deg);
+  }
+
+  .output {
+    max-height: 180px;
+    margin: 6px 0 0;
+    padding: 7px 9px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--field-bg);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    unicode-bidi: isolate;
   }
 
   .dismiss {

@@ -30,7 +30,7 @@ describe("relativeTime", () => {
 
 describe("displayFolder", () => {
   it("shows the parent folder with the home folder as ~", () => {
-    expect(displayFolder("/Users/ada/Dev/git-graph", "/Users/ada")).toBe("~/Dev");
+    expect(displayFolder("/Users/ada/Dev/gg", "/Users/ada")).toBe("~/Dev");
     expect(displayFolder("/home/ada/src/x", "/home/ada")).toBe("~/src");
     expect(displayFolder("/Users/ada/x", "/Users/ada")).toBe("~");
     expect(displayFolder("/Users/ada/Dev/x")).toBe("/Users/ada/Dev");
@@ -43,7 +43,7 @@ describe("displayFolder", () => {
 
 describe("colorIndex", () => {
   it("gives each key a stable lane colour index in 0..9", () => {
-    const keys = ["/a", "/b", "/Users/ada/Dev/git-graph", "", "ünïcode path"];
+    const keys = ["/a", "/b", "/Users/ada/Dev/gg", "", "ünïcode path"];
     for (const k of keys) {
       const i = colorIndex(k);
       expect(i).toBeGreaterThanOrEqual(0);

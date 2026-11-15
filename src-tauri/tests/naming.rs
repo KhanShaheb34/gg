@@ -12,8 +12,11 @@ const SCANNED: &[&str] = &[
     "crates",
     "scripts",
     "e2e",
+    "public",
     "index.html",
     "package.json",
+    "vite.config.ts",
+    "Cargo.toml",
     "README.md",
 ];
 
@@ -23,10 +26,13 @@ const SKIPPED: &[&str] = &["target", "node_modules", "gen"];
 /// The old name in lower case, in two parts so that this file does not hold it.
 const OLD: [&str; 2] = ["git", "graph"];
 
-/// Whether `line` holds the old name in any case, with or without a space between its parts.
+/// Whether `line` holds the old name in any case, its parts joined by nothing, a space, an
+/// underscore or a hyphen.
 fn has_old_name(line: &str) -> bool {
     let lower = line.to_lowercase();
-    lower.contains(&OLD.concat()) || lower.contains(&OLD.join(" "))
+    ["", " ", "_", "-"]
+        .iter()
+        .any(|sep| lower.contains(&OLD.join(sep)))
 }
 
 fn root() -> PathBuf {

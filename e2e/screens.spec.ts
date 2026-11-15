@@ -1,6 +1,6 @@
 // Screenshots for the visual check, written to docs/perf/screens/. Run on demand:
 //   GG_SCREENS=1 pnpm e2e screens
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, makeRepo, otherClone, runOp, test } from "./fixtures";
@@ -1219,5 +1219,77 @@ for (const [prefix, width, height] of SIZES)
       await page.getByRole("menuitem", { name: "Create pull request…" }).click();
       await expect(dialog.getByTestId("pr-title")).not.toHaveValue("");
       await shot("prs-dialog-long");
+    });
+  }
+
+// Settings and keyboard shortcuts (Task 10): the sheet at its top, a refused command with the
+// one beside it running, the lower sections, the reset confirmation; the shortcuts sheet; the
+// busy indicator with git's progress; a stale index.lock's notice.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`settings and shortcuts, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      const repo = gg.repoPath("small");
+      await page.goto("/");
+      await open(page, repo);
+      const grid = page.getByRole("grid", { name: "Commits" });
+      await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      const shot = async (name: string) => {
+        await park(page);
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      const settings = page.getByTestId("settings");
+      await page.keyboard.press("ControlOrMeta+,");
+      await expect(settings).toBeVisible();
+      await shot("settings");
+
+      await settings.getByTestId("settings-editor").fill("code --goto={path}");
+      await settings.getByTestId("settings-terminal").fill("kitty --directory {path}");
+      await expect(settings.getByRole("alert").filter({ hasText: "separate word" })).toBeVisible();
+      await expect(settings.getByTestId("settings-terminal-runs")).toBeVisible();
+      await settings.getByRole("button", { name: "Tools" }).click();
+      await page.waitForTimeout(400);
+      await shot("settings-tools");
+
+      await settings.getByTestId("settings-pattern").fill("../{repo}-trees/{branch}");
+      await expect(settings.getByTestId("settings-pattern-preview")).toContainText("small-trees");
+      await settings.getByRole("button", { name: "About" }).click();
+      await page.waitForTimeout(400);
+      await shot("settings-about");
+
+      await settings.getByTestId("settings-reset").click();
+      await expect(page.getByRole("dialog", { name: "Reset all settings?" })).toBeVisible();
+      await shot("settings-reset");
+      await page.getByRole("dialog", { name: "Reset all settings?" }).getByRole("button", { name: "Cancel" }).click();
+      await page.keyboard.press("Escape");
+      await expect(settings).toHaveCount(0);
+
+      await grid.focus();
+      await page.keyboard.press("?");
+      await expect(page.getByTestId("shortcuts")).toBeVisible();
+      await shot("shortcuts");
+      await page.keyboard.press("Escape");
+
+      // A push that takes a while: its progress line in the busy indicator.
+      const hook = path.join(repo, ".git", "hooks", "pre-push");
+      writeFileSync(hook, "#!/bin/sh\necho 'Checking 42 files before the push…' >&2\nsleep 3\n");
+      chmodSync(hook, 0o755);
+      const push = runOp(page, { op: "push", branch: "main", remote: "origin", to: null, force: false });
+      await expect(page.getByTestId("busy")).toContainText("Checking 42 files", { timeout: 4000 });
+      await shot("busy-progress");
+      await push;
+
+      // A stale lock in the way.
+      const lock = path.join(repo, ".git", "index.lock");
+      writeFileSync(lock, "");
+      const old = new Date(Date.now() - 3 * 3600_000);
+      utimesSync(lock, old, old);
+      await grid.locator('[data-index="2"]').click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Check out this commit" }).click();
+      await expect(page.getByRole("button", { name: "Remove the lock file…" })).toBeVisible();
+      await shot("lock-stale");
     });
   }

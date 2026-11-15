@@ -26,8 +26,22 @@
   const FOCUSABLE =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
+  /**
+   * Escape closes it while the focus is in it, or nowhere (a dialog that was on top of it
+   * closed and the focus could not come back); never while another dialog on top has it.
+   */
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.isComposing || e.key !== "Escape" || e.defaultPrevented) return;
+    const now = document.activeElement;
+    if (now !== null && now !== document.body && !box.contains(now)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onClose();
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.isComposing) return;
+    // Handled here first when the focus is inside: nothing behind sees it.
     if (e.key === "Escape" && !e.defaultPrevented) {
       e.preventDefault();
       e.stopPropagation();
@@ -56,6 +70,8 @@
     };
   });
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="backdrop" role="presentation" onmousedown={(e) => e.target === e.currentTarget && e.preventDefault()}>
   <div
@@ -91,7 +107,8 @@
     z-index: 60;
     display: flex;
     justify-content: center;
-    align-items: stretch;
+    /* As tall as its content, up to the window's height (it scrolls inside then). */
+    align-items: flex-start;
     padding: calc(var(--titlebar-h) + 12px) 16px 16px;
     background: var(--scrim);
     animation: fade 120ms linear;

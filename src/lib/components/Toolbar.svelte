@@ -417,11 +417,17 @@
     max-width: 440px;
   }
 
+  .busy.with-progress .busy-title {
+    flex: none;
+    max-width: 55%;
+  }
+
   .busy :global(.busy-progress) {
-    flex: 0 100 auto;
+    flex: 1 1 0;
     min-width: 3em;
     color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
+    /* No font-variant here: MiddleText measures with the computed font shorthand, which
+       Chrome leaves empty when a variant it cannot write is set. */
     font-weight: 400;
   }
 

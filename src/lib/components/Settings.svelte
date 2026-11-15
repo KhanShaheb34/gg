@@ -162,19 +162,26 @@
   let scroller: HTMLDivElement;
   let current = $state<string>("appearance");
 
-  function go(id: string) {
+  /** Where section `id` starts in the scrolled content, px. */
+  function topOf(id: string): number | null {
     const el = scroller.querySelector<HTMLElement>(`#settings-${id}`);
-    if (!el) return;
+    if (!el) return null;
+    return el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+  }
+
+  function go(id: string) {
+    const top = topOf(id);
+    if (top === null) return;
     current = id;
-    scroller.scrollTo({ top: el.offsetTop - 8, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    scroller.scrollTo({ top, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }
 
   function onScroll() {
     const top = scroller.scrollTop + 24;
     let found: string = SECTIONS[0][0];
     for (const [id] of SECTIONS) {
-      const el = scroller.querySelector<HTMLElement>(`#settings-${id}`);
-      if (el && el.offsetTop <= top) found = id;
+      const at = topOf(id);
+      if (at !== null && at <= top) found = id;
     }
     // At the bottom, the last one.
     if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) found = SECTIONS.at(-1)![0];
@@ -222,7 +229,9 @@
       {@render status(field)}
     </div>
     <div class="control">
-      <p class="explain">{explain}</p>
+      <p class="explain">
+        {#each explain.split("{path}") as part, i (i)}{#if i > 0}<code class="ph">{"{path}"}</code>{/if}{part}{/each}
+      </p>
       <div class="input-row">
         <input
           id="settings-{kind}"
@@ -316,7 +325,7 @@
           />
           <p class="runs" data-testid="settings-date-example">
             {@render arrow()}<span class="sample">{formatDate(sampleSecs, app.settings.dateFormat)}</span><span class="sample-long"
-              >{formatDateLong(sampleSecs, app.settings.dateFormat)}</span
+              >tooltip: {formatDateLong(sampleSecs, app.settings.dateFormat)}</span
             >
           </p>
           <p class="hint">In the graph, the details and the command log; the full date is in their tooltips.</p>

@@ -89,14 +89,6 @@ pub enum PullRequestState {
     Draft,
 }
 
-/// The open pull request a branch label shows (local and remote branches).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RefPr {
-    pub number: u32,
-    pub state: PullRequestState,
-}
-
 /// How far the repository's open pull requests are known (`snapshot.prs`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -479,8 +471,9 @@ pub struct RefLabel {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
-    /// Branch and remote branch only: its open pull request, if one is known.
-    pub pr: Option<RefPr>,
+    /// Branch and remote branch only: its open pull request, if one is known (in full: its
+    /// marker shows its title and opens its page).
+    pub pr: Option<PullRequest>,
 }
 
 /// Whether a row is a commit or the synthetic row for uncommitted changes.
@@ -1929,9 +1922,13 @@ mod tests {
                     upstream: Some("origin/main".into()),
                     ahead: 1,
                     behind: 2,
-                    pr: Some(RefPr {
+                    pr: Some(PullRequest {
                         number: 12,
+                        title: "Fix".into(),
+                        url: "https://github.com/o/r/pull/12".into(),
                         state: PullRequestState::Draft,
+                        head: "main".into(),
+                        base: "trunk".into(),
                     }),
                 }],
                 is_head: false,
@@ -1951,7 +1948,9 @@ mod tests {
                     "labels": [{"kind": "branch", "name": "main", "remotes": ["origin"],
                                 "current": true, "worktreePath": "/r",
                                 "upstream": "origin/main", "ahead": 1, "behind": 2,
-                                "pr": {"number": 12, "state": "draft"}}],
+                                "pr": {"number": 12, "title": "Fix",
+                                       "url": "https://github.com/o/r/pull/12", "state": "draft",
+                                       "head": "main", "base": "trunk"}}],
                     "isHead": false, "isMerge": true, "detachedWorktrees": ["/d"]
                 }]
             })

@@ -182,7 +182,7 @@ async fn open_pull_requests_are_listed_and_marked_on_their_branches() {
         labels
             .iter()
             .find(|l| l.kind == kind && l.name == name)
-            .and_then(|l| l.pr)
+            .and_then(|l| l.pr.as_ref())
             .map(|p| (p.number, p.state))
     };
     assert_eq!(
@@ -267,7 +267,7 @@ async fn forks_match_only_their_owners_branches() {
         labels
             .iter()
             .find(|l| l.kind == RefKind::Branch && l.name == name)
-            .and_then(|l| l.pr)
+            .and_then(|l| l.pr.as_ref())
             .map(|p| p.number)
     };
     assert_eq!(
@@ -389,7 +389,6 @@ async fn a_remote_not_on_github_never_runs_gh() {
 async fn a_slow_or_rate_limited_reload_keeps_the_markers_marked_stale() {
     let s = setup().await;
     s.h.m.set_prs_every(Duration::ZERO);
-    s.h.m.set_gh_timeout(Duration::from_millis(800));
     s.repo.branch("feature");
     s.gh.reply(
         "pr-list",
@@ -401,6 +400,9 @@ async fn a_slow_or_rate_limited_reload_keeps_the_markers_marked_stale() {
     let loaded_at = first.prs.loaded_at_ms;
     assert_eq!(first.prs.status, PrStatus::Ready);
 
+    // A tight limit only once the first load worked (a loaded machine may be slow to start
+    // the fake).
+    s.h.m.set_gh_timeout(Duration::from_millis(800));
     s.gh.slow("pr-list", 30);
     let started = std::time::Instant::now();
     let slow = s.load().await;
@@ -750,7 +752,7 @@ async fn a_pull_request_is_made_after_the_push_with_the_body_on_stdin() {
         s.labels()
             .await
             .iter()
-            .any(|l| l.name == "feature/x" && l.pr.map(|p| p.number) == Some(42))
+            .any(|l| l.name == "feature/x" && l.pr.as_ref().map(|p| p.number) == Some(42))
     );
     // The next suggestion offers the base used.
     s.gh.reply(

@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::dto::{
-    CommitRow, FetchState, HeadInfo, InProgress, PrState, RefKind, RefLabel, RefPr, RepoSnapshot,
-    RowKind, ViewOptions, WorktreeInfo, WorktreeStatus,
+    CommitRow, FetchState, HeadInfo, InProgress, PrState, PullRequest, RefKind, RefLabel,
+    RepoSnapshot, RowKind, ViewOptions, WorktreeInfo, WorktreeStatus,
 };
 use crate::git::log::{Commit, LOG_FORMAT, log_args};
 use crate::git::refs::RefInfo;
@@ -36,7 +36,7 @@ pub struct RepoInfo {
     pub stashes: Vec<Stash>,
     /// The open pull request of each branch label that has one, by kind and short name (the
     /// repository's own to fill in from what `gh` listed; not read from git).
-    pub pr_marks: BTreeMap<(RefKind, String), RefPr>,
+    pub pr_marks: BTreeMap<(RefKind, String), PullRequest>,
 }
 
 /// What [`RepoState::update`] changed.
@@ -756,7 +756,7 @@ fn build_labels(
                     upstream: r.upstream.clone(),
                     ahead: r.ahead,
                     behind: r.behind,
-                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).copied(),
+                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).cloned(),
                 }
             }
             RefKind::Remote if view.show_remotes => {
@@ -766,7 +766,7 @@ fn build_labels(
                     continue;
                 }
                 RefLabel {
-                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).copied(),
+                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).cloned(),
                     ..plain_label(r)
                 }
             }

@@ -140,7 +140,7 @@ export type RefLabel = {
   upstream: string | null;
   ahead: number;
   behind: number;
-  pr: { number: number; state: "open" | "draft" } | null; // branch and remote branch: its open pull request
+  pr: PullRequest | null; // branch and remote branch: its open pull request (in full: the marker shows and opens it)
 };
 export type CommitRow = {
   index: number;

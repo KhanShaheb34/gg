@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::dto::{PrUnavailable, PullRequest, PullRequestState, RefKind, RefPr};
+use crate::dto::{PrUnavailable, PullRequest, PullRequestState, RefKind};
 use crate::error::Result;
 use crate::git::refs::RefInfo;
 use crate::git::runner::{
@@ -582,7 +582,7 @@ impl PrData {
     /// branches by where they are pushed, remote branches by their remote. The list is
     /// indexed by head name and each remote's owner read once, so this stays cheap with
     /// thousands of refs and a thousand pull requests.
-    pub(crate) fn marks(&self, refs: &[RefInfo]) -> BTreeMap<(RefKind, String), RefPr> {
+    pub(crate) fn marks(&self, refs: &[RefInfo]) -> BTreeMap<(RefKind, String), PullRequest> {
         let mut by_head: HashMap<&str, Vec<&ListedPr>> = HashMap::new();
         for l in &self.listed {
             by_head.entry(l.pr.head.as_str()).or_default().push(l);
@@ -614,13 +614,7 @@ impl PrData {
                     .clone()
             });
             if let Some(pr) = pick(candidates.iter().copied(), owner.as_deref()) {
-                marks.insert(
-                    (r.kind, r.name.clone()),
-                    RefPr {
-                        number: pr.number,
-                        state: pr.state,
-                    },
-                );
+                marks.insert((r.kind, r.name.clone()), pr.clone());
             }
         }
         marks

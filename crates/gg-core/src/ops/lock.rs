@@ -109,6 +109,17 @@ async fn app_git_running(ctx: &OpCtx<'_>) -> bool {
     }
 }
 
+/// `path` as a message names it: relative to the worktree `cwd` when it is inside it
+/// (`.git/index.lock`), else in full (a linked worktree's lock, in the main git dir).
+fn named(path: &Path, cwd: &Path) -> String {
+    let cwd = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+    let full = dunce::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    full.strip_prefix(&cwd).map_or_else(
+        |_| path.display().to_string(),
+        |rel| rel.display().to_string(),
+    )
+}
+
 /// `d` for people: "40 s", "12 min", "3 h", "2 days".
 pub(crate) fn age_text(d: Duration) -> String {
     let s = d.as_secs();
@@ -163,7 +174,7 @@ pub(crate) async fn explain_failure(ctx: &OpCtx<'_>, step: Step) -> Result<Step>
             hints,
         });
     };
-    let shown = lock.path.display();
+    let shown = named(&lock.path, &ctx.cwd);
     let age = age_text(lock.age());
     let message = if lock.age() < STALE_AFTER || app_git_running(ctx).await {
         format!(
@@ -196,7 +207,7 @@ pub(crate) async fn refused(ctx: &OpCtx<'_>) -> Result<Option<String>> {
             "Nothing was removed: git could not say where the lock file is.".to_owned(),
         ));
     };
-    let shown = path.display();
+    let shown = named(&path, &ctx.cwd);
     let lock = match look(&path) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
@@ -243,7 +254,7 @@ pub(crate) async fn danger(ctx: &OpCtx<'_>) -> Result<Vec<Danger>> {
             "Remove the lock file {}, made {} ago? If another git process or an editor is \
              still working in this repository, removing its lock can damage the staging area. \
              Make sure none is.",
-            lock.path.display(),
+            named(&lock.path, &ctx.cwd),
             age_text(lock.age())
         ),
         detail: None,
@@ -280,7 +291,7 @@ pub(crate) async fn remove(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> 
     }
     Ok(Step::Done(format!(
         "Removed the lock file {}. Try again what failed.",
-        lock.path.display()
+        named(&lock.path, &ctx.cwd)
     )))
 }
 

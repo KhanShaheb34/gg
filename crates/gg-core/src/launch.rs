@@ -604,12 +604,37 @@ fn with_path(word: &str, path: &OsStr) -> OsString {
 }
 
 /// Options after which a program takes a command, not a folder (lowercase).
-const COMMAND_OPTIONS: [&str; 6] = ["-c", "-e", "/c", "/k", "-command", "-encodedcommand"];
+const COMMAND_OPTIONS: [&str; 7] = [
+    "-c",
+    "-e",
+    "/c",
+    "/k",
+    "-command",
+    "-encodedcommand",
+    "--command",
+];
+
+/// Whether `word` is an option after which a program takes a command: one of
+/// [`COMMAND_OPTIONS`], or short flags run together ending in `c` (`-lc`, `-ic`, `-lic`:
+/// a shell's login or interactive flag, then `-c`).
+fn takes_a_command(word: &str) -> bool {
+    let word = word.to_lowercase();
+    if COMMAND_OPTIONS.contains(&word.as_str()) {
+        return true;
+    }
+    word.strip_prefix('-').is_some_and(|flags| {
+        !flags.starts_with('-')
+            && flags.len() > 1
+            && flags.ends_with('c')
+            && flags.chars().all(|c| c.is_ascii_alphabetic())
+    })
+}
 
 /// `Ok` unless a word of a terminal command has `{path}` inside it (`--cwd={path}`): the
 /// folder is given as one argument of its own, never spliced into another; nor right after
 /// an option that takes a command (`-c`, `-e`, `/c`, `/k`, `-Command`, `-EncodedCommand`),
-/// whatever the program: the folder's name would be run.
+/// whatever the program (or short flags run together ending in `c`, `-lc`; or `--command`):
+/// the folder's name would be run.
 fn check_path_words(words: &[String]) -> Result<()> {
     if words
         .iter()
@@ -620,9 +645,10 @@ fn check_path_words(words: &[String]) -> Result<()> {
             "Write {path} as a separate word.",
         ));
     }
-    if let Some(pair) = words.windows(2).find(|pair| {
-        pair[1] == PATH_WORD && COMMAND_OPTIONS.contains(&pair[0].to_lowercase().as_str())
-    }) {
+    if let Some(pair) = words
+        .windows(2)
+        .find(|pair| pair[1] == PATH_WORD && takes_a_command(&pair[0]))
+    {
         return Err(CoreError::new(
             ErrorCode::BadRequest,
             format!(
@@ -1355,6 +1381,12 @@ mod tests {
             "pwsh -Command {path}",
             "powershell -encodedcommand {path}",
             "my-term -C {path}",
+            // Task 9 review minor 6: short flags run together, ending in c; --command.
+            "bash -lc {path}",
+            "zsh -ic {path}",
+            "bash -lic {path}",
+            "fish --command {path}",
+            "my-term --COMMAND {path}",
         ] {
             let err = check_terminal_command(command).unwrap_err();
             assert_eq!(err.code, ErrorCode::BadRequest, "{command}");
@@ -1365,6 +1397,9 @@ mod tests {
             "kitty --directory {path}",
             "wezterm start --cwd {path}",
             "xterm -e vim",
+            "my-term -l {path}",
+            "my-term --cwd {path}",
+            "my-term --commander {path}",
         ] {
             assert!(check_terminal_command(command).is_ok(), "{command}");
             assert!(

@@ -145,6 +145,9 @@ pub struct PrSuggestion {
     pub title: String,
     pub body: String,
     pub base: String,
+    /// The remote `base` is on: the base repository, which every `gh` command names; `None`
+    /// when the repository has no remote.
+    pub base_remote: Option<String>,
     /// The branch's open pull request, asked of `gh` for this branch; `None` when there is
     /// none or it could not be asked.
     pub existing: Option<PullRequest>,
@@ -866,13 +869,16 @@ pub enum OpRequest {
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
-    /// Opens a pull request of `branch` into `base` (a branch on the repository's remote)
-    /// through `gh`, with `title` (one line) and `body` (any text), as a draft with `draft`.
-    /// The branch is pushed first (R38) when its namesake on its remote is missing or behind.
-    /// Uses no working directory (runs from the main worktree).
+    /// Opens a pull request of `branch` into `base`, a branch on remote `base_remote` (the
+    /// base repository; `None`: the one `pr_suggest` names), through `gh`, with `title` (one
+    /// line) and `body` (any text), as a draft with `draft`. The branch is pushed first (R38)
+    /// when its namesake on its remote is missing or behind. Uses no working directory (runs
+    /// from the main worktree).
     PrCreate {
         branch: String,
         base: String,
+        #[serde(default)]
+        base_remote: Option<String>,
         title: String,
         body: String,
         draft: bool,
@@ -1421,8 +1427,10 @@ mod tests {
             json!({"op": "worktree_prune"}),
             json!({"op": "commit", "paths": ["a b", "-x"], "message": "m", "push": true,
                    "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
-            json!({"op": "pr_create", "branch": "b", "base": "main", "title": "t", "body": "x\ny",
-                   "draft": true}),
+            json!({"op": "pr_create", "branch": "b", "base": "main", "baseRemote": "up",
+                   "title": "t", "body": "x\ny", "draft": true}),
+            json!({"op": "pr_create", "branch": "b", "base": "main", "baseRemote": null,
+                   "title": "t", "body": "x\ny", "draft": true}),
         ];
         for case in cases {
             let request: OpRequest =
@@ -1621,12 +1629,13 @@ mod tests {
             title: "t".into(),
             body: "- a".into(),
             base: "main".into(),
+            base_remote: Some("origin".into()),
             existing: None,
             compare_url: Some("https://github.com/o/r/compare/main...b?expand=1".into()),
         };
         assert_eq!(
             serde_json::to_value(&suggestion).unwrap(),
-            json!({"title": "t", "body": "- a", "base": "main", "existing": null,
+            json!({"title": "t", "body": "- a", "base": "main", "baseRemote": "origin", "existing": null,
                    "compareUrl": "https://github.com/o/r/compare/main...b?expand=1"})
         );
         for (reason, name) in [

@@ -17,11 +17,37 @@ use crate::ops::network::{push, ref_commit};
 use crate::ops::{OpCtx, Step};
 use crate::repo::prs::PrTrigger;
 
+/// A `pr_create` request (see [`crate::dto::OpRequest::PrCreate`]).
+pub(crate) struct Request<'a> {
+    pub branch: &'a str,
+    pub base: &'a str,
+    pub base_remote: Option<&'a str>,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub draft: bool,
+}
+
 /// Checks a `pr_create` request without git: the branch and the base can be branch names
-/// (never option-like), and the title is one line with something on it.
-pub(crate) fn check(branch: &str, base: &str, title: &str) -> Result<()> {
+/// (never option-like), the base remote a remote's name, and the title is one line with
+/// something on it.
+pub(crate) fn check(
+    branch: &str,
+    base: &str,
+    base_remote: Option<&str>,
+    title: &str,
+) -> Result<()> {
     check_branch_name(branch)?;
     check_branch_name(base).map_err(|e| CoreError::new(ErrorCode::BadRequest, e.message))?;
+    if let Some(remote) = base_remote
+        && (remote.is_empty()
+            || remote.starts_with('-')
+            || remote.contains(|c: char| c.is_whitespace() || c.is_control()))
+    {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!("\u{201c}{remote}\u{201d} is not a remote's name."),
+        ));
+    }
     if title.trim().is_empty() {
         return Err(CoreError::new(
             ErrorCode::BadRequest,
@@ -46,15 +72,16 @@ fn refused(message: String) -> Step {
     }
 }
 
-/// Opens a pull request of `branch` into `base` (see the module comment).
-pub(crate) async fn create(
-    ctx: &OpCtx<'_>,
-    branch: &str,
-    base: &str,
-    title: &str,
-    body: &str,
-    draft: bool,
-) -> Result<Step> {
+/// Opens the pull request `request` asks for (see the module comment).
+pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step> {
+    let Request {
+        branch,
+        base,
+        base_remote,
+        title,
+        body,
+        draft,
+    } = request;
     if ref_commit(ctx, &format!("refs/heads/{branch}"))
         .await?
         .is_none()
@@ -64,7 +91,15 @@ pub(crate) async fn create(
         )));
     }
     let facts = RemoteFacts::read(&ctx.runner, &ctx.cwd).await?;
-    let (Some(remote), Some(base_remote)) = (facts.push_remote(branch), facts.base_remote()) else {
+    if let Some(r) = base_remote
+        && !facts.is_remote(r)
+    {
+        return Ok(refused(format!(
+            "Nothing was opened: there is no remote named {r}."
+        )));
+    }
+    let base_remote = base_remote.or_else(|| facts.base_remote(Some(branch)));
+    let (Some(remote), Some(base_remote)) = (facts.push_remote(branch), base_remote) else {
         return Ok(refused(format!(
             "Nothing was opened: it is not clear which remote to push {branch} to."
         )));
@@ -134,6 +169,8 @@ pub(crate) async fn create(
     let mut args = vec![
         "pr",
         "create",
+        "--repo",
+        gh.repo(),
         "--head",
         &head,
         "--base",

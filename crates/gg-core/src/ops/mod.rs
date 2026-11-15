@@ -681,17 +681,30 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::PrCreate {
             branch,
             base,
+            base_remote,
             title,
             body: text,
             draft,
         } => {
-            pr::check(&branch, &base, &title)?;
+            pr::check(&branch, &base, base_remote.as_deref(), &title)?;
+            let into = match &base_remote {
+                Some(remote) => format!("{remote}/{base}"),
+                None => base.clone(),
+            };
             (
-                fixed(format!("Open a pull request of {branch} into {base}")),
+                fixed(format!("Open a pull request of {branch} into {into}")),
                 body(move |ctx, _| {
-                    Box::pin(
-                        async move { pr::create(ctx, &branch, &base, &title, &text, draft).await },
-                    )
+                    Box::pin(async move {
+                        let request = pr::Request {
+                            branch: &branch,
+                            base: &base,
+                            base_remote: base_remote.as_deref(),
+                            title: &title,
+                            body: &text,
+                            draft,
+                        };
+                        pr::create(ctx, request).await
+                    })
                 }),
             )
         }

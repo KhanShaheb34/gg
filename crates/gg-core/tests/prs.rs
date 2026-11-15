@@ -145,7 +145,8 @@ async fn open_pull_requests_are_listed_and_marked_on_their_branches() {
     assert_eq!(
         call.argv,
         [
-            "pr", "list", "--state", "open", "--limit", "1000", "--json", FIELDS
+            "pr", "list", "--repo", "octo/cat", "--state", "open", "--limit", "1000", "--json",
+            FIELDS
         ]
     );
     let root = dunce::canonicalize(s.repo.path()).unwrap();
@@ -203,13 +204,38 @@ async fn open_pull_requests_are_listed_and_marked_on_their_branches() {
     assert_eq!(logged.len(), 1);
     assert_eq!(logged[0].args[0], "pr");
 
-    // A worktree on a branch with one shows it.
-    let wt = s.repo.add_worktree("feature-wt");
-    let _ = wt;
+    // A worktree on a branch with one shows it, in full.
+    let wt = s.repo.add_worktree("feature");
     s.h.m.refresh(s.id).await.unwrap();
     let snap = s.h.m.snapshot(s.id).await.unwrap();
     let main = snap.worktrees.iter().find(|w| w.is_main).unwrap();
-    assert_eq!(main.pr, None);
+    assert_eq!(main.pr, None, "main has none");
+    let root = |p: &std::path::Path| dunce::canonicalize(p).unwrap();
+    let on_feature = snap
+        .worktrees
+        .iter()
+        .find(|w| root(std::path::Path::new(&w.path)) == root(&wt))
+        .expect("the worktree is listed");
+    assert_eq!(on_feature.branch.as_deref(), Some("feature"));
+    let shown = on_feature.pr.as_ref().expect("its pull request");
+    assert_eq!(
+        (
+            shown.number,
+            shown.title.as_str(),
+            shown.url.as_str(),
+            shown.state,
+            shown.head.as_str(),
+            shown.base.as_str()
+        ),
+        (
+            12,
+            "PR 12",
+            "https://github.com/octo/cat/pull/12",
+            PullRequestState::Open,
+            "feature",
+            "main"
+        )
+    );
 }
 
 /// Forks: a pull request's head is matched to a branch only by its name AND the owner of the
@@ -509,19 +535,24 @@ async fn suggestions_come_from_the_commits_and_the_base_from_what_is_known() {
         [
             "pr",
             "list",
+            "--repo",
+            "octo/cat",
             "--head",
             "fix/pr_loading-state",
             "--state",
             "open",
+            "--limit",
+            "1000",
             "--json",
             FIELDS
         ],
-        "existing is asked for the branch itself"
+        "existing is asked for the branch itself, among as many as are listed"
     );
     assert_eq!(
         s.gh.calls_of(&["repo", "view"])[0].argv,
-        ["repo", "view", "--json", "defaultBranchRef"]
+        ["repo", "view", "octo/cat", "--json", "defaultBranchRef"]
     );
+    assert_eq!(one.base_remote.as_deref(), Some("origin"));
 
     s.repo.commit("Mark branches");
     s.gh.reply(
@@ -595,6 +626,7 @@ fn create(branch: &str, base: &str, title: &str, body: &str, draft: bool) -> OpR
     OpRequest::PrCreate {
         branch: branch.into(),
         base: base.into(),
+        base_remote: None,
         title: title.into(),
         body: body.into(),
         draft,
@@ -683,6 +715,8 @@ async fn a_pull_request_is_made_after_the_push_with_the_body_on_stdin() {
         [
             "pr",
             "create",
+            "--repo",
+            "octo/cat",
             "--head",
             "feature/x",
             "--base",
@@ -958,5 +992,83 @@ async fn the_git_gh_runs_is_protected_as_the_apps_own() {
             !call.env.iter().any(|e| e.starts_with(&format!("{var}="))),
             "{var}: {git_env:?}"
         );
+    }
+}
+
+/// One choice of repository (Task 8 review): every `gh` command names the repository the
+/// app chose (`--repo`), never left to `gh`. In a fork workflow, remotes `fork` (ada's, the
+/// branch's upstream) and `main-repo` (octo's), with the base on `main-repo`: the pull
+/// request goes to octo/cat from `ada:topic`; when `gh` cannot make it, the compare page is
+/// main-repo's, comparing ada's branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
+    let s = setup().await;
+    s.repo.git(&["remote", "rename", "origin", "main-repo"]);
+    let fork = s.repo.clone_as_remote_named("fork");
+    s.repo
+        .git(&["remote", "set-url", "fork", "git@github.com:ada/cat.git"]);
+    behind(&s.repo, "git@github.com:ada/cat.git", &fork);
+    s.repo.branch("topic");
+    s.repo.git(&["push", "-q", "-u", "fork", "topic"]);
+    s.gh.reply("pr-list", 0, "[]", "");
+    s.load().await;
+    let suggested = s.h.m.pr_suggest(s.id, "topic").await.unwrap();
+    assert_eq!(
+        suggested.base_remote.as_deref(),
+        Some("fork"),
+        "no upstream/github/origin: the branch's push remote"
+    );
+
+    s.gh.reply("pr-create", 0, "https://github.com/octo/cat/pull/5\n", "");
+    let mut request = create("topic", "main", "Topic", "", false);
+    if let OpRequest::PrCreate { base_remote, .. } = &mut request {
+        *base_remote = Some("main-repo".into());
+    }
+    let out = s.h.run(s.id, request.clone()).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let made = &s.gh.calls_of(&["pr", "create"])[0];
+    assert_eq!(
+        made.argv[..8],
+        [
+            "pr",
+            "create",
+            "--repo",
+            "octo/cat",
+            "--head",
+            "ada:topic",
+            "--base",
+            "main"
+        ]
+    );
+
+    // gh cannot make it: the compare page of the base repository, with the fork's branch.
+    s.gh.reply("pr-create", 1, "", "HTTP 502: bad gateway\n");
+    let out = s.h.run(s.id, request).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(
+        out.hints,
+        [OpHint::OpenUrl {
+            url: "https://github.com/octo/cat/compare/main...ada:topic?expand=1".into(),
+            label: "Open the compare page".into()
+        }]
+    );
+
+    // A remote that is not one: refused, nothing run.
+    let before = s.gh.calls().len();
+    let mut bad = create("topic", "main", "Topic", "", false);
+    if let OpRequest::PrCreate { base_remote, .. } = &mut bad {
+        *base_remote = Some("nope".into());
+    }
+    let out = s.h.run(s.id, bad).await;
+    assert_eq!(out.status, OpStatus::Failed);
+    assert_eq!(s.gh.calls().len(), before);
+
+    // gh never ran without naming the repository.
+    for call in s.gh.calls() {
+        let named = call.argv.iter().any(|a| a == "--repo")
+            || call.argv[..2] == ["repo", "view"] && call.argv.len() > 2;
+        assert!(named, "{:?}", call.argv);
+        assert!(!call.env.iter().any(|e| e.starts_with("GH_REPO=")));
+        assert!(!call.env.iter().any(|e| e.starts_with("GH_HOST=")));
     }
 }

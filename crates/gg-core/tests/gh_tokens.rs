@@ -57,6 +57,12 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
         // environment or starts a child (the runtime's workers are idle).
         unsafe { std::env::set_var(var, format!("env-value-of-{var}")) };
     }
+    // A repository and host gh would otherwise take from the environment (Task 8 review:
+    // every command names the repository the app chose; GH_HOST only as the app sets it).
+    for (var, value) in [("GH_REPO", "evil/repo"), ("GH_HOST", "evil.example")] {
+        // SAFETY: as above.
+        unsafe { std::env::set_var(var, value) };
+    }
     let gh = FakeGh::new();
     let h = harness().await;
     h.m.set_tool_path(Some(gh.path()));
@@ -149,6 +155,23 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
             .iter()
             .any(|e| e == "GH_TOKEN=env-value-of-GH_TOKEN")
     );
+
+    // No command took GH_REPO from the environment, nor GH_HOST but as the app set it.
+    for call in gh.calls() {
+        assert!(!has(&call.env, "GH_REPO"), "{:?}", call.argv);
+        assert!(
+            !call.env.iter().any(|e| e == "GH_HOST=evil.example"),
+            "{:?}",
+            call.argv
+        );
+        if call.argv[0] != "auth" {
+            assert!(
+                call.argv
+                    .iter()
+                    .any(|a| a == "--repo" || a.ends_with("team/app"))
+            );
+        }
+    }
 
     // The token gh printed for the check reached nothing of the app's.
     let log = h.log.since(0);

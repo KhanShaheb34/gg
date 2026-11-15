@@ -54,7 +54,14 @@ export type PrState = {
 };
 export type PrUnavailable = "no_gh" | "signed_out" | "not_github" | "failed";
 /** What `pr_suggest` offers for a new pull request; `existing` asked of gh for that branch. */
-export type PrSuggestion = { title: string; body: string; base: string; existing: PullRequest | null; compareUrl: string | null };
+export type PrSuggestion = {
+  title: string;
+  body: string;
+  base: string;
+  baseRemote: string | null; // the remote `base` is on: the repository the pull request goes to (null: no remote)
+  existing: PullRequest | null;
+  compareUrl: string | null;
+};
 /** `conflictedPaths`: the conflicted paths, sorted, the first 200 of them. */
 export type WorktreeStatus = { changed: number; untracked: number; conflicted: number; conflictedPaths: string[] };
 /** `lastError`: why the last fetch failed, in one line; `lastErrorDetail`: git's whole stderr of it. */
@@ -295,7 +302,8 @@ export type OpRequest =
   // no conflicts left is in progress, it concludes the merge, and `paths` must be every changed file.
   // Empty paths: nothing_to_do; blank message: bad_request.
   | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string }
-  | { op: "pr_create"; branch: string; base: string; title: string; body: string; draft: boolean };
+  // base: a branch on baseRemote, the repository it goes to (null: the one pr_suggest names); every gh command names it
+  | { op: "pr_create"; branch: string; base: string; baseRemote: string | null; title: string; body: string; draft: boolean };
 
 /** What a new worktree checks out: an existing local branch, a new branch at a commit (full hash), or a commit, detached. */
 export type WorktreeBranch = { existing: string } | { create: string; at: string } | { detach: string };

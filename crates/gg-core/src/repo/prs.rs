@@ -206,7 +206,7 @@ impl RepoManager {
         let facts = RemoteFacts::read(&repo.runner, &repo.root)
             .await
             .map_err(failed)?;
-        let Some(remote) = facts.base_remote() else {
+        let Some(remote) = facts.base_remote(None) else {
             return Err((PrUnavailable::NotGithub, None, false));
         };
         let Some(on) = self.on_github(repo, &repo.runner, &facts, remote).await else {
@@ -217,7 +217,16 @@ impl RepoManager {
         };
         let limit = LIST_LIMIT.to_string();
         let args = [
-            "pr", "list", "--state", "open", "--limit", &limit, "--json", PR_FIELDS,
+            "pr",
+            "list",
+            "--repo",
+            gh.repo(),
+            "--state",
+            "open",
+            "--limit",
+            &limit,
+            "--json",
+            PR_FIELDS,
         ];
         match gh.run(&args, CmdKind::Read, StdinPolicy::Null).await {
             Ok(Ok(out)) => match parse_list(&out.stdout) {
@@ -241,7 +250,7 @@ impl RepoManager {
             program,
             tool_path,
             &repo.root,
-            &on.host,
+            on,
             self.gh_limit(),
         ))
     }
@@ -337,7 +346,7 @@ impl RepoManager {
             ));
         }
         let facts = RemoteFacts::read(&repo.runner, root).await?;
-        let base_remote = facts.base_remote().map(str::to_owned);
+        let base_remote = facts.base_remote(Some(branch)).map(str::to_owned);
         let on = match base_remote.as_deref() {
             Some(r) => self.on_github(&repo, &repo.runner, &facts, r).await,
             None => None,
@@ -366,7 +375,7 @@ impl RepoManager {
             && let Some(gh) = &gh
             && let Ok(Ok(out)) = gh
                 .run(
-                    &["repo", "view", "--json", "defaultBranchRef"],
+                    &["repo", "view", gh.repo(), "--json", "defaultBranchRef"],
                     CmdKind::Read,
                     StdinPolicy::Null,
                 )
@@ -434,7 +443,18 @@ impl RepoManager {
             && let Ok(Ok(out)) = gh
                 .run(
                     &[
-                        "pr", "list", "--head", branch, "--state", "open", "--json", PR_FIELDS,
+                        "pr",
+                        "list",
+                        "--repo",
+                        gh.repo(),
+                        "--head",
+                        branch,
+                        "--state",
+                        "open",
+                        "--limit",
+                        &LIST_LIMIT.to_string(),
+                        "--json",
+                        PR_FIELDS,
                     ],
                     CmdKind::Read,
                     StdinPolicy::Null,
@@ -460,6 +480,7 @@ impl RepoManager {
             title,
             body,
             base,
+            base_remote,
             existing,
             compare_url: compare,
         })

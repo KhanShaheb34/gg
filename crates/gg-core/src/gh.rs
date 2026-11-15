@@ -111,23 +111,29 @@ pub(crate) fn unavailable_message(reason: PrUnavailable, failure: Option<&GhFail
     }
 }
 
-/// Runs `gh` for one repository.
+/// Runs `gh` for one repository, the one the app chose: every command names it (`--repo`,
+/// or `gh repo view`'s argument), so `gh` never picks one of its own from the remotes, nor
+/// from an inherited `GH_REPO` or `GH_HOST`.
 pub(crate) struct Gh {
     runner: ToolRunner,
     cwd: PathBuf,
     limit: TimeLimit,
+    /// The repository as `gh` takes it: `owner/name` on github.com, else `host/owner/name`.
+    repo: String,
 }
 
 impl Gh {
     /// `gh` at `program`, logged as `git`'s commands are (its repository, its operation and
-    /// Stop), run in `cwd` with `path` as its `PATH` (`None`: git's), for the repository on
-    /// `host`, given up on after `limit`.
+    /// Stop), run in `cwd` with `path` as its `PATH` (`None`: git's), for repository `on`
+    /// (on a host known to be GitHub), given up on after `limit`. `GH_HOST` is set only for
+    /// a host other than github.com (and removed for github.com); `GH_REPO` is never passed
+    /// on.
     pub(crate) fn new(
         git: &GitRunner,
         program: PathBuf,
         path: Option<OsString>,
         cwd: &Path,
-        host: &str,
+        on: &RemoteRepo,
         limit: Duration,
     ) -> Self {
         let mut runner = git.tool(program, "gh");
@@ -135,26 +141,38 @@ impl Gh {
             runner = runner.with_path(path);
         }
         runner = Self::base(runner);
-        if host != "github.com" {
+        let host = on.host.as_str();
+        let repo = if host == "github.com" {
+            runner = runner.without_env("GH_HOST");
+            format!("{}/{}", on.owner, on.name)
+        } else {
             runner = runner
                 .with_env("GH_HOST", host)
                 .without_env("GH_ENTERPRISE_TOKEN")
                 .without_env("GITHUB_ENTERPRISE_TOKEN");
-        }
+            format!("{host}/{}/{}", on.owner, on.name)
+        };
         Self {
             runner,
             cwd: cwd.to_owned(),
             limit: TimeLimit::total(limit),
+            repo,
         }
     }
 
-    /// What every `gh` command gets: no prompt, no update notice, no colour, and the
-    /// protection of the git it runs.
+    /// The repository every command names (`--repo <this>`).
+    pub(crate) fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    /// What every `gh` command gets: no prompt, no update notice, no colour, no repository
+    /// but the one named, and the protection of the git it runs.
     fn base(runner: ToolRunner) -> ToolRunner {
         runner
             .with_env("GH_PROMPT_DISABLED", "1")
             .with_env("GH_NO_UPDATE_NOTIFIER", "1")
             .with_env("NO_COLOR", "1")
+            .without_env("GH_REPO")
             .with_git_protection()
     }
 
@@ -175,7 +193,7 @@ impl Gh {
         if path.is_some() {
             runner = runner.with_path(path);
         }
-        runner = Self::base(runner);
+        runner = Self::base(runner).without_env("GH_HOST");
         for var in TOKEN_VARS {
             runner = runner.without_env(var);
         }
@@ -463,16 +481,24 @@ impl RemoteFacts {
         })
     }
 
-    /// The remote `gh` takes for the repository when given none, as `gh` picks it: the one
-    /// marked by `gh repo set-default`, else `upstream`, `github`, `origin`, else the first.
-    pub(crate) fn base_remote(&self) -> Option<&str> {
+    /// The remote of the repository pull requests go to (the base repository) unless the
+    /// user names another: the one marked by `gh repo set-default`, else `upstream`,
+    /// `github`, `origin`, else the remote `branch` (when given) is pushed to, else the first.
+    /// Every `gh` command is then told this repository (`--repo`).
+    pub(crate) fn base_remote(&self, branch: Option<&str>) -> Option<&str> {
         if let Some(r) = self.resolved.as_deref().filter(|r| self.known(r)) {
             return Some(r);
         }
         ["upstream", "github", "origin"]
             .into_iter()
             .find(|r| self.known(r))
+            .or_else(|| branch.and_then(|b| self.push_remote(b)))
             .or_else(|| self.urls.keys().next().map(String::as_str))
+    }
+
+    /// Whether `remote` is one of the repository's remotes.
+    pub(crate) fn is_remote(&self, remote: &str) -> bool {
+        self.known(remote)
     }
 
     /// The repository `remote` names: the first of its addresses that names one.
@@ -749,8 +775,21 @@ mod tests {
             ("upstream", "git@github.com:o/r"),
             ("zz", "git@github.com:z/r"),
         ];
-        assert_eq!(facts(&three, &[]).base_remote(), Some("upstream"));
-        assert_eq!(facts(&three, &[("zz", "base")]).base_remote(), Some("zz"));
+        assert_eq!(facts(&three, &[]).base_remote(None), Some("upstream"));
+        assert_eq!(
+            facts(&three, &[("zz", "base")]).base_remote(None),
+            Some("zz")
+        );
+        // None of those names: the branch's push remote, else the first.
+        let forked = [
+            ("fork", "git@github.com:ada/r"),
+            ("main-repo", "git@github.com:o/r"),
+            ("zzz", "git@github.com:z/r"),
+        ];
+        let f = facts(&forked, &[("branch.x.remote", "main-repo")]);
+        assert_eq!(f.base_remote(Some("x")), Some("main-repo"));
+        assert_eq!(f.base_remote(Some("y")), Some("fork"));
+        assert_eq!(f.base_remote(None), Some("fork"));
     }
 
     fn listed(number: u32, head: &str, owner: &str, cross: bool) -> ListedPr {

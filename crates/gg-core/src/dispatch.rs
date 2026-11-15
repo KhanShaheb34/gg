@@ -155,6 +155,12 @@ struct OpenInEditorArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstallCliArgs {
+    dir: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PerfMarkArgs {
     name: String,
     ms: f64,
@@ -350,6 +356,17 @@ impl Core {
                     .await?;
                 to_json(note)
             }
+            "install_cli" => {
+                let a: InstallCliArgs = parse(cmd, args)?;
+                to_json(
+                    self.off_runtime(move |core| core.install_cli(&a.dir))
+                        .await?,
+                )
+            }
+            "uninstall_cli" => {
+                let NoArgs {} = parse(cmd, args)?;
+                to_json(self.off_runtime(|core| core.uninstall_cli()).await?)
+            }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;
                 self.blocking(move |core| core.perf_mark(&a.name, a.ms))
@@ -379,6 +396,20 @@ impl Core {
             })
     }
 
+    /// Runs `f`, which blocks (writes a file, waits for the login shell), on Tokio's blocking
+    /// pool, without waiting for the store's turn: it does not touch the store.
+    async fn off_runtime<T: Send + 'static>(
+        self: &Arc<Self>,
+        f: impl FnOnce(&Core) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let core = self.clone();
+        tokio::task::spawn_blocking(move || f(&core))
+            .await
+            .unwrap_or_else(|e| {
+                Err(CoreError::new(ErrorCode::Io, "The task failed").with_detail(e.to_string()))
+            })
+    }
+
     /// The main worktree of open repository `repo_id`: what its preferences are kept by.
     fn repo_root(&self, repo_id: u32) -> Result<PathBuf> {
         let repos = self.repos()?;
@@ -403,6 +434,7 @@ impl Core {
             home_dir: home_dir(),
             settings_problem: self.store.problem(),
             git_problem: self.repos().ok().and_then(|r| r.git_problem()),
+            cli: self.cli_state(),
         }
     }
 }

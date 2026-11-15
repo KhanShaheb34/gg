@@ -737,6 +737,24 @@ pub struct AppState {
     /// Why the git found is too old for the app (older than 2.29), said once; `None` when it
     /// is new enough or could not be read.
     pub git_problem: Option<String>,
+    /// The `gg` terminal command.
+    pub cli: CliState,
+}
+
+/// The `gg` terminal command: where it is installed, what in the user's shell would win over
+/// it, and where it can be installed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliState {
+    /// The launcher the app wrote, first found on the login `PATH`; `None` when there is none.
+    pub installed: Option<String>,
+    /// What the login shell runs for `gg` instead of the launcher (an alias, a function, a
+    /// program earlier on `PATH`), as the shell describes it; `None` when nothing, or not
+    /// known (yet).
+    pub shadowed_by: Option<String>,
+    /// The folders the launcher can be written to, best first: on the login `PATH`,
+    /// writable, not inside a repository.
+    pub candidates: Vec<String>,
 }
 
 #[cfg(test)]
@@ -762,6 +780,11 @@ mod tests {
             home_dir: Some("/h".into()),
             settings_problem: None,
             git_problem: None,
+            cli: CliState {
+                installed: Some("/b/gg".into()),
+                shadowed_by: None,
+                candidates: vec!["/b".into()],
+            },
         };
         let v = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -773,7 +796,8 @@ mod tests {
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,
-                "gitProblem": null
+                "gitProblem": null,
+                "cli": {"installed": "/b/gg", "shadowedBy": null, "candidates": ["/b"]}
             })
         );
         assert_eq!(serde_json::from_value::<AppState>(v).unwrap(), state);

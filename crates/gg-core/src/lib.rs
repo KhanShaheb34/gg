@@ -3,6 +3,7 @@
 //! [`Core`] is the one entry point the transports (the Tauri app and the dev server) use:
 //! [`Core::dispatch`] takes a command name and JSON arguments and returns JSON.
 
+pub mod cli;
 mod dispatch;
 pub mod dto;
 mod editor;
@@ -55,6 +56,8 @@ pub struct Core {
     io_turn: tokio::sync::Mutex<()>,
     /// Folders the operating system asked the app to open, not yet taken by the UI.
     opened: Mutex<Vec<String>>,
+    /// The `gg` terminal command: where it is looked for, and what the shell said of it.
+    cli: Mutex<cli::CliContext>,
     sink: Arc<dyn EventSink>,
 }
 
@@ -102,6 +105,7 @@ impl Core {
             repos.set_fetch_interval(store.settings().fetch_interval_secs);
             repos
         });
+        let login_path = repos.as_ref().ok().and_then(|r| r.login_path());
         Arc::new(Self {
             repos,
             log,
@@ -110,6 +114,7 @@ impl Core {
             perf: Mutex::new(Perf::default()),
             io_turn: tokio::sync::Mutex::new(()),
             opened: Mutex::new(Vec::new()),
+            cli: Mutex::new(cli::CliContext::new(login_path)),
             sink,
         })
     }

@@ -618,7 +618,12 @@ async fn launch_path_is_reported() {
     assert_eq!(state["launchPath"], dir.path().to_string_lossy().as_ref());
 
     let none = harness().await;
-    let state = none.call("get_app_state", json!({})).await;
+    let mut state = none.call("get_app_state", json!({})).await;
+    // The `gg` command as this machine has it (see the_gg_command_installs_and_uninstalls);
+    // no shell is asked unless `start_cli` says which.
+    let cli = state.as_object_mut().unwrap().remove("cli").unwrap();
+    assert_eq!(cli["shadowedBy"], Value::Null);
+    assert!(cli["candidates"].is_array());
     let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let home = std::env::var_os(home_var)
         .filter(|v| !v.is_empty())
@@ -1024,4 +1029,93 @@ async fn credentials_in_urls_never_reach_the_ui() {
             "the credential reached the UI: {text}"
         );
     }
+}
+
+/// The `gg` command through `install_cli` / `uninstall_cli` and `get_app_state`, with a
+/// stand-in login shell and a `PATH` and home folder of temp folders only.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_gg_command_installs_and_uninstalls() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let local = home.join(".local/bin");
+    let bin = home.join("bin");
+    let outside = root.path().join("outside");
+    for dir in [&local, &bin, &outside] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let shell = root.path().join("fake-shell");
+    std::fs::write(&shell, "#!/bin/sh\nalias gg='git log'\neval \"$2\"\n").unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(std::env::join_paths([&outside, &bin, &local]).unwrap()),
+        home: Some(home.clone()),
+    });
+
+    // The shell's answer arrives in the background.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let cli = loop {
+        let cli = h.call("get_app_state", json!({})).await["cli"].clone();
+        if !cli["shadowedBy"].is_null() || std::time::Instant::now() > deadline {
+            break cli;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let s = |p: &Path| p.to_string_lossy().into_owned();
+    let expected = json!({
+        "installed": null,
+        "shadowedBy": "an alias for git log",
+        "candidates": [s(&local), s(&bin)],
+    });
+    assert_eq!(cli, expected);
+    // Announced too, for a UI that read the state before the answer came.
+    let announced = h
+        .sink
+        .wait_for(TIMEOUT, |name, _| name == "cli-changed")
+        .await;
+    assert_eq!(announced.map(|(_, v)| v), Some(expected));
+
+    // Only a candidate folder.
+    let err = h.fail("install_cli", json!({ "dir": outside })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(!outside.join("gg").exists());
+
+    let cli = h.call("install_cli", json!({ "dir": bin })).await;
+    assert_eq!(cli["installed"], s(&bin.join("gg")));
+    assert_eq!(cli["shadowedBy"], "an alias for git log");
+    assert!(gg_core::cli::has_marker(&bin.join("gg")));
+    assert_eq!(
+        h.call("get_app_state", json!({})).await["cli"]["installed"],
+        s(&bin.join("gg"))
+    );
+
+    let cli = h.call("uninstall_cli", json!({})).await;
+    assert_eq!(cli["installed"], Value::Null);
+    assert!(!bin.join("gg").exists());
+
+    let err = h.fail("uninstall_cli", json!({ "dir": bin })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let err = h.fail("install_cli", json!({})).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
+/// Without a login shell to ask, nothing is said to shadow the command.
+#[tokio::test]
+async fn the_gg_command_without_a_shell_check() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: None,
+        search_path: Some(root.path().as_os_str().to_owned()),
+        home: Some(root.path().join("home")),
+    });
+    let cli = h.call("get_app_state", json!({})).await["cli"].clone();
+    assert_eq!(
+        cli,
+        json!({ "installed": null, "shadowedBy": null, "candidates": [] })
+    );
 }

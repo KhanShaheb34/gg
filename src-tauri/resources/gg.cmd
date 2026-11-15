@@ -1,0 +1,60 @@
+@echo off
+rem gg launcher, installed by gg @GG_VERSION@
+rem
+rem gg [path]: opens the git repository that holds path (default: the current folder) in
+rem the gg app, and returns at once. Written by the app's "Install 'gg' Command"; the app
+rem replaces or removes it only while the marker line above is there. The app is the
+rem program it was installed from (below); if it moves, install the command again.
+rem (Installing it on Windows comes with the Windows release.)
+setlocal
+set "GG_APP=@GG_APP@"
+
+if "%~1"=="-h" goto help
+if "%~1"=="--help" goto help
+if "%~1"=="-V" goto version
+if "%~1"=="--version" goto version
+
+set "TARGET=%~1"
+if "%~1"=="--" set "TARGET=%~2"
+if "%TARGET%"=="" set "TARGET=."
+for %%I in ("%TARGET%") do set "TARGET=%%~fI"
+if not exist "%TARGET%\" (
+  echo gg: %TARGET%: no such folder 1>&2
+  exit /b 1
+)
+
+where git >nul 2>nul || (
+  echo gg: git was not found on PATH 1>&2
+  exit /b 1
+)
+set "TOP="
+for /f "delims=" %%T in ('git -C "%TARGET%" rev-parse --show-toplevel 2^>nul') do set "TOP=%%T"
+if not defined TOP (
+  echo gg: %TARGET% is not inside a git repository 1>&2
+  exit /b 1
+)
+set "TOP=%TOP:/=\%"
+
+rem Tests put a recording stub here.
+if defined GG_APP_BIN (
+  start "" "%GG_APP_BIN%" "%TOP%"
+  exit /b 0
+)
+if not exist "%GG_APP%" (
+  echo gg: the gg app is no longer at %GG_APP%. 1>&2
+  echo gg: open gg and choose Install 'gg' Command again to point this command at it. 1>&2
+  exit /b 1
+)
+start "" "%GG_APP%" "%TOP%"
+exit /b 0
+
+:version
+echo gg @GG_VERSION@
+exit /b 0
+
+:help
+echo usage: gg [path]
+echo        gg -- ^<path starting with -^>
+echo.
+echo Opens the git repository that holds path (default: the current folder) in gg.
+exit /b 0

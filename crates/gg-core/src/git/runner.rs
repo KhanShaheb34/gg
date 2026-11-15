@@ -1144,21 +1144,32 @@ pub fn resolve_login_path() -> Option<OsString> {
 
 #[cfg(unix)]
 fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
-    use std::io::Read;
     use std::os::unix::ffi::OsStringExt;
+
+    let script = r#"printf '\n__GG_PATH__%s__GG_PATH__' "$PATH""#;
+    let out = shell_output(shell, &["-ilc", script], timeout)?;
+    let path = between_markers(&out, PATH_MARKER)?;
+    (!path.is_empty()).then(|| OsString::from_vec(path.to_vec()))
+}
+
+/// What `shell` started with `args` prints on stdout, if it exits successfully within
+/// `timeout` (it is killed past it). Stdin is null and stderr is dropped. The output is
+/// read on a thread: a process started by the shell's profile may keep stdout open after
+/// the shell exits, and reading must not outlive the deadline.
+#[cfg(unix)]
+pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
+    use std::io::Read;
     use std::sync::mpsc;
 
     let deadline = Instant::now() + timeout;
     let mut child = std::process::Command::new(shell)
-        .args(["-ilc", r#"printf '\n__GG_PATH__%s__GG_PATH__' "$PATH""#])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
 
-    // Read on a thread: a process started by the shell profile may keep stdout open after
-    // the shell exits, and reading must not outlive the deadline.
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -1184,25 +1195,19 @@ fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
     // The shell has exited: its output is complete once the reader has it, unless something
     // it started holds stdout open. The reader gets a moment of its own for that, so a shell
     // that ends just before the deadline is not taken for one that printed nothing.
-    let out = rx
-        .recv_timeout(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .max(READ_GRACE),
-        )
-        .ok()?;
-    let path = between_markers(&out)?;
-    (!path.is_empty()).then(|| OsString::from_vec(path.to_vec()))
+    rx.recv_timeout(
+        deadline
+            .saturating_duration_since(Instant::now())
+            .max(READ_GRACE),
+    )
+    .ok()
 }
 
-/// The bytes between the first two [`PATH_MARKER`]s in `out`.
+/// The bytes between the first two `marker`s in `out`.
 #[cfg(unix)]
-fn between_markers(out: &[u8]) -> Option<&[u8]> {
-    let find = |hay: &[u8]| {
-        hay.windows(PATH_MARKER.len())
-            .position(|w| w == PATH_MARKER)
-    };
-    let start = find(out)? + PATH_MARKER.len();
+pub(crate) fn between_markers<'a>(out: &'a [u8], marker: &[u8]) -> Option<&'a [u8]> {
+    let find = |hay: &[u8]| hay.windows(marker.len()).position(|w| w == marker);
+    let start = find(out)? + marker.len();
     let len = find(&out[start..])?;
     Some(&out[start..start + len])
 }

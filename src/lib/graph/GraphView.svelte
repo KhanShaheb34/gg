@@ -887,8 +887,9 @@
     padding-left: 8px;
   }
 
+  /* Gives way first: the labels (and their pull-request markers) keep their room. */
   .subject {
-    flex: 1 1 auto;
+    flex: 1 1000 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;

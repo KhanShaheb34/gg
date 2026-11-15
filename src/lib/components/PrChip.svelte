@@ -3,8 +3,9 @@
   branch's label in the graph and on its worktree's row. A draft is hollow and quiet; a marker
   from a list that may be out of date (older than 10 minutes, or the last reload failed) is
   dimmed and its tooltip says as of when. A button: it opens the pull request in the browser,
-  and its click never reaches the row (no selection, no double-click action). Out of the Tab
-  order, like the rows' other small buttons: the row's menu has "Open pull request #N".
+  and its click never reaches the row (no selection, no double-click action), nor takes the
+  focus from where it is. Out of the Tab order, like the rows' other small buttons: the row's
+  menu has "Open pull request #N".
   Always there, hidden without a pull request, so a recycled graph row only changes it.
 -->
 <script lang="ts">
@@ -37,6 +38,7 @@
   }}
   ondblclick={(e) => e.stopPropagation()}
   onpointerdown={(e) => e.stopPropagation()}
+  onmousedown={(e) => e.preventDefault()}
 >
   <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
     <circle cx="2.4" cy="2" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />

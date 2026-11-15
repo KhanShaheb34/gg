@@ -58,6 +58,13 @@
     return parts.join(" · ");
   }
 
+  /** A label folded into "+k": as a shown one's tooltip, and its pull request, whose marker is folded with it. */
+  function hiddenTitle(label: RefLabel): string {
+    const pr = label.pr;
+    if (!pr) return title(label);
+    return `${title(label)} · ${pr.state === "draft" ? "draft " : ""}pull request #${pr.number}${prStale ? ` (${prStale})` : ""}`;
+  }
+
   function aheadBehind(label: RefLabel): string {
     const ahead = label.ahead > 0 ? `↑${label.ahead}` : "";
     const behind = label.behind > 0 ? `↓${label.behind}` : "";
@@ -119,7 +126,7 @@
   </span>
   <PrChip pr={label?.pr ?? null} stale={prStale} onOpen={onOpenPr} />
 {/each}
-<span class="ref more" data-slot="more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(title).join("\n")}
+<span class="ref more" data-slot="more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(hiddenTitle).join("\n")}
   >+{rest}</span
 >
 <span
@@ -142,7 +149,10 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    flex: none;
+    /* A long name gives way (cut at its end) before its pull-request marker is cut off by
+       the cell, once the subject beside it has none left (Task 9 review minor 5). */
+    flex: 0 1 auto;
+    min-width: 0;
     height: 18px;
     padding: 0 6px 0 5px;
     border: 1px solid color-mix(in srgb, var(--c) 34%, transparent);
@@ -157,6 +167,19 @@
 
   .ref[hidden] {
     display: none;
+  }
+
+  .name {
+    min-width: 2.5em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .remotes,
+  .ab,
+  .more,
+  .head {
+    flex: none;
   }
 
   .icon,

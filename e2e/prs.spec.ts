@@ -267,3 +267,27 @@ test("the button names where the branch really goes: remote.pushDefault sends it
   expect(options.some((o) => o.startsWith("origin/") || o.startsWith("fork/"))).toBe(false);
   await expect(dialog(page).getByRole("button", { name: "Push fix/typo to fork/fix/typo and create pull request" })).toBeEnabled();
 });
+
+test("several branches with pull requests on one commit: the ones folded into +k are named in its tooltip; a marker click leaves the focus (Task 9 review minor 5)", async ({ gg }) => {
+  const { page } = gg;
+  for (const name of ["pr/one", "pr/two", "pr/three"]) gg.git("prs", "branch", name, "fix/typo");
+  listing(gg, [pr(31, "fix/typo", "Typo"), pr(32, "pr/one", "One"), pr(33, "pr/two", "Two", true), pr(34, "pr/three", "Three")]);
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await refresh(page);
+  const row = grid(page).locator('[role="row"]', { has: page.locator('[data-ref="fix/typo"]') });
+  const more = row.locator('[data-slot="more"]');
+  await expect(more).toBeVisible();
+  await expect(row.locator("button.pr-chip:not([hidden])").first()).toBeVisible();
+  await expect.poll(async () => ((await more.getAttribute("title")) ?? "").match(/pull request #\d+/g)?.length ?? 0).toBe(2);
+  // The markers shown are not cut off by the cell.
+  for (const chipEl of await row.locator("button.pr-chip:not([hidden])").all()) {
+    const box = (await chipEl.boundingBox())!;
+    const cell = (await row.locator(".desc").boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(cell.x + cell.width + 0.5);
+  }
+  // A click opens it and leaves the focus where it was (the grid).
+  await grid(page).focus();
+  await row.locator("button.pr-chip:not([hidden])").first().click();
+  await expect(grid(page)).toBeFocused();
+});

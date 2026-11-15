@@ -7,8 +7,10 @@ pub mod cli;
 mod dispatch;
 pub mod dto;
 pub mod error;
+pub mod gh;
 pub mod git;
 pub mod graph;
+pub mod hosts;
 pub mod launch;
 mod mask;
 pub mod ops;
@@ -180,6 +182,14 @@ impl Core {
         }
     }
 
+    /// Finds and runs `gh` on `path` instead of the login `PATH` (tests only: a fake `gh`).
+    #[cfg(feature = "testutil")]
+    pub fn set_tool_path(&self, path: Option<std::ffi::OsString>) {
+        if let Ok(repos) = self.repos() {
+            repos.set_tool_path(path);
+        }
+    }
+
     /// Every perf mark so far, oldest first.
     pub fn perf_marks(&self) -> Vec<(String, f64)> {
         self.perf().marks.clone()
@@ -236,6 +246,21 @@ impl repo::WorktreeMemory for StoreMemory {
     fn remember(&self, root: &std::path::Path, worktree: Option<&std::path::Path>) {
         // Only the next start would miss it.
         let _ = self.0.set_active_worktree(root, worktree);
+    }
+
+    fn pr_base(&self, root: &std::path::Path) -> Option<String> {
+        self.0.repo_prefs(root).pr_base
+    }
+
+    fn remember_pr_base(&self, root: &std::path::Path, base: &str) {
+        // Only the next pull request's suggestion would miss it.
+        let _ = self.0.set_repo_prefs(
+            root,
+            store::RepoPrefsPatch {
+                pr_base: Some(Some(base.to_owned())),
+                ..Default::default()
+            },
+        );
     }
 }
 

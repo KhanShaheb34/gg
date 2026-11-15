@@ -227,8 +227,8 @@ export function shellQuote(arg: string): string {
 }
 
 /** The command line of git with `args`, quoted for a shell ("git commit -m 'Fix it'"). */
-export function commandLine(args: string[]): string {
-  return ["git", ...args].map(shellQuote).join(" ");
+export function commandLine(args: string[], program = "git"): string {
+  return [program, ...args].map(shellQuote).join(" ");
 }
 
 /**

@@ -61,6 +61,16 @@ pub trait WorktreeMemory: Send + Sync + 'static {
     /// Remembers `worktree` (`None`: the main one) as active for the repository at `root`.
     /// Called on Tokio's blocking pool.
     fn remember(&self, root: &Path, worktree: Option<&Path>);
+    /// The base branch of the last pull request made in the repository at `root`, if any.
+    fn pr_base(&self, root: &Path) -> Option<String> {
+        let _ = root;
+        None
+    }
+    /// Remembers `base` as the base branch of the last pull request made there. Called on
+    /// Tokio's blocking pool.
+    fn remember_pr_base(&self, root: &Path, base: &str) {
+        let _ = (root, base);
+    }
 }
 
 /// Opens repositories and keeps their state. Create one per app with [`RepoManager::new`].
@@ -134,6 +144,17 @@ pub struct RepoManager {
     /// Tests only: background worktree reads running now, and the most seen at once.
     #[cfg(any(test, feature = "testutil"))]
     worktree_reads_at_once: (AtomicU32, AtomicU32),
+    /// Repositories (by main worktree) whose pull requests' unavailability has been said
+    /// this run: said once per repository per run of the app.
+    pub(super) prs_said: Mutex<std::collections::HashSet<PathBuf>>,
+    /// How long a `gh` command may run, in milliseconds.
+    pub(super) gh_timeout_ms: AtomicU64,
+    /// Tests only: the `PATH` `gh` is found on and run with, instead of the login shell's.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) tool_path: Mutex<Option<std::ffi::OsString>>,
+    /// Tests only: the least time between two loads of the pull requests, instead of 60 s.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) prs_every: Mutex<Option<Duration>>,
 }
 
 /// Tests only: a point in the core where the next task to pass stops. `reached` is
@@ -176,7 +197,7 @@ pub(crate) struct Repo {
     /// The id of the last load that ended without finishing; the next refresh reloads.
     pub(super) abandoned_load: AtomicU64,
     /// Serializes refreshes and view-option changes.
-    refresh_lock: tokio::sync::Mutex<()>,
+    pub(super) refresh_lock: tokio::sync::Mutex<()>,
     /// A refresh was asked for that no refresh has started on yet.
     refresh_wanted: AtomicBool,
     pub(super) load_task: Mutex<Option<JoinHandle<()>>>,
@@ -235,6 +256,10 @@ pub(crate) struct Repo {
     /// Held by a scheduled fetch from before it shows as running until it ends;
     /// cancelling one waits for it.
     pub(super) scheduled_running: Arc<tokio::sync::Mutex<()>>,
+    /// Whether the pull requests are being loaded, and when they last were.
+    pub(super) prs_gate: Mutex<super::prs::PrGate>,
+    /// Pull request loads ended so far (tests wait on it).
+    pub(super) prs_loads: watch::Sender<u64>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -310,6 +335,7 @@ struct HeldErrors {
     tree_watch: Option<serde_json::Value>,
     status: Option<serde_json::Value>,
     stashes: Option<serde_json::Value>,
+    prs: Option<serde_json::Value>,
 }
 
 /// What a held `repo-error` is about.
@@ -325,6 +351,8 @@ pub(super) enum ErrorKind {
     Status,
     /// The stash list could not be read.
     Stashes,
+    /// Pull requests cannot be shown (said once per repository per run).
+    Prs,
 }
 
 /// The state lock's contents.
@@ -365,6 +393,8 @@ pub(super) struct Slot {
     active_status_known: bool,
     /// What is known of each worktree beside `git worktree list`, by path.
     extras: HashMap<String, WorktreeExtra>,
+    /// The open pull requests, as last loaded (see `repo/prs.rs`).
+    pub(super) prs: super::prs::PrSlot,
 }
 
 impl Slot {
@@ -419,6 +449,7 @@ impl Slot {
             snapshot.uncommitted_subject = crate::dto::uncommitted_subject(&snapshot.status);
         }
         snapshot.op.clone_from(&self.op);
+        snapshot.prs = self.prs.state;
         snapshot.seq = self.emit_seq;
         self.describe_worktrees(&mut snapshot);
         snapshot
@@ -444,6 +475,10 @@ impl Slot {
             });
             let extra = self.extras.get(&wt.path);
             wt.unpushed = extra.and_then(|e| e.unpushed);
+            wt.pr = match (&self.prs.data, &wt.branch) {
+                (Some(data), Some(branch)) => data.of_branch(branch).cloned(),
+                _ => None,
+            };
             if wt.active {
                 wt.status = self.active_status_known.then(|| snapshot.status.clone());
                 wt.in_progress = snapshot.in_progress.as_ref().map(|p| p.kind);
@@ -527,6 +562,7 @@ impl Repo {
             ErrorKind::TreeWatch => held.tree_watch = Some(payload),
             ErrorKind::Status => held.status = Some(payload),
             ErrorKind::Stashes => held.stashes = Some(payload),
+            ErrorKind::Prs => held.prs = Some(payload),
         }
     }
 
@@ -539,6 +575,7 @@ impl Repo {
             ErrorKind::TreeWatch => held.tree_watch = None,
             ErrorKind::Status => held.status = None,
             ErrorKind::Stashes => held.stashes = None,
+            ErrorKind::Prs => held.prs = None,
         }
     }
 
@@ -556,6 +593,7 @@ impl Repo {
                 held.load.take(),
                 held.status.take(),
                 held.stashes.take(),
+                held.prs.take(),
             ]
         };
         for payload in held.into_iter().flatten() {
@@ -672,7 +710,18 @@ impl RepoManager {
             worktree_read_delay_ms: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             worktree_reads_at_once: (AtomicU32::new(0), AtomicU32::new(0)),
+            prs_said: Mutex::new(std::collections::HashSet::new()),
+            gh_timeout_ms: AtomicU64::new(duration_ms(crate::gh::GH_TIMEOUT)),
+            #[cfg(any(test, feature = "testutil"))]
+            tool_path: Mutex::new(None),
+            #[cfg(any(test, feature = "testutil"))]
+            prs_every: Mutex::new(None),
         })
+    }
+
+    /// Where active worktrees and pull request bases are remembered, if anywhere.
+    pub(crate) fn memory(&self) -> Option<Arc<dyn WorktreeMemory>> {
+        lock(&self.memory).clone()
     }
 
     /// From now on, each repository's active worktree is remembered in `memory`, and a
@@ -835,6 +884,7 @@ impl RepoManager {
                 switching: false,
                 active_status_known: false,
                 extras: HashMap::new(),
+                prs: super::prs::PrSlot::default(),
             }),
             loading: watch::channel(None).0,
             abandoned_load: AtomicU64::new(0),
@@ -867,6 +917,8 @@ impl RepoManager {
             user_fetch: AtomicBool::new(false),
             scheduled_cancel: Mutex::new(None),
             scheduled_running: Arc::new(tokio::sync::Mutex::new(())),
+            prs_gate: Mutex::new(super::prs::PrGate::default()),
+            prs_loads: watch::channel(0).0,
         });
         repo.stashes_read(self.sink.as_ref(), stash_error);
 
@@ -2255,10 +2307,10 @@ impl RepoManager {
     /// Like [`RepoManager::apply_forced`]. With `takes_switch` (`info` was read in the
     /// worktree commands run in now), a switch of worktree underway is shown with it;
     /// without, it stays underway (`info` is from before it).
-    async fn apply_with(
+    pub(super) async fn apply_with(
         &self,
         repo: &Arc<Repo>,
-        info: RepoInfo,
+        mut info: RepoInfo,
         view: Option<ViewOptions>,
         op_done: Option<u64>,
         force: bool,
@@ -2272,6 +2324,13 @@ impl RepoManager {
             if takes_switch {
                 slot.take_switch();
             }
+            // The branches' pull requests, from the list last loaded (none read from git).
+            info.pr_marks = slot
+                .prs
+                .data
+                .as_ref()
+                .map(|data| data.marks(&info.refs))
+                .unwrap_or_default();
             let view = view.unwrap_or_else(|| slot.target().view().clone());
             let view = normalize_view(view, &info);
             let changed = if slot.load_incomplete(repo)
@@ -2530,6 +2589,7 @@ async fn read_info(
             status: tree.status,
             in_progress: tree.in_progress,
             stashes,
+            pr_marks: Default::default(),
         },
         stash_error,
     ))
@@ -2703,6 +2763,7 @@ mod tests {
             switching: false,
             active_status_known: true,
             extras: HashMap::new(),
+            prs: super::super::prs::PrSlot::default(),
         };
         let id = RepoIdentity {
             repo_id: 1,

@@ -37,6 +37,7 @@ export function label(overrides: Partial<RefLabel> = {}): RefLabel {
     upstream: null,
     ahead: 0,
     behind: 0,
+    pr: null,
     ...overrides,
   };
 }
@@ -61,6 +62,7 @@ export function snap(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,
+    prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
     inProgress: null,
     seq: 1,
     ...overrides,

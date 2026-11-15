@@ -139,6 +139,22 @@ struct Uninstalled {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RefreshArgs {
+    repo_id: u32,
+    /// The user asked (the Refresh button or shortcut): the pull requests load too.
+    #[serde(default)]
+    prs: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrSuggestArgs {
+    repo_id: u32,
+    branch: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SetActiveWorktreeArgs {
     repo_id: u32,
     path: PathBuf,
@@ -347,8 +363,17 @@ impl Core {
                 Ok(Value::Null)
             }
             "refresh" => {
-                let a: RepoArgs = parse(cmd, args)?;
-                to_json(self.repos()?.refresh(a.repo_id).await?)
+                let a: RefreshArgs = parse(cmd, args)?;
+                let repos = self.repos()?;
+                if a.prs {
+                    to_json(repos.refresh_by_user(a.repo_id).await?)
+                } else {
+                    to_json(repos.refresh(a.repo_id).await?)
+                }
+            }
+            "pr_suggest" => {
+                let a: PrSuggestArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_suggest(a.repo_id, &a.branch).await?)
             }
             "set_window_focused" => {
                 let a: FocusArgs = parse(cmd, args)?;

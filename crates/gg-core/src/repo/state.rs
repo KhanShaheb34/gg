@@ -2,11 +2,11 @@
 //! read so far with their layout, and everything derived from them (labels, rows, search).
 //! Pure and synchronous: no git, no I/O, no async.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::dto::{
-    CommitRow, FetchState, HeadInfo, InProgress, RefKind, RefLabel, RepoSnapshot, RowKind,
-    ViewOptions, WorktreeInfo, WorktreeStatus,
+    CommitRow, FetchState, HeadInfo, InProgress, PrState, RefKind, RefLabel, RefPr, RepoSnapshot,
+    RowKind, ViewOptions, WorktreeInfo, WorktreeStatus,
 };
 use crate::git::log::{Commit, LOG_FORMAT, log_args};
 use crate::git::refs::RefInfo;
@@ -34,6 +34,9 @@ pub struct RepoInfo {
     pub in_progress: Option<InProgress>,
     /// The stashes, newest first.
     pub stashes: Vec<Stash>,
+    /// The open pull request of each branch label that has one, by kind and short name (the
+    /// repository's own to fill in from what `gh` listed; not read from git).
+    pub pr_marks: BTreeMap<(RefKind, String), RefPr>,
 }
 
 /// What [`RepoState::update`] changed.
@@ -172,6 +175,7 @@ impl RepoState {
             && info.head == self.info.head
             && info.refs == self.info.refs
             && info.remotes == self.info.remotes
+            && info.pr_marks == self.info.pr_marks
             && same_worktree_labels(&info.worktrees, &self.info.worktrees)
             && self.stashes_shown(&info, &view) == self.stashes_shown(&self.info, &self.view);
         self.info = info;
@@ -442,6 +446,7 @@ impl RepoState {
             view_options: self.view.clone(),
             fetch: fetch.clone(),
             op: None,
+            prs: PrState::default(),
             in_progress: self.info.in_progress.clone(),
             seq: 0,
         }
@@ -751,6 +756,7 @@ fn build_labels(
                     upstream: r.upstream.clone(),
                     ahead: r.ahead,
                     behind: r.behind,
+                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).copied(),
                 }
             }
             RefKind::Remote if view.show_remotes => {
@@ -759,7 +765,10 @@ fn build_labels(
                 if absorbed {
                     continue;
                 }
-                plain_label(r)
+                RefLabel {
+                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).copied(),
+                    ..plain_label(r)
+                }
             }
             RefKind::Tag if view.show_tags => plain_label(r),
             RefKind::Remote | RefKind::Tag | RefKind::Stash => continue,
@@ -780,6 +789,7 @@ fn build_labels(
             upstream: None,
             ahead: 0,
             behind: 0,
+            pr: None,
         });
     }
     for list in labels.values_mut() {
@@ -798,6 +808,7 @@ fn plain_label(r: &RefInfo) -> RefLabel {
         upstream: None,
         ahead: 0,
         behind: 0,
+        pr: None,
     }
 }
 
@@ -887,6 +898,7 @@ mod tests {
             status: WorktreeStatus::default(),
             in_progress: None,
             stashes: Vec::new(),
+            pr_marks: BTreeMap::new(),
         }
     }
 

@@ -10,6 +10,7 @@ import { shown } from "../menus/common";
 import type { Confirmed, CoreErrorDto, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 import { app, dismissToast, notify, reportError, showLog, type ToastAction } from "./app.svelte";
 import { markStopped } from "./commandLog.svelte";
+import { openExternal } from "./editor";
 import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
 
@@ -217,6 +218,10 @@ function hintActions(repoId: number, hint: OpHint, worktree: string): ToastActio
           },
         },
       ];
+    }
+    case "open_url": {
+      const { url, label } = hint;
+      return [{ label, run: () => void openExternal(repoId, { target: "url", url }) }];
     }
   }
 }

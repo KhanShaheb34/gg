@@ -438,7 +438,7 @@ async fn repo_prefs_round_trip_and_default() {
             .unwrap();
         assert_eq!(
             prefs,
-            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true })
+            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBase": null })
         );
         let set = core
             .dispatch(
@@ -449,7 +449,7 @@ async fn repo_prefs_round_trip_and_default() {
             .unwrap();
         assert_eq!(
             set,
-            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
+            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
         );
         // An empty patch changes nothing.
         let same = core
@@ -458,7 +458,7 @@ async fn repo_prefs_round_trip_and_default() {
             .unwrap();
         assert_eq!(
             same,
-            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
+            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
         );
         let theirs = core
             .dispatch("get_repo_prefs", json!({ "repoId": other_id }))
@@ -466,7 +466,7 @@ async fn repo_prefs_round_trip_and_default() {
             .unwrap();
         assert_eq!(
             theirs,
-            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true }),
+            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBase": null }),
             "per repository"
         );
     }
@@ -484,7 +484,7 @@ async fn repo_prefs_round_trip_and_default() {
         .unwrap();
     assert_eq!(
         prefs,
-        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
+        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
     );
 
     let root = dunce::canonicalize(repo.path()).unwrap();
@@ -496,7 +496,7 @@ async fn repo_prefs_round_trip_and_default() {
             .unwrap();
     assert_eq!(
         saved["repoPrefs"][root.to_string_lossy().as_ref()],
-        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
+        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
     );
 }
 

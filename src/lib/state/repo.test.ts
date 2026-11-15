@@ -74,6 +74,7 @@ function snapshot(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,
+    prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
     inProgress: null,
     seq: 0,
     ...overrides,

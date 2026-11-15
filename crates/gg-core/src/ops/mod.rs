@@ -13,6 +13,7 @@ mod explain;
 mod local;
 mod network;
 pub(crate) mod order;
+mod pr;
 mod progress;
 mod stash;
 mod worktree;
@@ -674,6 +675,23 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
                 body(move |ctx, _| {
                     Box::pin(async move { commit::commit(ctx, &paths, &message, push).await })
+                }),
+            )
+        }
+        OpRequest::PrCreate {
+            branch,
+            base,
+            title,
+            body: text,
+            draft,
+        } => {
+            pr::check(&branch, &base, &title)?;
+            (
+                fixed(format!("Open a pull request of {branch} into {base}")),
+                body(move |ctx, _| {
+                    Box::pin(
+                        async move { pr::create(ctx, &branch, &base, &title, &text, draft).await },
+                    )
                 }),
             )
         }

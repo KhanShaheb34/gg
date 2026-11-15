@@ -285,7 +285,7 @@
   // --- Copy ----------------------------------------------------------------------------------
 
   function copy(r: CommandRecord) {
-    navigator.clipboard.writeText(commandLine(r.args)).then(
+    navigator.clipboard.writeText(commandLine(r.args, r.program)).then(
       () => toast("info", "Copied the command line."),
       () => toast("error", "Could not copy the command line."),
     );
@@ -319,7 +319,7 @@
 
 {#snippet command(r: CommandRecord, inOp: boolean)}
   {@const open = !!opened[r.id]}
-  {@const line = commandLine(r.args)}
+  {@const line = commandLine(r.args, r.program)}
   <div class="cmd" class:in-op={inOp} class:read={r.kind === "read"} data-key={inOp ? undefined : `c${r.id}`}>
     <button
       class="row"

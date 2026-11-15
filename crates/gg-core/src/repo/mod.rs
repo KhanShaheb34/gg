@@ -4,6 +4,7 @@
 mod fetch;
 mod loader;
 mod manager;
+pub(crate) mod prs;
 pub mod state;
 
 pub(crate) use manager::{Repo, canonical, canonical_paths, unknown_repo};

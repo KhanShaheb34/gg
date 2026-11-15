@@ -704,7 +704,7 @@ fn resolve_program(program: &OsStr, path: Option<&OsString>) -> Option<PathBuf> 
 /// The first program called `name` in an absolute entry of `path` (the given `PATH`, else
 /// the app's): an executable file on Unix; on Windows anything there (Windows Terminal's
 /// `wt.exe` is an alias the file system cannot read as a file).
-fn find_program(name: &OsStr, path: Option<&OsString>) -> Option<PathBuf> {
+pub(crate) fn find_program(name: &OsStr, path: Option<&OsString>) -> Option<PathBuf> {
     let path = path.cloned().or_else(|| std::env::var_os("PATH"))?;
     std::env::split_paths(&path)
         .filter(|dir| dir.is_absolute())

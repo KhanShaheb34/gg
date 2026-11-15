@@ -254,21 +254,27 @@ impl TestRepo {
     /// keep it alive for as long as the remote is used.
     #[must_use]
     pub fn clone_as_remote(&self) -> TestRepo {
-        let origin = Self::in_new_tempdir("origin.git");
+        self.clone_as_remote_named("origin")
+    }
+
+    /// Like [`TestRepo::clone_as_remote`], as remote `name`.
+    #[must_use]
+    pub fn clone_as_remote_named(&self, name: &str) -> TestRepo {
+        let origin = Self::in_new_tempdir(&format!("{name}.git"));
         origin.git(&["init", "-q", "--bare", "-b", "main"]);
         origin.no_background_maintenance();
         self.git_with(
             &[
                 OsStr::new("remote"),
                 OsStr::new("add"),
-                OsStr::new("origin"),
+                OsStr::new(name),
                 origin.path().as_os_str(),
             ],
             &[],
         );
-        self.git(&["push", "-q", "origin", "--all"]);
-        self.git(&["push", "-q", "origin", "--tags"]);
-        self.git(&["fetch", "-q", "origin"]);
+        self.git(&["push", "-q", name, "--all"]);
+        self.git(&["push", "-q", name, "--tags"]);
+        self.git(&["fetch", "-q", name]);
         origin
     }
 
@@ -430,5 +436,143 @@ impl EventSink for RecordingSink {
     fn emit(&self, name: &str, payload: Value) {
         self.lock().push((name.to_owned(), payload));
         self.count.send_modify(|n| *n += 1);
+    }
+}
+
+/// A stand-in for the GitHub CLI (`gh`), for tests that must never reach a network host: a
+/// shell script `gh` in a folder of its own (put first on the runner's tool `PATH` with
+/// [`FakeGh::path`]) that records each call (its arguments, its environment, its working
+/// folder, what it read on stdin, whether it had a terminal) and answers with what the test
+/// set for that kind of call: `pr-list`, `pr-list-head` (with `--head`), `pr-create`,
+/// `repo-view`. Unset, it prints nothing and exits 0.
+#[cfg(unix)]
+pub struct FakeGh {
+    dir: TempDir,
+}
+
+/// One call of a [`FakeGh`].
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FakeGhCall {
+    pub argv: Vec<String>,
+    /// `NAME=value` lines.
+    pub env: Vec<String>,
+    pub cwd: String,
+    pub stdin: Vec<u8>,
+    /// It could open `/dev/tty` (a controlling terminal).
+    pub tty: bool,
+}
+
+#[cfg(unix)]
+impl Default for FakeGh {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(unix)]
+impl FakeGh {
+    const SCRIPT: &str = r#"#!/bin/sh
+d="$(cd "$(dirname "$0")/.." && pwd)"
+i=1
+while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
+c="$d/calls/$i"
+for a in "$@"; do printf '%s\0' "$a"; done > "$c/argv"
+env > "$c/env"
+pwd > "$c/cwd"
+if (: < /dev/tty) 2>/dev/null; then echo yes > "$c/tty"; fi
+cat > "$c/stdin"
+key="$1-$2"
+case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
+r="$d/replies/$key"
+if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi
+if [ -f "$r.err" ]; then cat "$r.err" >&2; fi
+if [ -f "$r.out" ]; then cat "$r.out"; fi
+touch "$c/done"
+if [ -f "$r.code" ]; then exit "$(cat "$r.code")"; fi
+exit 0
+"#;
+
+    pub fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix("gg-fake-gh-")
+            .tempdir()
+            .expect("temp dir");
+        for sub in ["bin", "calls", "replies"] {
+            fs::create_dir(dir.path().join(sub)).expect("fake gh folder");
+        }
+        let gh = dir.path().join("bin/gh");
+        fs::write(&gh, Self::SCRIPT).expect("write fake gh");
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
+        Self { dir }
+    }
+
+    /// The `PATH` that finds it first (then the system's own folders, for `sh`, `cat`…).
+    pub fn path(&self) -> std::ffi::OsString {
+        let mut path = self.dir.path().join("bin").into_os_string();
+        path.push(":/usr/bin:/bin");
+        path
+    }
+
+    /// The fake program itself.
+    pub fn program(&self) -> PathBuf {
+        self.dir.path().join("bin/gh")
+    }
+
+    /// Answers calls of `key` with `stdout`, `stderr` and exit `code`.
+    pub fn reply(&self, key: &str, code: i32, stdout: &str, stderr: &str) {
+        let base = self.dir.path().join("replies").join(key);
+        let file = |ext: &str| base.with_extension(ext);
+        fs::write(file("out"), stdout).unwrap();
+        fs::write(file("err"), stderr).unwrap();
+        fs::write(file("code"), code.to_string()).unwrap();
+    }
+
+    /// Makes calls of `key` wait `secs` seconds before answering.
+    pub fn slow(&self, key: &str, secs: u32) {
+        let base = self.dir.path().join("replies").join(key);
+        fs::write(base.with_extension("sleep"), secs.to_string()).unwrap();
+    }
+
+    /// Calls of `key` answer at once again.
+    pub fn fast(&self, key: &str) {
+        let base = self.dir.path().join("replies").join(key);
+        let _ = fs::remove_file(base.with_extension("sleep"));
+    }
+
+    /// The calls so far, oldest first.
+    pub fn calls(&self) -> Vec<FakeGhCall> {
+        let mut out = Vec::new();
+        for i in 1.. {
+            let c = self.dir.path().join("calls").join(i.to_string());
+            if !c.is_dir() {
+                break;
+            }
+            let read = |name: &str| fs::read(c.join(name)).unwrap_or_default();
+            let text = |name: &str| String::from_utf8_lossy(&read(name)).into_owned();
+            out.push(FakeGhCall {
+                argv: read("argv")
+                    .split(|&b| b == 0)
+                    .filter(|a| !a.is_empty())
+                    .map(|a| String::from_utf8_lossy(a).into_owned())
+                    .collect(),
+                env: text("env").lines().map(str::to_owned).collect(),
+                cwd: text("cwd").trim_end().to_owned(),
+                stdin: read("stdin"),
+                tty: c.join("tty").exists(),
+            });
+        }
+        out
+    }
+
+    /// The calls whose arguments start with `prefix`.
+    pub fn calls_of(&self, prefix: &[&str]) -> Vec<FakeGhCall> {
+        self.calls()
+            .into_iter()
+            .filter(|c| {
+                c.argv.len() >= prefix.len() && c.argv.iter().zip(prefix).all(|(a, p)| a == p)
+            })
+            .collect()
     }
 }

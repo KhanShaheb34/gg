@@ -137,6 +137,8 @@ describe("command log text", () => {
     expect(shellQuote("é.txt")).toBe("'é.txt'");
     expect(shellQuote("a*b")).toBe("'a*b'");
     expect(commandLine(["commit", "-m", "Fix the thing"])).toBe("git commit -m 'Fix the thing'");
+    // Another tool the core ran shows as itself.
+    expect(commandLine(["pr", "list", "--json", "a,b"], "gh")).toBe("gh pr list --json a,b");
   });
 
   it("shows progress redrawn with carriage returns as its last state, per line", () => {

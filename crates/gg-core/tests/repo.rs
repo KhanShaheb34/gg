@@ -174,6 +174,7 @@ fn label(kind: RefKind, name: &str) -> RefLabel {
         upstream: None,
         ahead: 0,
         behind: 0,
+        pr: None,
     }
 }
 

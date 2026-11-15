@@ -37,9 +37,24 @@ export type WorktreeInfo = {
   unpushed: number | null; // commits of its HEAD on no remote-tracking branch; null = unknown
   inProgress: InProgress["kind"] | null;
   lockReason: string | null; // when locked with a reason
-  pr: PullRequest | null; // filled in by the pull-request tasks
+  pr: PullRequest | null; // its branch's open pull request, once loaded
 };
 export type PullRequest = { number: number; title: string; url: string; state: "open" | "draft"; head: string; base: string };
+/**
+ * The repository's open pull requests (loaded through `gh` with a fetch or a refresh the user
+ * asks for, at most once a minute). `ready` with reason `failed`: the last reload failed and the
+ * list shown is as of `loadedAtMs` (dim it by age). `partial`: 1000 were listed, some markers
+ * may be missing.
+ */
+export type PrState = {
+  status: "unknown" | "loading" | "ready" | "unavailable";
+  reason: PrUnavailable | null;
+  loadedAtMs: number | null;
+  partial: boolean;
+};
+export type PrUnavailable = "no_gh" | "signed_out" | "not_github" | "failed";
+/** What `pr_suggest` offers for a new pull request; `existing` asked of gh for that branch. */
+export type PrSuggestion = { title: string; body: string; base: string; existing: PullRequest | null; compareUrl: string | null };
 /** `conflictedPaths`: the conflicted paths, sorted, the first 200 of them. */
 export type WorktreeStatus = { changed: number; untracked: number; conflicted: number; conflictedPaths: string[] };
 /** `lastError`: why the last fetch failed, in one line; `lastErrorDetail`: git's whole stderr of it. */
@@ -71,6 +86,7 @@ export type RepoSnapshot = {
   fetch: FetchState;
   /** The operation running on this repository; `queued`: requests waiting behind it. */
   op: { id: number; title: string; startedAtMs: number; queued: number } | null;
+  prs: PrState;
   inProgress: InProgress | null;
   /** Grows by one per repository with each snapshot that changes anything and each operation outcome; drop older ones. */
   seq: number;
@@ -117,6 +133,7 @@ export type RefLabel = {
   upstream: string | null;
   ahead: number;
   behind: number;
+  pr: { number: number; state: "open" | "draft" } | null; // branch and remote branch: its open pull request
 };
 export type CommitRow = {
   index: number;
@@ -182,7 +199,7 @@ export type ExternalRequest = { target: "editor" | "terminal" | "reveal"; path?:
  * remembered as active (null = the main one); set by the core. `sidePanel`: the side panel
  * shows while the window is wide enough to dock it.
  */
-export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null; sidePanel: boolean };
+export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null; sidePanel: boolean; prBase: string | null };
 export type Recent = { path: string; name: string; lastOpenedMs: number };
 export type AppState = {
   recents: Recent[];
@@ -209,6 +226,7 @@ export type CliState = {
  */
 export type CommandRecord = {
   id: number;
+  program: string; // "git", or another tool the core ran ("gh")
   kind: "read" | "write";
   cwd: string;
   args: string[];
@@ -276,7 +294,8 @@ export type OpRequest =
   // they are. push: then pushes the branch to the same-named branch on its remote (R38). While a merge with
   // no conflicts left is in progress, it concludes the merge, and `paths` must be every changed file.
   // Empty paths: nothing_to_do; blank message: bad_request.
-  | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string };
+  | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string }
+  | { op: "pr_create"; branch: string; base: string; title: string; body: string; draft: boolean };
 
 /** What a new worktree checks out: an existing local branch, a new branch at a commit (full hash), or a commit, detached. */
 export type WorktreeBranch = { existing: string } | { create: string; at: string } | { detach: string };
@@ -332,7 +351,8 @@ export type OpHint =
   | { kind: "force_push"; branch: string; remote: string; to: string | null } // where the rejected push went
   | { kind: "choose_pull_mode"; branch: string }
   | { kind: "skip"; commit: string } // continuing came out empty: skip that commit
-  | { kind: "make_active"; worktree: string }; // the branch needed is checked out in that worktree
+  | { kind: "make_active"; worktree: string } // the branch needed is checked out in that worktree
+  | { kind: "open_url"; url: string; label: string }; // an https page: the pull request, or the compare page
 
 /** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
 export type OpOutcome = {

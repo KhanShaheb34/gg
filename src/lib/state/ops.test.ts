@@ -7,7 +7,12 @@ vi.mock("../ipc", async (importOriginal) => {
   return {
     CoreError: actual.CoreError,
     onEvent: vi.fn(() => () => {}),
-    api: { runOp: vi.fn(), saveSession: vi.fn(async () => {}), setActiveWorktree: vi.fn() },
+    api: {
+      runOp: vi.fn(),
+      saveSession: vi.fn(async () => {}),
+      setActiveWorktree: vi.fn(),
+      openExternal: vi.fn(async () => ({ note: null })),
+    },
   };
 });
 
@@ -370,6 +375,15 @@ describe("hint buttons", () => {
     expect(ipc.api.setActiveWorktree).toHaveBeenCalledWith(1, "/r/feature");
     expect(ipc.api.runOp).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(view.applySnapshot).toHaveBeenCalledWith(after));
+  });
+
+  it("open_url: opens the page the core named (a pull request, a compare page) in the browser", async () => {
+    const url = "https://github.com/octo/cat/pull/42";
+    const [open] = await buttonsFor([{ kind: "open_url", url, label: "Open pull request" }]);
+    expect(open.label).toBe("Open pull request");
+    await open.run();
+    expect(ipc.api.openExternal).toHaveBeenCalledWith(1, { target: "url", url });
+    expect(ipc.api.runOp).not.toHaveBeenCalled();
   });
 
   it("push: pushes the branch the core named", async () => {

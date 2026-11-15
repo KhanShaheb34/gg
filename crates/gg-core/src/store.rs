@@ -54,6 +54,9 @@ pub struct SettingsPatch {
 pub struct RepoPrefsPatch {
     pub merge_no_ff: Option<bool>,
     pub side_panel: Option<bool>,
+    /// `Some(None)` (JSON `null`) forgets it.
+    #[serde(default, deserialize_with = "present")]
+    pub pr_base: Option<Option<String>>,
 }
 
 /// Reads a field that is present, `null` included, as `Some`; a missing one stays `None`
@@ -279,6 +282,9 @@ impl Store {
             if let Some(shown) = patch.side_panel {
                 prefs.side_panel = shown;
             }
+            if let Some(base) = patch.pr_base {
+                prefs.pr_base = base.filter(|b| !b.trim().is_empty());
+            }
             Ok(prefs.clone())
         })
     }
@@ -470,12 +476,14 @@ impl StoreData {
                 let active_worktree = field(prefs, "activeWorktree").unwrap_or_default();
                 let side_panel =
                     field(prefs, "sidePanel").unwrap_or(RepoPrefs::default().side_panel);
+                let pr_base = field(prefs, "prBase").unwrap_or_default();
                 Some((
                     root.clone(),
                     RepoPrefs {
                         merge_no_ff,
                         active_worktree,
                         side_panel,
+                        pr_base,
                     },
                 ))
             })
@@ -1453,6 +1461,7 @@ mod tests {
                 RepoPrefsPatch {
                     merge_no_ff: Some(false),
                     side_panel: Some(false),
+                    pr_base: Some(Some("develop".into())),
                 },
             )
             .unwrap();
@@ -1460,12 +1469,24 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             saved["repoPrefs"]["/a"],
-            serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null, "sidePanel": true})
+            serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null, "sidePanel": true, "prBase": null})
         );
         assert_eq!(
             saved["repoPrefs"]["/c"],
-            serde_json::json!({"mergeNoFf": false, "activeWorktree": null, "sidePanel": false})
+            serde_json::json!({"mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": "develop"})
         );
+        // Read back, and forgotten with null.
+        assert_eq!(
+            Store::load(dir.path())
+                .repo_prefs(Path::new("/c"))
+                .pr_base
+                .as_deref(),
+            Some("develop")
+        );
+        let patch: RepoPrefsPatch =
+            serde_json::from_value(serde_json::json!({"prBase": null})).unwrap();
+        let prefs = store.set_repo_prefs(Path::new("/c"), patch).unwrap();
+        assert_eq!(prefs.pr_base, None);
         let aside = fs::read_dir(dir.path())
             .unwrap()
             .filter(|e| {

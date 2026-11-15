@@ -14,6 +14,7 @@ import type {
   OpOutcome,
   OpenedRepo,
   OpRequest,
+  PrSuggestion,
   Recent,
   RepoPrefs,
   RepoSnapshot,
@@ -326,7 +327,9 @@ export const api = {
   async fetch(repoId: number): Promise<void> {
     await call("fetch", { repoId });
   },
-  refresh: (repoId: number) => call<RepoSnapshot>("refresh", { repoId }),
+  /** Re-reads the repository; `prs`: the user asked, so the pull requests load too (at most once a minute). */
+  refresh: (repoId: number, prs = false) => call<RepoSnapshot>("refresh", prs ? { repoId, prs } : { repoId }),
+  prSuggest: (repoId: number, branch: string) => call<PrSuggestion>("pr_suggest", { repoId, branch }),
   async setWindowFocused(focused: boolean): Promise<void> {
     await call("set_window_focused", { focused });
   },

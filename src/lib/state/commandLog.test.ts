@@ -45,6 +45,7 @@ let nextId = 1;
 function rec(overrides: Partial<CommandRecord> = {}): CommandRecord {
   return {
     id: nextId++,
+    program: "git",
     kind: "write",
     cwd: "/r",
     args: ["status"],

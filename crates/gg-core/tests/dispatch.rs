@@ -1582,3 +1582,84 @@ async fn worktree_files_and_commit_via_dispatch() {
     assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "add it");
     assert_eq!(out["committed"], json!(repo.git(&["rev-parse", "HEAD"])));
 }
+
+/// Pull requests through dispatch (a fake `gh`): `refresh` with `prs` loads them (a plain
+/// one does not); `pr_suggest` offers the base remembered in the repository's preferences;
+/// `pr_create` runs as an operation, its outcome carrying an `open_url` hint, and remembers
+/// the base in the preferences.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_requests_via_dispatch() {
+    let gh = gg_core::testutil::FakeGh::new();
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&["branch", "develop"]);
+    let origin = repo.clone_as_remote();
+    let url = "https://github.com/octo/cat.git";
+    repo.git(&["remote", "set-url", "origin", url]);
+    let key = format!("url.{}.insteadOf", origin.path().display());
+    repo.git(&["config", &key, url]);
+    repo.git(&["switch", "-q", "-c", "topic"]);
+    repo.commit("Topic work");
+    let h = harness().await;
+    h.core.set_tool_path(Some(gh.path()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    assert_eq!(snap["prs"]["status"], "unknown");
+
+    gh.reply("pr-list", 0, "[]", "");
+    h.call("refresh", json!({ "repoId": id })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(gh.calls().is_empty(), "a plain refresh loads none");
+    h.call("refresh", json!({ "repoId": id, "prs": true }))
+        .await;
+    let ready = h
+        .sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["prs"]["status"] == "ready"
+        })
+        .await;
+    assert!(ready.is_some(), "loaded");
+
+    h.call(
+        "set_repo_prefs",
+        json!({ "repoId": id, "patch": { "prBase": "develop" } }),
+    )
+    .await;
+    let suggested = h
+        .call("pr_suggest", json!({ "repoId": id, "branch": "topic" }))
+        .await;
+    assert_eq!(suggested["base"], "develop");
+    assert_eq!(suggested["title"], "Topic work");
+    assert_eq!(
+        suggested["compareUrl"],
+        "https://github.com/octo/cat/compare/develop...topic?expand=1"
+    );
+
+    gh.reply("pr-create", 0, "https://github.com/octo/cat/pull/5\n", "");
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
+                "request": { "op": "pr_create", "branch": "topic", "base": "main",
+                             "title": "Topic", "body": "b", "draft": false },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert_eq!(
+        out["hints"],
+        json!([{ "kind": "open_url", "url": "https://github.com/octo/cat/pull/5",
+                 "label": "Open pull request" }])
+    );
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let prefs = h.call("get_repo_prefs", json!({ "repoId": id })).await;
+        if prefs["prBase"] == "main" {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{prefs}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

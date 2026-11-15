@@ -69,6 +69,7 @@ function placeholder(repoId: number): RepoSnapshot {
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,
+    prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
     inProgress: null,
     seq: 0,
   };
@@ -476,7 +477,8 @@ export class RepoView {
     const started = performance.now();
     const seen = this.events;
     try {
-      this.applyAnswer(await api.refresh(this.repoId), seen);
+      // Asked for by the user: the pull requests load too.
+      this.applyAnswer(await api.refresh(this.repoId, true), seen);
     } catch (e) {
       this.notice(e, "Could not refresh");
     }

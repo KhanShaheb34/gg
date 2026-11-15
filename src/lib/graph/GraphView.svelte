@@ -404,6 +404,7 @@
       upstream: null,
       ahead: 0,
       behind: 0,
+      pr: null,
     };
   }
 

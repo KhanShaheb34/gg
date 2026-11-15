@@ -428,7 +428,10 @@ impl RepoManager {
         // The watcher also sees the fetch's ref updates and refreshes ~300 ms later; that
         // second refresh finds nothing new and emits nothing. This one is kept so that the
         // state is current when `fetch` returns.
-        match self.refresh_now(repo_id).await {
+        let refreshed = self.refresh_now(repo_id).await;
+        // The pull requests go with a fetch (at most once a minute), in the background.
+        self.spawn_load_prs(&repo, crate::repo::prs::PrTrigger::Fetch);
+        match refreshed {
             Err(e) if e.code == ErrorCode::UnknownRepo => Err(e),
             _ => Ok(()),
         }

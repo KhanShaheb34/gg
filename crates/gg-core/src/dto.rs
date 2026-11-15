@@ -89,6 +89,69 @@ pub enum PullRequestState {
     Draft,
 }
 
+/// The open pull request a branch label shows (local and remote branches).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefPr {
+    pub number: u32,
+    pub state: PullRequestState,
+}
+
+/// How far the repository's open pull requests are known (`snapshot.prs`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrState {
+    pub status: PrStatus,
+    /// Why they are not shown (`unavailable`); with `ready`, `failed` says the last reload
+    /// failed and what is shown is the list of `loaded_at_ms`.
+    pub reason: Option<PrUnavailable>,
+    /// When the list shown was loaded, unix milliseconds; `None` before the first.
+    pub loaded_at_ms: Option<i64>,
+    /// `gh` listed as many as it was asked for (1000): some branches' markers may be missing.
+    pub partial: bool,
+}
+
+/// Whether the open pull requests are known. Serialized lowercase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrStatus {
+    /// Not loaded yet (they load with a fetch or a refresh the user asks for).
+    #[default]
+    Unknown,
+    /// Being loaded for the first time (or after they were unavailable).
+    Loading,
+    Ready,
+    Unavailable,
+}
+
+/// Why pull requests are not shown. Serialized snake_case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrUnavailable {
+    /// The GitHub CLI (`gh`) is not installed (not on the login `PATH`).
+    NoGh,
+    /// `gh` is not signed in to the host.
+    SignedOut,
+    /// The repository's remote is not on GitHub (or there is none).
+    NotGithub,
+    /// `gh` failed or did not answer in time.
+    Failed,
+}
+
+/// What `pr_suggest` offers for a new pull request of a branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrSuggestion {
+    pub title: String,
+    pub body: String,
+    pub base: String,
+    /// The branch's open pull request, asked of `gh` for this branch; `None` when there is
+    /// none or it could not be asked.
+    pub existing: Option<PullRequest>,
+    /// The host's page comparing the branch with `base`, when it can be built.
+    pub compare_url: Option<String>,
+}
+
 /// Change counts for one worktree.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,6 +355,8 @@ pub struct RepoSnapshot {
     pub fetch: FetchState,
     /// The operation running on this repository, if any.
     pub op: Option<RunningOp>,
+    /// The open pull requests: whether they are known (see [`PrState`]).
+    pub prs: PrState,
     /// A merge, rebase, cherry-pick or revert git stopped in, if any.
     pub in_progress: Option<InProgress>,
     /// Grows by one, per repository, with each snapshot that changes anything (every
@@ -411,6 +476,8 @@ pub struct RefLabel {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// Branch and remote branch only: its open pull request, if one is known.
+    pub pr: Option<RefPr>,
 }
 
 /// Whether a row is a commit or the synthetic row for uncommitted changes.
@@ -520,6 +587,8 @@ pub struct RepoPrefs {
     pub active_worktree: Option<String>,
     /// The side panel (worktrees) is shown while the window is wide enough to dock it.
     pub side_panel: bool,
+    /// The base branch of the last pull request made, offered for the next one.
+    pub pr_base: Option<String>,
 }
 
 impl Default for RepoPrefs {
@@ -528,6 +597,7 @@ impl Default for RepoPrefs {
             merge_no_ff: true,
             active_worktree: None,
             side_panel: true,
+            pr_base: None,
         }
     }
 }
@@ -577,7 +647,7 @@ pub enum PullMode {
 /// abort and skip also when the commit moved.
 ///
 /// Every request that runs in a working directory (all but push, push_tag, delete_tag,
-/// delete_remote_branch and fetch_into_local) carries `expect_worktree`: the active worktree
+/// delete_remote_branch, fetch_into_local, the worktree operations and pr_create) carries `expect_worktree`: the active worktree
 /// the UI showed. The core refuses it, running nothing, when another worktree is active by
 /// its turn, so switching worktrees never redirects a request already asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -796,6 +866,17 @@ pub enum OpRequest {
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
+    /// Opens a pull request of `branch` into `base` (a branch on the repository's remote)
+    /// through `gh`, with `title` (one line) and `body` (any text), as a draft with `draft`.
+    /// The branch is pushed first (R38) when its namesake on its remote is missing or behind.
+    /// Uses no working directory (runs from the main worktree).
+    PrCreate {
+        branch: String,
+        base: String,
+        title: String,
+        body: String,
+        draft: bool,
+    },
 }
 
 /// What a new worktree checks out: an existing local branch, a new branch made at a commit
@@ -821,11 +902,14 @@ pub struct WorktreePath {
 
 impl OpRequest {
     /// Whether the request runs from the main worktree whichever is active: the worktree
-    /// operations, which name the worktree they are about.
+    /// operations, which name the worktree they are about, and `pr_create`, which needs none.
     pub fn runs_in_main(&self) -> bool {
         matches!(
             self,
-            Self::WorktreeAdd { .. } | Self::WorktreeRemove { .. } | Self::WorktreePrune {}
+            Self::WorktreeAdd { .. }
+                | Self::WorktreeRemove { .. }
+                | Self::WorktreePrune {}
+                | Self::PrCreate { .. }
         )
     }
 
@@ -905,7 +989,8 @@ impl OpRequest {
             | Self::DeleteRemoteBranch { .. }
             | Self::WorktreeAdd { .. }
             | Self::WorktreeRemove { .. }
-            | Self::WorktreePrune {} => None,
+            | Self::WorktreePrune {}
+            | Self::PrCreate { .. } => None,
         }
     }
 
@@ -985,7 +1070,8 @@ impl OpRequest {
             | Self::DeleteRemoteBranch { .. }
             | Self::WorktreeAdd { .. }
             | Self::WorktreeRemove { .. }
-            | Self::WorktreePrune {} => None,
+            | Self::WorktreePrune {}
+            | Self::PrCreate { .. } => None,
         }
     }
 }
@@ -1098,6 +1184,12 @@ pub enum OpHint {
     /// checked out there.
     MakeActive {
         worktree: String,
+    },
+    /// Open `url` (an `https://` page: a pull request, or the host's compare page) in the
+    /// browser; `label` names the button.
+    OpenUrl {
+        url: String,
+        label: String,
     },
 }
 
@@ -1329,6 +1421,8 @@ mod tests {
             json!({"op": "worktree_prune"}),
             json!({"op": "commit", "paths": ["a b", "-x"], "message": "m", "push": true,
                    "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "pr_create", "branch": "b", "base": "main", "title": "t", "body": "x\ny",
+                   "draft": true}),
         ];
         for case in cases {
             let request: OpRequest =
@@ -1432,6 +1526,10 @@ mod tests {
                     to: Some("main".into()),
                 },
                 OpHint::ChoosePullMode { branch: "b".into() },
+                OpHint::OpenUrl {
+                    url: "https://github.com/o/r/pull/1".into(),
+                    label: "Open pull request".into(),
+                },
             ],
             created: Some("/r.worktrees/x".into()),
             committed: None,
@@ -1460,6 +1558,7 @@ mod tests {
                 },
                 fetch: FetchState::default(),
                 op: None,
+                prs: PrState::default(),
                 in_progress: None,
                 seq: 0,
             },
@@ -1482,7 +1581,8 @@ mod tests {
                 {"kind": "fetch"},
                 {"kind": "pull", "branch": "b"},
                 {"kind": "force_push", "branch": "b", "remote": "origin", "to": "main"},
-                {"kind": "choose_pull_mode", "branch": "b"}
+                {"kind": "choose_pull_mode", "branch": "b"},
+                {"kind": "open_url", "url": "https://github.com/o/r/pull/1", "label": "Open pull request"}
             ])
         );
         assert_eq!(v["created"], "/r.worktrees/x");
@@ -1515,7 +1615,31 @@ mod tests {
         assert_eq!(serde_json::to_value(RowKind::Stash).unwrap(), "stash");
         assert_eq!(
             serde_json::to_value(RepoPrefs::default()).unwrap(),
-            json!({"mergeNoFf": true, "activeWorktree": null, "sidePanel": true})
+            json!({"mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBase": null})
+        );
+        let suggestion = PrSuggestion {
+            title: "t".into(),
+            body: "- a".into(),
+            base: "main".into(),
+            existing: None,
+            compare_url: Some("https://github.com/o/r/compare/main...b?expand=1".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&suggestion).unwrap(),
+            json!({"title": "t", "body": "- a", "base": "main", "existing": null,
+                   "compareUrl": "https://github.com/o/r/compare/main...b?expand=1"})
+        );
+        for (reason, name) in [
+            (PrUnavailable::NoGh, "no_gh"),
+            (PrUnavailable::SignedOut, "signed_out"),
+            (PrUnavailable::NotGithub, "not_github"),
+            (PrUnavailable::Failed, "failed"),
+        ] {
+            assert_eq!(serde_json::to_value(reason).unwrap(), name);
+        }
+        assert_eq!(
+            serde_json::to_value(PrState::default()).unwrap(),
+            json!({"status": "unknown", "reason": null, "loadedAtMs": null, "partial": false})
         );
     }
 
@@ -1715,6 +1839,12 @@ mod tests {
                 started_at_ms: 9,
                 queued: 1,
             }),
+            prs: PrState {
+                status: PrStatus::Ready,
+                reason: Some(PrUnavailable::Failed),
+                loaded_at_ms: Some(5),
+                partial: true,
+            },
             in_progress: Some(InProgress {
                 kind: InProgressKind::CherryPick,
                 files: vec![ConflictFile {
@@ -1747,6 +1877,7 @@ mod tests {
                                 "showStashes": true},
                 "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},
                 "op": {"id": 4, "title": "Create branch x", "startedAtMs": 9, "queued": 1},
+                "prs": {"status": "ready", "reason": "failed", "loadedAtMs": 5, "partial": true},
                 "inProgress": {"kind": "cherry-pick",
                                "files": [{"path": "a b.txt", "state": "resolved"}],
                                "fileCount": 1, "step": null, "total": null, "subject": "fix",
@@ -1789,6 +1920,10 @@ mod tests {
                     upstream: Some("origin/main".into()),
                     ahead: 1,
                     behind: 2,
+                    pr: Some(RefPr {
+                        number: 12,
+                        state: PullRequestState::Draft,
+                    }),
                 }],
                 is_head: false,
                 is_merge: true,
@@ -1806,7 +1941,8 @@ mod tests {
                     "edges": [{"from": 1, "to": 0, "color": 4, "half": "bottom"}],
                     "labels": [{"kind": "branch", "name": "main", "remotes": ["origin"],
                                 "current": true, "worktreePath": "/r",
-                                "upstream": "origin/main", "ahead": 1, "behind": 2}],
+                                "upstream": "origin/main", "ahead": 1, "behind": 2,
+                                "pr": {"number": 12, "state": "draft"}}],
                     "isHead": false, "isMerge": true, "detachedWorktrees": ["/d"]
                 }]
             })

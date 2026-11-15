@@ -547,8 +547,13 @@ fn with_path(word: &str, path: &OsStr) -> OsString {
     }
 }
 
+/// Options after which a program takes a command, not a folder (lowercase).
+const COMMAND_OPTIONS: [&str; 6] = ["-c", "-e", "/c", "/k", "-command", "-encodedcommand"];
+
 /// `Ok` unless a word of a terminal command has `{path}` inside it (`--cwd={path}`): the
-/// folder is given as one argument of its own, never spliced into another.
+/// folder is given as one argument of its own, never spliced into another; nor right after
+/// an option that takes a command (`-c`, `-e`, `/c`, `/k`, `-Command`, `-EncodedCommand`),
+/// whatever the program: the folder's name would be run.
 fn check_path_words(words: &[String]) -> Result<()> {
     if words
         .iter()
@@ -557,6 +562,17 @@ fn check_path_words(words: &[String]) -> Result<()> {
         return Err(CoreError::new(
             ErrorCode::BadRequest,
             "Write {path} as a separate word.",
+        ));
+    }
+    if let Some(pair) = words.windows(2).find(|pair| {
+        pair[1] == PATH_WORD && COMMAND_OPTIONS.contains(&pair[0].to_lowercase().as_str())
+    }) {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!(
+                "{{path}} cannot follow {}: the folder's name would be run as a command.",
+                pair[0]
+            ),
         ));
     }
     Ok(())
@@ -569,7 +585,7 @@ pub(crate) fn check_terminal_command(command: &str) -> Result<()> {
 }
 
 /// Programs that read their arguments as commands of their own, by file name (lowercase).
-const SHELLS: [&str; 11] = [
+const SHELLS: [&str; 21] = [
     "cmd",
     "cmd.exe",
     "powershell",
@@ -579,13 +595,23 @@ const SHELLS: [&str; 11] = [
     "wt",
     "wt.exe",
     "sh",
+    "sh.exe",
     "bash",
+    "bash.exe",
     "zsh",
+    "zsh.exe",
+    "fish",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "nu",
+    "env",
 ];
 
 /// Characters a shell or `cmd` reads as more than a name.
-const SHELL_SPECIAL: [char; 14] = [
-    '&', '|', ';', '<', '>', '^', '%', '$', '`', '(', ')', '"', '\'', '\n',
+const SHELL_SPECIAL: [char; 15] = [
+    '&', '|', ';', '<', '>', '^', '%', '$', '`', '(', ')', '"', '\'', '\n', '\r',
 ];
 
 /// `Err` when the configured `program` (its first word) is a shell, `cmd`, `wt` or a batch
@@ -1182,10 +1208,20 @@ mod tests {
             "/bin/zsh",
             "open.bat",
             r"C:\tools\edit.CMD",
+            "bash.exe",
+            "sh.exe",
+            "zsh.exe",
+            "fish",
+            "dash",
+            "ksh",
+            "csh",
+            "tcsh",
+            "nu",
+            "/usr/bin/env",
         ] {
             for bad in [
                 "/w/a&b", "/w/a|b", "/w/a;b", "/w/a<b", "/w/a>b", "/w/a^b", "/w/a%b", "/w/a$b",
-                "/w/a`b", "/w/a(b", "/w/a)b", "/w/a\"b", "/w/a'b", "/w/a\nb",
+                "/w/a`b", "/w/a(b", "/w/a)b", "/w/a\"b", "/w/a'b", "/w/a\nb", "/w/a\rb",
             ] {
                 let quoted = format!("'{program}' -x");
                 let err = terminal("linux", Some(&quoted), bad, &[]).unwrap_err();
@@ -1206,6 +1242,38 @@ mod tests {
             assert!(
                 terminal("linux", Some(program), "/w/a&b;$(c)", &[]).is_ok(),
                 "{program}"
+            );
+        }
+    }
+
+    /// `{path}` right after an option that takes a command (`-c`, `-e`, `/c`, `/k`,
+    /// `-Command`, `-EncodedCommand`) would make the folder's name a command, whatever the
+    /// program: refused when saved and when launched.
+    #[test]
+    fn the_folder_is_never_given_as_a_command() {
+        for command in [
+            "kitty -c {path}",
+            "xterm -e {path}",
+            "cmd /c {path}",
+            "cmd /K {path}",
+            "pwsh -Command {path}",
+            "powershell -encodedcommand {path}",
+            "my-term -C {path}",
+        ] {
+            let err = check_terminal_command(command).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{command}");
+            let err = terminal("linux", Some(command), "/w/plain", &[]).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{command}");
+        }
+        for command in [
+            "kitty --directory {path}",
+            "wezterm start --cwd {path}",
+            "xterm -e vim",
+        ] {
+            assert!(check_terminal_command(command).is_ok(), "{command}");
+            assert!(
+                terminal("linux", Some(command), "/w/plain", &[]).is_ok(),
+                "{command}"
             );
         }
     }

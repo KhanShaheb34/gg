@@ -160,7 +160,8 @@ export type CommitDetails = {
 
 /**
  * Defaults: system, 300 (0 = off), null (the system's default opener), "../{repo}.worktrees/{branch}".
- * `worktreePattern`: where new worktrees go, relative to the main worktree; {repo} {branch} filled in, must contain {branch}.
+ * `worktreePattern`: where new worktrees go, relative to the main worktree; {repo} {branch} filled in, must contain {branch}
+ * and lead outside the main worktree (a suggestion that would land inside a worktree or the git dir uses the default).
  */
 export type Settings = {
   theme: "system" | "light" | "dark";

@@ -1542,6 +1542,17 @@ async fn the_default_location_follows_the_pattern_and_skips_taken_folders() {
             .await
             .unwrap();
     assert_eq!(path.path, format!("{base}/flat/repo-worktree"));
+    // One that lands inside the main worktree, a linked one or the git dir: the default
+    // pattern instead (Task 4 review).
+    let other = repo.add_worktree("other");
+    for inside in [
+        format!("{base}/repo/inside/{{branch}}"),
+        format!("{}/sub/{{branch}}", real(&other)),
+        format!("{base}/repo/.git/{{branch}}"),
+    ] {
+        let path = h.m.worktree_default_path(id, "x", &inside).await.unwrap();
+        assert_eq!(path.path, format!("{base}/repo.worktrees/x"), "{inside}");
+    }
 }
 
 // ---- Branches checked out elsewhere offer that worktree ----

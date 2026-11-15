@@ -315,12 +315,19 @@ impl Store {
         }
         if let Some(pattern) = &patch.worktree_pattern
             && !pattern.trim().is_empty()
-            && !valid_worktree_pattern(pattern)
         {
-            return Err(CoreError::new(
-                ErrorCode::BadRequest,
-                "The worktree location must contain {branch}, so that each branch gets its own folder.",
-            ));
+            if !pattern.contains("{branch}") {
+                return Err(CoreError::new(
+                    ErrorCode::BadRequest,
+                    "The worktree location must contain {branch}, so that each branch gets its own folder.",
+                ));
+            }
+            if pattern_inside_repository(pattern) {
+                return Err(CoreError::new(
+                    ErrorCode::BadRequest,
+                    "The worktree location must be outside the repository's folder (start it with ../): a worktree inside it would show up there as untracked files.",
+                ));
+            }
         }
         self.change(|data| {
             if let Some(theme) = patch.theme {
@@ -575,9 +582,34 @@ fn valid_fetch_interval(secs: u32) -> bool {
     secs == 0 || FETCH_INTERVAL_RANGE.contains(&secs)
 }
 
-/// Whether `pattern` can place worktrees: it names the branch, so each gets its own folder.
+/// Whether `pattern` can place worktrees: it names the branch, so each gets its own folder,
+/// and does not put them inside the repository's folder.
 fn valid_worktree_pattern(pattern: &str) -> bool {
-    pattern.contains("{branch}")
+    pattern.contains("{branch}") && !pattern_inside_repository(pattern)
+}
+
+/// Whether the relative `pattern` places a worktree inside the main worktree (or its git
+/// dir) of any repository: worked out on paths alone. An absolute pattern cannot be judged
+/// without the repository; the suggestion skips one that lands inside (see
+/// `worktree_default_path`).
+pub(crate) fn pattern_inside_repository(pattern: &str) -> bool {
+    use std::path::Component;
+    if Path::new(pattern).has_root() || Path::new(pattern).is_absolute() {
+        return false;
+    }
+    let root = Path::new("r").join("repo");
+    let filled = pattern.replace("{repo}", "repo").replace("{branch}", "b");
+    let mut out = PathBuf::new();
+    for part in root.join(filled).components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out.starts_with(&root)
 }
 
 /// `path` with symlinks resolved (unchanged if it cannot be, for example a deleted folder).
@@ -1281,6 +1313,27 @@ mod tests {
         assert_eq!(err.code, ErrorCode::BadRequest);
         assert!(err.message.contains("{branch}"), "{}", err.message);
         assert_eq!(store.settings().worktree_pattern, "../wt/{repo}-{branch}");
+        // Inside the repository's folder: refused (Task 4 review).
+        for inside in [
+            "wt/{branch}",
+            "./{branch}",
+            "../{repo}/x/{branch}",
+            "{branch}",
+        ] {
+            let err = store
+                .update_settings(patch(serde_json::json!({"worktreePattern": inside})))
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{inside}");
+            assert!(err.message.contains("outside"), "{}", err.message);
+        }
+        assert_eq!(store.settings().worktree_pattern, "../wt/{repo}-{branch}");
+        for outside in [
+            "../{branch}",
+            "../{repo}-wt/{branch}",
+            "/abs/{repo}/{branch}",
+        ] {
+            assert!(!pattern_inside_repository(outside), "{outside}");
+        }
         // Survives a reload; blank goes back to the default.
         let again = Store::load(config.path());
         assert_eq!(again.settings().worktree_pattern, "../wt/{repo}-{branch}");
@@ -1297,6 +1350,16 @@ mod tests {
         let edited = Store::load(config.path());
         assert_eq!(
             edited.settings().worktree_pattern,
+            "../{repo}.worktrees/{branch}"
+        );
+        // So does one inside the repository.
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"worktreePattern": "wt/{branch}"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Store::load(config.path()).settings().worktree_pattern,
             "../{repo}.worktrees/{branch}"
         );
     }

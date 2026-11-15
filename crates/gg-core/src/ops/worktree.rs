@@ -12,8 +12,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::dto::{
-    Danger, DangerKind, InProgressKind, OpHint, OpRequest, WorktreeBranch, WorktreeInfo,
-    WorktreePath,
+    DEFAULT_WORKTREE_PATTERN, Danger, DangerKind, InProgressKind, OpHint, OpRequest,
+    WorktreeBranch, WorktreeInfo, WorktreePath,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::branch_slug;
@@ -1129,7 +1129,8 @@ impl RepoManager {
     /// (`worktreePattern`) with `{repo}` the main worktree's folder name and `{branch}` the
     /// branch made safe for a folder name, relative to the main worktree; the first of it,
     /// `<it>-2`, `<it>-3`… that is free (no such folder, or an empty one, and not a
-    /// worktree git lists). `exists`: that folder is there (empty).
+    /// worktree git lists). `exists`: that folder is there (empty). A pattern that lands
+    /// inside a worktree or the git dir is not used: the default one is.
     pub async fn worktree_default_path(
         &self,
         repo_id: u32,
@@ -1143,10 +1144,26 @@ impl RepoManager {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let expanded = pattern
-            .replace("{branch}", &branch_slug(branch))
-            .replace("{repo}", &name);
-        let base = resolve(&repo.root, &expanded);
+        let slug = branch_slug(branch);
+        let place = |pattern: &str| {
+            resolve(
+                &repo.root,
+                &pattern.replace("{branch}", &slug).replace("{repo}", &name),
+            )
+        };
+        // Never inside a worktree or the git dir: then the default pattern instead.
+        let git_dir = canonical(&repo.common_dir);
+        let inside = |path: &Path| {
+            let path = real(path);
+            path.starts_with(&git_dir)
+                || listed
+                    .iter()
+                    .any(|w| path.starts_with(&w.path) && path != Path::new(&w.path))
+        };
+        let mut base = place(pattern);
+        if inside(&base) {
+            base = place(DEFAULT_WORKTREE_PATTERN);
+        }
         let base_name = base
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())

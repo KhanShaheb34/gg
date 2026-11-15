@@ -80,6 +80,8 @@
   let asked = 0;
   /** A commit was made: the next list read decides whether anything is left to commit. */
   let backWhenEmpty = false;
+  /** git's message for the merge stopped here, once put in the empty field (not again). */
+  let offeredMergeMessage: string | null = null;
   async function load() {
     const n = ++asked;
     // The list read is of the repository as this snapshot shows it: a commit of these
@@ -102,6 +104,11 @@
         if (ticked.has(f.path) || (tickNew && (before === null || !known.has(f.path)))) next.add(f.path);
       }
       ticked = next;
+      // Concluding a merge: an empty field gets git's own message for it, once.
+      if (got.mergeMessage !== null && got.mergeMessage !== offeredMergeMessage && untrack(() => active)) {
+        offeredMergeMessage = got.mergeMessage;
+        if (untrack(() => message).trim() === "") message = got.mergeMessage;
+      }
       // A commit just made left nothing: back to the worktree list.
       if (backWhenEmpty) {
         backWhenEmpty = false;

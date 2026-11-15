@@ -354,3 +354,50 @@ test("a commit panel whose worktree is no longer listed is closed for good, not 
   await expect(worktreeRow(page, "topic")).toBeVisible();
   await expect(panel(page)).toHaveCount(0);
 });
+
+test("concluding a merge: tracked files ticked and kept so, new files up to the user, git's message offered, a merge commit made", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("commit");
+  const topic = path.join(path.dirname(repo), "commit.worktrees", "topic");
+  const at = (...args: string[]) => gg.gitAt(topic, ...args);
+  writeFileSync(path.join(topic, "shared.txt"), "base\n");
+  at("add", "shared.txt");
+  at("commit", "-q", "-m", "Share a file");
+  at("switch", "-q", "-c", "other");
+  writeFileSync(path.join(topic, "shared.txt"), "other\n");
+  at("commit", "-q", "-am", "Other side");
+  at("switch", "-q", "topic");
+  writeFileSync(path.join(topic, "shared.txt"), "topic\n");
+  at("commit", "-q", "-am", "Topic side");
+  expect(() => at("merge", "-q", "other")).toThrow();
+  // Resolved and staged, and another tracked file changed during the merge.
+  writeFileSync(path.join(topic, "shared.txt"), "both\n");
+  at("add", "shared.txt");
+  writeFileSync(path.join(topic, "src", "app.ts"), "export const app = 3;\n");
+
+  await open(page, repo);
+  await page.evaluate(async (wt) => {
+    const { api } = await import("/src/lib/ipc.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    await api.setActiveWorktree(app.activeRepoId!, wt);
+  }, topic);
+  await expect(page.getByTestId("active-worktree")).toContainText("topic");
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByTestId("commit-merge")).toContainText("Concluding the merge of other");
+  for (const tracked of ["shared.txt", "src/app.ts"]) {
+    await expect(file(page, tracked)).toHaveAttribute("aria-selected", "true");
+    await expect(file(page, tracked)).toHaveAttribute("aria-disabled", "true");
+    await file(page, tracked).click({ force: true });
+    await expect(file(page, tracked)).toHaveAttribute("aria-selected", "true");
+  }
+  // The new file is the user's to leave out.
+  await file(page, "topic.txt").click();
+  await expect(file(page, "topic.txt")).toHaveAttribute("aria-selected", "false");
+  await expect(message(page)).toHaveValue("Merge branch 'other' into topic");
+  await commitButton(page).click();
+  await expect(notice(page, /Concluded the merge: committed 2 files to topic/)).toBeVisible();
+  expect(at("log", "-1", "--format=%P").trim().split(" ")).toHaveLength(2);
+  expect(at("log", "-1", "--format=%s").trim()).toBe("Merge branch 'other' into topic");
+  expect(at("status", "--porcelain").trim()).toBe("?? topic.txt");
+});

@@ -80,7 +80,52 @@ pub async fn read_files(r: &GitRunner, worktree: &Path) -> Result<WorktreeFiles>
     let mut files = parse_files(&out.stdout);
     let truncated = files.len() > MAX_LISTED_FILES;
     files.truncate(MAX_LISTED_FILES);
-    Ok(WorktreeFiles { files, truncated })
+    let merge_message = read_merge_message(r, worktree).await?;
+    Ok(WorktreeFiles {
+        files,
+        truncated,
+        merge_message,
+    })
+}
+
+/// The message git prepared for the merge stopped in `worktree` (its `MERGE_MSG`), without
+/// its `#` comment lines, trimmed; `None` when no merge is stopped there, or it is empty.
+async fn read_merge_message(r: &GitRunner, worktree: &Path) -> Result<Option<String>> {
+    let out = r
+        .run(
+            worktree,
+            &[
+                "rev-parse",
+                "--git-path",
+                "MERGE_HEAD",
+                "--git-path",
+                "MERGE_MSG",
+            ],
+            CmdKind::Read,
+        )
+        .await?;
+    let text = out.text();
+    let mut lines = text.lines();
+    let (Some(head), Some(msg)) = (lines.next(), lines.next()) else {
+        return Ok(None);
+    };
+    if !worktree.join(head).is_file() {
+        return Ok(None);
+    }
+    let Ok(raw) = std::fs::read(worktree.join(msg)) else {
+        return Ok(None);
+    };
+    Ok(Some(merge_message_text(&String::from_utf8_lossy(&raw))).filter(|m| !m.is_empty()))
+}
+
+/// `MERGE_MSG`'s text as the commit panel offers it: `#` comment lines removed, trimmed.
+fn merge_message_text(raw: &str) -> String {
+    raw.lines()
+        .filter(|l| !l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
 }
 
 /// Every changed file in porcelain v2 output `out`, sorted by path, one entry per path (a
@@ -255,6 +300,13 @@ fn parse_status(out: &[u8]) -> (WorktreeStatus, Vec<Unmerged>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_merge_message_loses_its_comment_lines() {
+        let raw = "Merge branch 'feature'\n\n# Conflicts:\n#\tclash.txt\n";
+        assert_eq!(merge_message_text(raw), "Merge branch 'feature'");
+        assert_eq!(merge_message_text("# only comments\n\n"), "");
+    }
 
     const ORDINARY: &str = "1 .M N... 100644 100644 100644 aaaa aaaa file one.txt\0";
     const RENAME: &str =

@@ -156,6 +156,9 @@ pub struct FileEntry {
 pub struct WorktreeFiles {
     pub files: Vec<FileEntry>,
     pub truncated: bool,
+    /// While a merge is stopped there: the message git prepared for it (`MERGE_MSG`, its
+    /// `#` comment lines removed, trimmed), which the panel offers; else `None`.
+    pub merge_message: Option<String>,
 }
 
 /// Most files `worktree_files` lists.
@@ -1598,6 +1601,7 @@ mod tests {
                 reason: Some("why".into()),
             }],
             truncated: true,
+            merge_message: Some("Merge branch 'x'".into()),
         };
         let v = serde_json::to_value(&files).unwrap();
         assert_eq!(
@@ -1605,7 +1609,7 @@ mod tests {
             json!({"files": [{"path": "new name", "origPath": "old", "status": "R",
                               "staged": true, "unstaged": false, "committable": false,
                               "reason": "why"}],
-                   "truncated": true})
+                   "truncated": true, "mergeMessage": "Merge branch 'x'"})
         );
         assert_eq!(serde_json::from_value::<WorktreeFiles>(v).unwrap(), files);
         let letters = [

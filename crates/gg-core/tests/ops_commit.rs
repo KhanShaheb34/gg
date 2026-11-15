@@ -655,6 +655,12 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
     );
     assert!(h.writes_since(mark).is_empty(), "nothing ran");
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
+    // The panel offers git's own message for the merge, without its comment lines.
+    let listed = files_of(&h, id, repo.path()).await;
+    assert_eq!(
+        listed.merge_message.as_deref(),
+        Some("Merge branch 'feature'")
+    );
     let out = h
         .run(
             id,
@@ -673,6 +679,7 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
         Some(repo.git(&["rev-parse", "HEAD"]).as_str())
     );
     assert!(!in_git_dir(&repo, "MERGE_HEAD"));
+    assert_eq!(files_of(&h, id, repo.path()).await.merge_message, None);
     assert_eq!(
         repo.git(&["rev-list", "--parents", "-n1", "HEAD"])
             .split(' ')

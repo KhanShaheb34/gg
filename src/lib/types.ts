@@ -293,7 +293,11 @@ export type FileEntry = {
   reason: string | null;
 };
 /** `worktree_files`: the changed files sorted by path, the first 5000; `truncated` when there are more. */
-export type WorktreeFiles = { files: FileEntry[]; truncated: boolean };
+export type WorktreeFiles = {
+  files: FileEntry[];
+  truncated: boolean;
+  mergeMessage: string | null; // while a merge is stopped there: git's message for it, comment lines removed
+};
 /** `worktree_default_path`: the first free folder the pattern gives; `exists`: it is there, empty. */
 export type WorktreePath = { path: string; exists: boolean };
 

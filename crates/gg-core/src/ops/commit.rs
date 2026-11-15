@@ -965,6 +965,7 @@ pub(crate) async fn commit(
         ));
     };
     ctx.keep_outcome_when_stopped();
+    *ctx.committed.lock().unwrap_or_else(|e| e.into_inner()) = Some(new.clone());
 
     // The paths the commit changed are as the new HEAD has them in the user's index too;
     // nothing else there changes.

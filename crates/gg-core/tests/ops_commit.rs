@@ -210,6 +210,7 @@ async fn only_the_ticked_files_are_committed_and_staged_unticked_ones_stay_stage
         out.message,
         format!("Committed 3 files to main ({}).", &new[..8])
     );
+    assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert_eq!(
         changed_by(repo.path(), &new),
         set(&["a.txt", "c.txt", "d.txt"])
@@ -424,6 +425,7 @@ async fn a_failing_hook_commits_nothing_and_its_output_is_shown() {
         let id = h.open(repo.path()).await.repo_id;
         let out = h.run(id, commit(&["a.txt"], "refused", false)).await;
         assert_eq!(out.status, OpStatus::Failed, "{name}: {out:#?}");
+        assert_eq!(out.committed, None, "nothing was committed");
         assert!(
             out.message
                 .starts_with("Nothing was committed: git or one of the repository's hooks"),
@@ -665,6 +667,10 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
             .starts_with("Concluded the merge: committed 2 files to main ("),
         "{}",
         out.message
+    );
+    assert_eq!(
+        out.committed.as_deref(),
+        Some(repo.git(&["rev-parse", "HEAD"]).as_str())
     );
     assert!(!in_git_dir(&repo, "MERGE_HEAD"));
     assert_eq!(
@@ -921,6 +927,10 @@ async fn a_failed_push_is_said_after_the_commit() {
         }
     );
     assert_eq!(repo.git(&["rev-parse", "HEAD^"]), before, "committed");
+    assert_eq!(
+        out.committed.as_deref(),
+        Some(repo.git(&["rev-parse", "HEAD"]).as_str())
+    );
     assert!(
         out.detail
             .as_deref()
@@ -1376,6 +1386,7 @@ async fn a_stop_after_the_commit_is_made_says_it_was_made() {
         "{out:#?}"
     );
     assert!(out.message.contains("Stopped"), "{}", out.message);
+    assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert_eq!(porcelain(repo.path()), ["M  b.txt"]);
     assert!(scratch_left(&repo.path().join(".git")).is_empty());
 }
@@ -1398,6 +1409,7 @@ async fn a_stop_during_the_push_keeps_the_commit_and_offers_the_push() {
     let id = h.open(repo.path()).await.repo_id;
     let out = stopped_once(&h, id, commit(&["a.txt"], "and push", true), &marker).await;
     let new = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert!(
         out.message
             .starts_with(&format!("Committed 1 file to main ({}).", &new[..8])),
@@ -1607,6 +1619,7 @@ async fn a_held_index_lock_after_the_commit_is_waited_for_once_then_explained() 
             &new[..8]
         )
     );
+    assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     let detail = out.detail.as_deref().unwrap();
     assert!(
         detail.starts_with("git reset -q -- a.txt 'it'\\''s.txt'\n"),

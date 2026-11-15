@@ -338,6 +338,7 @@ export type OpOutcome = {
   dangers: Danger[]; // non-empty only for needs_confirmation
   hints: OpHint[];
   created: string | null; // worktree_add: the worktree it made, as the snapshot lists it
+  committed: string | null; // commit: the commit it made (full hash), whatever came after it
   snapshot: RepoSnapshot; // after the operation and its refresh; after pull / fetch_into_local maybe before the log reload (a repo-changed with a higher seq follows)
 };
 

@@ -84,6 +84,8 @@ pub(crate) struct OpCtx<'a> {
     pub(crate) held_read: std::sync::Mutex<Option<(PathBuf, Vec<u8>)>>,
     /// The worktree the operation made (its canonical path, as the snapshot lists it).
     pub(crate) created: Arc<std::sync::Mutex<Option<String>>>,
+    /// The commit the operation made (its full hash), once made.
+    pub(crate) committed: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Fewest milliseconds between two `op-progress` events of one operation.
@@ -890,11 +892,13 @@ impl RepoManager {
         // refresh. A request that needs confirmation shows nothing.
         let started = Arc::new(AtomicBool::new(false));
         let continuing = matches!(turn.request, OpRequest::Continue { .. });
-        // Where the body says which worktree it made (worktree_add).
+        // Where the body says which worktree it made (worktree_add), or which commit (commit).
         let created = Arc::new(std::sync::Mutex::new(None));
+        let committed = Arc::new(std::sync::Mutex::new(None));
         let inner = tokio::spawn({
-            let (m, started, created) = (self.clone(), started.clone(), created.clone());
-            async move { m.run_body(turn, op_id, &started, &created).await }
+            let made = (created.clone(), committed.clone());
+            let (m, started) = (self.clone(), started.clone());
+            async move { m.run_body(turn, op_id, &started, &made).await }
         });
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
@@ -922,6 +926,7 @@ impl RepoManager {
             dangers: Vec::new(),
             hints: Vec::new(),
             created: created.lock().unwrap_or_else(|e| e.into_inner()).take(),
+            committed: committed.lock().unwrap_or_else(|e| e.into_inner()).take(),
             snapshot,
         };
         match ran {
@@ -983,7 +988,10 @@ impl RepoManager {
         turn: Turn,
         op_id: u64,
         started: &AtomicBool,
-        created: &Arc<std::sync::Mutex<Option<String>>>,
+        made: &(
+            Arc<std::sync::Mutex<Option<String>>>,
+            Arc<std::sync::Mutex<Option<String>>>,
+        ),
     ) -> Result<(String, Ran)> {
         let Turn {
             repo,
@@ -1010,7 +1018,8 @@ impl RepoManager {
             net_limit: self.net_limit(),
             kept: std::sync::atomic::AtomicBool::new(false),
             held_read: std::sync::Mutex::new(None),
-            created: created.clone(),
+            created: made.0.clone(),
+            committed: made.1.clone(),
         };
         // A request runs only in the worktree it was asked for: switching worktrees never
         // redirects one already asked for. Checked before anything is read there.
@@ -1558,6 +1567,7 @@ mod tests {
             kept: std::sync::atomic::AtomicBool::new(false),
             held_read: std::sync::Mutex::new(None),
             created: Arc::default(),
+            committed: Arc::default(),
         };
         let mark = log.since(0).last().map_or(0, |c| c.id);
 

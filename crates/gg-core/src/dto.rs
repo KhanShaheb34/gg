@@ -1131,6 +1131,9 @@ pub struct OpOutcome {
     /// `worktree_add`: the worktree it made (its path as the snapshot lists it), so the UI
     /// can act on exactly that one; else `None`.
     pub created: Option<String>,
+    /// `commit`: the commit it made (its full hash), whatever came after it (a push that
+    /// failed, a Stop, a hook's complaint, trouble updating the staging area); else `None`.
+    pub committed: Option<String>,
     /// The repository after the operation and its refresh. After a pull or a fetch into a
     /// local branch it may still be the state before the log reload has caught up; a
     /// `repo-changed` with a higher `seq` follows.
@@ -1414,6 +1417,7 @@ mod tests {
                 OpHint::ChoosePullMode { branch: "b".into() },
             ],
             created: Some("/r.worktrees/x".into()),
+            committed: None,
             snapshot: RepoSnapshot {
                 repo_id: 1,
                 name: "r".into(),

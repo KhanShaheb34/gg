@@ -26,7 +26,7 @@
   import { runOp } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { closeCommit, commitDrafts, makeActive, panelState } from "../state/worktrees.svelte";
-  import type { FileEntry, HeadInfo, OpOutcome, OpRequest } from "../types";
+  import type { FileEntry, HeadInfo, OpRequest } from "../types";
   import MiddleText from "./MiddleText.svelte";
 
   let { view, path }: { view: RepoView; path: string } = $props();
@@ -277,11 +277,6 @@
 
   let field: HTMLTextAreaElement | undefined = $state();
 
-  /** Whether the commit was made: the core says so first in every outcome that made one. */
-  function commitMade(outcome: OpOutcome): boolean {
-    return outcome.status !== "needs_confirmation" && /^(Committed|Concluded the merge)\b/.test(outcome.message);
-  }
-
   async function commit(push: boolean) {
     // Only the worktree shown commits, and only while it is the active one: the core refuses
     // a request whose worktree is not active by its turn.
@@ -300,7 +295,7 @@
       const outcome = await runOp(view.repoId, request);
       // Made, whatever followed (a push that failed, a Stop after it): the form starts afresh.
       // (The outcome's snapshot may still show HEAD as it was until the graph has reloaded.)
-      if (commitMade(outcome)) {
+      if (outcome.committed !== null) {
         message = "";
         ticked = new Set();
         tickNew = false;

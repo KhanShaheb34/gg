@@ -3,9 +3,9 @@
 //! Ignored by default and meaningful only in a release build:
 //!
 //! ```text
-//! scripts/gen-synthetic-repo.sh ~/.cache/gitgraph-perf/r20k 20000 200
-//! scripts/gen-synthetic-repo.sh ~/.cache/gitgraph-perf/r100k 100000 400
-//! GG_PERF_R20K="$HOME/.cache/gitgraph-perf/r20k" GG_PERF_R100K="$HOME/.cache/gitgraph-perf/r100k" \
+//! scripts/gen-synthetic-repo.sh ~/.cache/gg-perf/r20k 20000 200
+//! scripts/gen-synthetic-repo.sh ~/.cache/gg-perf/r100k 100000 400
+//! GG_PERF_R20K="$HOME/.cache/gg-perf/r20k" GG_PERF_R100K="$HOME/.cache/gg-perf/r100k" \
 //!   cargo test -p gg-core --release --test perf -- --ignored --nocapture
 //! ```
 //!

@@ -1,10 +1,12 @@
-# GitGraph
+# gg
 
 A fast, light desktop git client built around the commit graph: tabs of repositories, each a
 virtualized graph with branch and tag labels, a branch filter, search, fetch and refresh, a
 details panel with the commit's message and changed files, and the everyday actions on
 commits, branches, tags and stashes from right-click menus. Tauri 2 shell, Rust core
 (`crates/gg-core`), Svelte 5 UI (`src/`).
+
+gg is inspired by the [Git Graph](https://marketplace.visualstudio.com/items?itemName=mhutchie.git-graph) extension for VS Code.
 
 It writes into a repository only when you ask for an action (and for `git fetch`, which also
 runs on a schedule you can turn off, updating remote-tracking refs, objects and `FETCH_HEAD`

@@ -1,6 +1,6 @@
 [package]
-name = "gitgraph"
-description = "GitGraph desktop app"
+name = "gg-desktop"
+description = "gg desktop app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ publish = false
 
 [lib]
 # The `_lib` suffix keeps the lib name distinct from the bin name (cargo#8519 on Windows).
-name = "gitgraph_lib"
+name = "gg_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]

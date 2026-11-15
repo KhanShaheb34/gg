@@ -1,6 +1,6 @@
 [package]
 name = "gg-core"
-description = "Git graph core: reads repositories through the git CLI and lays out the commit graph"
+description = "gg core: reads repositories through the git CLI and lays out the commit graph"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

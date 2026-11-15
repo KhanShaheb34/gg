@@ -1,5 +1,5 @@
 <!--
-  Merge a branch (local or remote) into the current one, with Git Graph's options: a merge
+  Merge a branch (local or remote) into the current one, with these options: a merge
   commit even when a fast-forward is possible (remembered per repository: read as the dialog
   opens, saved when it merges, if it is known to have changed), squash (stage the changes as one; no merge commit, so the
   first option does not apply), and no commit (stop before committing the merge).

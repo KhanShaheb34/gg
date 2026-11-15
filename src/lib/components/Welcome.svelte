@@ -22,7 +22,7 @@
     <header class="intro">
       <div class="tile"><Mark size={34} /></div>
       <div>
-        <h1 id="welcome-title">GitGraph</h1>
+        <h1 id="welcome-title">gg</h1>
         <p class="lede">Open a repository folder to see its branches and history as a graph.</p>
       </div>
     </header>

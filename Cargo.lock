@@ -1108,6 +1108,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gg-desktop"
+version = "0.1.0"
+dependencies = [
+ "gg-core",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio",
+]
+
+[[package]]
 name = "gg-devserver"
 version = "0.1.0"
 dependencies = [
@@ -1151,18 +1163,6 @@ dependencies = [
  "libc",
  "system-deps",
  "winapi",
-]
-
-[[package]]
-name = "gitgraph"
-version = "0.1.0"
-dependencies = [
- "gg-core",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokio",
 ]
 
 [[package]]

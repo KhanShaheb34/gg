@@ -13,11 +13,11 @@
 set -uo pipefail
 out=$(mkdir -p "$1" && cd "$1" && pwd)
 root=$(cd "$(dirname "$0")/.." && pwd)
-bundle=$root/target/release/bundle/macos/GitGraph.app
-app=$bundle/Contents/MacOS/gitgraph
+bundle=$root/target/release/bundle/macos/gg.app
+app=$bundle/Contents/MacOS/gg-desktop
 [ -x "$app" ] || { echo "no app at $app: build it with the perf feature first" >&2; exit 1; }
-if pgrep -f "/GitGraph.app/Contents/MacOS/gitgraph" > /dev/null; then
-  echo "GitGraph is running; quit every copy of it first" >&2
+if pgrep -f "/gg.app/Contents/MacOS/gg-desktop" > /dev/null; then
+  echo "gg is running; quit every copy of it first" >&2
   exit 1
 fi
 # The window id for screenshots: a small helper, compiled once into <outdir>.

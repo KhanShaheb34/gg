@@ -5,10 +5,10 @@
 #
 # Builds the bundle with its measurement hooks (`pnpm tauri build --bundles app --features
 # perf`, skipped with --no-build), then launches it N times (default 6), one at a time, with
-# `open -n -a GitGraph.app --env ...`, the way a user's launch goes through LaunchServices.
+# `open -n -a gg.app --env ...`, the way a user's launch goes through LaunchServices.
 # Every launch gets its own empty config folder (GG_CONFIG_DIR), so the user's own app state
 # is never read or changed and no saved session adds tabs. The script refuses to run while
-# any copy of the app (bundle id dev.gitgraph.desktop) is running.
+# any copy of the app (bundle id com.shakirul.gg) is running.
 #
 # - Launch: the wall-clock time (unix ms) is taken right before `open` runs ("spawn"). The app
 #   appends `name<TAB>ms since navigation start<TAB>unix ms` to the perf log for each mark,
@@ -85,12 +85,12 @@ for mode in $modes; do
       ;;
   esac
 done
-bundle=$root/target/release/bundle/macos/GitGraph.app
-app=$bundle/Contents/MacOS/gitgraph
-bundle_id=dev.gitgraph.desktop
+bundle=$root/target/release/bundle/macos/gg.app
+app=$bundle/Contents/MacOS/gg-desktop
+bundle_id=com.shakirul.gg
 
-if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "/GitGraph.app/Contents/MacOS/gitgraph" > /dev/null; then
-  echo "GitGraph ($bundle_id) is running; quit every copy of it first" >&2
+if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "/gg.app/Contents/MacOS/gg-desktop" > /dev/null; then
+  echo "gg ($bundle_id) is running; quit every copy of it first" >&2
   exit 1
 fi
 if [ "$build" = 1 ]; then
@@ -143,7 +143,7 @@ footprint_mb() {
     awk '/phys_footprint:/ { printf "%.1f\n", $2 / 1048576; exit }'
 }
 rss_mb() { ps -o rss= -p "$1" | awk '{ printf "%.1f\n", $1 / 1024 }'; }
-name_of() { ps -o comm= -p "$1" | sed 's/.*\.WebKit\./WebKit./; s/.*\/gitgraph$/gitgraph/'; }
+name_of() { ps -o comm= -p "$1" | sed 's/.*\.WebKit\./WebKit./; s/.*\/gg-desktop$/gg-desktop/'; }
 # Footprint of the app and its helpers: prints "total<TAB>name=MB name=MB ...".
 footprints() {
   # Called as `IFS=<tab> read ... < <(footprints ...)`, which hands it that IFS.

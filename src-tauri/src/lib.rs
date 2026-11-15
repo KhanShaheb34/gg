@@ -45,13 +45,13 @@ impl CoreSlot {
 }
 
 async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
-    let config_dir = match gg_core::store::config_dir_override() {
-        Some(dir) => dir,
-        None => app.path().app_config_dir().map_err(|e| {
+    // Before the store loads: the settings saved under the app's old name are copied over.
+    let config_dir = gg_core::store::config_dir(|| {
+        app.path().app_config_dir().map_err(|e| {
             CoreError::new(ErrorCode::Io, "Could not find the app's config folder")
                 .with_detail(e.to_string())
-        })?,
-    };
+        })
+    })?;
     let launch = launch_path(std::env::args_os().nth(1), std::env::var_os("GG_OPEN"));
     let core = Core::new(config_dir, launch, Arc::new(TauriSink(app))).await?;
     // Performance runs only (`--features perf`, see scripts/perf.sh).
@@ -68,7 +68,7 @@ async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
 }
 
 /// Folders the operating system asked the app to open (`RunEvent::Opened`: Finder's Open
-/// With, a folder dropped on the Dock icon, `open -a GitGraph <folder>`), held until the core
+/// With, a folder dropped on the Dock icon, `open -a gg <folder>`), held until the core
 /// has started; then the core itself, which queues them for the UI.
 struct OpenedQueue {
     pending: Vec<PathBuf>,

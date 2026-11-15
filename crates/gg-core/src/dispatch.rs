@@ -13,6 +13,7 @@ use crate::Core;
 use crate::dto::{AppState, Confirmed, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::LogFilter;
+use crate::launch::{External, Programs};
 use crate::mask;
 use crate::store::{RepoPrefsPatch, SettingsPatch};
 
@@ -187,6 +188,26 @@ struct RepoPrefsArgs {
 struct OpenInEditorArgs {
     repo_id: u32,
     path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenExternalArgs {
+    repo_id: u32,
+    target: External,
+    /// A worktree of the repository (editor, terminal, reveal); the active one when absent.
+    #[serde(default)]
+    path: Option<PathBuf>,
+    /// The web page (url).
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// What `open_external` returns: a note for the user when something else than asked was
+/// opened.
+#[derive(serde::Serialize)]
+struct OpenedExternal {
+    note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -414,6 +435,25 @@ impl Core {
                     .open_in_editor(a.repo_id, a.path.as_deref(), command.as_deref())
                     .await?;
                 to_json(note)
+            }
+            "open_external" => {
+                let a: OpenExternalArgs = parse(cmd, args)?;
+                let settings = self.store.settings();
+                let programs = Programs {
+                    editor: settings.editor_command.as_deref(),
+                    terminal: settings.terminal_command.as_deref(),
+                };
+                let note = self
+                    .repos()?
+                    .open_external(
+                        a.repo_id,
+                        a.target,
+                        a.path.as_deref(),
+                        a.url.as_deref(),
+                        programs,
+                    )
+                    .await?;
+                to_json(OpenedExternal { note })
             }
             "install_cli" => {
                 let a: InstallCliArgs = parse(cmd, args)?;

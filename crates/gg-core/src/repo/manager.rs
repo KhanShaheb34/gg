@@ -112,12 +112,12 @@ pub struct RepoManager {
     /// goes on, in milliseconds.
     #[cfg(any(test, feature = "testutil"))]
     pub(super) scheduled_fetch_gap_ms: AtomicU64,
-    /// When set, editor launches are appended to this file instead of run (the dev server's
-    /// `--record-editor-launches`, for the UI's tests).
-    pub(crate) editor_record: Mutex<Option<PathBuf>>,
-    /// Tests only: when set, editor launches are recorded here instead of run.
+    /// When set, launches (editor, terminal, file manager, browser) are appended to this file
+    /// instead of run (the dev server's `--record-launches`, for the UI's tests).
+    pub(crate) launch_record: Mutex<Option<PathBuf>>,
+    /// Tests only: when set, launches are recorded here instead of run.
     #[cfg(any(test, feature = "testutil"))]
-    pub(crate) editor_launches: Mutex<Option<Vec<Vec<String>>>>,
+    pub(crate) launches: Mutex<Option<Vec<Vec<String>>>>,
     /// Tests only: points where the next task to pass waits (see `pause_at`).
     #[cfg(any(test, feature = "testutil"))]
     pub(super) pauses: Mutex<HashMap<&'static str, PausePoint>>,
@@ -660,9 +660,9 @@ impl RepoManager {
             fetch_panic: AtomicBool::new(false),
             #[cfg(any(test, feature = "testutil"))]
             scheduled_fetch_gap_ms: AtomicU64::new(0),
-            editor_record: Mutex::new(None),
+            launch_record: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
-            editor_launches: Mutex::new(None),
+            launches: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
             pauses: Mutex::new(HashMap::new()),
             memory: Mutex::new(None),

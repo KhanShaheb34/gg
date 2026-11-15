@@ -6,10 +6,10 @@
 pub mod cli;
 mod dispatch;
 pub mod dto;
-mod editor;
 pub mod error;
 pub mod git;
 pub mod graph;
+pub mod launch;
 mod mask;
 pub mod ops;
 pub mod repo;
@@ -172,11 +172,11 @@ impl Core {
         self.perf().log = path;
     }
 
-    /// From now on, editor launches are appended to `file` instead of run (see
-    /// [`RepoManager::record_editor_launches_to`]); nothing without git.
-    pub fn record_editor_launches_to(&self, file: Option<PathBuf>) {
+    /// From now on, launches (editor, terminal, file manager, browser) are appended to `file`
+    /// instead of run (see [`RepoManager::record_launches_to`]); nothing without git.
+    pub fn record_launches_to(&self, file: Option<PathBuf>) {
         if let Ok(repos) = self.repos() {
-            repos.record_editor_launches_to(file);
+            repos.record_launches_to(file);
         }
     }
 

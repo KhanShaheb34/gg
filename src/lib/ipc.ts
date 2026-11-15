@@ -17,6 +17,7 @@ import type {
   RepoPrefs,
   RepoSnapshot,
   RowsPage,
+  ExternalRequest,
   Settings,
   ViewOptions,
   WorktreeFiles,
@@ -363,6 +364,13 @@ export const api = {
    * the worktree folder instead of the file), else null.
    */
   openInEditor: (repoId: number, path: string | null) => call<string | null>("open_in_editor", { repoId, path }),
+  /**
+   * Opens worktree `path` of repository `repoId` (any of its worktrees; the active one when
+   * omitted) in the editor, a terminal or the file manager, or (`url`) the `https://` page
+   * `url` in the browser. Resolves to a note to show when something else was opened, else null.
+   */
+  openExternal: (repoId: number, request: ExternalRequest) =>
+    call<{ note: string | null }>("open_external", { repoId, ...request }),
   /**
    * Writes the `gg` launcher into `dir` (one of `CliState.candidates`), replacing only a
    * launcher the app wrote; resolves to the command's state after.

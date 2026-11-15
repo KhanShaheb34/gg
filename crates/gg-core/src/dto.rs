@@ -483,6 +483,9 @@ pub struct Settings {
     pub fetch_interval_secs: u32,
     /// Program (and arguments) that opens files; `None` uses the system's default opener.
     pub editor_command: Option<String>,
+    /// Program (and arguments) that opens a terminal in a folder (`{path}` in it stands for the
+    /// folder, else the folder is added last); `None` uses the platform's terminal.
+    pub terminal_command: Option<String>,
     /// Where new worktrees go by default, relative to the main worktree: `{repo}` is the
     /// main worktree's folder name, `{branch}` the branch made safe for a folder name.
     pub worktree_pattern: String,
@@ -497,6 +500,7 @@ impl Default for Settings {
             theme: Theme::System,
             fetch_interval_secs: 300,
             editor_command: None,
+            terminal_command: None,
             worktree_pattern: DEFAULT_WORKTREE_PATTERN.to_owned(),
         }
     }
@@ -1226,7 +1230,7 @@ mod tests {
                 "recents": [{"path": "/r", "name": "r", "lastOpenedMs": 5}],
                 "session": {"tabs": ["/r"], "active": null},
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
-                             "worktreePattern": "../{repo}.worktrees/{branch}"},
+                             "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}"},
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,

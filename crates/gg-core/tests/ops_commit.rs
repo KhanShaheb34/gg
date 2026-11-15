@@ -855,6 +855,44 @@ async fn commit_and_push_sends_the_branch_to_its_namesake() {
     );
 }
 
+/// A commit without the push on a branch that has somewhere to go offers the push (R30, to
+/// the branch of the same name, R38); with no remote, or on a detached HEAD, nothing.
+#[tokio::test]
+async fn a_commit_without_the_push_offers_it() {
+    let repo = three_files();
+    repo.write("a.txt", "edited\n");
+    repo.write("b.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, commit(&["a.txt"], "no remote", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(out.hints.is_empty(), "nowhere to push: {:?}", out.hints);
+
+    let origin = repo.clone_as_remote();
+    repo.git(&["checkout", "-q", "-b", "topic"]);
+    let out = h.run(id, commit(&["b.txt"], "kept here", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.hints,
+        [OpHint::Push {
+            branch: "topic".into(),
+            remote: "origin".into()
+        }]
+    );
+    assert!(
+        origin
+            .git(&["for-each-ref", "--format=%(refname)", "refs/heads/topic"])
+            .is_empty(),
+        "not pushed"
+    );
+
+    repo.write("c.txt", "edited\n");
+    repo.git(&["checkout", "-q", "--detach"]);
+    let out = h.run(id, commit(&["c.txt"], "detached", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(out.hints.is_empty(), "{:?}", out.hints);
+}
+
 /// The commit is made; the push fails: said apart, with a push to try again.
 #[tokio::test]
 async fn a_failed_push_is_said_after_the_commit() {

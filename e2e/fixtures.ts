@@ -585,8 +585,8 @@ function killGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): voi
 }
 
 /** Where the devserver of config folder `configDir` records editor launches (it never starts one). */
-function editorRecord(configDir: string): string {
-  return path.join(path.dirname(configDir), "editor-launches.jsonl");
+function launchRecord(configDir: string): string {
+  return path.join(path.dirname(configDir), "launches.jsonl");
 }
 
 /**
@@ -614,8 +614,8 @@ function fakeShell(home: string, setup: string): string {
 
 /**
  * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
- * debug build unless `binary` names another. The debug build records editor launches instead
- * of starting an editor (see `GG.editorLaunches`). The `gg` command is looked for in
+ * debug build unless `binary` names another. The debug build records launches (editor, terminal, file manager, browser) instead
+ * of starting an editor (see `GG.launches`). The `gg` command is looked for in
  * `cliFolders(home, extraCliFolders)` only, and the stand-in shell, set up with `shellSetup`, is what is asked
  * what `gg` is.
  */
@@ -639,7 +639,7 @@ export function startDevserver(
       VITE_ORIGIN,
       "--exit-on-stdin-eof",
       // The perf runs' release build (built on its own) need not know it.
-      ...(binary === DEVSERVER ? ["--record-editor-launches", editorRecord(configDir)] : []),
+      ...(binary === DEVSERVER ? ["--record-launches", launchRecord(configDir)] : []),
       "--cli-path",
       cliPath,
       "--cli-shell",
@@ -763,8 +763,8 @@ export type GG = {
   git(name: string, ...args: string[]): string;
   /** Runs git in folder `dir` (a clone beside a fixture, say); returns stdout. */
   gitAt(dir: string, ...args: string[]): string;
-  /** The editor launches asked for so far (program and arguments each), oldest first; none is started. */
-  editorLaunches(): string[][];
+  /** The launches asked for so far (editor, terminal, file manager, browser: program and arguments each), oldest first; none is started. */
+  launches(): string[][];
 };
 
 /**
@@ -831,8 +831,8 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: nu
         return run(...args);
       };
 
-      const editorLaunches = (): string[][] => {
-        const file = editorRecord(path.join(root, "config"));
+      const launches = (): string[][] => {
+        const file = launchRecord(path.join(root, "config"));
         if (!existsSync(file)) return [];
         return readFileSync(file, "utf8")
           .split("\n")
@@ -840,7 +840,7 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: nu
           .map((l) => JSON.parse(l) as string[]);
       };
 
-      await use({ page, home: root, repoPath, folder, git, gitAt, editorLaunches });
+      await use({ page, home: root, repoPath, folder, git, gitAt, launches });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

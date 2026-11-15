@@ -159,7 +159,7 @@ export type CommitDetails = {
 };
 
 /**
- * Defaults: system, 300 (0 = off), null (the system's default opener), "../{repo}.worktrees/{branch}".
+ * Defaults: system, 300 (0 = off), null (the system's default opener), null (the platform's terminal), "../{repo}.worktrees/{branch}".
  * `worktreePattern`: where new worktrees go, relative to the main worktree; {repo} {branch} filled in, must contain {branch}
  * and lead outside the main worktree (a suggestion that would land inside a worktree or the git dir uses the default).
  */
@@ -167,8 +167,12 @@ export type Settings = {
   theme: "system" | "light" | "dark";
   fetchIntervalSecs: number;
   editorCommand: string | null;
+  /** Opens a terminal in a folder: `{path}` stands for it, else it is added last; null = the platform's terminal. */
+  terminalCommand: string | null;
   worktreePattern: string;
 };
+/** What `open_external` opens: a worktree (`path`; the active one when omitted) or an `https://` page. */
+export type ExternalRequest = { target: "editor" | "terminal" | "reveal"; path?: string } | { target: "url"; url: string };
 /**
  * Kept per repository. Defaults: mergeNoFf true, sidePanel true. `activeWorktree`: the worktree
  * remembered as active (null = the main one); set by the core. `sidePanel`: the side panel

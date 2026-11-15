@@ -802,12 +802,13 @@ pub(crate) async fn commit(
         }
     }
     // Where a push goes, worked out before anything is committed (a Stop later ends every
-    // command but those that follow a commit made).
-    let push_to = match (push, current_branch(ctx).await?) {
-        (true, Some(branch)) => push_remote(ctx, &branch)
+    // command but those that follow a commit made). Without `push` too: the notice of a
+    // commit on a branch with somewhere to push it offers the push (R30).
+    let push_to = match current_branch(ctx).await? {
+        Some(branch) => push_remote(ctx, &branch)
             .await?
             .map(|remote| (branch, remote)),
-        _ => None,
+        None => None,
     };
     let ran = runner
         .run_unchecked(&ctx.cwd, &commit_args, CmdKind::Write)
@@ -911,7 +912,15 @@ pub(crate) async fn commit(
         });
     }
     if !push {
-        return Ok(Step::Done(committed));
+        return Ok(if retry.is_empty() {
+            Step::Done(committed)
+        } else {
+            Step::DoneWith {
+                message: committed,
+                detail: None,
+                hints: retry,
+            }
+        });
     }
     Ok(push_after(ctx, branch, committed).await)
 }

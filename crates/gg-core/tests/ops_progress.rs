@@ -817,7 +817,7 @@ async fn open_in_editor_rejects_paths_outside_the_worktree() {
     std::os::unix::fs::symlink(outside.path(), repo.path().join("link")).unwrap();
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    h.m.record_editor_launches();
+    h.m.record_launches();
 
     let escaping = outside.path().join("secret.txt");
     let escaping = escaping.to_str().unwrap();
@@ -840,7 +840,7 @@ async fn open_in_editor_rejects_paths_outside_the_worktree() {
             .await
             .expect_err("missing");
     assert_eq!(err.code, ErrorCode::PathMissing, "{err:?}");
-    assert!(h.m.editor_launches().is_empty(), "nothing was opened");
+    assert!(h.m.launches().is_empty(), "nothing was opened");
 
     let root = dunce::canonicalize(repo.path()).unwrap();
     let editor = Some("my-editor");
@@ -852,7 +852,7 @@ async fn open_in_editor_rejects_paths_outside_the_worktree() {
         .unwrap();
     h.m.open_in_editor(id, None, editor).await.unwrap();
     let opened: Vec<String> =
-        h.m.editor_launches()
+        h.m.launches()
             .into_iter()
             .map(|argv| argv.last().cloned().unwrap())
             .collect();
@@ -874,7 +874,7 @@ async fn editor_command_is_split_without_a_shell() {
     repo.commit_all("one");
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    h.m.record_editor_launches();
+    h.m.record_launches();
     let file = dunce::canonicalize(repo.path().join("a.txt"))
         .unwrap()
         .to_string_lossy()
@@ -906,7 +906,7 @@ async fn editor_command_is_split_without_a_shell() {
         vec![opener, root]
     };
     assert_eq!(
-        h.m.editor_launches(),
+        h.m.launches(),
         [
             vec![
                 "my-editor".to_owned(),

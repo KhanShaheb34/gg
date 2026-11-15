@@ -41,6 +41,9 @@ pub struct SettingsPatch {
     /// `Some(None)` (JSON `null`) goes back to the system's default opener.
     #[serde(default, deserialize_with = "present")]
     pub editor_command: Option<Option<String>>,
+    /// `Some(None)` (JSON `null`) goes back to the platform's terminal.
+    #[serde(default, deserialize_with = "present")]
+    pub terminal_command: Option<Option<String>>,
     /// A blank pattern goes back to the default; any other must contain `{branch}`.
     pub worktree_pattern: Option<String>,
 }
@@ -344,6 +347,10 @@ impl Store {
                 // A blank command means the default opener, like `null`.
                 data.settings.editor_command = command.filter(|c| !c.trim().is_empty());
             }
+            if let Some(command) = patch.terminal_command {
+                // A blank command means the platform's terminal, like `null`.
+                data.settings.terminal_command = command.filter(|c| !c.trim().is_empty());
+            }
             if let Some(pattern) = patch.worktree_pattern {
                 // A blank pattern means the default.
                 data.settings.worktree_pattern = if pattern.trim().is_empty() {
@@ -481,6 +488,7 @@ impl StoreData {
                 fetch_interval_secs: field(settings, "fetchIntervalSecs")
                     .unwrap_or(defaults.fetch_interval_secs),
                 editor_command: field(settings, "editorCommand"),
+                terminal_command: field(settings, "terminalCommand"),
                 worktree_pattern: field(settings, "worktreePattern")
                     .unwrap_or(defaults.worktree_pattern),
             },
@@ -528,6 +536,7 @@ impl StoreData {
                     "theme",
                     "fetchIntervalSecs",
                     "editorCommand",
+                    "terminalCommand",
                     "worktreePattern",
                 ],
             )
@@ -1300,6 +1309,43 @@ mod tests {
             .update_settings(patch(serde_json::json!({"editorCommand": "  "})))
             .unwrap();
         assert_eq!(s.editor_command, None, "blank is the default opener");
+    }
+
+    #[test]
+    fn terminal_command_is_set_and_cleared() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.settings().terminal_command, None);
+        let s = store
+            .update_settings(patch(
+                serde_json::json!({"terminalCommand": "kitty --directory {path}"}),
+            ))
+            .unwrap();
+        assert_eq!(
+            s.terminal_command.as_deref(),
+            Some("kitty --directory {path}")
+        );
+        // Kept across a patch without it and a reload; the editor command is its own.
+        store
+            .update_settings(patch(serde_json::json!({"editorCommand": "code"})))
+            .unwrap();
+        let again = Store::load(config.path()).settings();
+        assert_eq!(
+            again.terminal_command.as_deref(),
+            Some("kitty --directory {path}")
+        );
+        assert_eq!(again.editor_command.as_deref(), Some("code"));
+        let s = store
+            .update_settings(patch(serde_json::json!({"terminalCommand": " "})))
+            .unwrap();
+        assert_eq!(s.terminal_command, None, "blank is the platform's terminal");
+        store
+            .update_settings(patch(serde_json::json!({"terminalCommand": "wezterm"})))
+            .unwrap();
+        let s = store
+            .update_settings(patch(serde_json::json!({"terminalCommand": null})))
+            .unwrap();
+        assert_eq!(s.terminal_command, None);
     }
 
     #[test]

@@ -1035,17 +1035,17 @@ async fn open_in_editor_uses_the_editor_command_setting() {
     assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
 }
 
-/// With launches recorded to a file (the dev server's `--record-editor-launches`), nothing is
+/// With launches recorded to a file (the dev server's `--record-launches`), nothing is
 /// started: each launch is a line of JSON, the program and its arguments.
 #[tokio::test]
-async fn editor_launches_can_be_recorded_to_a_file() {
+async fn launches_can_be_recorded_to_a_file() {
     let repo = TestRepo::new();
     repo.write("a b.txt", "x\n");
     repo.commit_all("one");
     let h = harness().await;
     let record = tempfile::tempdir().unwrap();
     let file = record.path().join("launches.jsonl");
-    h.core.record_editor_launches_to(Some(file.clone()));
+    h.core.record_launches_to(Some(file.clone()));
     let snap = h.open_loaded(repo.path()).await;
     let id = snap["repoId"].clone();
     let patch = json!({"patch": {"editorCommand": "gg-no-such-editor --wait"}});
@@ -1070,6 +1070,188 @@ async fn editor_launches_can_be_recorded_to_a_file() {
             json!(["gg-no-such-editor", "--wait", root]),
         ]
     );
+}
+
+/// The launches recorded in `file` so far, each the program and its arguments.
+fn recorded(file: &Path) -> Vec<Value> {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// `open_external` opens any worktree git lists for the repository, read afresh, not only
+/// the active one: in the editor, a terminal and the file manager, with the commands from
+/// the settings. A folder that is no worktree of it (outside, inside one, the git folder, a
+/// worktree of another repository) is refused, and a worktree whose folder is gone; nothing
+/// is started for those.
+#[tokio::test]
+async fn open_external_opens_the_repositorys_worktrees_only() {
+    let repo = TestRepo::new();
+    repo.write("dir/a.txt", "x\n");
+    repo.commit_all("one");
+    let linked = repo.add_worktree("feature");
+    let gone = repo.add_worktree("gone");
+    std::fs::remove_dir_all(&gone).unwrap();
+    let other = TestRepo::new();
+    other.commit("theirs");
+    let elsewhere = tempfile::tempdir().unwrap();
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    let patch = json!({"patch": {"editorCommand": "my-editor -n", "terminalCommand": "my-term --cwd={path} -x"}});
+    h.call("update_settings", patch).await;
+
+    // A worktree added after the repository was opened counts: the list is read afresh.
+    let later = repo.add_worktree("later");
+    let root = dunce::canonicalize(repo.path()).unwrap();
+    let linked = dunce::canonicalize(&linked).unwrap();
+    let later = dunce::canonicalize(&later).unwrap();
+    let open =
+        |target: &str, path: Option<&Path>| json!({"repoId": id, "target": target, "path": path});
+    for (target, path) in [
+        ("editor", Some(linked.as_path())),
+        ("terminal", Some(linked.as_path())),
+        ("editor", Some(later.as_path())),
+        ("editor", None),
+    ] {
+        let out = h.call("open_external", open(target, path)).await;
+        assert_eq!(out, json!({"note": null}), "{target} {path:?}");
+    }
+    h.call("open_external", open("reveal", Some(&linked))).await;
+    let mut cwd = std::ffi::OsString::from("--cwd=");
+    cwd.push(&linked);
+    let reveal = if cfg!(target_os = "macos") {
+        json!(["/usr/bin/open", "-R", linked])
+    } else if cfg!(windows) {
+        let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        json!([format!(r"{windows}\explorer.exe"), "/select,", linked])
+    } else {
+        json!(["xdg-open", linked.parent().unwrap()])
+    };
+    assert_eq!(
+        recorded(&file),
+        [
+            json!(["my-editor", "-n", linked]),
+            json!(["my-term", cwd.to_string_lossy(), "-x"]),
+            json!(["my-editor", "-n", later]),
+            json!(["my-editor", "-n", root]),
+            reveal,
+        ]
+    );
+
+    let inside = root.join("dir");
+    let git_dir = root.join(".git");
+    for (path, code) in [
+        (elsewhere.path(), ErrorCode::BadRequest),
+        (inside.as_path(), ErrorCode::BadRequest),
+        (git_dir.as_path(), ErrorCode::BadRequest),
+        (other.path(), ErrorCode::BadRequest),
+        (gone.as_path(), ErrorCode::PathMissing),
+    ] {
+        for target in ["editor", "terminal", "reveal"] {
+            let err = h.fail("open_external", open(target, Some(path))).await;
+            assert_eq!(err.code, code, "{target} {}: {err:?}", path.display());
+        }
+    }
+    let err = h
+        .fail(
+            "open_external",
+            json!({"repoId": id, "target": "editor", "path": linked, "url": "https://example.com/"}),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    let err = h
+        .fail("open_external", json!({"repoId": id, "target": "browser"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    let err = h
+        .fail("open_external", json!({"repoId": 999, "target": "reveal"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
+    assert_eq!(recorded(&file).len(), 5, "nothing more was started");
+}
+
+/// Without a terminal command, the platform's terminal opens in the worktree (macOS:
+/// Terminal; elsewhere see the unit tests of `launch`).
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_terminal_without_a_command_is_terminal_on_macos() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    h.call("open_external", json!({"repoId": id, "target": "terminal"}))
+        .await;
+    let root = dunce::canonicalize(repo.path()).unwrap();
+    assert_eq!(
+        recorded(&file),
+        [json!(["/usr/bin/open", "-a", "Terminal", root])]
+    );
+}
+
+/// A web page opens only from an `https://` address, written out again by the parser; never
+/// with a path. Nothing is started for a refused one.
+#[tokio::test]
+async fn open_external_opens_only_https_pages() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    let page = "https://GitHub.com/o/r/pull/7";
+    let out = h
+        .call(
+            "open_external",
+            json!({"repoId": id, "target": "url", "url": page}),
+        )
+        .await;
+    assert_eq!(out, json!({"note": null}));
+    let opened = "https://github.com/o/r/pull/7";
+    let expected = if cfg!(target_os = "macos") {
+        json!(["/usr/bin/open", opened])
+    } else if cfg!(windows) {
+        let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        json!([
+            format!(r"{windows}\System32\rundll32.exe"),
+            "url.dll,FileProtocolHandler",
+            opened
+        ])
+    } else {
+        json!(["xdg-open", opened])
+    };
+    assert_eq!(recorded(&file), [expected]);
+
+    for args in [
+        json!({"repoId": id, "target": "url", "url": "http://github.com/o/r"}),
+        json!({"repoId": id, "target": "url", "url": "file:///etc/passwd"}),
+        json!({"repoId": id, "target": "url", "url": "https://x:y@github.com/"}),
+        json!({"repoId": id, "target": "url", "url": "https://github.com/a b"}),
+        json!({"repoId": id, "target": "url"}),
+        json!({"repoId": id, "target": "url", "url": page, "path": repo.path()}),
+    ] {
+        let err = h.fail("open_external", args.clone()).await;
+        assert_eq!(err.code, ErrorCode::BadRequest, "{args}: {err:?}");
+    }
+    let err = h
+        .fail(
+            "open_external",
+            json!({"repoId": 999, "target": "url", "url": page}),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
+    assert_eq!(recorded(&file).len(), 1);
 }
 
 /// R36: a credential in a URL (the `user:password@` part) never reaches the UI, wherever git

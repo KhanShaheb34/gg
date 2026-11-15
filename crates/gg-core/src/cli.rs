@@ -181,39 +181,59 @@ pub fn install(dir: &Path, script: &str) -> Result<PathBuf> {
         )
         .with_detail(e.to_string())
     };
-    match fs::symlink_metadata(&target) {
-        Ok(meta) if meta.is_file() && has_marker(&target) => {}
-        Ok(meta) => {
-            return Err(CoreError::new(
-                ErrorCode::BadRequest,
-                format!(
-                    "There is already a gg in {} that gg did not write: {}. Remove it, or choose another folder.",
-                    dir.display(),
-                    what_is_there(&target, &meta)
-                ),
-            ));
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+    let replacing = match fs::symlink_metadata(&target) {
+        Ok(meta) if meta.is_file() && has_marker(&target) => true,
+        Ok(meta) => return Err(not_ours(dir, &target, &meta)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
         Err(e) => return Err(failed(e)),
-    }
-    // Whole or absent: written beside it under a hidden name, then renamed over it.
+    };
+    // Whole or absent: written beside it under a hidden name, then renamed over it. The temp
+    // file is made new (a stale one of ours goes first), never written through a link.
     let tmp = dir.join(format!(".{COMMAND}.{}.tmp", std::process::id()));
     let written = (|| {
-        let mut file = fs::File::create(&tmp)?;
+        // Removing a link someone put there removes the link, not what it points at.
+        match fs::symlink_metadata(&tmp) {
+            Ok(meta) if !meta.is_dir() => fs::remove_file(&tmp)?,
+            _ => {}
+        }
+        let mut file = crate::store::create_new_file(&tmp, 0o755)?;
         file.write_all(script.as_bytes())?;
         file.sync_all()?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            // The umask may have taken bits off at creation.
             fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
         }
-        fs::rename(&tmp, &target)
+        if replacing {
+            fs::rename(&tmp, &target)
+        } else {
+            // A first install never replaces a gg that appeared meanwhile.
+            crate::store::move_no_overwrite(&tmp, &target)
+        }
     })();
     if let Err(e) = written {
         let _ = fs::remove_file(&tmp);
+        if e.kind() == io::ErrorKind::AlreadyExists
+            && let Ok(meta) = fs::symlink_metadata(&target)
+        {
+            return Err(not_ours(dir, &target, &meta));
+        }
         return Err(failed(e));
     }
     Ok(target)
+}
+
+/// The refusal to touch `target` in `dir`, a `gg` the app did not write, saying what it is.
+fn not_ours(dir: &Path, target: &Path, meta: &fs::Metadata) -> CoreError {
+    CoreError::new(
+        ErrorCode::BadRequest,
+        format!(
+            "There is already a gg in {} that gg did not write: {}. Remove it, or choose another folder.",
+            dir.display(),
+            what_is_there(target, meta)
+        ),
+    )
 }
 
 /// Removes every launcher the app wrote in the folders of `search_path` and returns their
@@ -731,6 +751,28 @@ mod tests {
             .collect();
         assert_eq!(names, ["gg"]);
         assert_eq!(installed(&path_of(&[dir.path()])), Some(path));
+    }
+
+    /// The temp file is made new: a stale one of ours is replaced, and a link planted under
+    /// its name is never written through.
+    #[cfg(unix)]
+    #[test]
+    fn install_never_writes_through_a_planted_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "keep me").unwrap();
+        let tmp = dir.path().join(format!(".gg.{}.tmp", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        let script = launcher_script("0.1.0", None);
+        let path = install(dir.path(), &script).unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+        assert_eq!(fs::read_to_string(&path).unwrap(), script);
+        assert!(fs::symlink_metadata(&tmp).is_err(), "no temp file left");
+        // A stale temp file of ours.
+        fs::write(&tmp, "half a script").unwrap();
+        install(dir.path(), &script).unwrap();
+        assert!(fs::symlink_metadata(&tmp).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), script);
     }
 
     #[cfg(unix)]

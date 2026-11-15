@@ -573,23 +573,30 @@ dd code {
   word-break: break-all;
 }
 
-/* Screenshots: the app's window, at its real size or smaller, never larger. */
+/* Screenshots: the app's window, at its real size or smaller, never larger. The border sits
+   outside the image (content-box), so an image shown at its own width is drawn 1:1, pixel
+   for pixel, not resampled to 2 px narrower. */
 .shot {
   margin: 0;
 }
 
 .shot img {
+  box-sizing: content-box;
+  max-width: calc(100% - 2px);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
 
+/* Wider than the text column when the window has room, up to the screenshot's own 1280 px,
+   where it is drawn 1:1; never closer than the page's side padding to the window's edge. */
 .shot-hero {
+  width: clamp(100%, 100% + (100vw - var(--wrap)) / 2, 1282px);
   margin-top: 56px;
 }
 
 .shot-hero img {
-  width: 100%;
+  width: calc(100% - 2px);
 }
 
 /* ---- Sections --------------------------------------------------------------------------- */

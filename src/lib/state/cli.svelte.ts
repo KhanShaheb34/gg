@@ -4,7 +4,8 @@
 import InstallCliDialog from "../components/dialogs/InstallCliDialog.svelte";
 import { api } from "../ipc";
 import type { CliState } from "../types";
-import { app } from "./app.svelte";
+import { shortenPath } from "../format";
+import { app, reportError, toast } from "./app.svelte";
 import { overlays, showDialog } from "./overlays.svelte";
 
 /** Reads the command's state again (it may have changed outside the app); keeps the old one if that fails. */
@@ -28,6 +29,21 @@ export async function uninstallCli(): Promise<CliState> {
   const state = await api.uninstallCli();
   app.cli = state;
   return state;
+}
+
+/**
+ * Removes the command (the welcome screen's "Remove"; on Linux and Windows the only way
+ * besides the dialog): says what went, or why it could not.
+ */
+export async function removeCli(): Promise<void> {
+  const was = app.cli.installed;
+  try {
+    await uninstallCli();
+  } catch (e) {
+    reportError(e, "Could not remove the gg command");
+    return;
+  }
+  toast("info", was === null ? "Removed the gg command." : `Removed the gg command: ${shortenPath(was, app.homeDir)}.`);
 }
 
 /** Shows the install dialog with the command's state read afresh; nothing if one is open. */

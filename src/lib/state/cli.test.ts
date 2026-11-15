@@ -59,6 +59,20 @@ describe("the gg command's state", () => {
     expect(app.cli).toEqual(before);
   });
 
+  it("removes the command from the welcome screen and says so, or why not", async () => {
+    app.cli = after;
+    vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce(before);
+    await cli.removeCli();
+    expect(app.cli).toEqual(before);
+    expect(app.toasts.map((t) => [t.kind, t.message])).toEqual([["info", "Removed the gg command: /h/bin/gg."]]);
+    app.cli = after;
+    const refusal = new ipc.CoreError({ code: "io", message: "Could not remove /h/bin/gg", detail: "denied" });
+    vi.mocked(ipc.api.uninstallCli).mockRejectedValueOnce(refusal);
+    await cli.removeCli();
+    expect(app.cli).toEqual(after);
+    expect(app.toasts.at(-1)).toMatchObject({ kind: "error", message: "Could not remove the gg command: Could not remove /h/bin/gg" });
+  });
+
   it("opens one dialog, with the state read when it opens", async () => {
     vi.mocked(ipc.api.getAppState).mockResolvedValue({ cli: after } as never);
     await Promise.all([cli.openCliDialog(), cli.openCliDialog()]);

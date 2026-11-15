@@ -37,7 +37,7 @@ test("installs the command from the welcome screen and removes it again", async 
   await expect(box).toHaveCount(0);
   await expect(page.getByText("Installed the gg command: wrote ~/bin/gg.")).toBeVisible();
   expect(readFileSync(launcher, "utf8")).toContain("# gg launcher, installed by gg ");
-  await expect(hint).toHaveCount(0);
+  await expect(hint).toHaveText("gg command installed in ~/bin · Remove");
 
   await openFromMenu(page);
   await expect(box.getByTestId("cli-installed")).toHaveText("Installed at ~/bin/gg.");
@@ -46,7 +46,25 @@ test("installs the command from the welcome screen and removes it again", async 
   await expect(box).toHaveCount(0);
   await expect(page.getByText("Removed the gg command: ~/bin/gg.")).toBeVisible();
   expect(existsSync(launcher)).toBe(false);
-  await expect(hint).toBeVisible();
+  await expect(hint).toContainText("Install the command…");
+});
+
+test("the welcome screen removes an installed command (Linux and Windows have no app menu)", async ({ gg }) => {
+  const { page, home } = gg;
+  await page.goto("/");
+  const hint = page.getByTestId("cli-hint");
+  await hint.getByRole("button", { name: "Install the command…" }).click();
+  await dialog(page).getByRole("button", { name: "Install", exact: true }).click();
+  await expect(hint).toHaveText("gg command installed in ~/.local/bin · Remove");
+  await hint.getByRole("button", { name: "Remove" }).click();
+  await expect(page.getByText("Removed the gg command: ~/.local/bin/gg.")).toBeVisible();
+  expect(existsSync(path.join(home, ".local", "bin", "gg"))).toBe(false);
+  await expect(hint).toContainText("Open a repository from a terminal with gg.");
+  // Still installed when the page loads again.
+  await hint.getByRole("button", { name: "Install the command…" }).click();
+  await dialog(page).getByRole("button", { name: "Install", exact: true }).click();
+  await page.reload();
+  await expect(hint).toHaveText("gg command installed in ~/.local/bin · Remove");
 });
 
 test("leaves a gg it did not write alone and says what it is", async ({ gg }) => {

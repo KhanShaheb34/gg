@@ -75,7 +75,7 @@ impl RepoManager {
     /// out again (no spaces, no control characters, no user name or password in it) before
     /// the system's opener gets it.
     ///
-    /// `bad_request` for a path that is no worktree of the repository, a missing or wrong
+    /// `bad_request` for a path that is not absolute or no worktree of the repository, a missing or wrong
     /// address, or an argument that does not belong to the target; `path_missing` for a
     /// worktree whose folder is gone; `io` if no program could be started.
     pub async fn open_external(
@@ -124,6 +124,14 @@ impl RepoManager {
             let active = repo.worktree();
             return Ok(dunce::canonicalize(&active).unwrap_or(active));
         };
+        // Named as the snapshot lists it: a relative path would be read against the app's own
+        // folder.
+        if !path.is_absolute() {
+            return Err(CoreError::new(
+                ErrorCode::BadRequest,
+                format!("{} is not a full path to a worktree.", path.display()),
+            ));
+        }
         let target = canonical(path);
         let listed = canonical_paths(read_worktrees(&repo.runner, &repo.root).await?);
         let Some(wt) = listed.iter().find(|w| Path::new(&w.path) == target) else {

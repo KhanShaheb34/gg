@@ -1159,6 +1159,19 @@ async fn open_external_opens_the_repositorys_worktrees_only() {
             assert_eq!(err.code, code, "{target} {}: {err:?}", path.display());
         }
     }
+    // A relative path is refused, even one that leads to a worktree from the app's folder.
+    let here = dunce::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    let up = here.components().count() - 1;
+    let mut relative = PathBuf::new();
+    for _ in 0..up {
+        relative.push("..");
+    }
+    relative.push(linked.strip_prefix("/").unwrap_or(&linked));
+    assert!(relative.is_relative());
+    for target in ["editor", "terminal", "reveal"] {
+        let err = h.fail("open_external", open(target, Some(&relative))).await;
+        assert_eq!(err.code, ErrorCode::BadRequest, "{target}: {err:?}");
+    }
     let err = h
         .fail(
             "open_external",

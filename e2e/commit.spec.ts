@@ -3,7 +3,7 @@
 // cut at 5,000 files, the ways in (the shortcut, the worktree menu and its row, the graph's
 // uncommitted row), another worktree made active in one click, the keyboard, what stops a
 // commit said under the buttons, and the worktree menu's launchers (recorded, never started).
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
@@ -271,9 +271,66 @@ test("an open commit panel reads the files only when something changed", async (
   const reads = () =>
     page.evaluate(async () => {
       const { api } = await import("/src/lib/ipc.ts");
-      return (await api.commandLog(0)).filter((c) => c.args.includes("status")).length;
+      return (await api.commandLog(0)).filter((c: { args: string[] }) => c.args.includes("status")).length;
     });
   const before = await reads();
   await page.waitForTimeout(1500);
   expect(await reads()).toBe(before);
+});
+
+test("only the worktree shown commits, and only while it is active: elsewhere, after a switch, after its folder is gone", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("commit");
+  // The same new file in both worktrees: a commit of the shown one's list would also take
+  // in the main worktree.
+  writeFileSync(path.join(repo, "topic.txt"), "main's own\n");
+  await open(page, repo);
+  const topic = path.join(path.dirname(repo), "commit.worktrees", "topic");
+  const heads = () => [gg.git("commit", "rev-parse", "HEAD").trim(), gg.gitAt(topic, "rev-parse", "HEAD").trim()];
+  const before = heads();
+  const writes = () =>
+    page.evaluate(async () => {
+      const { api } = await import("/src/lib/ipc.ts");
+      return (await api.commandLog(0)).filter((c: { kind: string }) => c.kind === "write").length;
+    });
+
+  // Shown but not active: Cmd+Enter in the message commits nothing, anywhere.
+  await worktreeRow(page, "topic").click({ button: "right" });
+  await item(page, "Commit…").click();
+  await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
+  await message(page).fill("Not here");
+  const writesBefore = await writes();
+  await message(page).press("ControlOrMeta+Enter");
+  await page.waitForTimeout(500);
+  expect(await writes()).toBe(writesBefore);
+  expect(heads()).toEqual(before);
+
+  // Made active, then another made active under the open panel: it goes back to the offer.
+  await page.getByRole("button", { name: "Make it active" }).click();
+  await expect(page.getByTestId("commit-elsewhere")).toHaveCount(0);
+  await expect(commitButton(page)).toBeVisible();
+  await page.evaluate(async (main) => {
+    const { api } = await import("/src/lib/ipc.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    await api.setActiveWorktree(app.activeRepoId!, main);
+  }, gg.git("commit", "rev-parse", "--show-toplevel").trim());
+  await expect(page.getByTestId("active-worktree")).toContainText("main");
+  await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
+  await message(page).press("ControlOrMeta+Enter");
+  await page.waitForTimeout(500);
+  expect(heads()).toEqual(before);
+
+  // Active again, then its folder deleted outside the app: the repository falls back to the
+  // main worktree; the panel offers nothing to commit there and commits nothing.
+  await page.getByRole("button", { name: "Make it active" }).click();
+  await expect(commitButton(page)).toBeVisible();
+  rmSync(topic, { recursive: true, force: true });
+  await page.keyboard.press("ControlOrMeta+r");
+  await expect(page.getByTestId("active-worktree")).toContainText("main");
+  await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Make it active" })).toBeDisabled();
+  await message(page).press("ControlOrMeta+Enter");
+  await page.waitForTimeout(500);
+  expect(gg.git("commit", "rev-parse", "HEAD").trim()).toBe(before[0]);
 });

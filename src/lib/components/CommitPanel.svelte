@@ -26,7 +26,7 @@
   import { runOp } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { closeCommit, commitDrafts, makeActive, panelState } from "../state/worktrees.svelte";
-  import type { FileEntry, OpOutcome, OpRequest } from "../types";
+  import type { FileEntry, HeadInfo, OpOutcome, OpRequest } from "../types";
   import MiddleText from "./MiddleText.svelte";
 
   let { view, path }: { view: RepoView; path: string } = $props();
@@ -49,6 +49,8 @@
   const merging = $derived(stopped?.kind === "merge");
 
   let files = $state.raw<FileEntry[] | null>(null);
+  /** HEAD as the snapshot showed it when the list was asked for: what the ticks belong to. */
+  let filesHead = $state.raw<HeadInfo | null>(null);
   let truncated = $state(false);
   let readError: string | null = $state(null);
   /** The paths ticked. */
@@ -80,11 +82,16 @@
   let backWhenEmpty = false;
   async function load() {
     const n = ++asked;
+    // The list read is of the repository as this snapshot shows it: a commit of these
+    // ticks expects that HEAD, not one that came later; and only one read while this worktree
+    // was the active one (the snapshot's HEAD is the active worktree's).
+    const head = untrack(() => (active ? snap.head : null));
     try {
       const got = await api.worktreeFiles(view.repoId, path);
       if (n !== asked) return;
       const before = files;
       files = got.files;
+      filesHead = head;
       truncated = got.truncated;
       readError = null;
       // Ticks follow the list: gone files go; new ones come ticked while everything is.
@@ -254,9 +261,9 @@
 
   /** Why Commit cannot be pressed now, or null. */
   const reason = $derived.by((): string | null => {
-    if (!active) return null;
+    if (!active) return "Make this worktree active to commit.";
     if (readError !== null) return readError;
-    if (files === null) return "Reading the changed files…";
+    if (files === null || filesHead === null) return "Reading the changed files…";
     if (stopped && !merging)
       return `A ${KIND[stopped.kind]} is stopped here: Continue, in the banner, commits its changes (or abort it).`;
     if (merging && conflicts > 0) return "Resolve the conflicts, then conclude the merge.";
@@ -276,14 +283,17 @@
   }
 
   async function commit(push: boolean) {
+    // Only the worktree shown commits, and only while it is the active one: the core refuses
+    // a request whose worktree is not active by its turn.
+    if (!active || filesHead === null) return;
     if (reason !== null || pending || (push && (pushTo === null || "why" in pushTo))) return;
     const request: OpRequest = {
       op: "commit",
       paths: chosen.map((f) => f.path),
       message,
       push,
-      expectHead: snap.head,
-      expectWorktree: snap.activeWorktree,
+      expectHead: filesHead,
+      expectWorktree: path,
     };
     pending = push ? "push" : "commit";
     try {

@@ -84,3 +84,22 @@ test.describe("with a shell that has its own gg", () => {
     expect(existsSync(path.join(home, ".local", "bin", "gg"))).toBe(true);
   });
 });
+
+test.describe("with many folders on the PATH", () => {
+  test.use({ ggCliFolders: 4 });
+
+  test("offers them in a list", async ({ gg }) => {
+    const { page, home } = gg;
+    await page.goto("/");
+    await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
+    const box = dialog(page);
+    const list = box.getByRole("combobox", { name: "Folder (on your PATH)" });
+    await expect(list).toHaveValue(path.join(home, ".local", "bin"));
+    await expect(list.locator("option")).toHaveText(["~/.local/bin", "~/bin", "~/tools/bin1", "~/tools/bin2", "~/tools/bin3", "~/tools/bin4"]);
+    await list.selectOption({ label: "~/tools/bin3" });
+    await expect(box.getByTestId("cli-written")).toContainText("~/tools/bin3/gg");
+    await box.getByRole("button", { name: "Install", exact: true }).click();
+    await expect(box).toHaveCount(0);
+    expect(existsSync(path.join(home, "tools", "bin3", "gg"))).toBe(true);
+  });
+});

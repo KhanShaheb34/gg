@@ -78,10 +78,14 @@ fn path_dirs(search_path: &OsStr) -> Vec<PathBuf> {
 }
 
 /// The folders the launcher can be written to, best first: those of `search_path` (the login
-/// `PATH`) that exist, the user can write to and are not inside a repository. First
-/// `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, then the others under `home`,
-/// in `PATH` order. (A folder elsewhere on `PATH` that happens to be writable, a project's
-/// own tools say, is not offered.)
+/// `PATH`) that exist and the user can write to. First `~/.local/bin`, `/opt/homebrew/bin`
+/// and `/usr/local/bin`, then the others under `home`, in `PATH` order. A folder under `home`
+/// must not be inside a repository (a project's `node_modules/.bin`, say). (The system ones
+/// may be: Homebrew's prefix is its own repository, which does not track `bin`.) Of the
+/// others under `home`, those a tool rewrites are left out: version managers' `shims`, and
+/// folders reached through a symbolic link (a version manager's per-shell link, which is
+/// gone when that shell ends). A folder elsewhere on `PATH` that happens to be writable is
+/// not offered.
 pub fn candidates(search_path: &OsStr, home: Option<&Path>) -> Vec<PathBuf> {
     let mut preferred = Vec::new();
     if let Some(home) = home {
@@ -97,15 +101,31 @@ fn candidates_with(
     preferred: &[PathBuf],
 ) -> Vec<PathBuf> {
     let on_path = path_dirs(search_path);
-    let usable =
-        |dir: &PathBuf| on_path.contains(dir) && is_writable_dir(dir) && !in_repository(dir);
+    let under_home = |dir: &Path| home.is_some_and(|h| dir.starts_with(h));
+    let usable = |dir: &PathBuf| {
+        on_path.contains(dir) && is_writable_dir(dir) && !(under_home(dir) && in_repository(dir))
+    };
     let mut out: Vec<PathBuf> = preferred.iter().filter(|d| usable(d)).cloned().collect();
     for dir in &on_path {
-        if home.is_some_and(|h| dir.starts_with(h)) && !out.contains(dir) && usable(dir) {
+        let rewritten = dir.file_name().is_some_and(|n| n == "shims")
+            || home.is_some_and(|h| through_a_link(h, dir));
+        if under_home(dir) && !out.contains(dir) && !rewritten && usable(dir) {
             out.push(dir.clone());
         }
     }
     out
+}
+
+/// Whether some folder on the way from `home` down to `dir` (under it) is a symbolic link.
+fn through_a_link(home: &Path, dir: &Path) -> bool {
+    let Ok(rest) = dir.strip_prefix(home) else {
+        return false;
+    };
+    let mut at = home.to_path_buf();
+    rest.components().any(|part| {
+        at.push(part);
+        fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink())
+    })
 }
 
 /// Whether `dir` is a folder the user may create files in.
@@ -564,6 +584,12 @@ mod tests {
         mkdir(&repo.join(".git"));
         let in_repo = mkdir(&repo.join("node_modules/.bin"));
         let missing = home.join("missing");
+        let shims = mkdir(&home.join(".pyenv/shims"));
+        let real_node = mkdir(&root.path().join("node-22/bin"));
+        let link_parent = mkdir(&home.join(".local/state/fnm"));
+        std::os::unix::fs::symlink(real_node.parent().unwrap(), link_parent.join("123_456"))
+            .unwrap();
+        let linked = link_parent.join("123_456/bin");
         let elsewhere = mkdir(&root.path().join("elsewhere"));
         let not_on_path = mkdir(&home.join("not-on-path"));
         let search = path_of(&[
@@ -576,9 +602,13 @@ mod tests {
             Path::new("relative/bin"),
             &local,
             &tools,
+            &shims,
+            &linked,
         ]);
         let _ = not_on_path;
-        // ~/.local/bin first, then the others under home in PATH order, once each.
+        // ~/.local/bin first, then the others under home in PATH order, once each; not a
+        // version manager's shims, nor a folder reached through a link.
+        assert!(linked.is_dir());
         assert_eq!(
             candidates(&search, Some(&home)),
             [local.clone(), tools.clone(), bin.clone()]
@@ -595,8 +625,10 @@ mod tests {
         let home = mkdir(&root.path().join("home"));
         let local = mkdir(&home.join(".local/bin"));
         let mine = mkdir(&home.join("bin"));
-        // Stand-ins for /opt/homebrew/bin and /usr/local/bin, outside home.
+        // Stand-ins for /opt/homebrew/bin and /usr/local/bin, outside home. Homebrew's prefix
+        // is a repository of its own: its bin is offered all the same.
         let brew = mkdir(&root.path().join("homebrew/bin"));
+        mkdir(&root.path().join("homebrew/.git"));
         let usr = mkdir(&root.path().join("usr/local/bin"));
         let preferred = [local.clone(), brew.clone(), usr.clone()];
         let search = path_of(&[&mine, &usr, &brew, &local]);

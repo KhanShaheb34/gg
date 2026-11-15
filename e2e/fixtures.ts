@@ -508,11 +508,12 @@ function editorRecord(configDir: string): string {
 
 /**
  * Where the `gg` command may go in a test: `~/.local/bin` and `~/bin` of the test's home
- * folder, made here; the `PATH` the devserver looks for it on (`--cli-path`). Never a folder
+ * folder, and `extra` more (`~/tools/bin1`…), made here; the `PATH` the devserver looks for it on (`--cli-path`). Never a folder
  * of the user's own `PATH`.
  */
-export function cliFolders(home: string): string[] {
+export function cliFolders(home: string, extra = 0): string[] {
   const dirs = [path.join(home, ".local", "bin"), path.join(home, "bin")];
+  for (let i = 1; i <= extra; i++) dirs.push(path.join(home, "tools", `bin${i}`));
   for (const dir of dirs) mkdirSync(dir, { recursive: true });
   return dirs;
 }
@@ -532,7 +533,7 @@ function fakeShell(home: string, setup: string): string {
  * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
  * debug build unless `binary` names another. The debug build records editor launches instead
  * of starting an editor (see `GG.editorLaunches`). The `gg` command is looked for in
- * `cliFolders(home)` only, and the stand-in shell, set up with `shellSetup`, is what is asked
+ * `cliFolders(home, extraCliFolders)` only, and the stand-in shell, set up with `shellSetup`, is what is asked
  * what `gg` is.
  */
 export function startDevserver(
@@ -540,8 +541,9 @@ export function startDevserver(
   home: string,
   binary = DEVSERVER,
   shellSetup = "",
+  extraCliFolders = 0,
 ): Promise<Devserver> {
-  const cliPath = cliFolders(home).join(path.delimiter);
+  const cliPath = cliFolders(home, extraCliFolders).join(path.delimiter);
   const shell = fakeShell(home, shellSetup);
   const child = spawn(
     binary,
@@ -692,15 +694,17 @@ export async function buildDevserver(): Promise<void> {
   }
 }
 
-export const test = base.extend<{ gg: GG; ggShellSetup: string }>({
+export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: number }>({
   /** What the stand-in login shell defines before it is asked what `gg` is (`alias gg=…`). */
   ggShellSetup: ["", { option: true }],
-  gg: async ({ page, ggShellSetup }, use) => {
+  /** Folders the `gg` command may go in besides `~/.local/bin` and `~/bin`. */
+  ggCliFolders: [0, { option: true }],
+  gg: async ({ page, ggShellSetup, ggCliFolders }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
     let server: Devserver | null = null;
     try {
-      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup);
+      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders);
       await page.addInitScript((url) => {
         (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
       }, server.url);

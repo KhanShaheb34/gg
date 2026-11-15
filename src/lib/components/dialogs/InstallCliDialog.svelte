@@ -15,6 +15,8 @@
   let { close }: Props = $props();
 
   const uid = Math.random().toString(36).slice(2, 8);
+  /** Most folders shown as a column of choices; more go in a list. */
+  const MAX_RADIOS = 4;
   // The folders as the dialog opened: they do not move under the user's pointer. What the
   // shell says of `gg` may arrive later (cli-changed), and is shown when it does.
   const shown = $state.snapshot(app.cli);
@@ -91,6 +93,18 @@
       Add a folder such as <code>~/.local/bin</code> to your <code>PATH</code> in your shell’s profile, then open this
       again.
     </p>
+  {:else if shown.candidates.length > MAX_RADIOS}
+    <!-- A long PATH: a list rather than a column of rows taller than the window. -->
+    <div class="field">
+      <label class="field-label" for="cli-dir-{uid}">Folder (on your <code>PATH</code>)</label>
+      <div class="select-wrap">
+        <select id="cli-dir-{uid}" class="select" bind:value={dir} disabled={busy}>
+          {#each shown.candidates as candidate (candidate)}
+            <option value={candidate}>{short(candidate)}</option>
+          {/each}
+        </select>
+      </div>
+    </div>
   {:else}
     <fieldset class="choices">
       <legend class="field-label">Folder (on your <code>PATH</code>)</legend>
@@ -101,12 +115,12 @@
         </label>
       {/each}
     </fieldset>
-    {#if dir !== null}
-      <p class="dialog-text muted written" data-testid="cli-written">
-        Writes one small script, {short(launcherPath(dir))}, and changes nothing else. No administrator rights are
-        needed.
-      </p>
-    {/if}
+  {/if}
+  {#if dir !== null}
+    <p class="dialog-text muted written" data-testid="cli-written">
+      Writes one small script, {short(launcherPath(dir))}, and changes nothing else. No administrator rights are
+      needed.
+    </p>
   {/if}
 
   {#if shadowedBy !== null}

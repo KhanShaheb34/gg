@@ -1,7 +1,8 @@
 // Screenshots the locally served site and checks its images, into site/.preview/:
-// at device scale 1 and 2, widths 1920, 1440, 768 and 375, light and dark. For each page it
-// reports horizontal overflow, the bytes loaded (all images scrolled into view) and, for each
-// <img>, whether it has enough pixels: naturalWidth >= displayed width × devicePixelRatio.
+// at device scale 1 and 2, widths 2560 to 375, light and dark. For each page it reports
+// horizontal overflow, the bytes loaded (all images scrolled into view), where the hero
+// screenshot sits, and for each <img> whether it has enough pixels: the file's width >=
+// displayed width × devicePixelRatio.
 // Usage (from the repository root, with the site served): node site/scripts/preview.mjs [url]
 import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -62,11 +63,30 @@ async function visit({ scale, width, scheme, toggle = false }) {
       }),
     ),
   );
+  // Where the hero screenshot sits: its edges against the window, the text column and the lane.
+  const hero = await page.evaluate(() => {
+    const block = document.querySelector(".hero");
+    const b = block.getBoundingClientRect();
+    const colLeft = b.left + parseFloat(getComputedStyle(block).paddingLeft);
+    const lane = b.left + parseFloat(getComputedStyle(block, "::before").left) + 1;
+    const r = document.querySelector(".shot-hero img").getBoundingClientRect(); // border box
+    const vw = document.documentElement.clientWidth;
+    return { left: r.left, right: vw - r.right, colLeft, colRight: vw - b.right, lane, width: r.width };
+  });
   const theme = toggle ? (scheme === "light" ? "dark" : "light") + " (toggled)" : scheme;
   const name = `${width}-${theme.split(" ")[0]}${toggle ? "-toggled" : ""}@${scale}x`;
-  if (!toggle) await page.screenshot({ path: join(out, `${name}.png`), fullPage: true });
+  // Whole page at 1×; at 2× the top of the page (header and hero), to keep the files sane.
+  if (!toggle) {
+    await page.screenshot(
+      scale === 1 ? { path: join(out, `${name}.png`), fullPage: true } : { path: join(out, `${name}-top.png`), clip: { x: 0, y: 0, width, height: 1800 }, fullPage: true },
+    );
+  }
   console.log(
     `\n${width} px, ${scale}x, ${theme}: overflow ${overflow}px, first load ${(firstBytes / 1024).toFixed(0)} KB, all images ${(bytes / 1024).toFixed(0)} KB${errors.length ? ", errors: " + errors.join(" | ") : ""}`,
+  );
+  const px = (n) => `${Math.round(n)}px`;
+  console.log(
+    `  hero: left ${px(hero.left)}, right ${px(hero.right)} from the window; text column left ${px(hero.colLeft)}, right ${px(hero.colRight)}; lane at ${px(hero.lane)}; ${px(hero.width)} wide with its border`,
   );
   for (const i of imgs) {
     const need = i.shown * i.dpr;
@@ -78,7 +98,7 @@ async function visit({ scale, width, scheme, toggle = false }) {
 }
 
 for (const scale of [1, 2])
-  for (const width of [1920, 1440, 768, 375])
+  for (const width of [2560, 1920, 1680, 1440, 1280, 768, 375])
     for (const scheme of ["light", "dark"]) await visit({ scale, width, scheme });
 // The page's own toggle, against the system's preference.
 await visit({ scale: 2, width: 1440, scheme: "light", toggle: true });

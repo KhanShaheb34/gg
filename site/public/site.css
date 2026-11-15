@@ -11,7 +11,9 @@
 
   --gutter: 76px; /* room for the lane */
   --rail: 22px; /* the lane's centre, from the block's left edge */
-  --wrap: 1232px;
+  /* Wide enough that the content column (wrap − 2 × pad − gutter) holds the 1280 px hero
+     screenshot and its border at 1:1. */
+  --wrap: 1422px;
   --pad: 32px;
   --radius: 10px;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
@@ -588,10 +590,10 @@ dd code {
   box-shadow: var(--shadow);
 }
 
-/* Wider than the text column when the window has room, up to the screenshot's own 1280 px,
-   where it is drawn 1:1; never closer than the page's side padding to the window's edge. */
+/* The text column's width, up to the screenshot's own 1280 px (and its border), where it is
+   drawn 1:1; it never sticks out of the column. */
 .shot-hero {
-  width: clamp(100%, 100% + (100vw - var(--wrap)) / 2, 1282px);
+  max-width: 1282px;
   margin-top: 56px;
 }
 

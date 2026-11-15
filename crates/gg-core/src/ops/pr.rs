@@ -7,7 +7,7 @@
 
 use crate::dto::{OpHint, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::gh::{already_exists, created_url, number_of, unavailable_message};
+use crate::gh::{GhFailure, already_exists, created_url, number_of, unavailable_message};
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
@@ -240,11 +240,15 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
                     format!("{pushed}{branch} has a pull request open already{number}."),
                 ));
             }
+            // Not signed in (or no gh): said as such; anything else is gh's own reason.
+            let why = match &failure {
+                GhFailure::Failed { message, .. } => {
+                    format!("gh could not open the pull request: {message}")
+                }
+                _ => unavailable_message(failure.reason(), Some(&failure)),
+            };
             Ok(Step::Failed {
-                message: format!(
-                    "{pushed}{}",
-                    unavailable_message(failure.reason(), Some(&failure))
-                ),
+                message: format!("{pushed}{why}"),
                 detail: failure.detail(),
                 hints: compare,
             })

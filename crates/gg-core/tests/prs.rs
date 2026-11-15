@@ -1068,10 +1068,15 @@ async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
         ]
     );
 
-    // gh cannot make it: the compare page of the base repository, with the fork's branch.
+    // gh cannot make it: said as such, with the compare page of the base repository and
+    // the fork's branch.
     s.gh.reply("pr-create", 1, "", "HTTP 502: bad gateway\n");
     let out = s.h.run(s.id, request).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "gh could not open the pull request: HTTP 502: bad gateway"
+    );
     assert_eq!(
         out.hints,
         [OpHint::OpenUrl {

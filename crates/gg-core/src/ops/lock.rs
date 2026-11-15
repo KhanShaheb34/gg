@@ -4,8 +4,11 @@
 //! "Unable to create '…/index.lock': File exists". git says nothing of who holds it.
 //!
 //! An operation that failed so has the lock named in its failure, with how long ago it was
-//! made. When it is older than [`STALE_AFTER`] and no git child of the app's is running for
-//! the repository, it is offered for removal (`remove_index_lock`): a red confirmation names
+//! made. When it is older than [`STALE_AFTER`], no git child of the app's is running for
+//! the repository and no other git process is found working in it (a `git commit` waiting
+//! in a terminal's editor holds the lock for as long as the editor is open; see
+//! [`crate::platform::git_running_in`]; where that cannot be looked at, the messages say
+//! so), it is offered for removal (`remove_index_lock`): a red confirmation names
 //! the file, its age and the warning that another git or an editor may still be using the
 //! repository, with a token of the file as seen (path, modification time, size; R39). The
 //! removal deletes exactly the active worktree's `index.lock` (`git rev-parse --git-path
@@ -19,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::dto::{Danger, DangerKind, OpHint};
 use crate::error::Result;
 use crate::ops::{OpCtx, Step};
+use crate::platform::GitScan;
 
 /// A lock file at least this old, with no git of the app's running, may be left behind.
 pub(crate) const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
@@ -109,6 +113,66 @@ async fn app_git_running(ctx: &OpCtx<'_>) -> bool {
     }
 }
 
+/// What a lock file found in the repository is taken for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// Younger than [`STALE_AFTER`]: a git may well be working.
+    Fresh,
+    /// A git child of the app's runs for the repository.
+    AppGit,
+    /// Another git process (this pid) works in the repository.
+    OtherGit(u32),
+    /// Probably left behind by a git that crashed: offered for removal. `checked`: whether
+    /// other git processes could be looked for at all.
+    Stale { checked: bool },
+}
+
+/// The verdict on a lock `age` old, with a git of the app's running or not (`app_git`) and
+/// what a look for other git processes found (`scan`). "Stale" is read as: at least
+/// [`STALE_AFTER`] old, and no git known to run in the repository.
+fn verdict(age: Duration, app_git: bool, scan: GitScan) -> Verdict {
+    if age < STALE_AFTER {
+        return Verdict::Fresh;
+    }
+    if app_git {
+        return Verdict::AppGit;
+    }
+    match scan {
+        GitScan::Running(pid) => Verdict::OtherGit(pid),
+        GitScan::NoneRunning => Verdict::Stale { checked: true },
+        GitScan::Unknown => Verdict::Stale { checked: false },
+    }
+}
+
+/// Looks for a git process working in the worktree `cwd` or in the git dir that holds `lock`.
+async fn scan_for_git(cwd: &Path, lock: &Path) -> GitScan {
+    let mut dirs = vec![dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned())];
+    if let Some(git_dir) = lock.parent() {
+        dirs.push(dunce::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_owned()));
+    }
+    tokio::task::spawn_blocking(move || crate::platform::git_running_in(&dirs))
+        .await
+        .unwrap_or(GitScan::Unknown)
+}
+
+/// The verdict on `lock`, found in the repository the operation runs in: a fresh lock is
+/// judged without looking further.
+async fn judge(ctx: &OpCtx<'_>, lock: &LockFile) -> Verdict {
+    if lock.age() < STALE_AFTER {
+        return Verdict::Fresh;
+    }
+    let app_git = app_git_running(ctx).await;
+    let scan = if app_git {
+        GitScan::Unknown
+    } else {
+        scan_for_git(&ctx.cwd, &lock.path).await
+    };
+    verdict(lock.age(), app_git, scan)
+}
+
+/// Said when other git processes could not be looked for.
+const NOT_CHECKED: &str = "gg could not check whether another git is running";
+
 /// `path` as a message names it: relative to the worktree `cwd` when it is inside it
 /// (`.git/index.lock`), else in full (a linked worktree's lock, in the main git dir).
 fn named(path: &Path, cwd: &Path) -> String {
@@ -176,21 +240,36 @@ pub(crate) async fn explain_failure(ctx: &OpCtx<'_>, step: Step) -> Result<Step>
     };
     let shown = named(&lock.path, &ctx.cwd);
     let age = age_text(lock.age());
-    let message = if lock.age() < STALE_AFTER || app_git_running(ctx).await {
-        format!(
+    let message = match judge(ctx, &lock).await {
+        Verdict::Fresh | Verdict::AppGit => format!(
             "Another git process is working in this repository: git found its lock file, \
              {shown}, made {age} ago. Try again once it is done."
-        )
-    } else {
-        hints.push(OpHint::RemoveIndexLock {
-            path: lock.path.display().to_string(),
-            worktree: ctx.cwd.display().to_string(),
-        });
-        format!(
-            "git found a lock file, {shown}, made {age} ago, and no git started by gg is \
-             running here: it was probably left behind by a git that crashed. Another \
-             program (a terminal, an editor) may still be using it; if none is, remove it."
-        )
+        ),
+        Verdict::OtherGit(pid) => format!(
+            "A git process (pid {pid}) is working in this repository: git found its lock \
+             file, {shown}, made {age} ago. Try again once it is done (a commit waiting for \
+             its message in an editor holds it until the editor is closed)."
+        ),
+        Verdict::Stale { checked } => {
+            hints.push(OpHint::RemoveIndexLock {
+                path: lock.path.display().to_string(),
+                worktree: ctx.cwd.display().to_string(),
+            });
+            if checked {
+                format!(
+                    "git found a lock file, {shown}, made {age} ago, and no git process is \
+                     running here: it was probably left behind by a git that crashed. Another \
+                     program (an editor) may still be using it; if none is, remove it."
+                )
+            } else {
+                format!(
+                    "git found a lock file, {shown}, made {age} ago, and no git started by gg \
+                     is running here; {NOT_CHECKED}. It may have been left behind by a git \
+                     that crashed: if no other git or editor is using this repository, \
+                     remove it."
+                )
+            }
+        }
     };
     Ok(Step::Failed {
         message,
@@ -221,22 +300,24 @@ pub(crate) async fn refused(ctx: &OpCtx<'_>) -> Result<Option<String>> {
             )));
         }
     };
-    if lock.age() < STALE_AFTER {
-        return Ok(Some(format!(
+    match judge(ctx, &lock).await {
+        Verdict::Fresh => Ok(Some(format!(
             "Nothing was removed: {shown} was made {} ago, so a git process may still be \
              using it. gg removes only a lock file at least {} old.",
             age_text(lock.age()),
             age_text(STALE_AFTER)
-        )));
-    }
-    if app_git_running(ctx).await {
-        return Ok(Some(
+        ))),
+        Verdict::AppGit => Ok(Some(
             "Nothing was removed: gg is running git in this repository right now. Try again \
              in a moment."
                 .to_owned(),
-        ));
+        )),
+        Verdict::OtherGit(pid) => Ok(Some(format!(
+            "Nothing was removed: A git process (pid {pid}) is using this repository; the \
+             lock is not stale."
+        ))),
+        Verdict::Stale { .. } => Ok(None),
     }
-    Ok(None)
 }
 
 /// The `remove_index_lock` danger, always: the file named, its age, and that another git
@@ -248,12 +329,16 @@ pub(crate) async fn danger(ctx: &OpCtx<'_>) -> Result<Vec<Danger>> {
     let Ok(Some(lock)) = look(&path) else {
         return Ok(Vec::new()); // refused before
     };
+    let unchecked = match scan_for_git(&ctx.cwd, &lock.path).await {
+        GitScan::Unknown => format!(" {NOT_CHECKED}."),
+        GitScan::Running(_) | GitScan::NoneRunning => String::new(),
+    };
     Ok(vec![Danger {
         kind: DangerKind::RemoveIndexLock,
         message: format!(
             "Remove the lock file {}, made {} ago? If another git process or an editor is \
              still working in this repository, removing its lock can damage the staging area. \
-             Make sure none is.",
+             Make sure none is.{unchecked}",
             named(&lock.path, &ctx.cwd),
             age_text(lock.age())
         ),
@@ -325,6 +410,28 @@ mod tests {
         assert!(!index_lock_exists(
             "error: cannot lock ref 'refs/heads/x': Unable to create '/r/.git/refs/heads/x.lock': File exists."
         ));
+    }
+
+    #[test]
+    fn a_lock_is_stale_only_when_old_and_no_git_is_known_to_run() {
+        let old = STALE_AFTER + Duration::from_secs(1);
+        let young = STALE_AFTER - Duration::from_secs(1);
+        assert_eq!(verdict(young, false, GitScan::NoneRunning), Verdict::Fresh);
+        assert_eq!(verdict(young, false, GitScan::Running(7)), Verdict::Fresh);
+        assert_eq!(verdict(old, true, GitScan::NoneRunning), Verdict::AppGit);
+        assert_eq!(
+            verdict(old, false, GitScan::Running(7)),
+            Verdict::OtherGit(7)
+        );
+        assert_eq!(
+            verdict(old, false, GitScan::NoneRunning),
+            Verdict::Stale { checked: true }
+        );
+        // Where git processes cannot be looked for (Windows), still offered, saying so.
+        assert_eq!(
+            verdict(old, false, GitScan::Unknown),
+            Verdict::Stale { checked: false }
+        );
     }
 
     #[cfg(unix)]

@@ -1,7 +1,8 @@
 //! What differs between the operating systems where the app runs other programs and looks
 //! at files: finding a program on a `PATH`, the process tree a child and everything it
 //! starts form (so that a time limit, a Stop or the app's exit ends all of it), whether a
-//! process still runs, and what tells one file from another without reading it.
+//! process still runs, whether a git process works in a repository, and what tells one file
+//! from another without reading it.
 //!
 //! On Unix a child leads a session of its own (no controlling terminal) and so a process
 //! group, which a signal ends as a whole. On Windows a child is started without a console
@@ -345,6 +346,152 @@ pub(crate) fn file_identity(path: &Path, meta: &std::fs::Metadata) -> Option<u12
     }
 }
 
+/// What a look for git processes working in a repository found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitScan {
+    /// One is running there (its pid).
+    Running(u32),
+    /// None is (of those this user may look at).
+    NoneRunning,
+    /// It could not be told: not on this platform, or the process list was not readable.
+    Unknown,
+}
+
+/// Whether a program called `name` (a file name, as a process list gives it) is git on
+/// `os` (`std::env::consts::OS`).
+pub(crate) fn is_git_program(os: &str, name: &str) -> bool {
+    if os == "windows" {
+        name.eq_ignore_ascii_case("git.exe") || name.eq_ignore_ascii_case("git")
+    } else {
+        name == "git"
+    }
+}
+
+/// Looks, as well as this user may, for a `git` process other than the app's own whose
+/// working folder is in one of `dirs` (canonical folders: a worktree, its git dir). Linux:
+/// `/proc`; macOS: libproc; elsewhere [`GitScan::Unknown`]. Another user's processes cannot
+/// be looked into and count as none.
+pub(crate) fn git_running_in(dirs: &[PathBuf]) -> GitScan {
+    let inside = |cwd: &Path| dirs.iter().any(|d| cwd.starts_with(d));
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return GitScan::Unknown;
+        };
+        let own = std::process::id();
+        for entry in entries.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if pid == own {
+                continue;
+            }
+            let dir = entry.path();
+            let comm = std::fs::read_to_string(dir.join("comm")).unwrap_or_default();
+            let exe = std::fs::read_link(dir.join("exe")).ok();
+            let git = is_git_program("linux", comm.trim())
+                || exe
+                    .as_deref()
+                    .and_then(Path::file_name)
+                    .is_some_and(|n| is_git_program("linux", &n.to_string_lossy()));
+            if git
+                && let Ok(cwd) = std::fs::read_link(dir.join("cwd"))
+                && inside(&cwd)
+            {
+                return GitScan::Running(pid);
+            }
+        }
+        GitScan::NoneRunning
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::git_running_in(&inside)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = inside;
+        GitScan::Unknown
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    //! The libproc calls behind [`super::git_running_in`] (no child process is started).
+
+    use std::ffi::{CStr, c_int, c_void};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::path::Path;
+
+    use super::GitScan;
+
+    pub(super) fn git_running_in(inside: &dyn Fn(&Path) -> bool) -> GitScan {
+        // SAFETY: with no buffer, proc_listallpids only counts.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let Ok(count) = usize::try_from(count) else {
+            return GitScan::Unknown;
+        };
+        // Room for processes started meanwhile.
+        let mut pids = vec![0 as libc::pid_t; count + 64];
+        let bytes = c_int::try_from(pids.len() * size_of::<libc::pid_t>()).unwrap_or(c_int::MAX);
+        // SAFETY: the buffer holds `bytes` bytes of pids.
+        let got = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast::<c_void>(), bytes) };
+        let Ok(got) = usize::try_from(got) else {
+            return GitScan::Unknown;
+        };
+        let own = libc::pid_t::try_from(std::process::id()).unwrap_or(0);
+        for &pid in pids.iter().take(got.min(pids.len())) {
+            if pid <= 0 || pid == own {
+                continue;
+            }
+            let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+            // SAFETY: the buffer is PROC_PIDPATHINFO_MAXSIZE bytes long.
+            let len = unsafe {
+                libc::proc_pidpath(pid, path.as_mut_ptr().cast::<c_void>(), path.len() as u32)
+            };
+            let Ok(len) = usize::try_from(len) else {
+                continue;
+            };
+            let program = Path::new(std::ffi::OsStr::from_bytes(&path[..len.min(path.len())]));
+            let git = program
+                .file_name()
+                .is_some_and(|n| super::is_git_program("macos", &n.to_string_lossy()));
+            if !git {
+                continue;
+            }
+            // SAFETY: an all-zero proc_vnodepathinfo is a valid value of it.
+            let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+            let size = c_int::try_from(size_of::<libc::proc_vnodepathinfo>()).unwrap_or(c_int::MAX);
+            // SAFETY: `info` is the structure PROC_PIDVNODEPATHINFO fills, of its size.
+            let filled = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDVNODEPATHINFO,
+                    0,
+                    (&raw mut info).cast::<c_void>(),
+                    size,
+                )
+            };
+            if filled != size {
+                continue; // another user's, or gone
+            }
+            // SAFETY: the path is a NUL-terminated C string within its MAXPATHLEN bytes
+            // (laid out as 32 rows of 32).
+            let raw: &[u8; 1024] = unsafe { &*(&raw const info.pvi_cdir.vip_path).cast() };
+            let Ok(cwd) = CStr::from_bytes_until_nul(raw) else {
+                continue;
+            };
+            if inside(Path::new(std::ffi::OsStr::from_bytes(cwd.to_bytes()))) {
+                return GitScan::Running(u32::try_from(pid).unwrap_or(0));
+            }
+        }
+        GitScan::NoneRunning
+    }
+}
+
 #[cfg(windows)]
 mod job {
     //! The Windows calls behind [`super::ProcessTree`] and friends.
@@ -679,6 +826,29 @@ mod tests {
         std::fs::write(&other, "two").unwrap();
         std::fs::rename(&other, &file).unwrap();
         assert_ne!(id(&file), Some(first), "replaced: another file");
+    }
+
+    #[test]
+    fn git_is_known_by_its_program_name_per_platform() {
+        assert!(is_git_program("macos", "git"));
+        assert!(is_git_program("linux", "git"));
+        assert!(!is_git_program("linux", "Git"));
+        assert!(!is_git_program("linux", "git-remote-https"));
+        assert!(!is_git_program("macos", "gitk"));
+        assert!(is_git_program("windows", "git.exe"));
+        assert!(is_git_program("windows", "GIT.EXE"));
+        assert!(!is_git_program("windows", "git-bash.exe"));
+    }
+
+    #[test]
+    fn no_git_runs_in_a_new_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let scan = git_running_in(&[dunce::canonicalize(dir.path()).unwrap()]);
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            assert_eq!(scan, GitScan::NoneRunning);
+        } else {
+            assert_eq!(scan, GitScan::Unknown);
+        }
     }
 
     #[test]

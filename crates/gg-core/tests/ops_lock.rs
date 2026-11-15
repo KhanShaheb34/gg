@@ -222,3 +222,79 @@ async fn the_lock_is_the_active_worktrees_own() {
         "the main worktree's lock is not this one"
     );
 }
+
+/// A `git commit` waiting in its editor (in a terminal, say) holds `index.lock` for as long
+/// as the editor is open, however old the lock gets: it is never offered for removal, and a
+/// removal asked for anyway is refused, naming the git process (Task 10 review Important 1).
+/// Where gg can look for running git processes (macOS, Linux).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn a_lock_held_by_a_running_git_is_never_offered_nor_removed() {
+    let repo = TestRepo::new();
+    let one = repo.commit("one");
+    repo.write("staged.txt", "x\n");
+    repo.git(&["add", "staged.txt"]);
+    // `git commit -a` in the repository, as from a terminal, waiting in its editor (with
+    // `-a` or paths, git holds the staging area's lock until the message is written).
+    let mut editor = std::process::Command::new("git")
+        .args(["commit", "-a", "-q"])
+        .current_dir(repo.path())
+        .env("GIT_CONFIG_GLOBAL", gg_core::testutil::empty_git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        // git runs it as `<editor> "$@"`: the file is given to `:`.
+        .env("GIT_EDITOR", "sleep 30; :")
+        .env("GIT_AUTHOR_NAME", "T")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "T")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let path = repo.path().join(".git").join("index.lock");
+    let started = std::time::Instant::now();
+    while !path.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "git took the lock"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // As old as a stale one.
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let pid = editor.id();
+
+    let out = h.run(id, new_branch(&one)).await;
+    let offered = out
+        .hints
+        .iter()
+        .any(|h| matches!(h, OpHint::RemoveIndexLock { .. }));
+    let asked = h.run(id, remove_lock()).await;
+    let _ = editor.kill();
+    let _ = editor.wait();
+
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(!offered, "{:?}", out.hints);
+    assert!(
+        out.message.contains(&format!("pid {pid}")),
+        "{}",
+        out.message
+    );
+    assert_eq!(asked.status, OpStatus::Failed, "{asked:#?}");
+    assert!(
+        asked.message.contains(&format!(
+            "A git process (pid {pid}) is using this repository; the lock is not stale."
+        )),
+        "{}",
+        asked.message
+    );
+}

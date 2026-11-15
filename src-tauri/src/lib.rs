@@ -2,7 +2,7 @@
 //! command, `invoke_core(cmd, args)`, and receives its events as Tauri events.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use gg_core::{Core, CoreError, ErrorCode, EventSink};
@@ -93,7 +93,6 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Hands `paths` to the core, or keeps them until it starts. Call inside the async runtime.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn deliver_opened(paths: Vec<PathBuf>) {
     let mut opened = lock(&OPENED);
     match &opened.core {
@@ -112,6 +111,18 @@ fn opened_dirs(urls: &[tauri::Url]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The folders a second launch of the app (`gg <path>`, which starts a new instance) asked
+/// to open, from its arguments (`args`, the program first) and working folder `cwd`: each
+/// argument that is an existing folder, a relative one taken from `cwd`. Anything else (a
+/// flag, macOS's process serial number, a missing path) is left out.
+fn forwarded_paths(args: &[String], cwd: &str) -> Vec<PathBuf> {
+    args.iter()
+        .skip(1)
+        .map(|arg| Path::new(cwd).join(arg))
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
 /// The folder to open at launch: the first command-line argument if it is an existing
 /// directory, else `GG_OPEN` if that is.
 fn launch_path(first_arg: Option<OsString>, gg_open: Option<OsString>) -> Option<PathBuf> {
@@ -120,6 +131,15 @@ fn launch_path(first_arg: Option<OsString>, gg_open: Option<OsString>) -> Option
         .flatten()
         .map(PathBuf::from)
         .find(|p| p.is_dir())
+}
+
+/// Brings the main window to the front (unminimized, shown, focused).
+fn bring_forward<R: tauri::Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 #[tauri::command]
@@ -256,7 +276,18 @@ pub fn run() {
     // The core starts after the window and webview are created; the login shell it asks
     // for git's PATH can run meanwhile.
     gg_core::git::runner::prefetch_login_path();
-    let builder = tauri::Builder::default();
+    // First of all: a second launch (`gg <path>` starts a new instance) hands its folders to
+    // the running app and exits here, during plugin set-up, before the app's own set-up, so
+    // it never reads or writes the config folder or migrates anything. The running app opens
+    // the folders (or shows their tabs) and comes to the front.
+    let builder =
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            let paths = forwarded_paths(&args, &cwd);
+            if !paths.is_empty() {
+                tauri::async_runtime::spawn(async move { deliver_opened(paths) });
+            }
+            bring_forward(app);
+        }));
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu).on_menu_event(|app, event| {
         if event.id() == MENU_INSTALL_CLI {
@@ -298,10 +329,7 @@ pub fn run() {
                 }
                 tauri::async_runtime::spawn(async move { deliver_opened(paths) });
                 // The app may be running behind other windows: bring it forward.
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                bring_forward(app);
             }
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
@@ -330,6 +358,31 @@ mod tests {
             std::fs::canonicalize(&dirs[0]).unwrap(),
             std::fs::canonicalize(&dir).unwrap()
         );
+    }
+
+    #[test]
+    fn a_second_launch_forwards_its_existing_folders() {
+        let dir = std::env::temp_dir().join(format!("gg-forwarded-test-{}", std::process::id()));
+        let sub = dir.join("my repo");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(dir.join("file"), "x").unwrap();
+        let cwd = dir.to_string_lossy().into_owned();
+        let args: Vec<String> = [
+            "/Applications/gg.app/Contents/MacOS/gg-desktop",
+            "my repo",
+            &sub.to_string_lossy(),
+            "file",
+            "-psn_0_12345",
+            "missing",
+        ]
+        .map(str::to_owned)
+        .into();
+        let forwarded = forwarded_paths(&args, &cwd);
+        let only = forwarded_paths(&args[..1], &cwd);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(forwarded, [sub.clone(), sub]);
+        // Without a path it only comes to the front.
+        assert!(only.is_empty());
     }
 
     #[test]

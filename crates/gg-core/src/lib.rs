@@ -14,6 +14,7 @@ pub mod hosts;
 pub mod launch;
 mod mask;
 pub mod ops;
+mod platform;
 pub mod repo;
 pub mod store;
 #[cfg(any(test, feature = "testutil"))]

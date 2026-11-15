@@ -25,6 +25,18 @@ tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-threa
 # killpg for a fetch that timed out (already in the build through tokio).
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Job objects that end a child's whole process tree, file identity, process liveness
+# (already in the build through tokio and notify).
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # Self dev-dependency: turns on `testutil` for the integration tests in `tests/`.
 gg-core = { path = ".", features = ["testutil"] }

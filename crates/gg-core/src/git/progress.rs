@@ -286,8 +286,8 @@ static JUDGED: std::sync::LazyLock<JudgeCache> = std::sync::LazyLock::new(JudgeC
 struct FileKey {
     len: u64,
     modified: Option<std::time::SystemTime>,
-    #[cfg(unix)]
-    ino: u64,
+    /// The file itself (inode; volume and file index on Windows), when it can be read.
+    identity: Option<u128>,
     marker_size: usize,
 }
 
@@ -319,8 +319,7 @@ fn judge_files(
             let key = FileKey {
                 len: meta.len(),
                 modified: meta.modified().ok(),
-                #[cfg(unix)]
-                ino: std::os::unix::fs::MetadataExt::ino(&meta),
+                identity: crate::platform::file_identity(&path, &meta),
                 marker_size: size,
             };
             let mut known = cache.0.lock().unwrap_or_else(|e| e.into_inner());

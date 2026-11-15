@@ -16,6 +16,7 @@ use serde::Deserialize;
 
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::worktrees::read_worktrees;
+use crate::platform::Lookup;
 use crate::repo::{RepoManager, canonical, canonical_paths};
 
 /// What `open_external` opens: a worktree in the editor, a terminal in it, the file manager
@@ -800,42 +801,38 @@ fn split_command(command: &str, setting: &str) -> Result<Vec<String>> {
     Ok(words)
 }
 
-/// The program a bare name (`code`, no folder in it) stands for: the first executable file
-/// of that name in an absolute entry of `path` (the given `PATH`, else the app's). A relative
-/// entry (`.`, `bin`, an empty one) is skipped: the editor runs in the worktree, where it
-/// would find a program of the repository's (branch review Minor 7). A name with a folder in
-/// it is the user's own choice, taken as it is. `None` if no entry has it.
-#[cfg(unix)]
-fn resolve_program(program: &OsStr, path: Option<&OsString>) -> Option<PathBuf> {
+/// The program a bare name (`code`, no folder in it) stands for: the first program of that
+/// name in an absolute entry of `path` (the given `PATH`, else the app's; see
+/// [`crate::platform::find_program`]). A relative entry (`.`, `bin`, an empty one) is
+/// skipped: the editor runs in the worktree, where it would find a program of the
+/// repository's (branch review Minor 7). A name with a folder in it is the user's own
+/// choice, taken as it is, except that on Windows a script (`code.cmd`, a `.bat`) is never
+/// run: `cmd.exe` would parse its arguments, a path among them, again (R19).
+fn resolve_program(program: &OsStr, path: Option<&OsString>) -> Lookup {
     let name = Path::new(program);
     if name.components().count() != 1 || name.is_absolute() {
-        return Some(name.to_owned());
+        if cfg!(windows) && windows_script(&program.to_string_lossy()) {
+            return Lookup::ScriptOnly(name.to_owned());
+        }
+        return Lookup::Program(name.to_owned());
     }
-    find_program(program, path)
+    crate::platform::find_program(&program.to_string_lossy(), path.map(OsString::as_os_str))
+}
+
+/// Whether Windows would run file `name` through another program: a `.cmd`, `.bat` (or any
+/// other extension than a program's).
+fn windows_script(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let ext = Path::new(&lower)
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned());
+    matches!(ext.as_deref(), Some(e) if e != "exe" && e != "com")
 }
 
 /// The first program called `name` in an absolute entry of `path` (the given `PATH`, else
-/// the app's): an executable file on Unix; on Windows anything there (Windows Terminal's
-/// `wt.exe` is an alias the file system cannot read as a file).
+/// the app's), see [`crate::platform::find_program`].
 pub(crate) fn find_program(name: &OsStr, path: Option<&OsString>) -> Option<PathBuf> {
-    let path = path.cloned().or_else(|| std::env::var_os("PATH"))?;
-    std::env::split_paths(&path)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join(name))
-        .find(|candidate| runnable(candidate))
-}
-
-#[cfg(unix)]
-fn runnable(candidate: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    candidate
-        .metadata()
-        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn runnable(candidate: &Path) -> bool {
-    candidate.symlink_metadata().is_ok()
+    crate::platform::find_program(&name.to_string_lossy(), path.map(OsString::as_os_str)).program()
 }
 
 /// Starts `argv` in `cwd` with no input or output, in a process group of its own (so it
@@ -866,10 +863,23 @@ fn launch(
             ),
         )
     };
-    #[cfg(unix)]
-    let resolved = resolve_program(program, path.as_ref()).ok_or_else(missing)?;
-    #[cfg(not(unix))]
-    let resolved = program;
+    let resolved = match resolve_program(program, path.as_ref()) {
+        Lookup::Program(found) => found,
+        Lookup::ScriptOnly(script) => {
+            let fix = setting.map_or(String::new(), |s| {
+                format!(" Set the {s} command in Settings to the program itself (its .exe).")
+            });
+            return Err(CoreError::new(
+                ErrorCode::Io,
+                format!(
+                    "\u{201c}{name}\u{201d} is {}, a script that Windows runs through cmd.exe, \
+                     which gg never does, so nothing was opened.{fix}",
+                    script.display()
+                ),
+            ));
+        }
+        Lookup::Missing => return Err(missing()),
+    };
     let mut cmd = Command::new(resolved);
     cmd.args(args);
     if let Some(raw) = raw {
@@ -941,15 +951,41 @@ mod tests {
         let name = OsString::from("my-editor");
 
         let relative = OsString::from("bin:.:");
-        assert_eq!(resolve_program(&name, Some(&relative)), None);
+        assert_eq!(resolve_program(&name, Some(&relative)), Lookup::Missing);
         let absolute = std::env::join_paths([Path::new("bin"), bin.as_path()]).unwrap();
-        assert_eq!(resolve_program(&name, Some(&absolute)), Some(tool.clone()));
+        assert_eq!(
+            resolve_program(&name, Some(&absolute)),
+            Lookup::Program(tool.clone())
+        );
         // A path the user gave is theirs.
         let given = tool.clone().into_os_string();
-        assert_eq!(resolve_program(&given, Some(&relative)), Some(tool));
+        assert_eq!(
+            resolve_program(&given, Some(&relative)),
+            Lookup::Program(tool)
+        );
         // Not executable: not it.
         std::fs::write(bin.join("plain"), "x").unwrap();
-        assert_eq!(resolve_program(OsStr::new("plain"), Some(&absolute)), None);
+        assert_eq!(
+            resolve_program(OsStr::new("plain"), Some(&absolute)),
+            Lookup::Missing
+        );
+    }
+
+    #[test]
+    fn windows_never_runs_a_script_as_a_program() {
+        for script in [r"C:\VS Codein\code.cmd", "x.BAT", "run.ps1", "a.vbs"] {
+            assert!(windows_script(script), "{script}");
+        }
+        for program in [
+            r"C:\VS Code\Code.exe",
+            "wt.EXE",
+            "old.com",
+            "vim",
+            r"C:	ools
+vim",
+        ] {
+            assert!(!windows_script(program), "{program}");
+        }
     }
 
     #[test]

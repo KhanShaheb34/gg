@@ -403,29 +403,12 @@ fn remove_left_over(dir: &Path) {
             continue;
         };
         let path = entry.path();
-        if pid != std::process::id() && (process_gone(pid, &path) || older_than_a_day(&path)) {
+        if pid != std::process::id()
+            && (crate::platform::process_gone(pid) || older_than_a_day(&path))
+        {
             let _ = fs::remove_dir_all(path);
         }
     }
-}
-
-/// Whether process `pid`, which made the folder `made`, is gone.
-#[cfg(unix)]
-fn process_gone(pid: u32, _made: &Path) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    // Signal 0 checks only: ESRCH, no such process. (EPERM: one runs, another user's.)
-    let alive = unsafe { libc::kill(pid, 0) } == 0
-        || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
-    !alive
-}
-
-/// Whether process `pid` is gone: not known without Unix's signal 0 (a folder older than a
-/// day counts as left over all the same).
-#[cfg(not(unix))]
-fn process_gone(_pid: u32, _made: &Path) -> bool {
-    false
 }
 
 /// Whether folder `made` was last changed more than a day ago: no commit takes that long,

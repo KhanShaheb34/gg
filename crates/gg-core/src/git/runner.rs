@@ -24,6 +24,7 @@ const LOG_CAPACITY: usize = 500;
 /// Longest stdout/stderr text kept per log record, in bytes.
 const MAX_LOG_TEXT: usize = 16 * 1024;
 /// How long the login shell gets to report its `PATH`.
+#[cfg(unix)]
 const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long the login shell's output may take to arrive once the shell has exited.
 #[cfg(unix)]
@@ -120,6 +121,7 @@ const INHERITED_REPO_VARS: [&str; 5] = [
 
 /// Brackets the `PATH` the login shell prints, so profile output around it cannot be taken
 /// for part of it.
+#[cfg(unix)]
 const PATH_MARKER: &[u8] = b"__GG_PATH__";
 
 /// Whether a command only reads the repository or may change it.
@@ -612,6 +614,9 @@ impl Drop for LiveChild {
 #[derive(Clone)]
 pub struct GitRunner {
     log: Arc<CommandLog>,
+    /// The git program: `None` for `git` found through the `PATH` below (Unix); its full
+    /// path on Windows, found by the app (see [`crate::platform::find_program`]).
+    program: Option<PathBuf>,
     /// The git children running, per repository; shared by every clone.
     live: Arc<LiveChildren>,
     /// `PATH` for git children, from the user's login shell when it could be read.
@@ -652,7 +657,9 @@ impl GitRunner {
         log: Arc<CommandLog>,
         login_path: Option<OsString>,
     ) -> Result<Self> {
-        if let Some(path) = login_path {
+        if let Some(path) = login_path
+            && let Ok(program) = git_program(Some(&path))
+        {
             let mut runner = Self {
                 log: log.clone(),
                 live: Arc::default(),
@@ -661,6 +668,7 @@ impl GitRunner {
                 stop: None,
                 version: None,
                 index_file: None,
+                program,
             };
             if let Ok(version) = runner.check().await {
                 runner.version = version;
@@ -675,6 +683,7 @@ impl GitRunner {
             stop: None,
             version: None,
             index_file: None,
+            program: git_program(None)?,
         };
         runner.version = runner.check().await?;
         Ok(runner)
@@ -742,7 +751,7 @@ impl GitRunner {
     async fn check(&self) -> Result<Option<(u32, u32, u32)>> {
         let mut cmd = self.command(None, &["--version"]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        match cmd.output().await {
+        match output(&mut cmd).await {
             Ok(out) if out.status.success() => {
                 Ok(parse_git_version(&String::from_utf8_lossy(&out.stdout)))
             }
@@ -782,7 +791,7 @@ impl GitRunner {
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        match cmd.output().await {
+        match output(&mut cmd).await {
             Ok(out) => {
                 let code = out.status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -828,13 +837,12 @@ impl GitRunner {
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let child = cmd.spawn().map_err(|e| {
+        let (child, tree) = crate::platform::spawn(&mut cmd).map_err(|e| {
             let err = spawn_error(cwd, e);
             self.log
                 .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
             err
         })?;
-        let group = child.id();
         let output = child.wait_with_output();
         tokio::pin!(output);
         let finished = tokio::select! {
@@ -842,9 +850,12 @@ impl GitRunner {
             () = stop.stopped() => None,
         };
         let out = match finished {
-            Some(out) => out,
+            Some(out) => {
+                tree.release();
+                out
+            }
             None => {
-                let (stdout, stderr) = match end_group(group, &mut output).await {
+                let (stdout, stderr) = match end_group(&tree, &mut output).await {
                     Some(Ok(out)) => (
                         out.stdout,
                         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -982,24 +993,29 @@ impl GitRunner {
     /// is full, so reading one to the end before the other can deadlock. If reading stdout
     /// fails, kill the child so the stderr drain can finish. For `git log`, use
     /// [`crate::git::log::read_log`], which does all of this.
-    pub fn spawn_stream(&self, cwd: &Path, args: &[&str]) -> Result<Child> {
+    pub fn spawn_stream(&self, cwd: &Path, args: &[&str]) -> Result<StreamChild> {
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let started = Instant::now();
-        cmd.spawn().map_err(|e| {
-            let err = spawn_error(cwd, e);
-            self.log.push(
-                self.tags,
-                CmdKind::Read,
-                cwd,
-                args,
-                started,
-                -1,
-                b"",
-                &err.message,
-            );
-            err
-        })
+        crate::platform::spawn(&mut cmd)
+            .map(|(child, tree)| StreamChild {
+                child,
+                tree: Some(tree),
+            })
+            .map_err(|e| {
+                let err = spawn_error(cwd, e);
+                self.log.push(
+                    self.tags,
+                    CmdKind::Read,
+                    cwd,
+                    args,
+                    started,
+                    -1,
+                    b"",
+                    &err.message,
+                );
+                err
+            })
     }
 
     /// Records a `Read` command started with [`GitRunner::spawn_stream`] at `started`.
@@ -1047,7 +1063,11 @@ impl GitRunner {
     /// a new process group whose id is its pid: what a time limit or a Stop ends.
     fn command(&self, cwd: Option<&Path>, args: &[&str]) -> Command {
         // With PATH overridden, the program lookup for "git" also uses this PATH.
-        let mut cmd = child_command(std::ffi::OsStr::new("git"), self.path.as_ref(), cwd);
+        let program = self
+            .program
+            .as_ref()
+            .map_or(std::ffi::OsStr::new("git"), |p| p.as_os_str());
+        let mut cmd = child_command(program, self.path.as_ref(), cwd);
         cmd.args(LEADING_ARGS).args(args).envs(GIT_ENV);
         if let Some(index) = &self.index_file {
             cmd.env("GIT_INDEX_FILE", index);
@@ -1079,10 +1099,38 @@ impl GitRunner {
     }
 }
 
+/// The git program to run with `PATH` `path` (the app's own when `None`): elsewhere than on
+/// Windows `None`, found by name through that `PATH` at each start; on Windows found here,
+/// by the app, as a full path (Windows would otherwise look in the folder git runs in, a
+/// repository, before `PATH`), and only as a program: a `git.cmd` shim alone is refused
+/// with a message saying so, since it would run through `cmd.exe` (R19).
+fn git_program(path: Option<&OsString>) -> Result<Option<PathBuf>> {
+    if !cfg!(windows) {
+        return Ok(None);
+    }
+    match crate::platform::find_program("git", path.map(OsString::as_os_str)) {
+        crate::platform::Lookup::Program(git) => Ok(Some(git)),
+        crate::platform::Lookup::ScriptOnly(script) => Err(CoreError::new(
+            ErrorCode::GitNotFound,
+            format!(
+                "git was found only as {}, a script that Windows runs through cmd.exe; gg runs \
+                 git.exe itself only. Install Git for Windows, or put the folder that holds \
+                 git.exe on PATH.",
+                script.display()
+            ),
+        )),
+        crate::platform::Lookup::Missing => Err(CoreError::new(
+            ErrorCode::GitNotFound,
+            "git was not found on PATH",
+        )),
+    }
+}
+
 /// The spawn path every child of the app's shares (git and the other tools): `program` in
 /// `cwd`, with `path` as its `PATH` when known (and found with it), stdin null, killed when
 /// dropped, and (Unix) in a session of its own (R15, R41), so without a controlling terminal
-/// and leading its own process group. Without the variables an enclosing git process (a
+/// and leading its own process group; (Windows) without a console window, and put in a job
+/// object of its own when started with [`crate::platform::spawn`], as every child is. Without the variables an enclosing git process (a
 /// hook) exports, which would point it, or the git it runs, at another repository.
 fn child_command(
     program: &std::ffi::OsStr,
@@ -1091,19 +1139,7 @@ fn child_command(
 ) -> Command {
     let mut cmd = Command::new(program);
     cmd.stdin(Stdio::null()).kill_on_drop(true);
-    #[cfg(unix)]
-    {
-        // SAFETY: the closure runs in the forked child before exec and only calls
-        // setsid, which is async-signal-safe and touches no memory of the parent.
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
+    crate::platform::child_flags(&mut cmd);
     for var in INHERITED_REPO_VARS {
         cmd.env_remove(var);
     }
@@ -1303,8 +1339,7 @@ async fn exec_limited(
             .push(exec.tags, kind, cwd, args, started, -1, b"", &err.message);
         err
     };
-    let mut child = cmd.spawn().map_err(fail)?;
-    let group = child.id();
+    let (mut child, tree) = crate::platform::spawn(&mut cmd).map_err(fail)?;
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
     let mut stdin_pipe = child.stdin.take();
@@ -1407,20 +1442,15 @@ async fn exec_limited(
         };
         // Cancelled: ask git to stop, so that it removes its lock files, and give it a
         // moment before it is killed with the rest.
-        #[cfg(unix)]
-        if let Err(Expired::Cancelled) = finished
-            && let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok())
-        {
-            // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-            unsafe {
-                libc::killpg(pid, libc::SIGTERM);
-            }
+        if let Err(Expired::Cancelled) = finished {
+            tree.terminate();
             let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
         }
         finished
     };
     match finished {
         Ok((out, err, Ok(status))) => {
+            tree.release();
             let code = status.code().unwrap_or(-1);
             let stderr = String::from_utf8_lossy(&err).into_owned();
             exec.log
@@ -1433,15 +1463,7 @@ async fn exec_limited(
         }
         Ok((_, _, Err(e))) => Err(fail(e)),
         Err(hit) => {
-            #[cfg(unix)]
-            if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
-                // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-                unsafe {
-                    libc::killpg(pid, libc::SIGKILL);
-                }
-            }
-            #[cfg(not(unix))]
-            let _ = group;
+            tree.kill();
             let _ = child.kill().await;
             exec.log
                 .push(exec.tags, kind, cwd, args, started, -1, b"", "timed out");
@@ -1454,32 +1476,70 @@ async fn exec_limited(
     }
 }
 
-/// Ends the process group `group` (git's pid) of a stopped command whose output (not yet
-/// polled to its end) is `output`, and returns that output if it ends: SIGTERM, so git
-/// removes its lock files, then SIGKILL if it has not ended after [`CANCEL_GRACE`], then up
-/// to [`KILLED_GRACE`] for the pipes to close. Elsewhere than on Unix, nothing is returned
-/// and git itself is killed when `output` is dropped.
+/// Ends the process tree `tree` of a stopped command whose output (not yet polled to its
+/// end) is `output`, and returns that output if it ends: asked to end (SIGTERM on Unix, so
+/// git removes its lock files; on Windows it ends at once), then killed if it has not ended
+/// after [`CANCEL_GRACE`], then up to [`KILLED_GRACE`] for the pipes to close.
 async fn end_group<F: std::future::Future + Unpin>(
-    group: Option<u32>,
+    tree: &crate::platform::ProcessTree,
     output: &mut F,
 ) -> Option<F::Output> {
-    #[cfg(unix)]
-    if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
-        // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-        unsafe {
-            libc::killpg(pid, libc::SIGTERM);
-        }
-        if let Ok(out) = tokio::time::timeout(CANCEL_GRACE, &mut *output).await {
-            return Some(out);
-        }
-        // SAFETY: as above.
-        unsafe {
-            libc::killpg(pid, libc::SIGKILL);
-        }
-        return tokio::time::timeout(KILLED_GRACE, output).await.ok();
+    tree.terminate();
+    if let Ok(out) = tokio::time::timeout(CANCEL_GRACE, &mut *output).await {
+        return Some(out);
     }
-    let _ = (group, output);
-    None
+    tree.kill();
+    tokio::time::timeout(KILLED_GRACE, output).await.ok()
+}
+
+/// Runs `cmd` to its end, as [`Command::output`] does, in a process tree of its own (see
+/// [`crate::platform::spawn`]); dropped before the end, the tree is ended (Windows; on Unix
+/// git itself is killed).
+async fn output(cmd: &mut Command) -> io::Result<std::process::Output> {
+    let (child, tree) = crate::platform::spawn(cmd)?;
+    let out = child.wait_with_output().await;
+    tree.release();
+    out
+}
+
+/// A git command started with [`GitRunner::spawn_stream`]: the child (its pipes, waiting for
+/// it, killing it) and the process tree it heads, which [`StreamChild::wait`] lets go once
+/// the command has ended by itself (dropped before that, the tree is ended on Windows).
+pub struct StreamChild {
+    child: Child,
+    tree: Option<crate::platform::ProcessTree>,
+}
+
+impl StreamChild {
+    /// Waits for git to end (see [`Child::wait`]).
+    pub async fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        let status = self.child.wait().await;
+        if let Some(tree) = self.tree.take() {
+            tree.release();
+        }
+        status
+    }
+}
+
+impl std::fmt::Debug for StreamChild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamChild")
+            .field("child", &self.child)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for StreamChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for StreamChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
 }
 
 /// The `GitFailed` error for a git command that exited with `code`: the first non-empty
@@ -1717,6 +1777,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1762,6 +1823,7 @@ mod tests {
             stop,
             version: None,
             index_file: None,
+            program: None,
         };
         git.for_repo(3).tool(PathBuf::from("/bin/sh"), "gh")
     }
@@ -1779,6 +1841,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         let limit = TimeLimit::total(Duration::from_secs(1));
         let run = git.run_with_timeout(Path::new("/"), &["status"], CmdKind::Read, limit);
@@ -1853,6 +1916,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         }
         .tool(PathBuf::from("/bin/sh"), "gh")
         .with_env("GIT_CONFIG_COUNT", "2")
@@ -2064,6 +2128,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -2111,6 +2176,7 @@ mod tests {
             stop: Some(stop.clone()),
             version: None,
             index_file: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
@@ -2182,6 +2248,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         }
     }
 
@@ -2264,6 +2331,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
         // git prints back a 300 KiB config value given on its command line.
@@ -2298,6 +2366,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         let cmd = runner.command(None, &["status"]);
         let removed: Vec<_> = cmd
@@ -2352,6 +2421,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         runner.log_timed_out(
             Path::new("/r"),
@@ -2517,6 +2587,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         let op = runner.for_repo(4).for_op(9, Stop::new());
         op.log_timed_out(Path::new("/r"), &["push"], CmdKind::Write, Instant::now());
@@ -2536,6 +2607,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            program: None,
         };
         let cmd = runner.command(None, &["rebase"]);
         let env: Vec<(String, String)> = cmd

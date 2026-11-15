@@ -111,9 +111,16 @@ impl GhFailure {
 /// Said for each reason pull requests are not shown.
 pub(crate) fn unavailable_message(reason: PrUnavailable, failure: Option<&GhFailure>) -> String {
     match reason {
-        PrUnavailable::NoGh => "Pull requests need the GitHub CLI (gh), which was not found. \
-                                Install it from cli.github.com and sign in with gh auth login."
-            .to_owned(),
+        PrUnavailable::NoGh => {
+            let mut message = "Pull requests need the GitHub CLI (gh), which was not found. \
+                               Install it from cli.github.com and sign in with gh auth login."
+                .to_owned();
+            if cfg!(windows) {
+                // A gh.cmd or gh.bat shim is never run (it would go through cmd.exe).
+                message.push_str(" gg runs gh.exe itself only, never a .cmd or .bat file.");
+            }
+            message
+        }
         PrUnavailable::SignedOut => "The GitHub CLI (gh) is not signed in. Run gh auth login in \
                                      a terminal, then refresh."
             .to_owned(),

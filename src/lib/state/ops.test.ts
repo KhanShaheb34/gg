@@ -282,6 +282,26 @@ describe("runOp", () => {
     await expect(ops.runOp(1, create, { ownErrors: ["bad_name"] })).rejects.toThrow("Disk full");
     expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: "Disk full" })]);
   });
+
+  it("leaves a refusal in the request's turn to a caller that shows it, and reports git's failures", async () => {
+    const add: OpRequest = { op: "worktree_add", path: "../wt", branch: { existing: "feature/x" } };
+    const refused = outcome({ status: "failed", message: "Nothing was created: there is a worktree at /wt already." });
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(refused);
+    expect(await ops.runOp(1, add, { ownRefusals: true })).toBe(refused);
+    expect(app.app.toasts).toEqual([]);
+    expect(view.applySnapshot).toHaveBeenCalledWith(refused.snapshot);
+
+    // git ran and failed (a hook): reported as always.
+    const failed = outcome({ status: "failed", message: "git could not create it.", detail: "hook said no", logFrom: 4, logTo: 4 });
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(failed);
+    await ops.runOp(1, add, { ownRefusals: true });
+    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: "git could not create it." })]);
+
+    // Without asking, a refusal is reported.
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(refused);
+    await ops.runOp(1, add);
+    expect(app.app.toasts).toHaveLength(2);
+  });
 });
 
 describe("hint buttons", () => {

@@ -5,12 +5,14 @@
   import ConflictBanner from "./lib/components/ConflictBanner.svelte";
   import ContextMenu from "./lib/components/ContextMenu.svelte";
   import Mark from "./lib/components/Mark.svelte";
+  import SidePanel from "./lib/components/SidePanel.svelte";
+  import WorktreePanel from "./lib/components/WorktreePanel.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
   import { detailsRoom, panelRoom } from "./lib/detailsLayout";
-  import { colorIndex, shortenPath } from "./lib/format";
+  import { colorIndex, shortHash, shortenPath, visibleText } from "./lib/format";
   import GraphView from "./lib/graph/GraphView.svelte";
   import { api, onEvent, onFolderDrop } from "./lib/ipc";
   import { isMac } from "./lib/platform";
@@ -31,10 +33,61 @@
   import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
   import { overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
+  import {
+    addWorktree,
+    docked,
+    openPanelMenu,
+    panelShown,
+    setPanelShown,
+    sidePanel,
+  } from "./lib/state/worktrees.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
 
   const active = $derived(app.tabs.find((t) => t.repoId === app.activeRepoId) ?? null);
   const mac = isMac();
+  const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
+
+  /** The active tab's active worktree, as its snapshot has it. */
+  const activeWorktree = $derived.by(() => {
+    if (!active) return null;
+    const snap = repoView(active.repoId).snapshot;
+    return { path: snap.activeWorktree, branch: snap.head.branch, hash: snap.head.hash, count: snap.worktrees.length };
+  });
+
+  /**
+   * F6 (Shift+F6 back) moves between the window's regions: the graph, the newest notice, the
+   * side panel. From outside them it goes to the newest notice first (R30), else the graph.
+   */
+  function cycleRegion(delta: 1 | -1) {
+    const graph = document.querySelector<HTMLElement>('#repo-panel [role="grid"]');
+    const notices = document.querySelectorAll<HTMLElement>("[data-notices] .toast");
+    const notice = notices[notices.length - 1]?.querySelector<HTMLElement>("button") ?? null;
+    const panel = document.querySelector<HTMLElement>('[data-region="side-panel"] [role="listbox"]');
+    const regions = [graph, notice, panel];
+    const focused = document.activeElement;
+    const at = regions.findIndex(
+      (el, i) =>
+        el !== null &&
+        focused !== null &&
+        (i === 1 ? !!focused.closest("[data-notices]") : i === 2 ? !!focused.closest('[data-region="side-panel"]') : el.contains(focused)),
+    );
+    if (at < 0) {
+      if (!focusNewestNotice()) graph?.focus();
+      return;
+    }
+    for (let step = 1; step < regions.length; step++) {
+      const next = regions[(at + delta * step + regions.length * 2) % regions.length];
+      if (next) {
+        next.focus();
+        return;
+      }
+    }
+  }
+
+  /** Shows the side panel with the focus in its list (the header's worktree button). */
+  function showWorktrees() {
+    if (active) setPanelShown(active.repoId, true, true);
+  }
 
   /** Files are being dragged over the window (app only). */
   let dragging = $state(false);
@@ -134,8 +187,11 @@
       case "refresh":
         void view?.refresh();
         break;
-      case "notices":
-        focusNewestNotice();
+      case "regions":
+        cycleRegion(shortcut.delta);
+        break;
+      case "sidePanel":
+        if (active) setPanelShown(active.repoId);
         break;
       case "log":
         if (active) setLogOpen(!logPrefs.open, true);
@@ -144,7 +200,7 @@
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} bind:innerWidth={sidePanel.windowW} />
 
 <div class="shell" data-testid="app-root">
   <TabBar />
@@ -162,13 +218,36 @@
             <div class="identity">
               <span class="dot" style:background="var(--lane-{colorIndex(active.path)})" aria-hidden="true"></span>
               <h1 class="repo-name">{active.name}</h1>
-              <span class="repo-path selectable path-tail" title={shortenPath(active.path, app.homeDir)}
-                ><bdi>{shortenPath(active.path, app.homeDir)}</bdi></span
-              >
+              {#if activeWorktree}
+                <!-- Where every action runs: the active worktree, always in sight. -->
+                <button
+                  class="worktree"
+                  data-testid="active-worktree"
+                  title="Active worktree: {shortenPath(activeWorktree.path || active.path, app.homeDir)}{activeWorktree.count > 1
+                    ? ` (one of ${activeWorktree.count})`
+                    : ''}. Show the worktrees ({PANEL_KEYS})"
+                  onclick={showWorktrees}
+                >
+                  <svg class="ring" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                    <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
+                  </svg>
+                  <bdi class="wt-branch"
+                    >{activeWorktree.branch !== null
+                      ? visibleText(activeWorktree.branch)
+                      : activeWorktree.hash
+                        ? `${shortHash(activeWorktree.hash)} (detached)`
+                        : "no commits"}</bdi
+                  >
+                  <span class="repo-path path-tail"
+                    ><bdi>{shortenPath(activeWorktree.path || active.path, app.homeDir)}</bdi></span
+                  >
+                </button>
+              {/if}
             </div>
             <Toolbar view={repoView(active.repoId)} />
           </header>
-          <div class="repo-body" use:measured={(r) => (bodyRect = r)}>
+          <div class="repo-body">
+            <div class="main-column" use:measured={(r) => (bodyRect = r)}>
             <!-- The banner takes its height from the graph's top (the graph keeps its rows in place). -->
             <div class="graph-column">
               <div class="banner-slot" use:measured={(r) => (bannerRect = r)}>
@@ -193,6 +272,49 @@
                 detailsHidden={repoView(active.repoId).selectedHash !== null &&
                   detailsRoom(panelRoom(bodyH, bannerH, 0), true) === 0}
               />
+            {/if}
+            </div>
+            {#if panelShown(active.repoId)}
+              {@const view = repoView(active.repoId)}
+              <SidePanel
+                title="Worktrees"
+                count={view.snapshot.worktrees.length > 1 ? String(view.snapshot.worktrees.length) : null}
+                overlay={!docked()}
+                onhide={() => {
+                  setPanelShown(active.repoId, false);
+                  document.querySelector<HTMLElement>('#repo-panel [role="grid"]')?.focus();
+                }}
+              >
+                {#snippet actions()}
+                  <button
+                    class="icon-btn small"
+                    aria-label="Add worktree"
+                    title="Add worktree…"
+                    disabled={view.snapshot.head.hash === null}
+                    onclick={() => addWorktree(view.snapshot)}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                      <path d="M7 2.6v8.8M2.6 7h8.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                    </svg>
+                  </button>
+                  <button
+                    class="icon-btn small"
+                    aria-label="Worktree actions"
+                    title="More"
+                    onclick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      openPanelMenu(view, { x: r.left, y: r.bottom + 2 }, e.detail === 0);
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                      <circle cx="3.2" cy="7" r="1.1" fill="currentColor" />
+                      <circle cx="7" cy="7" r="1.1" fill="currentColor" />
+                      <circle cx="10.8" cy="7" r="1.1" fill="currentColor" />
+                    </svg>
+                  </button>
+                {/snippet}
+                <WorktreePanel {view} />
+              </SidePanel>
             {/if}
           </div>
         {/key}
@@ -227,6 +349,8 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    /* Nothing scrolls the window sideways, not even focus moving to something cut off. */
+    overflow: clip;
   }
 
   .content {
@@ -271,10 +395,10 @@
 
   .identity {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 8px;
     min-width: 0;
-    max-width: 34%;
+    max-width: 38%;
     flex: 0 1 auto;
   }
 
@@ -287,9 +411,13 @@
   }
 
   .repo-name {
+    flex: 0 1 auto;
+    min-width: 48px;
+    overflow: hidden;
     font-size: var(--fs);
     font-weight: 600;
     white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .repo-path {
@@ -298,11 +426,62 @@
     font-size: var(--fs-sm);
   }
 
-  /* The graph above, the details panel docked below it (when a commit is selected). */
+  /* The active worktree: its branch with the HEAD ring, then its folder; opens the panel. */
+  .worktree {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 1 auto;
+    min-width: 0;
+    height: 24px;
+    margin-left: 2px;
+    padding: 0 8px 0 7px;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
+    font-size: var(--fs-sm);
+    transition: background-color 80ms linear;
+  }
+
+  .worktree:hover {
+    background: var(--bg-hover);
+  }
+
+  .worktree:active {
+    background: var(--bg-pressed);
+  }
+
+  .ring {
+    flex: none;
+    color: var(--accent);
+  }
+
+  .wt-branch {
+    flex: 0 1 auto;
+    min-width: 40px;
+    max-width: 180px;
+    overflow: hidden;
+    color: var(--text);
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* The graph and the panels docked below it on the left, the side panel on the right (or
+     over the graph, in a narrow window). */
   .repo-body {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* The graph above, the details panel docked below it (when a commit is selected). */
+  .main-column {
     display: flex;
     flex-direction: column;
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
     min-height: 0;
   }
 

@@ -506,6 +506,8 @@ pub struct RepoPrefs {
     /// The worktree the repository acts in (symlinks resolved); `None` is the main one. Set
     /// by the core when the active worktree changes; one that is gone counts as the main.
     pub active_worktree: Option<String>,
+    /// The side panel (worktrees) is shown while the window is wide enough to dock it.
+    pub side_panel: bool,
 }
 
 impl Default for RepoPrefs {
@@ -513,6 +515,7 @@ impl Default for RepoPrefs {
         Self {
             merge_no_ff: true,
             active_worktree: None,
+            side_panel: true,
         }
     }
 }
@@ -1476,7 +1479,7 @@ mod tests {
         assert_eq!(serde_json::to_value(RowKind::Stash).unwrap(), "stash");
         assert_eq!(
             serde_json::to_value(RepoPrefs::default()).unwrap(),
-            json!({"mergeNoFf": true, "activeWorktree": null})
+            json!({"mergeNoFf": true, "activeWorktree": null, "sidePanel": true})
         );
     }
 

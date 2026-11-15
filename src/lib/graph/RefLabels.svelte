@@ -3,7 +3,8 @@
   row). A branch at the same commit as its remote branches is one pill (`main | origin`); the
   branch checked out in the active worktree is bold with a ring, like HEAD's node; tags are
   outlined; stashes (`stash@{0}`) have a colour of their own, not the lane's, and a dotted
-  edge. Never wraps; the description cell clips what does not fit. The graph finds the label
+  edge. A branch checked out in another worktree carries a folder mark (the side panel's), and a
+  worktree detached at a commit a folder pill; the active worktree's HEAD stays the boldest. Never wraps; the description cell clips what does not fit. The graph finds the label
   a right-click is on by its `data-slot` (a slot's index, or "more" for the "+k" pill).
 -->
 <script lang="ts" module>
@@ -44,7 +45,7 @@
   function title(label: RefLabel): string {
     const kinds = { tag: "Tag", remote: "Remote branch", stash: "Stash", branch: "Branch" } as const;
     const parts = [`${kinds[label.kind]} ${label.name}`];
-    if (label.current) parts.push("checked out");
+    if (label.current) parts.push("checked out in the active worktree");
     if (label.remotes.length > 0) parts.push(`same commit on ${label.remotes.join(", ")}`);
     if (label.upstream && (label.ahead > 0 || label.behind > 0)) {
       parts.push(`${label.ahead} ahead, ${label.behind} behind ${label.upstream}`);
@@ -62,7 +63,7 @@
 
 <!-- Every element here is always there, shown or hidden, so a recycled row changes text and
      attributes only: scrolling creates and destroys nothing. -->
-<span class="ref head current" data-ref="HEAD" title="HEAD (detached)" hidden={!detachedHead}>
+<span class="ref head current" data-ref="HEAD" title="HEAD of the active worktree (detached)" hidden={!detachedHead}>
   <svg class="icon" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
     <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
   </svg>
@@ -121,7 +122,7 @@
   hidden={detachedWorktrees.length === 0}
   title={detachedWorktrees.length === 0
     ? undefined
-    : `Worktree detached here: ${detachedWorktrees.map((p) => shortenPath(p, homeDir)).join(", ")}`}
+    : `Worktree detached here (not the active one): ${detachedWorktrees.map((p) => shortenPath(p, homeDir)).join(", ")}`}
 >
   <svg class="icon" width="11" height="10" viewBox="0 0 11 10" aria-hidden="true">
     <path d="M1 2.2c0-.5.4-.9.9-.9h2.4l1 1.1h3.8c.5 0 .9.4.9.9v4.6c0 .5-.4.9-.9.9H1.9c-.5 0-.9-.4-.9-.9z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />

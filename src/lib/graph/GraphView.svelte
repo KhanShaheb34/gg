@@ -113,6 +113,13 @@
   /** Height of the rendered rows' container: the rows needed, and room to stay put a step. */
   const poolRows = $derived(neededRows + POOL_STEP + alignSlack);
   const detachedHead = $derived(view.snapshot.head.branch === null);
+  /** Worktrees other than the active one detached at `r`'s commit (the active one's is the HEAD pill). */
+  function otherDetached(r: CommitRow | undefined): string[] {
+    const all = r?.detachedWorktrees;
+    if (!all || all.length === 0) return NO_PATHS;
+    const active = view.snapshot.activeWorktree;
+    return all.includes(active) ? all.filter((p) => p !== active) : all;
+  }
   /** A row's subject; the uncommitted row's is the snapshot's (see `rowSubject`). */
   const subjectOf = (r: CommitRow) => rowSubject(r, view.snapshot);
   /** Rows matching the search, and how to find the match in their subjects. */
@@ -704,7 +711,7 @@
               <RefLabels
                 labels={r?.labels ?? NO_LABELS}
                 detachedHead={!!r?.isHead && detachedHead}
-                detachedWorktrees={r?.detachedWorktrees ?? NO_PATHS}
+                detachedWorktrees={otherDetached(r)}
                 homeDir={app.homeDir}
               />
               <span class="subject"

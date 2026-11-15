@@ -25,12 +25,14 @@ import { findRepoView } from "./repo.svelte";
  * conflict banner shows it. A pull that needs to be told whether to merge or rebase (hint
  * `choose_pull_mode`) shows that choice instead of a notice, and is sent again as chosen. An error from the core is reported, and the promise rejects
  * with it; errors with a code in `ownErrors` are not reported: the caller shows them (a
- * dialog shows a refused name beside its field).
+ * dialog shows a refused name beside its field). With `ownRefusals`, a request the core refused in its turn
+ * before writing anything (`failed`, no command written, no detail: "there is a worktree there
+ * already") is not reported either: the dialog that sent it shows the reason beside its fields.
  */
 export async function runOp(
   repoId: number,
   request: OpRequest,
-  { ownErrors = [] }: { ownErrors?: CoreErrorDto["code"][] } = {},
+  { ownErrors = [], ownRefusals = false }: { ownErrors?: CoreErrorDto["code"][]; ownRefusals?: boolean } = {},
 ): Promise<OpOutcome> {
   let confirmed: Confirmed[] = [];
   for (;;) {
@@ -43,13 +45,18 @@ export async function runOp(
     }
     findRepoView(repoId)?.applySnapshot(outcome.snapshot);
     if (outcome.status !== "needs_confirmation") {
-      report(repoId, outcome);
+      if (!(ownRefusals && isRefusal(outcome))) report(repoId, outcome);
       return outcome;
     }
     const again = confirmed.length > 0;
     if (!(await confirm(repoId, outcome, again))) return outcome;
     confirmed = outcome.dangers.map((d) => ({ kind: d.kind, token: d.token }));
   }
+}
+
+/** Whether `outcome` is a refusal in the request's turn: failed before any command was written. */
+export function isRefusal(outcome: OpOutcome): boolean {
+  return outcome.status === "failed" && outcome.logFrom === 0 && outcome.detail === null && outcome.hints.length === 0;
 }
 
 /** What runs in each repository, for the busy indicator. */

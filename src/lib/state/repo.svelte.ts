@@ -9,6 +9,7 @@ import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
 import type { RefLabel, RepoSnapshot, RowsPage, ViewOptions } from "../types";
 import { CommitDetailsLoader } from "./details.svelte";
+import { PanelState } from "./panelState.svelte";
 import { SearchState } from "./search.svelte";
 import { DEFAULT_OPTIONS, readOptions, sameOptions, visible, writeOptions } from "./viewOptionsStore";
 
@@ -94,6 +95,9 @@ export class RepoView {
   /** The commit search: query, hits, and moving between them. */
   readonly search: SearchState;
 
+  /** The side panel of this repository: shown or not, the worktree selected in it. */
+  readonly panel: PanelState;
+
   /** A refresh asked for here is underway. */
   refreshing = $state(false);
   /** A fetch was asked for here and the core has not reported it running yet. */
@@ -163,6 +167,7 @@ export class RepoView {
     this.repoId = repoId;
     this.details = new CommitDetailsLoader(repoId);
     this.search = new SearchState(this);
+    this.panel = new PanelState(repoId);
     this.snapshot = placeholder(repoId);
     this.cache = this.newCache(-1, 0);
     this.stopEvents = onEvent<RepoSnapshot>("repo-changed", (s) => {

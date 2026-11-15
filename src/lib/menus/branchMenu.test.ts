@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { branchMenu } from "./branchMenu";
 import { DETACHED, disabled, find, ids, inProgress, label, row, RUNNING, snap, UNBORN } from "./menuTestData";
 
-const LOCAL_IDS = ["checkout", "-", "rename", "delete", "-", "merge", "rebase", "-", "push", "pull", "-", "copy.name"];
+const LOCAL_IDS = [
+  "checkout", "-", "rename", "delete", "-", "merge", "rebase", "-", "push", "pull", "-", "worktree.create", "-", "copy.name",
+];
 const REMOTE_IDS = ["checkout", "fetch_into_local", "-", "merge", "-", "delete", "-", "copy.name"];
 
 describe("branchMenu, local branch", () => {
@@ -13,6 +15,7 @@ describe("branchMenu, local branch", () => {
     expect(find(items, "merge").label).toBe("Merge feature/x into main…");
     expect(find(items, "rebase").label).toBe("Rebase main onto feature/x…");
     expect(find(items, "delete").danger).toBe(true);
+    expect(find(items, "worktree.create").label).toBe("Create worktree from feature/x…");
   });
 
   it("the current branch: no checkout, delete or merge into itself", () => {

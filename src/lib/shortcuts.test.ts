@@ -81,13 +81,21 @@ describe("shortcutFor elsewhere (Ctrl)", () => {
   });
 });
 
-describe("the notices shortcut", () => {
-  it("F6 alone moves to the newest notice, on every platform", () => {
-    expect(shortcutFor(key("F6"), true)).toEqual({ kind: "notices" });
-    expect(shortcutFor(key("F6"), false)).toEqual({ kind: "notices" });
-    expect(shortcutFor(key("F6", { shiftKey: true }), true)).toBeNull();
+describe("region and panel shortcuts", () => {
+  it("F6 moves to the next region (the graph, the newest notice, the side panel), Shift+F6 back, on every platform", () => {
+    expect(shortcutFor(key("F6"), true)).toEqual({ kind: "regions", delta: 1 });
+    expect(shortcutFor(key("F6"), false)).toEqual({ kind: "regions", delta: 1 });
+    expect(shortcutFor(key("F6", { shiftKey: true }), true)).toEqual({ kind: "regions", delta: -1 });
     expect(shortcutFor(key("F6", { metaKey: true }), true)).toBeNull();
-    expect(repeatable({ kind: "notices" })).toBe(false);
+    expect(repeatable({ kind: "regions", delta: 1 })).toBe(false);
+  });
+
+  it("Cmd+B shows or hides the side panel (Ctrl+B elsewhere)", () => {
+    expect(shortcutFor(key("b", { metaKey: true }), true)).toEqual({ kind: "sidePanel" });
+    expect(shortcutFor(key("B", { ctrlKey: true }), false)).toEqual({ kind: "sidePanel" });
+    expect(shortcutFor(key("b", { ctrlKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("b", { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "sidePanel" })).toBe(false);
   });
 
   it("Cmd+Shift+L shows or hides the command log (Ctrl+Shift+L elsewhere)", () => {

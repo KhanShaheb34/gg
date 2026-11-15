@@ -15,6 +15,7 @@
   import { reportError } from "../state/app.svelte";
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
+  import { panelShown, setPanelShown } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
@@ -26,6 +27,8 @@
   const FETCH_KEYS = mac ? "⌘⇧F" : "Ctrl+Shift+F";
   const REFRESH_KEYS = mac ? "⌘R" : "Ctrl+R";
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
+  const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
+  const sideShown = $derived(panelShown(view.repoId));
 
   function toggleLog() {
     setLogOpen(!logPrefs.open);
@@ -238,6 +241,22 @@
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
       <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" />
       <path d="M4.8 6.4 6.6 8l-1.8 1.6M8.2 9.8h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  </button>
+
+  <button
+    class="icon-btn tool"
+    aria-label="Worktrees"
+    aria-pressed={sideShown}
+    title="{sideShown ? 'Hide' : 'Show'} the worktrees ({PANEL_KEYS})"
+    data-testid="side-toggle"
+    onclick={() => setPanelShown(view.repoId)}
+  >
+    <!-- A window with a panel on its right. -->
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" />
+      <path d="M9.8 3.4v9.2" stroke="currentColor" stroke-width="1.4" />
+      <path d="M11.4 6h1M11.4 8h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
     </svg>
   </button>
 

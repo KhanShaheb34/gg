@@ -436,28 +436,37 @@ async fn repo_prefs_round_trip_and_default() {
             .dispatch("get_repo_prefs", json!({ "repoId": id }))
             .await
             .unwrap();
-        assert_eq!(prefs, json!({ "mergeNoFf": true, "activeWorktree": null }));
+        assert_eq!(
+            prefs,
+            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true })
+        );
         let set = core
             .dispatch(
                 "set_repo_prefs",
-                json!({ "repoId": id, "patch": { "mergeNoFf": false } }),
+                json!({ "repoId": id, "patch": { "mergeNoFf": false, "sidePanel": false } }),
             )
             .await
             .unwrap();
-        assert_eq!(set, json!({ "mergeNoFf": false, "activeWorktree": null }));
+        assert_eq!(
+            set,
+            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
+        );
         // An empty patch changes nothing.
         let same = core
             .dispatch("set_repo_prefs", json!({ "repoId": id, "patch": {} }))
             .await
             .unwrap();
-        assert_eq!(same, json!({ "mergeNoFf": false, "activeWorktree": null }));
+        assert_eq!(
+            same,
+            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
+        );
         let theirs = core
             .dispatch("get_repo_prefs", json!({ "repoId": other_id }))
             .await
             .unwrap();
         assert_eq!(
             theirs,
-            json!({ "mergeNoFf": true, "activeWorktree": null }),
+            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true }),
             "per repository"
         );
     }
@@ -473,7 +482,10 @@ async fn repo_prefs_round_trip_and_default() {
         .dispatch("get_repo_prefs", json!({ "repoId": id }))
         .await
         .unwrap();
-    assert_eq!(prefs, json!({ "mergeNoFf": false, "activeWorktree": null }));
+    assert_eq!(
+        prefs,
+        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
+    );
 
     let root = dunce::canonicalize(repo.path()).unwrap();
     let store = Store::load(config.path());
@@ -484,7 +496,7 @@ async fn repo_prefs_round_trip_and_default() {
             .unwrap();
     assert_eq!(
         saved["repoPrefs"][root.to_string_lossy().as_ref()],
-        json!({ "mergeNoFf": false, "activeWorktree": null })
+        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false })
     );
 }
 

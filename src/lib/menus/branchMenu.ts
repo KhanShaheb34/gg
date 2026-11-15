@@ -1,5 +1,5 @@
 // The menu of a branch label, local or remote (spec §5.2, "Branch (local)" and "Branch
-// (remote)"; "create worktree" and pull-request items come with Plan 3).
+// (remote)"; pull-request items come later).
 
 import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
 import {
@@ -69,6 +69,9 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
         label.current ? busy : undefined,
       ),
     }),
+    SEPARATOR,
+    // A branch checked out somewhere already gets a new branch at its commit (the dialog says).
+    item("worktree.create", `Create worktree from ${name}…`),
     SEPARATOR,
     item("copy.name", "Copy name"),
   ];

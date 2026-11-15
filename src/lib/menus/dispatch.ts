@@ -22,6 +22,7 @@ import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
 import { runOp } from "../state/ops.svelte";
 import { showDialog as show } from "../state/overlays.svelte";
+import { openCreateWorktree } from "../state/worktrees.svelte";
 import type { CommitRow, OpRequest, RefLabel, RepoSnapshot } from "../types";
 import { branchMenu } from "./branchMenu";
 import { checkOutBranch } from "./checkout";
@@ -48,7 +49,7 @@ export function pick(id: string, target: MenuTarget, snap: RepoSnapshot): void {
   const { row, label } = target;
   // Labels share some ids with commits ("checkout", "push", "delete"): theirs go first.
   if (label?.kind === "tag" && pickTag(id, label.name, snap)) return;
-  if (label?.kind === "branch" && pickBranch(id, label, snap)) return;
+  if (label?.kind === "branch" && pickBranch(id, label, snap, row)) return;
   if (label?.kind === "remote" && pickRemote(id, label.name, snap)) return;
   if (label === null && row.kind === "commit" && pickCommit(id, row, snap)) return;
   if ((row.kind === "stash" || label?.kind === "stash") && pickStash(id, row, snap)) return;
@@ -104,6 +105,9 @@ function pickCommit(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
       return true;
     case "tag.create":
       show(CreateTagDialog, { repoId, hash, subject, worktree });
+      return true;
+    case "worktree.create":
+      openCreateWorktree(snap, { kind: "commit", hash, subject });
       return true;
     case "cherry_pick":
       show(CherryPickDialog, { repoId, hash, subject, parents, head: snap.head, worktree });
@@ -167,7 +171,7 @@ function pickTag(id: string, name: string, snap: RepoSnapshot): boolean {
 }
 
 /** Local branch item `id` on `label`; false if `id` is not one. */
-function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot): boolean {
+function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot, row: CommitRow): boolean {
   const { repoId, activeWorktree: worktree } = snap;
   const branch = label.name;
   const into = snap.head.branch;
@@ -193,6 +197,13 @@ function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot): boolean {
     case "pull":
       run(repoId, { op: "pull", branch, mode: "default", expectHead: snap.head, expectWorktree: worktree });
       return true;
+    case "worktree.create": {
+      // Checked out in a worktree (this one included): a new branch at it instead.
+      const checkedOutIn = label.worktreePath ?? (label.current ? snap.activeWorktree : null);
+      const hash = row.hash;
+      openCreateWorktree(snap, { kind: "branch", name: branch, hash, checkedOutIn });
+      return true;
+    }
     default:
       return false;
   }

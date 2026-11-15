@@ -1,6 +1,6 @@
 // Rows, labels and snapshots for the menu builders' tests, and ways to look into menus.
 
-import type { CommitRow, InProgress, RefLabel, RepoSnapshot } from "../types";
+import type { CommitRow, InProgress, RefLabel, RepoSnapshot, WorktreeInfo } from "../types";
 import type { MenuItem } from "./types";
 
 export const HASH = "a".repeat(40);
@@ -113,4 +113,23 @@ export function disabled(items: MenuItem[]): string[] {
     if (it.submenu) out.push(...disabled(it.submenu));
   }
   return out;
+}
+
+export function worktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
+  return {
+    path: "/r.worktrees/feature-x",
+    head: HASH,
+    branch: "feature/x",
+    isMain: false,
+    locked: false,
+    prunable: false,
+    active: false,
+    status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
+    upstream: null,
+    unpushed: 0,
+    inProgress: null,
+    lockReason: null,
+    pr: null,
+    ...overrides,
+  };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { colorIndex, displayFolder, relativeTime, shortHash } from "./format";
+import { colorIndex, displayFolder, homeInText, relativeTime, shortHash, worktreePathsShown } from "./format";
 
 describe("shortHash", () => {
   it("returns the first 8 characters of a hash", () => {
@@ -53,5 +53,47 @@ describe("colorIndex", () => {
     }
     const spread = new Set(Array.from({ length: 50 }, (_, n) => colorIndex(`/repo/${n}`)));
     expect(spread.size).toBeGreaterThan(5);
+  });
+});
+
+describe("worktreePathsShown", () => {
+  const home = "/Users/ada";
+  it("elides the folders every worktree shares, home as ~", () => {
+    const paths = ["/Users/ada/Dev/app", "/Users/ada/Dev/app.worktrees/fix", "/Users/ada/Dev/app.worktrees/feature-x"];
+    const shown = worktreePathsShown(paths, home);
+    expect(shown.get(paths[0])).toBe("…/app");
+    expect(shown.get(paths[1])).toBe("…/app.worktrees/fix");
+    expect(shown.get(paths[2])).toBe("…/app.worktrees/feature-x");
+  });
+
+  it("shows one worktree, or worktrees sharing only ~ or the root, whole", () => {
+    expect(worktreePathsShown(["/Users/ada/Dev/app"], home).get("/Users/ada/Dev/app")).toBe("~/Dev/app");
+    const apart = worktreePathsShown(["/Users/ada/app", "/Users/ada/wt"], home);
+    expect([...apart.values()]).toEqual(["~/app", "~/wt"]);
+    const roots = worktreePathsShown(["/srv/app", "/tmp/wt"], home);
+    expect([...roots.values()]).toEqual(["/srv/app", "/tmp/wt"]);
+  });
+
+  it("keeps each worktree's own folder, even one inside another's", () => {
+    const shown = worktreePathsShown(["/Users/ada/Dev/app", "/Users/ada/Dev/app/wt"], home);
+    expect([...shown.values()]).toEqual(["…/app", "…/app/wt"]);
+  });
+
+  it("works with Windows paths", () => {
+    const shown = worktreePathsShown(["C:\\Users\\ada\\code\\app", "C:\\Users\\ada\\code\\app-fix"], "C:\\Users\\ada");
+    expect([...shown.values()]).toEqual(["…\\app", "…\\app-fix"]);
+  });
+});
+
+describe("homeInText", () => {
+  it("shows paths under the home folder as ~ wherever a path starts", () => {
+    const home = "/Users/ada";
+    expect(homeInText("Remove worktree /Users/ada/Dev/app.worktrees/fix", home)).toBe("Remove worktree ~/Dev/app.worktrees/fix");
+    expect(homeInText("/Users/ada/x and (/Users/ada/y) “/Users/ada/z”", home)).toBe("~/x and (~/y) “~/z”");
+    // Not a path under home: a longer folder name, or in the middle of a word.
+    expect(homeInText("/Users/adam/x a/Users/ada/y", home)).toBe("/Users/adam/x a/Users/ada/y");
+    expect(homeInText("/Users/ada/x", null)).toBe("/Users/ada/x");
+    expect(homeInText("C:\\Users\\Ada\\code\\x", "C:\\Users\\ada")).toBe("~\\code\\x");
+    expect(homeInText("/x/y", "/")).toBe("/x/y");
   });
 });

@@ -46,6 +46,51 @@ export function shortenPath(path: string, home?: string | null): string {
   return path;
 }
 
+/**
+ * The worktree paths `paths` as the side panel shows them: the home folder as `~`, and the
+ * folders all of them share elided as `…` ("…/app.worktrees/fix"), so what tells them
+ * apart is what shows. One path, or paths that share nothing below the root or `~`, are
+ * shown whole. Each keeps at least its own folder name.
+ */
+export function worktreePathsShown(paths: string[], home?: string | null): Map<string, string> {
+  const shown = new Map<string, string>();
+  const short = paths.map((p) => shortenPath(p, home));
+  if (paths.length < 2) {
+    paths.forEach((p, i) => shown.set(p, short[i]));
+    return shown;
+  }
+  const sep = separatorOf(short[0]);
+  const parts = short.map((p) => p.split(sep));
+  // Folders shared by all, but never a path's own last folder.
+  let common = Math.min(...parts.map((p) => p.length - 1));
+  for (let i = 0; i < common; i++) {
+    if (parts.some((p) => p[i] !== parts[0][i])) {
+      common = i;
+      break;
+    }
+  }
+  // Only the root ("" of "/x") or "~" in common: nothing worth eliding.
+  const root = parts[0][0] === "" || parts[0][0] === "~" || /^[A-Za-z]:$/.test(parts[0][0]) ? 1 : 0;
+  paths.forEach((p, i) => shown.set(p, common <= root ? short[i] : ["…", ...parts[i].slice(common)].join(sep)));
+  return shown;
+}
+
+/**
+ * `text` (a message from the core) with every absolute path under the home folder `home`
+ * shown as `~/…`, as paths are shown elsewhere. Only a path that starts the text or follows a
+ * space, quote or bracket is changed. Without `home`, `text` as is.
+ */
+export function homeInText(text: string, home?: string | null): string {
+  if (!home) return text;
+  const sep = separatorOf(home);
+  let root = home;
+  while (root.length > 1 && root.endsWith(sep)) root = root.slice(0, -1);
+  if (root.length <= 1) return text;
+  const escaped = (root + sep).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const flags = sep === "\\" ? "gi" : "g";
+  return text.replace(new RegExp(`(^|[\\s"'“‘(\\[])${escaped}`, flags), `$1~${sep}`);
+}
+
 /** The folder that contains `path`, for display, with the home folder `home` shown as `~`. */
 export function displayFolder(path: string, home?: string | null): string {
   const sep = separatorOf(path);

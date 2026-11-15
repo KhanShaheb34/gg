@@ -48,6 +48,7 @@ test("right-clicking a commit selects it and shows the commit actions", async ({
     "Check out this commit",
     "Create branch here…",
     "Create tag here…",
+    "Create worktree here…",
     "Cherry-pick…",
     "Revert…",
     "Reset main to here",
@@ -84,6 +85,7 @@ test("branch, tag and remote labels have their own menus; the reason of a disabl
     "Rebase the current branch onto this…",
     "Push 2 commits…",
     "Pull",
+    "Create worktree from main…",
     "Copy name",
   ]);
   const checkout = item(page, "Check out");
@@ -305,7 +307,10 @@ test("the menu closes on scroll, an outside click and the window losing focus, a
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await expect(menus(page)).toHaveCount(0);
 
-  // Near the bottom-right corner it opens up and to the left of the pointer.
+  // Near the bottom-right corner it opens up and to the left of the pointer (the side panel
+  // hidden, so the graph reaches the window's edge).
+  await page.getByTestId("side-toggle").click();
+  await expect(page.locator('[data-region="side-panel"]')).toHaveCount(0);
   const viewport = page.viewportSize()!;
   const area = (await grid(page).boundingBox())!; // above the details panel, now open
   await page.mouse.click(viewport.width - 10, area.y + area.height - 12, { button: "right" });

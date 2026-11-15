@@ -355,6 +355,89 @@ const REPOS: Record<string, RepoScript> = {
     git("fetch", "-q", "--depth", "2", `file://${source}`, "main");
     git("reset", "-q", "--hard", "FETCH_HEAD");
   },
+  /**
+   * Worktrees in every state, beside a bare `origin` (`worktrees-origin.git`); the linked ones
+   * in `worktrees.worktrees/` (the default location pattern). `main` (the main worktree): clean,
+   * level with origin/main, a `.gitignore` for `build/`. `feature/login`: 2 ahead and 1 behind
+   * origin/feature/login, one changed and one new file. `fix/typo`: no upstream, 1 commit on no
+   * remote. `detached`: HEAD detached at main~2. `release`: locked ("on a USB drive").
+   * `old-spike`: its folder deleted (prunable). `docs`: clean but for ignored files in
+   * `build/`. `hotfix`: a merge stopped on a conflict in `app.txt`. The repository has an
+   * identity for the commits the app makes.
+   */
+  worktrees(git, _write, dir) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const commit = (file: string, content: string, subject: string, at: Git = git, base = dir) => {
+      const target = path.join(base, file);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, content);
+      at("add", "-A");
+      at("commit", "-q", "-m", subject);
+    };
+    commit(".gitignore", "build/\n", "Ignore build output");
+    commit("app.txt", "app\n", "Start the app");
+    commit("README.md", "worktrees\n", "Add a readme");
+    commit("docs/guide.md", "guide\n", "Write the guide");
+    // Absolute: the linked worktrees push from their own folders.
+    const origin = path.join(path.dirname(dir), "worktrees-origin.git");
+    git("init", "-q", "--bare", "-b", "main", origin);
+    git("remote", "add", "origin", origin);
+    git("branch", "-q", "feature/login");
+    git("branch", "-q", "fix/typo");
+    git("branch", "-q", "release");
+    git("branch", "-q", "old-spike");
+    git("branch", "-q", "docs");
+    git("branch", "-q", "hotfix");
+    git("push", "-q", "-u", "origin", "main", "feature/login");
+    const base = path.join(path.dirname(dir), "worktrees.worktrees");
+    const add = (folder: string, ...args: string[]) => {
+      const at = path.join(base, folder);
+      git("worktree", "add", "-q", at, ...args);
+      return at;
+    };
+
+    const login = add("feature-login", "feature/login");
+    const inLogin = gitIn(login);
+    advanceClock(login, clocks.get(dir) ?? 0);
+    commit("login/remote.txt", "theirs\n", "Login on the remote", inLogin, login);
+    inLogin("push", "-q", "origin", "feature/login");
+    inLogin("reset", "-q", "--hard", "HEAD~1");
+    commit("login/form.txt", "form\n", "Add the login form", inLogin, login);
+    commit("login/check.txt", "check\n", "Check the password", inLogin, login);
+    inLogin("fetch", "-q", "origin");
+    writeFileSync(path.join(login, "app.txt"), "app with login\n");
+    writeFileSync(path.join(login, "login/notes.txt"), "notes\n");
+
+    const typo = add("fix-typo", "fix/typo");
+    const inTypo = gitIn(typo);
+    advanceClock(typo, clocks.get(login) ?? 0);
+    commit("README.md", "worktrees, fixed\n", "Fix a typo in the readme", inTypo, typo);
+
+    add("detached", "--detach", "main~2");
+    add("release", "release");
+    git("worktree", "lock", "--reason", "on a USB drive", path.join(base, "release"));
+    rmSync(add("old-spike", "old-spike"), { recursive: true, force: true });
+
+    const docs = add("docs", "docs");
+    mkdirSync(path.join(docs, "build"), { recursive: true });
+    writeFileSync(path.join(docs, "build", "site.html"), "<p>built</p>\n");
+
+    const hotfix = add("hotfix", "hotfix");
+    const inHotfix = gitIn(hotfix);
+    advanceClock(hotfix, clocks.get(typo) ?? 0);
+    git("switch", "-q", "-c", "patch");
+    commit("app.txt", "app, patched\n", "Patch the app");
+    git("switch", "-q", "main");
+    commit("app.txt", "app, hotfixed\n", "Hotfix the app", inHotfix, hotfix);
+    try {
+      inHotfix("merge", "-q", "patch");
+    } catch {
+      // Stopped on the conflict in app.txt, as wanted.
+    }
+    advanceClock(dir, clocks.get(hotfix) ?? 0);
+  },
   /** A repository without commits. */
   empty(git) {
     git("init", "-q", "-b", "main");

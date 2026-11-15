@@ -169,9 +169,12 @@ export type Settings = {
   editorCommand: string | null;
   worktreePattern: string;
 };
-/** Kept per repository. Default: mergeNoFf true. */
-/** `activeWorktree`: the worktree remembered as active (null = the main one); set by the core. */
-export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null };
+/**
+ * Kept per repository. Defaults: mergeNoFf true, sidePanel true. `activeWorktree`: the worktree
+ * remembered as active (null = the main one); set by the core. `sidePanel`: the side panel
+ * shows while the window is wide enough to dock it.
+ */
+export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null; sidePanel: boolean };
 export type Recent = { path: string; name: string; lastOpenedMs: number };
 export type AppState = {
   recents: Recent[];

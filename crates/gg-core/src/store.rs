@@ -50,6 +50,7 @@ pub struct SettingsPatch {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepoPrefsPatch {
     pub merge_no_ff: Option<bool>,
+    pub side_panel: Option<bool>,
 }
 
 /// Reads a field that is present, `null` included, as `Some`; a missing one stays `None`
@@ -272,6 +273,9 @@ impl Store {
             if let Some(no_ff) = patch.merge_no_ff {
                 prefs.merge_no_ff = no_ff;
             }
+            if let Some(shown) = patch.side_panel {
+                prefs.side_panel = shown;
+            }
             Ok(prefs.clone())
         })
     }
@@ -454,11 +458,14 @@ impl StoreData {
                 let merge_no_ff =
                     field(prefs, "mergeNoFf").unwrap_or(RepoPrefs::default().merge_no_ff);
                 let active_worktree = field(prefs, "activeWorktree").unwrap_or_default();
+                let side_panel =
+                    field(prefs, "sidePanel").unwrap_or(RepoPrefs::default().side_panel);
                 Some((
                     root.clone(),
                     RepoPrefs {
                         merge_no_ff,
                         active_worktree,
+                        side_panel,
                     },
                 ))
             })
@@ -504,7 +511,9 @@ impl StoreData {
                 was.iter()
                     .any(|(root, entry)| match (entry, now.get(root)) {
                         (Value::Object(was), Some(Value::Object(now))) => {
-                            differs(was, now, "mergeNoFf") || differs(was, now, "activeWorktree")
+                            differs(was, now, "mergeNoFf")
+                                || differs(was, now, "activeWorktree")
+                                || differs(was, now, "sidePanel")
                         }
                         _ => true,
                     })
@@ -1385,6 +1394,7 @@ mod tests {
                 Path::new("/c"),
                 RepoPrefsPatch {
                     merge_no_ff: Some(false),
+                    side_panel: Some(false),
                 },
             )
             .unwrap();
@@ -1392,11 +1402,11 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             saved["repoPrefs"]["/a"],
-            serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null})
+            serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null, "sidePanel": true})
         );
         assert_eq!(
             saved["repoPrefs"]["/c"],
-            serde_json::json!({"mergeNoFf": false, "activeWorktree": null})
+            serde_json::json!({"mergeNoFf": false, "activeWorktree": null, "sidePanel": false})
         );
         let aside = fs::read_dir(dir.path())
             .unwrap()

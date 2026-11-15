@@ -7,7 +7,7 @@
   to the newest one; Tab reaches the stack after the page.
 -->
 <script lang="ts">
-  import { visibleText } from "../format";
+  import { homeInText, visibleText } from "../format";
   import { app, dismissToast, type Toast, type ToastAction } from "../state/app.svelte";
   import { findRepoView } from "../state/repo.svelte";
 
@@ -107,7 +107,7 @@
       <div class="body selectable">
         <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
              what is around it. -->
-        <p class="message"><bdi>{visibleText(toast.message)}</bdi></p>
+        <p class="message"><bdi>{visibleText(homeInText(toast.message, app.homeDir))}</bdi></p>
         {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}

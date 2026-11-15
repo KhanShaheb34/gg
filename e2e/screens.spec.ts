@@ -887,3 +887,153 @@ for (const [prefix, width, height] of SIZES)
     await page.screenshot({ path: path.join(OUT, `${prefix}notice-skip-${theme}.png`) });
   });
 }
+
+// The side panel's worktree list and the worktree dialogs. In the small window the panel
+// lies over the graph once asked for.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`worktrees, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.goto("/");
+      const repo = gg.repoPath("worktrees");
+      await open(page, repo);
+      const grid = page.getByRole("grid", { name: "Commits" });
+      await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      const list = page.getByRole("listbox", { name: "Worktrees" });
+      const row = (folder: string) => list.locator(`[role="option"][data-path$="/${folder}"]`);
+      const shot = async (name: string) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      if (prefix === "small-") {
+        await page.keyboard.press("ControlOrMeta+b");
+      }
+      await expect(row("feature-login").locator(".changes")).toHaveText("2");
+      await expect(row("hotfix").locator(".changes")).toBeVisible();
+
+      // The list as it opens: the main worktree active, the others in every state.
+      await park(page);
+      await shot("worktrees");
+
+      // One selected (its HEAD selected in the graph), another under the pointer.
+      await row("feature-login").click();
+      await row("fix-typo").hover();
+      await shot("worktrees-selected");
+
+      // A worktree's menu.
+      await row("release").click({ button: "right" });
+      await page.getByRole("menuitem", { name: /^Locked/ }).hover();
+      await shot("menu-worktree");
+      await page.keyboard.press("Escape");
+
+      // Create: a new branch, its folder suggested.
+      await page.getByRole("button", { name: "Add worktree" }).click();
+      const create = page.getByRole("dialog", { name: "Create worktree" });
+      await create.getByLabel("New branch name").fill("feature/payments");
+      await expect(create.getByTestId("worktree-location")).toHaveValue("~/repos/worktrees.worktrees/feature-payments");
+      await park(page);
+      await shot("dialog-create-worktree");
+      // A folder another worktree has.
+      await create.getByTestId("worktree-location").fill("~/repos/worktrees.worktrees/docs/site");
+      await shot("dialog-create-worktree-invalid");
+      await create.getByRole("button", { name: "Cancel" }).click();
+
+      // From a branch checked out elsewhere.
+      await grid.locator('.ref[data-ref="fix/typo"]').click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create worktree from fix/typo…" }).click();
+      await park(page);
+      await shot("dialog-create-worktree-taken");
+      await page.getByRole("dialog", { name: "Create worktree" }).getByRole("button", { name: "Cancel" }).click();
+
+      // Delete, plain, then the core's red confirmation listing the work.
+      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
+      await row("feature-login").click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Delete…" }).click();
+      const del = page.getByRole("dialog", { name: "Delete worktree feature-login" });
+      await del.getByRole("checkbox", { name: /Also delete branch/ }).check();
+      await park(page);
+      await shot("dialog-delete-worktree");
+      await del.getByRole("checkbox", { name: /Also delete branch/ }).uncheck();
+      await del.getByRole("button", { name: "Delete worktree" }).click();
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+      await shot("dialog-delete-worktree-red");
+      await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
+
+      // Ignored files alone: the ordinary confirmation.
+      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
+      await row("docs").click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Delete…" }).click();
+      await page.getByRole("dialog", { name: "Delete worktree docs" }).getByRole("button", { name: "Delete worktree" }).click();
+      await expect(page.getByRole("dialog", { name: /Remove worktree/ })).toBeVisible();
+      await shot("dialog-delete-worktree-ignored");
+      await page.getByRole("dialog", { name: /Remove worktree/ }).getByRole("button", { name: "Cancel" }).click();
+
+      // Prune: the ordinary confirmation naming the entry.
+      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
+      await page.getByRole("button", { name: "Worktree actions" }).click();
+      await page.getByRole("menuitem", { name: "Prune stale entries…" }).click();
+      await expect(page.getByRole("dialog", { name: "Prune stale worktree entries" })).toBeVisible();
+      await park(page);
+      await shot("dialog-prune-worktrees");
+      await page.keyboard.press("Escape");
+
+      // Another worktree made active: the header and the graph follow.
+      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
+      await row("feature-login").dblclick();
+      await expect(list.locator('[data-active="true"]')).toHaveAttribute("data-path", /feature-login$/);
+      await expect(grid.locator('[role="row"].uncommitted')).toHaveCount(1);
+      await park(page);
+      await shot("worktrees-switched");
+    });
+  }
+
+for (const theme of ["light", "dark"] as const) {
+  test(`worktrees, one and many, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    const parent = path.dirname(gg.repoPath("small"));
+    // One worktree: the panel says what worktrees are for.
+    const solo = makeRepo(
+      "solo",
+      (git, write) => {
+        git("init", "-q", "-b", "main");
+        write("README.md", "solo\n");
+        git("add", "-A");
+        git("commit", "-q", "-m", "Start");
+      },
+      parent,
+    );
+    await open(page, solo);
+    await expect(page.getByTestId("worktrees-intro")).toBeVisible();
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `worktrees-one-${theme}.png`) });
+
+    // Twenty, some with long branch names, in the narrowest panel.
+    const many = makeRepo(
+      "service-with-a-long-repository-name",
+      (git, write, dir) => {
+        git("init", "-q", "-b", "main");
+        write("README.md", "many\n");
+        git("add", "-A");
+        git("commit", "-q", "-m", "Start");
+        for (let i = 1; i <= 20; i++) {
+          const name = i % 4 === 0 ? `feature/a-rather-long-branch-name-for-change-${i}` : `topic-${i}`;
+          git("worktree", "add", "-q", "-b", name, path.join(path.dirname(dir), "many.worktrees", name.replace(/\//g, "-")));
+        }
+      },
+      parent,
+    );
+    await page.evaluate(() => localStorage.setItem("gg.side.v1", JSON.stringify({ width: 240 })));
+    await page.reload();
+    await open(page, many);
+    await expect(page.getByRole("listbox", { name: "Worktrees" }).getByRole("option")).toHaveCount(21);
+    await park(page);
+    await page.waitForTimeout(1000);
+    await page.screenshot({ path: path.join(OUT, `worktrees-many-${theme}.png`) });
+    await page.evaluate(() => localStorage.removeItem("gg.side.v1"));
+  });
+}

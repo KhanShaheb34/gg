@@ -199,9 +199,32 @@ pub(crate) fn age_text(d: Duration) -> String {
 /// Whether git's output `detail` says it could not take the staging area's lock because
 /// `index.lock` exists.
 fn index_lock_exists(detail: &str) -> bool {
-    detail
-        .lines()
-        .any(|l| l.contains("Unable to create '") && l.contains("index.lock': File exists"))
+    lock_named(detail).is_some()
+}
+
+/// The `index.lock` git's output `detail` says it could not create because it exists, as
+/// git names it.
+fn lock_named(detail: &str) -> Option<&str> {
+    detail.lines().find_map(|l| {
+        let rest = &l[l.find("Unable to create '")? + "Unable to create '".len()..];
+        let end = rest.find("': File exists")?;
+        let path = &rest[..end];
+        path.ends_with("index.lock").then_some(path)
+    })
+}
+
+/// Whether `named` (a lock as git's message names it, relative to `cwd` if not absolute) is
+/// the file `lock`: an operation in another worktree, or with a temporary index, names
+/// another lock than the active worktree's.
+fn same_file(named: &str, cwd: &Path, lock: &Path) -> bool {
+    let named = Path::new(named);
+    let named = if named.is_absolute() {
+        named.to_owned()
+    } else {
+        cwd.join(named)
+    };
+    let canonical = |p: &Path| crate::repo::canonical(p);
+    canonical(&named) == canonical(lock)
 }
 
 /// `step`, when it failed because the staging area's lock exists, with the failure saying
@@ -217,17 +240,26 @@ pub(crate) async fn explain_failure(ctx: &OpCtx<'_>, step: Step) -> Result<Step>
     else {
         return Ok(step);
     };
-    if !index_lock_exists(&detail) {
+    let Some(git_named) = lock_named(&detail) else {
+        return Ok(Step::Failed {
+            message,
+            detail,
+            hints,
+        });
+    };
+    let path = lock_path(ctx).await?;
+    if path
+        .as_deref()
+        .is_some_and(|path| !same_file(git_named, &ctx.cwd, path))
+    {
+        // Another lock than the active worktree's: git's own message says which.
         return Ok(Step::Failed {
             message,
             detail,
             hints,
         });
     }
-    let found = match lock_path(ctx).await? {
-        Some(path) => look(&path).ok().flatten(),
-        None => None,
-    };
+    let found = path.and_then(|path| look(&path).ok().flatten());
     let Some(lock) = found else {
         // Gone already (the other git finished): a retry may work.
         return Ok(Step::Failed {
@@ -410,6 +442,40 @@ mod tests {
         assert!(!index_lock_exists(
             "error: cannot lock ref 'refs/heads/x': Unable to create '/r/.git/refs/heads/x.lock': File exists."
         ));
+    }
+
+    #[test]
+    fn the_lock_git_names_is_read_from_its_message() {
+        let detail =
+            "fatal: Unable to create '/r/it's here/.git/index.lock': File exists.\n\nAnother";
+        assert_eq!(lock_named(detail), Some("/r/it's here/.git/index.lock"));
+        assert_eq!(
+            lock_named("fatal: Unable to create '/tmp/gg-commit-1/index.lock': File exists."),
+            Some("/tmp/gg-commit-1/index.lock")
+        );
+        assert_eq!(
+            lock_named("fatal: Unable to create '/r/.git/refs/heads/x.lock': File exists."),
+            None
+        );
+    }
+
+    #[test]
+    fn only_the_active_worktrees_own_lock_is_taken_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let main_git = root.join("main").join(".git");
+        let linked_git = main_git.join("worktrees").join("side");
+        std::fs::create_dir_all(&linked_git).unwrap();
+        let linked_lock = linked_git.join("index.lock");
+        let main_lock = main_git.join("index.lock");
+        let cwd = root.join("main");
+        // As git names it: absolute, or relative to where it ran.
+        assert!(same_file(&main_lock.to_string_lossy(), &cwd, &main_lock));
+        assert!(same_file(".git/index.lock", &cwd, &main_lock));
+        // The main worktree's lock, or a temporary index's, is not the linked one's.
+        assert!(!same_file(&main_lock.to_string_lossy(), &cwd, &linked_lock));
+        let temp = root.join("gg-commit-1").join("index.lock");
+        assert!(!same_file(&temp.to_string_lossy(), &cwd, &main_lock));
     }
 
     #[test]

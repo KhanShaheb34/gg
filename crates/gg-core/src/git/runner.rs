@@ -1465,6 +1465,85 @@ mod tests {
         );
     }
 
+    /// A runner with no log of interest, for the time-limit tests.
+    fn plain_runner() -> GitRunner {
+        GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+        }
+    }
+
+    /// Runs the shell `script` (as a git alias, so as the runner runs git) with `limit`.
+    async fn run_script(
+        script: &str,
+        limit: TimeLimit,
+    ) -> std::result::Result<GitOutput, TimedOut> {
+        let dir = tempfile::tempdir().unwrap();
+        let alias = format!("alias.probe=!{script}");
+        plain_runner()
+            .run_with_timeout(dir.path(), &["-c", &alias, "probe"], CmdKind::Read, limit)
+            .await
+            .unwrap()
+    }
+
+    /// The idle limit counts from the last output: a command that keeps writing (to stderr,
+    /// as git's progress) for longer than it runs to its end. Limits generous against a slow
+    /// start (Task 6 review: the end-to-end tests were flaky).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_that_keeps_writing_is_not_idle() {
+        let started = Instant::now();
+        let out = run_script(
+            "for i in $(seq 30); do echo x >&2; sleep .1; done",
+            TimeLimit::idle(Duration::from_secs(2), Duration::from_secs(20)),
+        )
+        .await
+        .expect("finished");
+        assert_eq!(out.code, 0);
+        assert!(
+            started.elapsed() > Duration::from_secs(2),
+            "ran past the idle limit"
+        );
+    }
+
+    /// A command that writes nothing for the idle limit is given up as idle.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_silent_command_is_given_up_as_idle() {
+        let started = Instant::now();
+        let timed_out = run_script(
+            "sleep 30",
+            TimeLimit::idle(Duration::from_millis(500), Duration::from_secs(20)),
+        )
+        .await
+        .expect_err("gave up");
+        assert_eq!(timed_out.limit, Expired::Idle(Duration::from_millis(500)));
+        assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    /// However much a command keeps writing, it ends at the total limit, with what it wrote
+    /// kept.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_that_never_ends_stops_at_the_cap() {
+        let timed_out = run_script(
+            "while :; do echo still here >&2; sleep .1; done",
+            TimeLimit::idle(Duration::from_secs(2), Duration::from_secs(3)),
+        )
+        .await
+        .expect_err("gave up");
+        assert_eq!(timed_out.limit, Expired::Total(Duration::from_secs(3)));
+        assert!(
+            timed_out.stderr.contains("still here"),
+            "{:?}",
+            timed_out.stderr
+        );
+    }
+
     /// Output past the tail is read (so git is never blocked on a full pipe) and dropped.
     #[cfg(unix)]
     #[tokio::test]

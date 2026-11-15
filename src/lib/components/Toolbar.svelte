@@ -4,8 +4,10 @@
   refresh. Every control changes at once when used; the work it starts shows as it runs
   (spinning icons, a loading line along the header's bottom edge). An operation shows once
   it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
-  behind it show as a count. One that has run for STOP_AFTER_MS offers Stop (R41): a hook
-  that hangs, or git waiting on something that never comes, must not hold the repository.
+  behind it show as a count. Once it has run for a second, git's latest progress line (or the
+  step it is at) shows beside its title, cut in the middle. One that has run for
+  STOP_AFTER_MS offers Stop (R41): a hook that hangs, or git waiting on something that never
+  comes, must not hold the repository.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
@@ -15,10 +17,12 @@
   import { reportError } from "../state/app.svelte";
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
+  import { clearProgress, progressDue, progressLine, PROGRESS_AFTER_MS, watchOpProgress } from "../state/opProgress.svelte";
   import { NARROW_W, panelShown, setPanelShown, sidePanel } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
+  import MiddleText from "./MiddleText.svelte";
   import SearchBox from "./SearchBox.svelte";
 
   let { view }: { view: RepoView } = $props();
@@ -74,6 +78,25 @@
     const timer = setTimeout(() => (busy = op), Math.max(0, BUSY_DELAY_MS - (performance.now() - seenAt)));
     return () => clearTimeout(timer);
   });
+  watchOpProgress();
+  /** The operation shown has run for PROGRESS_AFTER_MS: its progress line shows. */
+  let progressShown = $state(false);
+  $effect(() => {
+    const op = busy;
+    progressShown = false;
+    if (op === null) {
+      clearProgress(view.repoId);
+      return;
+    }
+    if (progressDue(op.startedAtMs, Date.now())) {
+      progressShown = true;
+      return;
+    }
+    const timer = setTimeout(() => (progressShown = true), PROGRESS_AFTER_MS - (Date.now() - op.startedAtMs));
+    return () => clearTimeout(timer);
+  });
+  const progress = $derived(busy !== null && progressShown ? progressLine(view.repoId, busy.id) : null);
+
   const STOP_AFTER_MS = 5_000;
   /** The operation shown has run for STOP_AFTER_MS: Stop is offered. */
   let stoppable = $state(false);
@@ -107,7 +130,9 @@
   const busyTitle = $derived(
     busy === null
       ? ""
-      : visibleText(busy.title) + (busy.queued > 0 ? `\n${busy.queued} more waiting to run after it` : ""),
+      : visibleText(busy.title) +
+          (progress ? `\n${progress}` : "") +
+          (busy.queued > 0 ? `\n${busy.queued} more waiting to run after it` : ""),
   );
 
   function fetch() {
@@ -164,12 +189,15 @@
   <span class="spacer"></span>
 
   {#if busy}
-    <div class="busy" role="status" data-testid="busy" title={busyTitle}>
+    <div class="busy" class:with-progress={progress !== null} role="status" data-testid="busy" title={busyTitle}>
       <svg class="spinner" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
         <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.8" />
         <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
       </svg>
       <span class="busy-title">{visibleText(busy.title)}</span>
+      {#if progress !== null}
+        <MiddleText class="busy-progress" text={progress} keep={14} title={null} />
+      {/if}
       {#if busy.queued > 0}
         <span class="queued" aria-label="{busy.queued} more queued">+{busy.queued}</span>
       {/if}
@@ -376,10 +404,30 @@
   }
 
   .busy-title {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     color: var(--text);
+  }
+
+  /* With git's progress beside the title: wider, the progress giving way first. */
+  .busy.with-progress {
+    flex-basis: 360px;
+    max-width: 440px;
+  }
+
+  .busy :global(.busy-progress) {
+    flex: 0 100 auto;
+    min-width: 3em;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    font-weight: 400;
+  }
+
+  .busy-title:has(+ :global(.busy-progress))::after {
+    content: " ·";
+    color: var(--text-faint);
   }
 
   .queued {

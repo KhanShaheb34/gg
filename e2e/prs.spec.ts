@@ -131,6 +131,8 @@ test("create: the dialog opens at once, suggests from the commits, pushes first 
   await expect(dialog(page).getByRole("button", { name: "Cancel" })).toBeDisabled();
   await expect(dialog(page).getByTestId("pr-step")).toContainText("Creating the pull request…");
   await expect(dialog(page).getByRole("button", { name: "Creating…" })).toBeDisabled();
+  // The busy indicator says the step too, once the operation has run for a second (op-progress).
+  await expect(page.getByTestId("busy")).toContainText("Creating the pull request…");
 
   await expect(dialog(page)).toHaveCount(0);
   const done = notice(page, "Opened draft pull request #21 of fix/typo into main");

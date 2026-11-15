@@ -1,15 +1,14 @@
 // Pull requests in the UI (spec §5.5): how a marker reads (its tooltip, whether the list it
-// comes from is stale), opening a pull request or GitHub's compare page (only through
-// `open_external`, only at addresses the core gave), and the Create pull request dialog.
+// comes from is stale), opening a pull request (only through `open_external`, only at
+// addresses the core gave), and the Create pull request dialog (which also opens GitHub's
+// compare page, after pushing, when gh cannot make one).
 // The core loads the open pull requests with fetches and the user's refreshes; nothing here
 // asks gh for anything but `pr_suggest`.
 
 import CreatePullRequestDialog from "../components/dialogs/CreatePullRequestDialog.svelte";
 import { clockTime, relativeTime } from "../format";
-import { api } from "../ipc";
-import { PR_REASONS } from "../menus/common";
 import type { PrState, PullRequest, RepoSnapshot } from "../types";
-import { reportError, toast } from "./app.svelte";
+import { toast } from "./app.svelte";
 import { openExternal } from "./editor";
 import { showDialog } from "./overlays.svelte";
 
@@ -60,24 +59,4 @@ export async function copyLink(url: string): Promise<void> {
 /** Opens the Create pull request dialog for local branch `branch` of `snap`'s repository. */
 export function openCreatePullRequest(snap: RepoSnapshot, branch: string): void {
   showDialog(CreatePullRequestDialog, { repoId: snap.repoId, branch });
-}
-
-/**
- * Opens GitHub's page comparing local `branch` with its base, as the core builds it
- * (`pr_suggest`, asked only now); says why when it cannot.
- */
-export async function openComparePage(repoId: number, branch: string, snap: RepoSnapshot): Promise<void> {
-  let url: string | null;
-  try {
-    url = (await api.prSuggest(repoId, branch)).compareUrl;
-  } catch (e) {
-    reportError(e, "Could not open the compare page");
-    return;
-  }
-  if (url === null) {
-    const reason = snap.prs.reason;
-    toast("info", reason !== null && reason !== "failed" ? `${PR_REASONS[reason]}.` : "GitHub’s compare page cannot be built for this remote.");
-    return;
-  }
-  void openExternal(repoId, { target: "url", url });
 }

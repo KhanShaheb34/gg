@@ -118,8 +118,10 @@ test("create: the dialog opens at once, suggests from the commits, pushes first 
   await dialog(page).getByTestId("pr-body").fill("Typo in the first line.");
   await expect(dialog(page).getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
   await expect(dialog(page).getByTestId("pr-body")).toHaveValue("Typo in the first line.");
-  await expect(dialog(page).getByTestId("pr-base")).toHaveValue("origin/main");
-  await expect(dialog(page).getByTestId("push-note")).toHaveText("not on origin yet");
+  await expect(dialog(page).getByTestId("pr-base")).toHaveValue("main");
+  // The repository it goes into, named (Task 9 review I3).
+  await expect(dialog(page).getByTestId("pr-repo")).toHaveText("octo/cat");
+  await expect(dialog(page).getByTestId("push-note")).toHaveText("not pushed to origin/fix/typo yet");
   const create = dialog(page).getByRole("button", { name: "Push fix/typo to origin/fix/typo and create pull request" });
   await expect(create).toBeEnabled();
   await dialog(page).getByTestId("pr-draft").check();
@@ -160,7 +162,10 @@ test("an existing pull request: the dialog says so and opens it; a failure stays
   await expect(dialog(page).getByRole("heading")).toHaveText("Pull request #20 already exists");
   await expect(dialog(page).getByTestId("pr-existing")).toContainText("Explain the parser");
   await expect(dialog(page).getByRole("button", { name: "Copy link" })).toBeVisible();
-  await dialog(page).getByRole("button", { name: "Open", exact: true }).click();
+  // The title field that had the focus is gone: the focus is on Open, so Enter opens it
+  // (Task 9 review I4).
+  await expect(dialog(page).getByRole("button", { name: "Open", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(dialog(page)).toHaveCount(0);
   await expect.poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/pull/20"))).toBe(true);
 
@@ -183,7 +188,7 @@ test("an existing pull request: the dialog says so and opens it; a failure stays
     .toBe(true);
 });
 
-test("gh signed out: said once, plainly; the branch menu offers GitHub's compare page instead", async ({ gg }) => {
+test("gh signed out: said once, plainly; the branch menu pushes and opens GitHub's compare page, through the dialog", async ({ gg }) => {
   const { page } = gg;
   gg.gh.reply("pr-list", 4, "", "To get started with GitHub CLI, please run:  gh auth login\n");
   await page.goto("/");
@@ -193,9 +198,21 @@ test("gh signed out: said once, plainly; the branch menu offers GitHub's compare
   const said = notice(page, "The GitHub CLI (gh) is not signed in");
   await expect(said).toBeVisible();
   await expect(said).not.toHaveClass(/error/);
-  await menuOn(page, "fix/typo", "Open compare page on GitHub");
+  // Task 9 review I5: as without gh, the branch is pushed first, and the menu says so.
+  await menuOn(page, "fix/typo", "Push and open compare page…");
+  await expect(dialog(page).getByTestId("pr-no-gh")).toContainText("fix/typo is pushed to origin/fix/typo, then GitHub’s compare page opens");
+  await dialog(page).getByRole("button", { name: "Push fix/typo to origin/fix/typo and open the compare page" }).click();
+  await expect(dialog(page)).toHaveCount(0);
   await expect
     .poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/compare/main...fix/typo?expand=1")))
+    .toBe(true);
+  expect(gg.git("prs", "rev-parse", "refs/remotes/origin/fix/typo").trim()).toBe(gg.git("prs", "rev-parse", "fix/typo").trim());
+  expect(gg.gh.calls().filter((c) => c[1] === "create")).toEqual([]);
+  // On the remote now: the menu just opens the compare page (through the dialog's button).
+  await menuOn(page, "docs/readme", "Open compare page…");
+  await dialog(page).getByRole("button", { name: "Open the compare page" }).click();
+  await expect
+    .poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/compare/main...docs/readme?expand=1")))
     .toBe(true);
   // Dismissed, it does not come back with the next refresh.
   await said.getByRole("button", { name: /dismiss|close/i }).click();
@@ -226,4 +243,27 @@ test("gh not installed: the dialog says it pushes and then opens GitHub's compar
     .toBe(true);
   expect(gg.git("prs", "rev-parse", "refs/remotes/origin/fix/typo").trim()).toBe(gg.git("prs", "rev-parse", "fix/typo").trim());
   expect(gg.gh.calls()).toEqual([]);
+});
+
+test("the button names where the branch really goes: remote.pushDefault sends it to the fork (Task 9 review I3)", async ({ gg }) => {
+  const { page } = gg;
+  listing(gg, []);
+  const dir = gg.repoPath("prs");
+  const fork = path.join(path.dirname(dir), "prs-fork.git");
+  gg.git("prs", "init", "-q", "--bare", "-b", "main", fork);
+  gg.git("prs", "remote", "add", "fork", "https://github.com/ada/cat.git");
+  gg.git("prs", "config", `url.${fork}.insteadOf`, "https://github.com/ada/cat.git");
+  gg.git("prs", "config", "remote.pushDefault", "fork");
+  await page.goto("/");
+  await open(page, dir);
+  await refresh(page);
+
+  await menuOn(page, "fix/typo", "Create pull request…");
+  await expect(dialog(page).getByTestId("pr-repo")).toHaveText("octo/cat");
+  await expect(dialog(page).getByTestId("push-note")).toHaveText("not pushed to fork/fix/typo yet");
+  // Only the base repository's branches are offered.
+  const options = await dialog(page).getByTestId("pr-base").locator("option").allTextContents();
+  expect(options).toContain("main");
+  expect(options.some((o) => o.startsWith("origin/") || o.startsWith("fork/"))).toBe(false);
+  await expect(dialog(page).getByRole("button", { name: "Push fix/typo to fork/fix/typo and create pull request" })).toBeEnabled();
 });

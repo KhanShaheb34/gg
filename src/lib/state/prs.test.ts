@@ -20,7 +20,7 @@ vi.mock("../components/dialogs/CreatePullRequestDialog.svelte", () => ({ default
 import { api } from "../ipc";
 import { app } from "./app.svelte";
 import { showDialog } from "./overlays.svelte";
-import { openComparePage, openCreatePullRequest, openPullRequest, prTooltip, staleSince, STALE_AFTER_MS } from "./prs.svelte";
+import { openCreatePullRequest, openPullRequest, prTooltip, staleSince, STALE_AFTER_MS } from "./prs.svelte";
 
 const MIN = 60_000;
 const ready = (loadedAtMs: number, reason: PrState["reason"] = null): PrState => ({ status: "ready", reason, loadedAtMs, partial: false });
@@ -63,22 +63,6 @@ describe("opening", () => {
   it("a pull request opens at the address the core gave, through open_external", () => {
     openPullRequest(1, pullRequest());
     expect(api.openExternal).toHaveBeenCalledWith(1, { target: "url", url: "https://github.com/octo/cat/pull/12" });
-  });
-
-  it("the compare page is asked of the core only when chosen, and opened as it gave it", async () => {
-    const url = "https://github.com/octo/cat/compare/main...feature/x?expand=1";
-    vi.mocked(api.prSuggest).mockResolvedValue({ title: "t", body: "", base: "main", baseRemote: "origin", existing: null, compareUrl: url });
-    await openComparePage(1, "feature/x", snap());
-    expect(api.prSuggest).toHaveBeenCalledWith(1, "feature/x");
-    expect(api.openExternal).toHaveBeenCalledWith(1, { target: "url", url });
-  });
-
-  it("no compare page: says why, opens nothing", async () => {
-    vi.mocked(api.prSuggest).mockResolvedValue({ title: "t", body: "", base: "main", baseRemote: "origin", existing: null, compareUrl: null });
-    const signedOut = snap({ prs: { status: "unavailable", reason: "signed_out", loadedAtMs: null, partial: false } });
-    await openComparePage(1, "feature/x", signedOut);
-    expect(api.openExternal).not.toHaveBeenCalled();
-    expect(app.toasts).toMatchObject([{ kind: "info", message: "gh is not signed in — run `gh auth login` in a terminal." }]);
   });
 
   it("Create pull request… opens the dialog for the branch named when the menu opened", () => {

@@ -70,7 +70,12 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
         label.current ? busy : undefined,
       ),
     }),
-    pullRequestItem(label.name, label.pr, snap),
+    pullRequestItem(
+      label.name,
+      label.pr,
+      snap,
+      label.upstream !== null && label.ahead === 0 && snap.remoteBranches.includes(label.upstream),
+    ),
     SEPARATOR,
     // A branch checked out somewhere already gets a new branch at its commit (the dialog says).
     item("worktree.create", `Create worktree from ${name}…`),

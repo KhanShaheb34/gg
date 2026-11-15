@@ -24,7 +24,9 @@ describe("worktreeMenu", () => {
     const detached = worktreeMenu(worktree({ branch: null }), snap());
     expect(find(detached, "pr.create").disabledReason).toBe("HEAD is detached there: there is no branch to propose");
     const signedOut = snap({ prs: { status: "unavailable", reason: "signed_out", loadedAtMs: null, partial: false } });
-    expect(find(worktreeMenu(worktree(), signedOut), "pr.compare").label).toBe("Open compare page on GitHub");
+    expect(find(worktreeMenu(worktree(), signedOut), "pr.compare").label).toBe("Push and open compare page…");
+    const pushed = worktree({ upstream: { name: "origin/feature/x", ahead: 0, behind: 0 } });
+    expect(find(worktreeMenu(pushed, signedOut), "pr.compare").label).toBe("Open compare page…");
     const notGithub = snap({ prs: { status: "unavailable", reason: "not_github", loadedAtMs: null, partial: false } });
     expect(find(worktreeMenu(worktree(), notGithub), "pr.create").disabledReason).toBe("This remote is not on GitHub");
   });

@@ -22,7 +22,7 @@ import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
 import { runOp } from "../state/ops.svelte";
 import { showDialog as show } from "../state/overlays.svelte";
-import { openComparePage, openCreatePullRequest, openPullRequest } from "../state/prs.svelte";
+import { openCreatePullRequest, openPullRequest } from "../state/prs.svelte";
 import { openCreateWorktree } from "../state/worktrees.svelte";
 import type { CommitRow, OpRequest, PullRequest, RefLabel, RepoSnapshot } from "../types";
 import { branchMenu } from "./branchMenu";
@@ -278,5 +278,6 @@ async function copyMessage(repoId: number, hash: string): Promise<void> {
 export function pickPullRequest(id: string, branch: string, pr: PullRequest | null, snap: RepoSnapshot): void {
   if (id === "pr.open" && pr) openPullRequest(snap.repoId, pr);
   else if (id === "pr.create") openCreatePullRequest(snap, branch);
-  else if (id === "pr.compare") void openComparePage(snap.repoId, branch, snap);
+  // The same dialog: it pushes first when the branch is not on its remote (Task 9 review I5).
+  else if (id === "pr.compare") openCreatePullRequest(snap, branch);
 }

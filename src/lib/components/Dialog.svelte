@@ -109,6 +109,17 @@
     }
   }
 
+  /**
+   * Puts the focus back in the dialog when its content changed under it (the field that had
+   * it is gone): on the primary button when it can be pressed and is not dangerous, else on
+   * Cancel. Nothing when the focus is in the dialog.
+   */
+  export function keepFocus(): void {
+    const now = document.activeElement;
+    if (now !== null && now !== document.body && box.contains(now)) return;
+    (valid && !danger && !primaryButton.disabled ? primaryButton : cancelButton).focus();
+  }
+
   onMount(() => {
     const before = document.activeElement;
     wordsOnly = box.querySelector("input, select, textarea") === null;

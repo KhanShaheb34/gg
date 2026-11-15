@@ -8,18 +8,19 @@
   Then, as the answer and the repository's pull-request state say: the form (title, description,
   base among the remote branches, draft), with a primary button that names the push it makes
   first when one is needed (R38); "Pull request #N already exists" with Open and Copy link; or
-  why gh cannot make it, with the compare page to open instead when there is one. Without gh,
-  the branch is pushed and the compare page opens to finish there.
+  why nothing can be made (not GitHub). Without gh, or signed out, the branch is pushed and
+  the compare page opens to finish there. Where it pushes, whether it must, and the base
+  repository come from the core (`pr_suggest`), worked out as `pr_create` will.
 
   While the request is out, Cancel is off and the step is said (pushing, creating; R27). A
   failure stays here, inline, with Show log; success closes it and leaves a notice with Open
   and Copy link (R30).
 -->
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { visibleText } from "../../format";
   import { api, CoreError, onEvent } from "../../ipc";
-  import { defaultRemote, PR_REASONS, remoteOf, shown } from "../../menus/common";
+  import { defaultRemote, PR_REASONS, shown } from "../../menus/common";
   import { notify, showLog } from "../../state/app.svelte";
   import { openExternal } from "../../state/editor";
   import { runOp } from "../../state/ops.svelte";
@@ -60,9 +61,23 @@
   let bodyTouched = false;
   let baseTouched = false;
 
-  /** The remote branches a pull request can go into ("origin/main"), without remote HEADs. */
+  // svelte-ignore state_referenced_locally
+  /** A first guess at the base repository's remote until the suggestion says. */
+  const guessRemote = defaultRemote(snap?.remotes ?? []) || snap?.remotes[0] || "origin";
+  /**
+   * The remote of the repository the pull request goes into: the base repository the core
+   * chose (the same rule as the list's). Only its branches can be the base, so changing the
+   * base never changes the repository (Task 9 review minor 4).
+   */
+  const baseRemote = $derived(suggestion ? suggestion.baseRemote : guessRemote);
+
+  /** The base repository's branches a pull request can go into ("main"), without its HEAD. */
   const bases = $derived.by(() => {
-    const list = (snap?.remoteBranches ?? []).filter((b) => !b.endsWith("/HEAD"));
+    if (baseRemote === null) return [];
+    const prefix = `${baseRemote}/`;
+    const list = (snap?.remoteBranches ?? [])
+      .filter((b) => b.startsWith(prefix) && b !== `${prefix}HEAD`)
+      .map((b) => b.slice(prefix.length));
     if (base !== "" && !list.includes(base)) list.unshift(base);
     return list;
   });
@@ -70,9 +85,7 @@
   // svelte-ignore state_referenced_locally
   {
     // A first guess until the suggestion comes: the default remote's main, if it has one.
-    const remotes = snap?.remotes ?? [];
-    const guess = `${defaultRemote(remotes) || remotes[0] || "origin"}/main`;
-    if ((snap?.remoteBranches ?? []).includes(guess)) base = guess;
+    if ((snap?.remoteBranches ?? []).includes(`${guessRemote}/main`)) base = "main";
   }
 
   void (async () => {
@@ -89,7 +102,8 @@
       suggestion = s;
       if (!titleTouched) title = s.title;
       if (!bodyTouched) body = s.body;
-      if (!baseTouched && s.baseRemote !== null) base = `${s.baseRemote}/${s.base}`;
+      // Another repository than guessed: its base, whatever was picked from the guess.
+      if (s.baseRemote !== guessRemote || !baseTouched) base = s.baseRemote === null ? "" : s.base;
     } catch (e) {
       if (open) suggestFailed = e instanceof Error ? e.message : String(e);
     }
@@ -101,27 +115,25 @@
 
   /** Why gh cannot make it, when the repository's pull requests say so. */
   const unavailable = $derived(prs?.status === "unavailable" && prs.reason !== null && prs.reason !== "failed" ? prs.reason : null);
-  const noGh = $derived(unavailable === "no_gh");
+  /**
+   * gh cannot make it here (not installed, or signed out), but GitHub can: the branch is
+   * pushed and GitHub's compare page opens to finish there (Task 9 review I5).
+   */
+  const compareOnly = $derived(unavailable === "no_gh" || unavailable === "signed_out");
 
-  // --- The push it makes first (R38) -------------------------------------------------------
+  // --- The push it makes first (R38), as the core will make it ----------------------------
 
-  /** Where the branch is pushed: its upstream's remote, else the default remote. */
-  const pushRemote = $derived.by(() => {
-    const remotes = snap?.remotes ?? [];
-    const upstream = view?.loadedLabel(branch)?.upstream ?? null;
-    const own = upstream === null ? null : remoteOf(upstream, remotes);
-    return own ?? (defaultRemote(remotes) || remotes[0] || "origin");
-  });
-  /** It has no namesake on its remote yet, or that is behind it. */
-  const needsPush = $derived.by(() => {
-    const target = `${pushRemote}/${branch}`;
-    if (!(snap?.remoteBranches ?? []).includes(target)) return true;
-    const label = view?.loadedLabel(branch);
-    return label?.upstream === target && label.ahead > 0;
-  });
+  /** Where the branch is pushed ("fork/x"), as `pr_create` will push it; null until known. */
+  const pushTo = $derived(suggestion?.pushTo ?? null);
+  /** It is pushed first: its namesake there is missing or behind it. */
+  const needsPush = $derived(suggestion?.needsPush ?? false);
   /** Branch names in button labels: cut in the middle so the button stays a button. */
   const short = (name: string) => shown(name, 22);
-  const pushLabel = $derived(`Push ${short(branch)} to ${short(`${pushRemote}/${branch}`)}`);
+  const pushLabel = $derived(`Push ${short(branch)} to ${short(pushTo ?? "")}`);
+  /** Why it is pushed: not there at all, or there but behind. */
+  const pushNote = $derived(
+    pushTo === null ? null : (snap?.remoteBranches ?? []).includes(pushTo) ? `${shown(pushTo)} is behind` : `not pushed to ${shown(pushTo)} yet`,
+  );
 
   // --- Sending ----------------------------------------------------------------------------
 
@@ -145,27 +157,32 @@
 
   type Mode = "loading" | "existing" | "unavailable" | "form";
   const mode: Mode = $derived(
-    loading ? "loading" : existing !== null ? "existing" : unavailable !== null && !noGh ? "unavailable" : "form",
+    loading ? "loading" : existing !== null ? "existing" : unavailable !== null && !compareOnly ? "unavailable" : "form",
   );
-
-  const baseRemote = $derived(remoteOf(base, snap?.remotes ?? []));
 
   const primary = $derived.by(() => {
     if (pending) return step?.startsWith("Pushing") ? "Pushing…" : step === null && needsPush ? "Pushing…" : "Creating…";
     if (mode === "existing") return "Open";
-    if (mode === "unavailable") return compareUrl !== null ? "Open compare page" : "Create pull request";
-    if (noGh) return needsPush ? `${pushLabel} and open the compare page` : "Open the compare page";
-    return needsPush ? `${pushLabel} and create pull request` : "Create pull request";
+    if (mode === "unavailable") return "Create pull request";
+    if (compareOnly) return needsPush && pushTo !== null ? `${pushLabel} and open the compare page` : "Open the compare page";
+    return needsPush && pushTo !== null ? `${pushLabel} and create pull request` : "Create pull request";
   });
 
   const valid = $derived.by(() => {
     if (pending) return false;
     if (mode === "loading") return false;
     if (mode === "existing") return true;
-    if (mode === "unavailable") return compareUrl !== null;
+    if (mode === "unavailable") return false;
     // Without gh only the push is made (its title is not used): the base must be one.
-    if (noGh) return needsPush ? baseRemote !== null : compareUrl !== null;
-    return titleProblem === null && baseRemote !== null;
+    if (compareOnly) return needsPush ? baseRemote !== null && pushTo !== null : compareUrl !== null;
+    return titleProblem === null && baseRemote !== null && base !== "" && pushTo !== null;
+  });
+
+  // Task 9 review I4: the form's fields gone (the pull request exists, or none can be made),
+  // the focus is not lost with them: Enter and Escape keep working.
+  let frame: Dialog | undefined = $state();
+  $effect(() => {
+    if (mode === "existing" || mode === "unavailable") void tick().then(() => frame?.keepFocus());
   });
 
   function openUrl(url: string) {
@@ -176,8 +193,8 @@
   function done(outcome: OpOutcome) {
     const hint = outcome.hints.find((h) => h.kind === "open_url");
     const url = hint?.kind === "open_url" ? hint.url : null;
-    // Without gh it ends on the compare page: opened, as the dialog said it would be.
-    if (url !== null && noGh && url.includes("/compare/")) openUrl(url);
+    // Without gh (or signed out) it ends on the compare page: opened, as the dialog said.
+    if (url !== null && outcome.status === "done" && url.includes("/compare/")) openUrl(url);
     const actions =
       url === null
         ? []
@@ -217,7 +234,7 @@
         {
           op: "pr_create",
           branch,
-          base: base.slice(remote.length + 1),
+          base,
           baseRemote: remote,
           title: title.trim() || branch,
           body,
@@ -248,7 +265,7 @@
     if (mode === "existing" && existing !== null) {
       openUrl(existing.url);
       close();
-    } else if (mode === "unavailable" || (noGh && !needsPush)) {
+    } else if (compareOnly && !needsPush) {
       if (compareUrl !== null) openUrl(compareUrl);
       close();
     } else {
@@ -261,10 +278,14 @@
     return hint?.kind === "open_url" ? hint : null;
   });
 
+  /** The repository it goes into ("octo/cat"), as the core named it; its remote until then. */
+  const intoRepo = $derived(suggestion?.repo ?? baseRemote);
+
   const dialogTitle = $derived(mode === "existing" && existing ? `Pull request #${existing.number} already exists` : "Create pull request");
 </script>
 
 <Dialog
+  bind:this={frame}
   title={dialogTitle}
   {primary}
   {valid}
@@ -279,8 +300,8 @@
   <div class="dialog-target from">
     <span class="dialog-target-label">From</span>
     <span class="dialog-ref" title={branch}>{shown(branch)}</span>
-    {#if mode === "form" && needsPush}
-      <span class="push-note" data-testid="push-note">not on {shown(pushRemote)} yet</span>
+    {#if mode === "form" && needsPush && pushNote !== null}
+      <span class="push-note" data-testid="push-note">{pushNote}</span>
     {/if}
   </div>
 
@@ -304,25 +325,17 @@
     </div>
   {:else if mode === "unavailable" && unavailable}
     <p class="reason" data-testid="pr-unavailable">{PR_REASONS[unavailable]}.</p>
-    <p class="dialog-text muted">
-      {#if compareUrl !== null}
-        GitHub’s compare page opens a pull request in the browser instead{needsPush
-          ? `; push ${shown(branch)} to ${shown(pushRemote)} first, or it shows nothing to compare`
-          : ""}.
-      {:else}
-        Pull requests are made on GitHub only.
-      {/if}
-    </p>
+    <p class="dialog-text muted">Pull requests are made on GitHub only.</p>
   {/if}
 
   {#if mode === "form" || (mode === "loading" && !suggestFailed)}
-    {#if noGh && mode === "form"}
+    {#if compareOnly && mode === "form" && unavailable}
       <p class="nogh" data-testid="pr-no-gh">
-        {PR_REASONS.no_gh}: {#if needsPush}{shown(branch)} is pushed to {shown(`${pushRemote}/${branch}`)}, then{/if}
+        {PR_REASONS[unavailable]}: {#if needsPush && pushTo !== null}{shown(branch)} is pushed to {shown(pushTo)}, then{/if}
         GitHub’s compare page opens to finish it there.
       </p>
     {/if}
-    {#if !noGh}
+    {#if !compareOnly}
       <div class="field">
         <label class="field-label" for="pr-title-{uid}">Title</label>
         <input
@@ -357,7 +370,11 @@
       </div>
       <div class="row">
         <div class="field base">
-          <label class="field-label" for="pr-base-{uid}">Into</label>
+          <!-- The repository it goes into is the core's (the base repository); only its
+               branches are offered. -->
+          <label class="field-label" for="pr-base-{uid}"
+            >Into{#if intoRepo}&nbsp;<span class="into-repo" data-testid="pr-repo" title={intoRepo}>{shown(intoRepo)}</span>{/if}</label
+          >
           <div class="select-wrap">
             <select
               id="pr-base-{uid}"
@@ -398,7 +415,7 @@
         <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
       </svg>
       <span class="step-text">
-        {step ?? (needsPush ? `Pushing ${shown(branch)} to ${shown(`${pushRemote}/${branch}`)}…` : "Creating the pull request…")}
+        {step ?? (needsPush && pushTo !== null ? `Pushing ${shown(branch)} to ${shown(pushTo)}…` : "Creating the pull request…")}
         {#if progress}<span class="progress">{progress}</span>{/if}
       </span>
     </p>
@@ -571,5 +588,11 @@
     border-radius: 3px;
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
+  }
+
+  .into-repo {
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-weight: 500;
   }
 </style>

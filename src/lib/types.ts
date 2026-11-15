@@ -61,6 +61,12 @@ export type PrSuggestion = {
   baseRemote: string | null; // the remote `base` is on: the repository the pull request goes to (null: no remote)
   existing: PullRequest | null;
   compareUrl: string | null;
+  /** The base repository, "owner/name" (null: its remote names none). */
+  repo: string | null;
+  /** Where `pr_create` pushes the branch ("fork", "fork/x") and whether it must first: worked out as it will (null: not clear). */
+  pushRemote: string | null;
+  pushTo: string | null;
+  needsPush: boolean;
 };
 /** `conflictedPaths`: the conflicted paths, sorted, the first 200 of them. */
 export type WorktreeStatus = { changed: number; untracked: number; conflicted: number; conflictedPaths: string[] };

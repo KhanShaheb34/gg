@@ -265,14 +265,7 @@ impl RepoManager {
     /// logged through `runner` (an operation's, for `pr_create`), if it is installed.
     pub(crate) fn gh(&self, repo: &Repo, runner: &GitRunner, on: &RemoteRepo) -> Option<Gh> {
         let (program, tool_path) = self.gh_program(repo)?;
-        Some(Gh::new(
-            runner,
-            program,
-            tool_path,
-            &repo.root,
-            on,
-            self.gh_limit(),
-        ))
+        Gh::new(runner, program, tool_path, &repo.root, on, self.gh_limit())
     }
 
     /// `gh` as found for `repo`, and the `PATH` to run it with (`None`: git's).
@@ -377,6 +370,10 @@ impl RepoManager {
         remote: &str,
     ) -> Option<RemoteRepo> {
         let on = facts.repo_of(remote)?;
+        // Only a plain host name is ever GitHub, asked about or named to `gh` (I1).
+        if !is_plain_host(&on.host) {
+            return None;
+        }
         if is_known_github(&on.host) {
             return Some(on);
         }

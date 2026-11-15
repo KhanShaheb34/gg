@@ -126,7 +126,8 @@ impl Gh {
     /// Stop), run in `cwd` with `path` as its `PATH` (`None`: git's), for repository `on`
     /// (on a host known to be GitHub), given up on after `limit`. `GH_HOST` is set only for
     /// a host other than github.com (and removed for github.com); `GH_REPO` is never passed
-    /// on.
+    /// on. `None` for a host that is not a plain name ([`is_plain_host`]): it is never
+    /// named to `gh`.
     pub(crate) fn new(
         git: &GitRunner,
         program: PathBuf,
@@ -134,7 +135,10 @@ impl Gh {
         cwd: &Path,
         on: &RemoteRepo,
         limit: Duration,
-    ) -> Self {
+    ) -> Option<Self> {
+        if !is_plain_host(&on.host) {
+            return None;
+        }
         let mut runner = git.tool(program, "gh");
         if path.is_some() {
             runner = runner.with_path(path);
@@ -151,12 +155,12 @@ impl Gh {
                 .without_env("GITHUB_ENTERPRISE_TOKEN");
             format!("{host}/{}/{}", on.owner, on.name)
         };
-        Self {
+        Some(Self {
             runner,
             cwd: cwd.to_owned(),
             limit: TimeLimit::total(limit),
             repo,
-        }
+        })
     }
 
     /// The repository every command names (`--repo <this>`).
@@ -188,6 +192,9 @@ impl Gh {
         host: &str,
         limit: Duration,
     ) -> Option<bool> {
+        if !is_plain_host(host) {
+            return Some(false);
+        }
         let mut runner = git.tool(program, "gh");
         if path.is_some() {
             runner = runner.with_path(path);

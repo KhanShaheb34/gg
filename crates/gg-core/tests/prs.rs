@@ -1249,6 +1249,40 @@ async fn ssh_is_never_asked_about_a_host_that_is_not_a_plain_name() {
     assert_eq!(s.gh.ssh_calls().len(), 1);
 }
 
+/// Security (Task 9 review I1): a remote whose host is not a plain name is not on GitHub,
+/// whatever it ends with (`x?.ghe.com` passes a suffix test, but git and gh read `x`):
+/// neither the fake `gh` nor the fake `ssh` is ever run for it, not even to ask for stored
+/// credentials.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_host_that_only_ends_like_github_never_runs_gh_or_ssh() {
+    for url in [
+        "git@evil.example?.ghe.com:o/n.git",
+        "git@evil.example#.ghe.com:o/n.git",
+        "git@a b.ghe.com:o/n.git",
+        "git@x%2e.ghe.com:o/n.git",
+        "ssh://git@x%2e.ghe.com/o/n.git",
+    ] {
+        let s = setup_with(url).await;
+        let snap = s.load().await;
+        assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub), "{url}");
+        let suggested = s.h.m.pr_suggest(s.id, "main").await.unwrap();
+        assert_eq!(suggested.compare_url, None, "{url}");
+        assert!(s.gh.calls().is_empty(), "{url}: gh was run");
+        assert!(s.gh.ssh_calls().is_empty(), "{url}: ssh was run");
+    }
+    // Upper case and a trailing dot: the same Enterprise Cloud host.
+    let s = setup_with("git@ACME.GHE.COM.:octo/cat.git").await;
+    s.gh.reply("pr-list", 0, "[]", "");
+    let snap = s.load().await;
+    assert_eq!(snap.prs.status, PrStatus::Ready, "{snap:?}");
+    let list = s.gh.calls_of(&["pr", "list"]);
+    assert!(
+        list[0].env.iter().any(|e| e == "GH_HOST=acme.ghe.com"),
+        "{:?}",
+        list[0].env
+    );
+}
+
 /// No flicker (Task 8 review): a repository known not to be on GitHub, or without `gh`, is
 /// never shown as loading on its way to unavailable; one that can load is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -44,9 +44,14 @@ impl RemoteRepo {
     }
 }
 
-/// `host` lowercase, without a trailing dot; GitHub's ssh-over-443 host is `github.com`.
+/// `host` lowercase, without one trailing dot (the root of a fully qualified name).
+fn lower_host(host: &str) -> String {
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
+}
+
+/// `host` as [`lower_host`] gives it; GitHub's ssh-over-443 host is `github.com`.
 fn normal_host(host: &str) -> String {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host = lower_host(host);
     if host == "ssh.github.com" {
         "github.com".to_owned()
     } else {
@@ -83,9 +88,11 @@ fn parse(url: &str) -> Option<(RemoteRepo, Option<String>)> {
         }
         (host.to_owned(), path.to_owned(), None, true)
     };
-    let written = host.trim_end_matches('.').to_ascii_lowercase();
+    let written = lower_host(&host);
     let host = normal_host(&host);
-    if host.is_empty() {
+    // Only a plain host name is a hosting site's: `x?.ghe.com` ends like one, but git and
+    // `gh` read another host out of it (Task 9 review I1).
+    if !is_plain_host(&written) || !is_plain_host(&host) {
         return None;
     }
     let segments: Vec<&str> = path
@@ -137,8 +144,11 @@ pub fn is_plain_host(host: &str) -> bool {
 /// already has credentials stored for exactly that host (`RepoManager::on_github`), never by
 /// its name (`github.example.net` may be anyone's): otherwise `gh` would be pointed at it
 /// with `GH_HOST` and could send it a token. Other hosts are not supported (spec §5.5).
+/// Case and one trailing dot do not matter; a host that is not a plain name
+/// ([`is_plain_host`]) never is GitHub.
 pub fn is_known_github(host: &str) -> bool {
-    host == "github.com" || host.ends_with(".ghe.com")
+    let host = lower_host(host);
+    is_plain_host(&host) && (host == "github.com" || host.ends_with(".ghe.com"))
 }
 
 /// The page on `repo`'s GitHub host that compares `head` (a branch of `head_owner`'s fork,
@@ -346,6 +356,44 @@ mod tests {
             "notgithub.com",
         ] {
             assert!(!is_known_github(host), "{host}");
+        }
+    }
+
+    /// Security (Task 9 review I1): a host that is not a plain name is no hosting site's,
+    /// whatever it ends with: `x?.ghe.com` would pass a suffix test while git and gh read
+    /// another host. Case and one trailing dot do not matter.
+    #[test]
+    fn only_a_plain_host_name_is_a_hosting_sites() {
+        for url in [
+            "git@evil.example?.ghe.com:o/n.git",
+            "git@evil.example#.ghe.com:o/n.git",
+            "git@a b.ghe.com:o/n.git",
+            "git@x%2e.ghe.com:o/n.git",
+            "git@x%2E.ghe.com:o/n.git",
+            "git@x..:o/n.git",
+            "git@-x.ghe.com:o/n.git",
+        ] {
+            assert_eq!(parse_remote(url), None, "{url}");
+            assert_eq!(ssh_host(url), None, "{url}");
+        }
+        let upper = parse_remote("git@ACME.GHE.COM.:o/n.git").unwrap();
+        assert_eq!(upper.host, "acme.ghe.com");
+        assert_eq!(
+            ssh_host("git@ACME.GHE.COM.:o/n.git").as_deref(),
+            Some("acme.ghe.com")
+        );
+        for host in [
+            "x?.ghe.com",
+            "x#.ghe.com",
+            "a b.ghe.com",
+            "x%2e.ghe.com",
+            ".ghe.com",
+            "github.com..",
+        ] {
+            assert!(!is_known_github(host), "{host}");
+        }
+        for host in ["GitHub.com", "github.com.", "ACME.ghe.com."] {
+            assert!(is_known_github(host), "{host}");
         }
     }
 

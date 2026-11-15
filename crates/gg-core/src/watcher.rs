@@ -349,14 +349,33 @@ impl Ignored {
 #[derive(Debug, Default)]
 struct Batch {
     paths: HashSet<String>,
-    /// More than [`MAX_BATCH`] paths, or a change that cannot be placed (a rescan).
+    /// Past [`MAX_BATCH`] paths, the folders the rest are in (at most [`MAX_BATCH`] of them):
+    /// a folder git ignores holds only ignored paths.
+    dirs: HashSet<String>,
+    /// More folders than that too, or a change that cannot be placed (a rescan).
     overflow: bool,
     /// A `.gitignore` changed or a folder appeared: what git ignores is read again first.
     reread: bool,
 }
 
-/// Reads what git ignores in the worktree at `root` (see [`Ignored`]).
+/// Longest a read of what git ignores may take: one that hangs is given up on (git is
+/// stopped), so the watch goes on.
+const IGNORED_READ_LIMIT: Duration = Duration::from_secs(10);
+
+/// Reads what git ignores in the worktree at `root` (see [`Ignored`]), giving up after
+/// [`IGNORED_READ_LIMIT`].
 async fn read_ignored(runner: &GitRunner, root: &Path) -> Result<Ignored> {
+    tokio::time::timeout(IGNORED_READ_LIMIT, read_ignored_now(runner, root))
+        .await
+        .map_err(|_| {
+            CoreError::new(
+                ErrorCode::GitFailed,
+                "Reading what git ignores took too long.",
+            )
+        })?
+}
+
+async fn read_ignored_now(runner: &GitRunner, root: &Path) -> Result<Ignored> {
     let out = runner
         .run(
             root,
@@ -400,6 +419,7 @@ fn note_tree_event(root: &Path, ignored: &Ignored, event: &Event, batch: &mut Ba
     }
     if event.paths.is_empty() {
         batch.overflow = true;
+        batch.reread = true;
         return true;
     }
     let mut any = false;
@@ -420,7 +440,15 @@ fn note_tree_event(root: &Path, ignored: &Ignored, event: &Event, batch: &mut Ba
         if batch.paths.len() < MAX_BATCH {
             batch.paths.insert(rel);
         } else {
-            batch.overflow = true;
+            // Many changes at once (a build, an install): judged by their folders, against
+            // what git ignores read again first.
+            batch.reread = true;
+            let dir = rel.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
+            if dir.is_empty() || (batch.dirs.len() >= MAX_BATCH && !batch.dirs.contains(&dir)) {
+                batch.overflow = true;
+            } else {
+                batch.dirs.insert(dir);
+            }
         }
         any = true;
     }
@@ -465,7 +493,9 @@ pub async fn watch_worktree(
         move |event: notify::Result<Event>| {
             let noted = match event {
                 Err(_) => {
-                    lock(&batch).overflow = true;
+                    let mut batch = lock(&batch);
+                    batch.overflow = true;
+                    batch.reread = true;
                     true
                 }
                 Ok(e) => {
@@ -478,10 +508,22 @@ pub async fn watch_worktree(
             }
         }
     };
-    let mut os =
-        notify::recommended_watcher(handler).map_err(|e| watch_error(&root, e.to_string()))?;
-    os.watch(&root, RecursiveMode::Recursive)
-        .map_err(|e| watch_error(&root, e.to_string()))?;
+    // Adding a recursive watch walks the whole tree on some platforms: on the blocking pool.
+    // Links are not followed, so nothing outside the worktree is watched.
+    let os = {
+        let at = root.clone();
+        tokio::task::spawn_blocking(move || {
+            let root = at;
+            let config = notify::Config::default().with_follow_symlinks(false);
+            let mut os = RecommendedWatcher::new(handler, config)
+                .map_err(|e| watch_error(&root, e.to_string()))?;
+            os.watch(&root, RecursiveMode::Recursive)
+                .map_err(|e| watch_error(&root, e.to_string()))?;
+            Ok::<_, CoreError>(os)
+        })
+        .await
+        .map_err(|e| watch_error(&root, e.to_string()))??
+    };
     let os = Arc::new(Mutex::new(Some(os)));
     let task = runtime.spawn(async move {
         loop {
@@ -495,6 +537,7 @@ pub async fn watch_worktree(
             let relevant = batch.overflow || {
                 let ignored = ignored.read().unwrap_or_else(|e| e.into_inner());
                 batch.paths.iter().any(|p| !ignored.covers(p))
+                    || batch.dirs.iter().any(|d| !ignored.covers(d))
             };
             if relevant {
                 on_change();
@@ -755,6 +798,31 @@ mod tests {
         let rescan = Event::new(EventKind::Other);
         assert!(note_tree_event(root, &ignored, &rescan, &mut batch));
         assert!(batch.overflow, "a rescan counts as a change");
+    }
+
+    /// Past [`MAX_BATCH`] paths, the folders of the rest are kept, and what git ignores is
+    /// read again before they are judged.
+    #[test]
+    fn many_changes_are_kept_by_folder() {
+        let root = Path::new("/w");
+        let ignored = Ignored::default();
+        let write = EventKind::Create(CreateKind::File);
+        let mut batch = Batch::default();
+        for i in 0..MAX_BATCH + 500 {
+            let event = Event::new(write).add_path(root.join(format!("gen/{}/f{i}", i % 3)));
+            assert!(note_tree_event(root, &ignored, &event, &mut batch));
+        }
+        assert_eq!(batch.paths.len(), MAX_BATCH);
+        assert_eq!(batch.dirs.len(), 3, "{:?}", batch.dirs);
+        assert!(!batch.overflow);
+        assert!(batch.reread);
+        let fresh = Ignored::parse(b"gen/\0");
+        assert!(batch.paths.iter().all(|p| fresh.covers(p)));
+        assert!(batch.dirs.iter().all(|d| fresh.covers(d)));
+        // A top-level file past the limit cannot be judged by folder.
+        let top = Event::new(write).add_path(root.join("loose.txt"));
+        note_tree_event(root, &ignored, &top, &mut batch);
+        assert!(batch.overflow);
     }
 
     #[tokio::test(start_paused = true)]

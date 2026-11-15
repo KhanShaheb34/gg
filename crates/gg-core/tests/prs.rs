@@ -834,11 +834,11 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     let out =
         s.h.run(s.id, create("feature", "main", "T", "b", false))
             .await;
-    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
-    assert!(
-        out.message.contains("GitHub CLI (gh), which was not found"),
-        "{}",
-        out.message
+    // Without gh (Task 8 review): pushed all the same (R38), and done: finished on GitHub.
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "Pushed feature to origin/feature. Finish on GitHub:"
     );
     assert_eq!(
         out.hints,
@@ -851,6 +851,15 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
         s.repo
             .git_succeeds(&["rev-parse", "--verify", "refs/remotes/origin/feature"]),
         "pushed, so the compare page shows it"
+    );
+    // Nothing more to push: said so.
+    let out =
+        s.h.run(s.id, create("feature", "main", "T", "b", false))
+            .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "feature is on origin/feature already. Finish on GitHub:"
     );
 
     // Signed out.
@@ -1142,4 +1151,45 @@ async fn a_test_build_runs_only_the_fake_tools() {
     let snap = s.load().await;
     assert!(s.gh.calls().is_empty() && s.gh.ssh_calls().is_empty());
     assert_eq!(snap.prs.status, PrStatus::Unavailable);
+}
+
+/// `gh pr create` made it but printed no address the app takes (Task 8 review): done, said
+/// so, the list reloaded at once. An address on the host with another port is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pull_request_made_without_an_address_printed_is_done() {
+    let s = setup().await;
+    s.gh.reply("pr-list", 0, "[]", "");
+    s.load().await;
+    s.repo.branch("feature");
+    s.repo.git(&["push", "-q", "-u", "origin", "feature"]);
+    s.gh.reply("pr-create", 0, "Creating pull request...\n", "");
+    let loads = s.h.m.prs_loads(s.id);
+    let out =
+        s.h.run(s.id, create("feature", "main", "T", "", false))
+            .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "The pull request was created, but gh did not print its address."
+    );
+    tokio::time::timeout(TIMEOUT, s.h.m.wait_prs_loads(s.id, loads))
+        .await
+        .expect("reloaded at once");
+
+    s.gh.reply(
+        "pr-create",
+        0,
+        "https://github.com:443/octo/cat/pull/8\n",
+        "",
+    );
+    let out =
+        s.h.run(s.id, create("feature", "main", "T", "", false))
+            .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(
+        out.message
+            .ends_with("https://github.com:443/octo/cat/pull/8"),
+        "{}",
+        out.message
+    );
 }

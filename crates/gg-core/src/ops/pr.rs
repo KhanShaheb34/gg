@@ -7,7 +7,7 @@
 
 use crate::dto::{OpHint, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::gh::{GhFailure, already_exists, created_url, number_of, unavailable_message};
+use crate::gh::{already_exists, created_url, number_of, unavailable_message};
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
@@ -138,6 +138,10 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         label: "Open the compare page".to_owned(),
     }];
 
+    // gh looked for before anything is pushed: without it, the branch is still pushed and
+    // the pull request is finished on GitHub's compare page.
+    let gh = ctx.manager.gh(ctx.repo, &ctx.runner, &on);
+
     // Pushed first (R38) when its namesake there is missing or behind.
     let tracking = format!("refs/remotes/{remote}/{branch}");
     let behind = match ref_commit(ctx, &tracking).await? {
@@ -157,13 +161,15 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         }
     }
 
-    let Some(gh) = ctx.manager.gh(ctx.repo, &ctx.runner, &on) else {
-        return Ok(Step::Failed {
-            message: format!(
-                "{pushed}{}",
-                unavailable_message(PrUnavailable::NoGh, Some(&GhFailure::NoGh))
-            ),
-            detail: String::new(),
+    let Some(gh) = gh else {
+        let message = if behind {
+            format!("Pushed {branch} to {remote}/{branch}. Finish on GitHub:")
+        } else {
+            format!("{branch} is on {remote}/{branch} already. Finish on GitHub:")
+        };
+        return Ok(Step::DoneWith {
+            message,
+            detail: None,
             hints: compare,
         });
     };
@@ -204,18 +210,13 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
     };
     match ran {
         Ok(out) => {
-            let Some(url) = created_url(&out.text(), &on.web) else {
-                return Ok(Step::Failed {
-                    message: format!(
-                        "{pushed}gh did not say where the pull request is: look for it on the \
-                         repository's page."
-                    ),
-                    detail: format!("{}\n{}", out.text(), out.stderr).trim().to_owned(),
-                    hints: compare,
-                });
-            };
             remember_base(ctx, base);
             ctx.manager.spawn_load_prs(ctx.repo, PrTrigger::Created);
+            let Some(url) = created_url(&out.text(), &on.host) else {
+                return Ok(Step::Done(format!(
+                    "{pushed}The pull request was created, but gh did not print its address."
+                )));
+            };
             let number = number_of(&url).map_or_else(String::new, |n| format!(" #{n}"));
             let draft = if draft { "draft " } else { "" };
             Ok(opened(
@@ -226,7 +227,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
             ))
         }
         Err(failure) => {
-            if let Some(url) = already_exists(&failure.detail(), &on.web) {
+            if let Some(url) = already_exists(&failure.detail(), &on.host) {
                 ctx.manager.spawn_load_prs(ctx.repo, PrTrigger::Created);
                 let number = number_of(&url).map_or_else(String::new, |n| format!(" #{n}"));
                 return Ok(opened(

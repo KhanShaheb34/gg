@@ -346,13 +346,29 @@ pub(crate) fn parse_default_branch(json: &[u8]) -> Option<String> {
 }
 
 /// The address of the pull request `gh pr create` printed: its last line that is an
-/// `https://` URL on `web` (the host as its pages are addressed).
-pub(crate) fn created_url(stdout: &str, web: &str) -> Option<String> {
-    let prefix = format!("https://{web}/");
+/// `https://` URL on `host`, with any port or none.
+pub(crate) fn created_url(stdout: &str, host: &str) -> Option<String> {
+    let on_host = |line: &str| {
+        let Some(rest) = line.strip_prefix("https://") else {
+            return false;
+        };
+        let Some(rest) = rest
+            .get(..host.len())
+            .filter(|h| h.eq_ignore_ascii_case(host))
+            .map(|_| &rest[host.len()..])
+        else {
+            return false;
+        };
+        let rest = match rest.strip_prefix(':') {
+            Some(port) => port.trim_start_matches(|c: char| c.is_ascii_digit()),
+            None => rest,
+        };
+        rest.starts_with('/')
+    };
     stdout
         .lines()
         .map(str::trim)
-        .rfind(|l| l.starts_with(&prefix) && !l.contains(char::is_whitespace))
+        .rfind(|l| on_host(l) && !l.contains(char::is_whitespace))
         .map(str::to_owned)
 }
 
@@ -729,6 +745,18 @@ mod tests {
             Some("https://github.com/o/r/pull/7")
         );
         assert_eq!(created_url("https://evil.example/x\n", "github.com"), None);
+        assert_eq!(
+            created_url("https://github.com.evil.example/x\n", "github.com"),
+            None
+        );
+        assert_eq!(
+            created_url("https://ghe.example:8443/t/a/pull/2\n", "ghe.example").as_deref(),
+            Some("https://ghe.example:8443/t/a/pull/2")
+        );
+        assert_eq!(
+            created_url("https://ghe.example:x/t\n", "ghe.example"),
+            None
+        );
         assert_eq!(number_of("https://github.com/o/r/pull/7"), Some(7));
         let exists = "a pull request for branch \"x\" into branch \"main\" already exists:\nhttps://github.com/o/r/pull/3\n";
         assert_eq!(

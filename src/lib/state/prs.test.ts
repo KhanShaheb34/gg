@@ -83,6 +83,6 @@ describe("opening", () => {
 
   it("Create pull request… opens the dialog for the branch named when the menu opened", () => {
     openCreatePullRequest(snap({ repoId: 4 }), "feature/x");
-    expect(showDialog).toHaveBeenCalledWith({ name: "CreatePullRequestDialog" }, { repoId: 4, branch: "feature/x", homeDir: null });
+    expect(showDialog).toHaveBeenCalledWith({ name: "CreatePullRequestDialog" }, { repoId: 4, branch: "feature/x" });
   });
 });

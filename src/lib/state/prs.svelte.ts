@@ -9,7 +9,7 @@ import { clockTime, relativeTime } from "../format";
 import { api } from "../ipc";
 import { PR_REASONS } from "../menus/common";
 import type { PrState, PullRequest, RepoSnapshot } from "../types";
-import { app, reportError, toast } from "./app.svelte";
+import { reportError, toast } from "./app.svelte";
 import { openExternal } from "./editor";
 import { showDialog } from "./overlays.svelte";
 
@@ -59,7 +59,7 @@ export async function copyLink(url: string): Promise<void> {
 
 /** Opens the Create pull request dialog for local branch `branch` of `snap`'s repository. */
 export function openCreatePullRequest(snap: RepoSnapshot, branch: string): void {
-  showDialog(CreatePullRequestDialog, { repoId: snap.repoId, branch, homeDir: app.homeDir });
+  showDialog(CreatePullRequestDialog, { repoId: snap.repoId, branch });
 }
 
 /**

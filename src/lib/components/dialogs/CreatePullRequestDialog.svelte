@@ -32,7 +32,6 @@
     repoId: number;
     /** The local branch the pull request is made from, as it was when the menu opened. */
     branch: string;
-    homeDir: string | null;
     close: () => void;
   };
 

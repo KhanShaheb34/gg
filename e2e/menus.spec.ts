@@ -85,6 +85,7 @@ test("branch, tag and remote labels have their own menus; the reason of a disabl
     "Rebase the current branch onto this…",
     "Push 2 commits…",
     "Pull",
+    "Create pull request…",
     "Create worktree from main…",
     "Copy name",
   ]);

@@ -209,18 +209,18 @@ Launcher contract (`gg [path]`): resolve `path` (default `.`) to absolute; run `
 - [ ] Linux/Windows window chrome: native title bar (no overlay/traffic-light inset), menu reachable, Ctrl shortcuts.
 - [ ] Report honestly in `docs/platforms.md` what was verified where: built+tested locally (macOS), compiled-only locally, to be verified by CI on first push (the owner pushes). Commit.
 
-### Task 12: Public repository and release packaging
+### Task 12: Release packaging
 
-**Files:** `LICENSE` (MIT, "Copyright (c) 2026 Shakirul"), `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.github/workflows/release.yml`, `scripts/release-macos.sh`, `.gitignore`, issue/PR templates.
+> Revised 2026-11-15: the licence, public README, contribution and security notes, docs clean-up and the public-data audit moved to a separate branch (`public-ready`, its own pull request, merged after this plan). This task does not touch `README.md`, `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md` or `docs/`.
 
-- [ ] Audit, with a script kept as `scripts/audit-public.sh` and run in CI: no absolute home paths, email addresses, tokens or hostnames of private remotes in tracked files (code, docs, fixtures, screenshots' text is out of reach — re-check screenshot content by eye and retake any that show a private path or repository name); list every finding and fix it. Report (do not rewrite) what the git history contains that the owner should know before going public: author email on commits, file names, any secret-looking strings (`git log -p` scan with the same patterns).
-- [ ] README for strangers: what it is (one screenshot), install (download, the not-notarized note with both ways to open), `gg` command, features, requirements (git 2.29+, `gh` optional), build from source, how it works (uses your git; command log), privacy (no telemetry, no network except your remotes and `gh`), licence, credit line to the Git Graph extension as inspiration. Development docs (`docs/superpowers/`, `docs/perf/`) stay, with a one-paragraph `docs/README.md` saying what they are.
-- [ ] `scripts/release-macos.sh`: universal build (`--target universal-apple-darwin`), ad-hoc signed (`codesign -s -`), `.dmg` with an Applications link via `hdiutil` (no AppleScript window styling — the Plan 1 DMG flake), `gg-macos-universal.dmg` + `.sha256` + `latest.json` into `dist-release/` (git-ignored). Run it; mount the dmg, copy the app out, launch it with a fresh `GG_CONFIG_DIR`, confirm it starts on this Mac; report size.
-- [ ] `release.yml`: on a `v*` tag, builds macOS universal dmg, Linux AppImage + deb, Windows NSIS exe, attaches them to a draft GitHub release with checksums. Not run here (needs a push; the owner's action).
-- [ ] Version set to `0.3.0` in one place. Commit.
+**Files:** `.github/workflows/release.yml`, `scripts/release-macos.sh`, `.gitignore`, version in `Cargo.toml` / `package.json` / `tauri.conf.json`.
+
+- [ ] `scripts/release-macos.sh`: universal build (`--target universal-apple-darwin`), ad-hoc signed (`codesign -s -`), `.dmg` with an Applications link via `hdiutil` (no AppleScript window styling — the Plan 1 DMG flake), `gg-macos-universal.dmg` + `.sha256` + `latest.json` (the shape `site/public/latest.json` uses: `version`, `file`, `sizeMb`, `sha256`) into `dist-release/` (git-ignored). Run it; mount the dmg, copy the app out, launch it with a fresh `GG_CONFIG_DIR` (only if no gg is running), confirm it starts on this Mac; report size and both architectures (`lipo -archs`).
+- [ ] `release.yml`: on a `v*` tag, builds the macOS universal dmg, Linux AppImage + deb, Windows NSIS exe, attaches them to a draft GitHub release with checksums. Actions pinned by commit SHA; `permissions: contents: write` only on the release job. Not run here (needs a push; the owner's action).
+- [ ] Version set to `0.3.0` in one place (a test asserts the three files agree). Commit.
 
 ### Task 13: Verify and polish
 
 - [ ] Real app, both themes, 1280×800 and 900×560, on fixture repositories: every Task 1–10 feature used end to end — `gg` from a terminal into a running and a not-running app; worktree create → edit a file → panel count updates by itself → commit subset → push → create PR (fake `gh`) → delete worktree (clean, then one with work); settings changes take effect; the staging routine still works. Fix what is rough; polish outranks everything.
 - [ ] Perf re-measure (r20k; large working tree with the watch on): launch, idle CPU, idle memory, scroll, side-panel open, worktree switch → `docs/perf/2026-11-plan-3.md`, against Plans 1–2, with causes for any miss.
-- [ ] All screenshots retaken under the new name into `docs/screens/` (the site uses them). README final pass. Full suites green. Report what was verified in the real app, what only in the browser build, and what not at all.
+- [ ] All screenshots retaken under the new name into `docs/perf/screens/` as today (the `public-ready` branch curates what the README and site use). README final pass. Full suites green. Report what was verified in the real app, what only in the browser build, and what not at all.

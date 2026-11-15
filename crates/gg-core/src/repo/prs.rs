@@ -59,9 +59,48 @@ pub(crate) struct PrSlot {
     pub(crate) data: Option<Arc<PrData>>,
 }
 
-/// How a load ended: the list, or why there is none (with `gh`'s failure, and whether it is
-/// worth saying: not for a repository without remotes).
-type Loaded = std::result::Result<PrData, (PrUnavailable, Option<GhFailure>, bool)>;
+/// Why there is no list: the reason, `gh`'s failure, and whether it is worth saying (not for
+/// a repository without remotes).
+type Unloaded = (PrUnavailable, Option<GhFailure>, bool);
+/// How a load ended: the list, or why there is none.
+type Loaded = std::result::Result<PrData, Unloaded>;
+
+/// A failure to list for error `e`.
+fn failed(e: CoreError) -> Unloaded {
+    let failure = GhFailure::Failed {
+        message: e.message,
+        detail: e.detail.unwrap_or_default(),
+    };
+    (PrUnavailable::Failed, Some(failure), true)
+}
+
+/// Lists the open pull requests with `gh`: `gh pr list --repo <repo> --state open --limit
+/// 1000 --json …` in the main worktree.
+async fn list_prs(gh: &Gh, facts: RemoteFacts) -> Loaded {
+    let limit = LIST_LIMIT.to_string();
+    let args = [
+        "pr",
+        "list",
+        "--repo",
+        gh.repo(),
+        "--state",
+        "open",
+        "--limit",
+        &limit,
+        "--json",
+        PR_FIELDS,
+    ];
+    match gh.run(&args, CmdKind::Read, StdinPolicy::Null).await {
+        Ok(Ok(out)) => match parse_list(&out.stdout) {
+            Ok(listed) => Ok(PrData { listed, facts }),
+            Err(why) => Err(failed(
+                CoreError::new(ErrorCode::Io, "gh's answer could not be read.").with_detail(why),
+            )),
+        },
+        Ok(Err(failure)) => Err((failure.reason(), Some(failure), true)),
+        Err(e) => Err(failed(e)),
+    }
+}
 
 impl RepoManager {
     /// Loads `repo`'s pull requests in the background for `trigger` (see the module
@@ -112,8 +151,13 @@ impl RepoManager {
     }
 
     async fn load_prs_once(self: &Arc<Self>, repo: &Arc<Repo>) {
+        // Whether gh can be asked at all is known first: a repository not on GitHub, or
+        // without gh, goes to unavailable without being shown as loading on the way.
+        let ready = self.gh_for_list(repo).await;
         // Shown as loading while nothing is shown yet.
-        let loading = {
+        let loading = if ready.is_err() {
+            None
+        } else {
             let mut slot = repo.slot.write().await;
             if slot.closed {
                 return;
@@ -133,7 +177,10 @@ impl RepoManager {
         if let Some(stamped) = loading {
             repo.publish(self.sink.as_ref(), stamped);
         }
-        let loaded = self.list_prs(repo).await;
+        let loaded = match ready {
+            Ok((gh, facts)) => list_prs(&gh, facts).await,
+            Err(why) => Err(why),
+        };
         let say = {
             let mut slot = repo.slot.write().await;
             if slot.closed {
@@ -194,17 +241,10 @@ impl RepoManager {
         repo.report_error(self.sink.as_ref(), ErrorKind::Prs, payload);
     }
 
-    /// Lists `repo`'s open pull requests: `gh pr list --state open --limit 1000 --json …` in
-    /// the main worktree, unless the repository's remote is not on GitHub or `gh` is not
-    /// installed.
-    async fn list_prs(&self, repo: &Repo) -> Loaded {
-        let failed = |e: CoreError| {
-            let failure = GhFailure::Failed {
-                message: e.message,
-                detail: e.detail.unwrap_or_default(),
-            };
-            (PrUnavailable::Failed, Some(failure), true)
-        };
+    /// `gh` for listing `repo`'s open pull requests, and the remote facts they are matched
+    /// with; or why they cannot be listed: the repository's remote is not on GitHub, or `gh`
+    /// is not installed.
+    async fn gh_for_list(&self, repo: &Repo) -> std::result::Result<(Gh, RemoteFacts), Unloaded> {
         let facts = self
             .remote_facts(repo, &repo.runner, &repo.root)
             .await
@@ -218,30 +258,7 @@ impl RepoManager {
         let Some(gh) = self.gh(repo, &repo.runner, &on) else {
             return Err((PrUnavailable::NoGh, Some(GhFailure::NoGh), true));
         };
-        let limit = LIST_LIMIT.to_string();
-        let args = [
-            "pr",
-            "list",
-            "--repo",
-            gh.repo(),
-            "--state",
-            "open",
-            "--limit",
-            &limit,
-            "--json",
-            PR_FIELDS,
-        ];
-        match gh.run(&args, CmdKind::Read, StdinPolicy::Null).await {
-            Ok(Ok(out)) => match parse_list(&out.stdout) {
-                Ok(listed) => Ok(PrData { listed, facts }),
-                Err(why) => Err(failed(
-                    CoreError::new(ErrorCode::Io, "gh's answer could not be read.")
-                        .with_detail(why),
-                )),
-            },
-            Ok(Err(failure)) => Err((failure.reason(), Some(failure), true)),
-            Err(e) => Err(failed(e)),
-        }
+        Ok((gh, facts))
     }
 
     /// `gh` for `repo`, on the repository's host `on` (one [`RepoManager::on_github`] gave),

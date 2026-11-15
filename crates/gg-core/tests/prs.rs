@@ -1225,3 +1225,36 @@ async fn ssh_is_never_asked_about_a_host_that_is_not_a_plain_name() {
     assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub));
     assert_eq!(s.gh.ssh_calls().len(), 1);
 }
+
+/// No flicker (Task 8 review): a repository known not to be on GitHub, or without `gh`, is
+/// never shown as loading on its way to unavailable; one that can load is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn loading_is_shown_only_when_gh_will_be_asked() {
+    let loading = |s: &Setup| {
+        s.h.sink
+            .events()
+            .into_iter()
+            .filter(|(n, v)| n == "repo-changed" && v["prs"]["status"] == "loading")
+            .count()
+    };
+    let s = setup_with("https://gitlab.com/octo/cat.git").await;
+    s.gh.reply("auth-token", 1, "", "");
+    s.h.m.set_prs_every(Duration::ZERO);
+    s.load().await;
+    s.load().await;
+    assert_eq!(loading(&s), 0, "not GitHub");
+
+    let s = setup().await;
+    let empty = tempfile::tempdir().unwrap();
+    s.h.m
+        .set_tool_path(Some(empty.path().as_os_str().to_owned()));
+    s.h.m.set_prs_every(Duration::ZERO);
+    s.load().await;
+    s.load().await;
+    assert_eq!(loading(&s), 0, "no gh");
+
+    let s = setup().await;
+    s.gh.reply("pr-list", 0, "[]", "");
+    s.load().await;
+    assert_eq!(loading(&s), 1, "gh asked");
+}

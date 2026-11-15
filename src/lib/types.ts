@@ -273,9 +273,11 @@ export type DangerKind =
   | "drop_stash"
   | "abort"
   | "skip_discards"
-  | "remove_worktree_with_work" // red: removed with --force
+  | "remove_worktree_with_work" // red: changed or untracked files go (--force), or a detached HEAD's commits
   | "remove_worktree_ignored_files" // an ordinary confirmation, not red: only ignored files, which git deletes
-  | "delete_unmerged_branch_with_worktree"; // red: the branch deleted after its worktree (R9)
+  | "delete_unmerged_branch_with_worktree" // red: the branch deleted after its worktree (R9)
+  | "prune_worktrees" // an ordinary confirmation: the stale entries prune forgets
+  | "prune_worktrees_loses_commits"; // red: a stale detached entry's commits on no branch, tag or remote go
 /**
  * token: the state the message was worked out from (R39); confirming sends it back with the
  * kind (`Confirmed`), and the core asks again if the state has changed since.

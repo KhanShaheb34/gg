@@ -935,14 +935,21 @@ pub enum DangerKind {
     /// Skipping a rebase's commit puts every tracked file back as HEAD has it: changes made
     /// since it stopped go too.
     SkipDiscards,
-    /// Removing a worktree that holds work (uncommitted changes, untracked files, commits on
-    /// no remote, something in progress): it is removed with `--force`. Red.
+    /// Removing a worktree that holds work (uncommitted changes, untracked files, a detached
+    /// HEAD's commits on no branch, tag or remote, something in progress): changed or
+    /// untracked files are removed with `--force`. Red.
     RemoveWorktreeWithWork,
     /// Removing a worktree whose only work is ignored files, which git deletes with it
     /// without asking. An ordinary confirmation, not red.
     RemoveWorktreeIgnoredFiles,
     /// Deleting, after its worktree, a branch that `branch -d` would refuse (R9). Red.
     DeleteUnmergedBranchWithWorktree,
+    /// Pruning forgets the worktree entries whose folders are gone (one on a disconnected
+    /// drive too). An ordinary confirmation, not red.
+    PruneWorktrees,
+    /// Pruning, when an entry to forget is a detached HEAD with commits on no branch, tag or
+    /// remote: they are lost with it. Red.
+    PruneWorktreesLosesCommits,
 }
 
 /// What would be lost, said plainly, for the confirmation.
@@ -959,8 +966,9 @@ pub struct Danger {
     /// `delete_unmerged_branch`, the branch's tip; `drop_stash`, the stash's commit;
     /// `abort`, what is stopped and HEAD; `skip_discards`, HEAD and the files whose changes go;
     /// `remove_worktree_with_work` and `remove_worktree_ignored_files`, the worktree's HEAD,
-    /// what is in progress there, and hashes of its status, of its commits on no remote and
-    /// of its ignored files; `delete_unmerged_branch_with_worktree`, the branch's tip.
+    /// what is in progress there, and hashes of its status, of its lost commits and of its
+    /// ignored files; `delete_unmerged_branch_with_worktree`, the branch's tip;
+    /// `prune_worktrees` and `prune_worktrees_loses_commits`, the entries and their HEADs.
     /// Confirming sends it back with its kind; if it no
     /// longer matches, the core asks again, with the state as it is then.
     pub token: Option<String>,

@@ -944,8 +944,99 @@ pub(crate) async fn remove(
     })
 }
 
+/// Said with every prune confirmation.
+const DISCONNECTED: &str = "If one of these is on a disconnected drive, reconnect it or lock \
+                            the worktree instead.";
+
+/// The danger of pruning: none when no entry is prunable; else `prune_worktrees` listing
+/// each entry git would forget (its path, and its branch or detached commit), or the red
+/// `prune_worktrees_loses_commits` when a detached one has commits on no branch, tag or
+/// remote, listed too: they are lost with it. Its token is the entries and their HEADs.
+pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
+    let stale: Vec<WorktreeInfo> = listed(ctx)
+        .await?
+        .into_iter()
+        .filter(|w| w.prunable && !w.locked && !w.is_main)
+        .collect();
+    if stale.is_empty() {
+        return Ok(None);
+    }
+    let mut token = String::new();
+    let mut entries = Vec::new();
+    let mut lost: Vec<String> = Vec::new();
+    let mut lost_count = 0;
+    for wt in &stale {
+        let head = wt.head.as_deref().unwrap_or("");
+        token.push_str(&format!("{}\0{head}\n", wt.path));
+        entries.push(match (&wt.branch, &wt.head) {
+            (Some(branch), _) => format!("{} (branch {branch})", wt.path),
+            (None, Some(head)) => format!("{} (detached at {})", wt.path, short(head)),
+            (None, None) => wt.path.clone(),
+        });
+        if wt.branch.is_none() && !head.is_empty() {
+            let only_here = [head, "--not", "--branches", "--tags", "--remotes"];
+            let mut count_args = vec!["rev-list", "--count"];
+            count_args.extend(only_here);
+            let n: usize = ctx
+                .read(&count_args)
+                .await?
+                .text()
+                .trim()
+                .parse()
+                .unwrap_or(0);
+            if n > 0 {
+                lost_count += n;
+                let limit = MAX_LOST_LISTED.to_string();
+                let mut log = vec!["log", "--abbrev=8", "--format=%h %s", "-n", &limit];
+                log.extend(only_here);
+                lost.extend(
+                    ctx.read(&log)
+                        .await?
+                        .text()
+                        .lines()
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_owned),
+                );
+            }
+        }
+    }
+    let mut detail = Vec::new();
+    section(&mut detail, "Entries forgotten", &entries, entries.len());
+    section(
+        &mut detail,
+        "Commits on no branch, tag or remote",
+        &lost,
+        lost_count,
+    );
+    let them = count(stale.len(), "worktree entry", "worktree entries");
+    let (kind, message) = if lost_count == 0 {
+        (
+            DangerKind::PruneWorktrees,
+            format!(
+                "Pruning makes git forget {them} whose folders are gone (listed below). \
+                 {DISCONNECTED}"
+            ),
+        )
+    } else {
+        (
+            DangerKind::PruneWorktreesLosesCommits,
+            format!(
+                "Pruning makes git forget {them} whose folders are gone (listed below), and \
+                 with them {} on no branch, tag or remote, which are lost. {DISCONNECTED}",
+                count(lost_count, "commit", "commits")
+            ),
+        )
+    };
+    Ok(Some(Danger {
+        kind,
+        message,
+        detail: Some(detail.join("\n")),
+        token: Some(token),
+    }))
+}
+
 /// `git worktree prune`: git forgets the worktrees whose folders are gone (not locked
-/// ones). The message names the entries it removed.
+/// ones), once confirmed (see [`prune_dangers`]). The message names the entries it removed.
 pub(crate) async fn prune(ctx: &OpCtx<'_>) -> Result<Step> {
     let before = listed(ctx).await?;
     let args = ["worktree", "prune"];

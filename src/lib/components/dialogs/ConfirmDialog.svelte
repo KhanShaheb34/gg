@@ -33,6 +33,8 @@
     remove_worktree_with_work: "Remove worktree",
     remove_worktree_ignored_files: "Remove worktree",
     delete_unmerged_branch_with_worktree: "Delete branch",
+    prune_worktrees: "Prune",
+    prune_worktrees_loses_commits: "Prune",
   };
 
   const primary = $derived(dangers.length === 1 ? VERB[dangers[0].kind] : "Go ahead");

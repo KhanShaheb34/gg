@@ -43,6 +43,10 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
             path,
             delete_branch,
         } => crate::ops::worktree::removal_dangers(ctx, path, *delete_branch).await?,
+        OpRequest::WorktreePrune {} => crate::ops::worktree::prune_dangers(ctx)
+            .await?
+            .into_iter()
+            .collect(),
         // The others carry none.
         _ => Vec::new(),
     })

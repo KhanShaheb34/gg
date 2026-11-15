@@ -1003,7 +1003,30 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     fs::remove_dir_all(&locked).unwrap();
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    let out = h.run(id, OpRequest::WorktreePrune {}).await;
+    // Asked first (Task 4 review): an ordinary confirmation naming what git forgets.
+    let mark = h.last_log_id();
+    let asked = h.run(id, OpRequest::WorktreePrune {}).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:#?}");
+    assert!(h.writes_since(mark).is_empty());
+    let danger = &asked.dangers[0];
+    assert_eq!(asked.dangers.len(), 1);
+    assert_eq!(danger.kind, DangerKind::PruneWorktrees);
+    assert_eq!(
+        danger.message,
+        "Pruning makes git forget 1 worktree entry whose folders are gone (listed below). If \
+         one of these is on a disconnected drive, reconnect it or lock the worktree instead."
+    );
+    assert_eq!(
+        danger.detail.as_deref(),
+        Some(format!("Entries forgotten (1):\n  {gone_listed} (branch gone)").as_str())
+    );
+    let out = h
+        .run_confirmed(
+            id,
+            OpRequest::WorktreePrune {},
+            &[DangerKind::PruneWorktrees],
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(out.title, "Prune stale worktree entries");
     assert_eq!(
@@ -1026,6 +1049,58 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
         "{}",
         again.message
     );
+}
+
+/// A stale detached entry whose commits are on no branch, tag or remote: pruning loses
+/// them, so the confirmation is the red one and lists them.
+#[tokio::test]
+async fn pruning_a_detached_entry_with_commits_of_its_own_is_red_and_lists_them() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let wt = repo.add_worktree("tmp");
+    git_in(&wt, &["checkout", "-q", "--detach"]);
+    git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "only there"]);
+    let lost = git_in(&wt, &["rev-parse", "HEAD"]);
+    repo.git(&["branch", "-D", "tmp"]);
+    let listed_path = real(&wt);
+    fs::remove_dir_all(&wt).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let asked = h.run(id, OpRequest::WorktreePrune {}).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:#?}");
+    let danger = &asked.dangers[0];
+    assert_eq!(danger.kind, DangerKind::PruneWorktreesLosesCommits);
+    assert!(
+        danger
+            .message
+            .contains("and with them 1 commit on no branch, tag or remote, which are lost."),
+        "{}",
+        danger.message
+    );
+    assert_eq!(
+        danger.detail.as_deref(),
+        Some(
+            format!(
+                "Entries forgotten (1):\n  {listed_path} (detached at {})\n\nCommits on no \
+                 branch, tag or remote (1):\n  {} only there",
+                &lost[..8],
+                &lost[..8]
+            )
+            .as_str()
+        )
+    );
+    // A confirmation for the ordinary kind does not do.
+    let ordinary = [Confirmed {
+        kind: DangerKind::PruneWorktrees,
+        token: danger.token.clone(),
+    }];
+    let again = h.run_with(id, OpRequest::WorktreePrune {}, &ordinary).await;
+    assert_eq!(again.status, OpStatus::NeedsConfirmation);
+    let out = h
+        .run_with(id, OpRequest::WorktreePrune {}, &confirmed(&asked.dangers))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(listed(&repo).len(), 1);
 }
 
 // ---- Adding ----

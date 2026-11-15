@@ -273,9 +273,6 @@ const PAGE_ERRORS_SCRIPT: &str = r#"(() => {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // The core starts after the window and webview are created; the login shell it asks
-    // for git's PATH can run meanwhile.
-    gg_core::git::runner::prefetch_login_path();
     // First of all: a second launch (`gg <path>` starts a new instance) hands its folders to
     // the running app and exits here, during plugin set-up, before the app's own set-up, so
     // it never reads or writes the config folder or migrates anything. The running app opens
@@ -307,6 +304,10 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Only the instance that stays gets here (a second one has exited during plugin
+            // set-up, having run nothing). The core starts after the window and webview are
+            // created; the login shell it asks for git's PATH can run meanwhile.
+            gg_core::git::runner::prefetch_login_path();
             let slot = Arc::new(CoreSlot {
                 app: app.handle().clone(),
                 core: OnceCell::new(),

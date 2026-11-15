@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { colorIndex, displayFolder, homeInText, relativeTime, shortHash, worktreePathsShown } from "./format";
+import { colorIndex, cutToFit, displayFolder, homeInText, relativeTime, shortHash, worktreeFolders } from "./format";
 
 describe("shortHash", () => {
   it("returns the first 8 characters of a hash", () => {
@@ -56,32 +56,64 @@ describe("colorIndex", () => {
   });
 });
 
-describe("worktreePathsShown", () => {
+describe("worktreeFolders", () => {
   const home = "/Users/ada";
-  it("elides the folders every worktree shares, home as ~", () => {
-    const paths = ["/Users/ada/Dev/app", "/Users/ada/Dev/app.worktrees/fix", "/Users/ada/Dev/app.worktrees/feature-x"];
-    const shown = worktreePathsShown(paths, home);
-    expect(shown.get(paths[0])).toBe("…/app");
-    expect(shown.get(paths[1])).toBe("…/app.worktrees/fix");
-    expect(shown.get(paths[2])).toBe("…/app.worktrees/feature-x");
+  const wt = "/Users/ada/repos/app.worktrees";
+
+  it("names the worktrees in the shared folder by their folder name, and says the folder once", () => {
+    const paths = ["/Users/ada/repos/app", `${wt}/fix`, `${wt}/feature-x`];
+    const f = worktreeFolders(paths, paths[0], home);
+    expect(f.parent).toBe("~/repos/app.worktrees");
+    expect(f.parentPath).toBe(wt);
+    expect([...f.labels.values()]).toEqual(["app", "fix", "feature-x"]);
   });
 
-  it("shows one worktree, or worktrees sharing only ~ or the root, whole", () => {
-    expect(worktreePathsShown(["/Users/ada/Dev/app"], home).get("/Users/ada/Dev/app")).toBe("~/Dev/app");
-    const apart = worktreePathsShown(["/Users/ada/app", "/Users/ada/wt"], home);
-    expect([...apart.values()]).toEqual(["~/app", "~/wt"]);
-    const roots = worktreePathsShown(["/srv/app", "/tmp/wt"], home);
-    expect([...roots.values()]).toEqual(["/srv/app", "/tmp/wt"]);
+  it("gives a worktree elsewhere the shortest end that tells it apart", () => {
+    const paths = ["/Users/ada/repos/app", `${wt}/a`, `${wt}/b`, "/Users/ada/other/fix", "/srv/x/y/fix"];
+    const f = worktreeFolders(paths, paths[0], home);
+    expect(f.parent).toBe("~/repos/app.worktrees");
+    expect(f.labels.get("/Users/ada/other/fix")).toBe("~/other/fix");
+    expect(f.labels.get("/srv/x/y/fix")).toBe("…/y/fix");
+    const deep = worktreeFolders(["/Users/ada/repos/app", `${wt}/a`, "/Users/ada/p/q/r/fix"], "/Users/ada/repos/app", home);
+    expect(deep.labels.get("/Users/ada/p/q/r/fix")).toBe("~/…/r/fix");
   });
 
-  it("keeps each worktree's own folder, even one inside another's", () => {
-    const shown = worktreePathsShown(["/Users/ada/Dev/app", "/Users/ada/Dev/app/wt"], home);
-    expect([...shown.values()]).toEqual(["…/app", "…/app/wt"]);
+  it("makes names that would be the same longer, the main one too", () => {
+    const paths = ["/Users/ada/repos/fix", `${wt}/fix`, `${wt}/b`];
+    const f = worktreeFolders(paths, paths[0], home);
+    expect(f.labels.get(paths[0])).toBe("~/repos/fix");
+    expect(f.labels.get(paths[1])).toBe("~/…/app.worktrees/fix");
+    expect(f.labels.get(paths[2])).toBe("b");
+  });
+
+  it("has no shared folder with only the main worktree", () => {
+    const f = worktreeFolders(["/Users/ada/repos/app"], "/Users/ada/repos/app", home);
+    expect(f.parent).toBeNull();
+    expect(f.labels.get("/Users/ada/repos/app")).toBe("app");
   });
 
   it("works with Windows paths", () => {
-    const shown = worktreePathsShown(["C:\\Users\\ada\\code\\app", "C:\\Users\\ada\\code\\app-fix"], "C:\\Users\\ada");
-    expect([...shown.values()]).toEqual(["…\\app", "…\\app-fix"]);
+    const paths = ["C:\\Users\\ada\\code\\app", "C:\\Users\\ada\\code\\app.worktrees\\fix"];
+    const f = worktreeFolders(paths, paths[0], "C:\\Users\\ada");
+    expect(f.parent).toBe("~\\code\\app.worktrees");
+    expect([...f.labels.values()]).toEqual(["app", "fix"]);
+  });
+});
+
+describe("cutToFit", () => {
+  // One unit per character.
+  const width = (s: string) => [...s].length;
+  it("keeps the end and as much of the start as fits", () => {
+    expect(cutToFit("feature/payments-service-v2", 30, 10, width)).toBeNull();
+    expect(cutToFit("feature/payments-service-v2", 20, 10, width)).toBe("feature/p…service-v2");
+    expect(cutToFit("abcdefgh", 5, 10, width)).toBe("…efgh");
+    expect(cutToFit("abcdefgh", 7, 10, width)).toBe("ab…efgh");
+  });
+
+  it("lets the end give way too when nothing else fits", () => {
+    expect(cutToFit("abcdefghij", 3, 4, width)).toBe("…ij");
+    expect(cutToFit("abcdefghij", 1, 4, width)).toBe("…");
+    expect(cutToFit("é😀abcdef", 5, 3, width)).toBe("é…def");
   });
 });
 

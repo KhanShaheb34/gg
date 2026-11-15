@@ -2,14 +2,15 @@
   The side panel on the right of a repository: a header (its title, a count, the content's
   own buttons, and Hide) over a body the content fills (the worktree list; the commit panel and
   pull requests later). Its left edge resizes it (SIDE_MIN_W to SIDE_MAX_W, remembered;
-  double-click resets). In a wide window it sits beside the graph; in a narrow one
-  (`overlay`) it lies over the graph's right side with a shadow, and Escape inside hides it.
-  Its header lines up with the graph's column header.
+  double-click resets). In a wide window it sits beside the graph (at its least width below
+  NARROW_W, where it does not resize); in a narrow one (`overlay`) it lies over the graph's
+  right side with a shadow, below the conflict banner (`top`), and Escape inside hides it. Its
+  header lines up with the graph's column header.
 -->
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { isMac } from "../platform";
-  import { clampWidth, saveWidth, SIDE_DEFAULT_W, sidePanel } from "../state/worktrees.svelte";
+  import { clampWidth, dockedWidth, NARROW_W, saveWidth, SIDE_DEFAULT_W, sidePanel } from "../state/worktrees.svelte";
   import Splitter from "./Splitter.svelte";
 
   type Props = {
@@ -18,18 +19,22 @@
     count?: string | null;
     /** Over the graph rather than beside it. */
     overlay: boolean;
+    /** Over the graph: how far from the top it starts (below the conflict banner), px. */
+    top?: number;
     onhide: () => void;
     actions?: Snippet;
     children: Snippet;
   };
 
-  let { title, count = null, overlay, onhide, actions, children }: Props = $props();
+  let { title, count = null, overlay, top = 0, onhide, actions, children }: Props = $props();
 
   const HIDE_KEYS = isMac() ? "⌘B" : "Ctrl+B";
   /** Over the graph, the panel leaves the graph at least this much of the window. */
   const OVERLAY_GAP = 120;
 
-  const width = $derived(overlay ? Math.min(sidePanel.width, Math.max(200, sidePanel.windowW - OVERLAY_GAP)) : sidePanel.width);
+  const width = $derived(overlay ? Math.min(sidePanel.width, Math.max(200, sidePanel.windowW - OVERLAY_GAP)) : dockedWidth());
+  /** Docked at its least width in a narrow window: nothing to resize. */
+  const resizable = $derived(overlay || sidePanel.windowW >= NARROW_W);
 
   let startW = 0;
 
@@ -42,8 +47,16 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<aside class="side" class:overlay style:width="{width}px" aria-label={title} data-region="side-panel" onkeydown={onKeydown}>
-  <Splitter
+<aside
+  class="side"
+  class:overlay
+  style:width="{width}px"
+  style:top={overlay ? `${top}px` : undefined}
+  aria-label={title}
+  data-region="side-panel"
+  onkeydown={onKeydown}
+>
+  {#if resizable}<Splitter
     label="Resize the side panel"
     edge="left"
     value={width}
@@ -54,7 +67,7 @@
       sidePanel.width = SIDE_DEFAULT_W;
       saveWidth();
     }}
-  />
+  />{/if}
   <header class="head">
     <h2 class="title">{title}</h2>
     {#if count !== null}

@@ -1,26 +1,29 @@
 <!--
   The worktrees of a repository, as git lists them (so ones made in a terminal, by an agent
-  or by another tool show too), the main one first. Each row: the branch (or the detached
-  commit), the folder (the home folder as ~, the folders they all share as …), uncommitted
-  changes, ahead and behind its upstream (or "no upstream", or how many commits are on no
-  remote), and what is unusual: locked, folder missing, a merge or rebase stopped there. The
-  active worktree, where every action runs, has the accent bar and the ring the graph draws on
-  its HEAD.
+  or by another tool show too), the main one first. Each row: on its first line the branch
+  (or the detached commit), uncommitted changes and, in one place at the right, how it stands
+  with its upstream (↑ahead ↓behind, "no upstream", or how many commits are on no remote); on
+  its second line its folder (by name: the folder most of them are in is said once, in the
+  panel's header; see worktreeFolders) and what is unusual: locked, folder missing, a merge or
+  rebase stopped there. Long names are cut in the middle. The active worktree, where every
+  action runs, has the accent bar and the ring the graph draws on its HEAD.
 
-  A click selects a row and shows its HEAD in the graph; a double click, Enter or the row's
-  "Make active" button makes it the active worktree (the row shows the switch at once). The
-  list takes arrow keys, Home and End; the menu key (or Shift+F10) or a right click opens a
-  row's menu. With only the main worktree, one sentence says what worktrees are for.
+  A grid of rows: a click selects a row and shows its HEAD in the graph; a double click, Enter
+  or the row's "Make active" button makes it the active worktree (the row shows the switch at
+  once; one that cannot be made active says why). The grid takes arrow keys, Home and End;
+  the menu key (or Shift+F10) or a right click opens a row's menu. With only the main
+  worktree, one sentence says what worktrees are for.
 -->
 <script lang="ts">
   import { tick } from "svelte";
-  import { shortHash, visibleText, worktreePathsShown } from "../format";
+  import { shortHash, worktreeFolders } from "../format";
   import { commits } from "../menus/common";
   import { makeActiveReason } from "../menus/worktreeMenu";
-  import { app } from "../state/app.svelte";
+  import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { addWorktree, makeActive, openWorktreeMenu, panelState, revealWorktree } from "../state/worktrees.svelte";
   import type { WorktreeInfo } from "../types";
+  import MiddleText from "./MiddleText.svelte";
 
   let { view }: { view: RepoView } = $props();
 
@@ -28,7 +31,7 @@
   const snap = $derived(view.snapshot);
   /** The main worktree first, then the others in git's order. */
   const rows = $derived([...snap.worktrees].sort((a, b) => Number(b.isMain) - Number(a.isMain)));
-  const paths = $derived(worktreePathsShown(rows.map((w) => w.path), app.homeDir));
+  const folders = $derived(worktreeFolders(rows.map((w) => w.path), rows.find((w) => w.isMain)?.path ?? null, app.homeDir));
   const loading = $derived(snap.generation < 0 && rows.length === 0);
   const selectedIndex = $derived(rows.findIndex((w) => w.path === panel.selected));
 
@@ -98,7 +101,7 @@
   /** The accessible name of a row. */
   function label(wt: WorktreeInfo): string {
     const name = wt.branch ?? `detached at ${wt.head ? shortHash(wt.head) : "nothing"}`;
-    const parts = [name, paths.get(wt.path) ?? wt.path];
+    const parts = [name, folders.labels.get(wt.path) ?? wt.path];
     if (wt.active) parts.push("active");
     if (wt.isMain) parts.push("main worktree");
     const changes = changesText(wt);
@@ -116,8 +119,11 @@
     if (wt) void revealWorktree(view, wt);
   }
 
+  /** Makes `wt` active, or says why it cannot be. */
   function activate(wt: WorktreeInfo) {
-    if (makeActiveReason(wt, snap) === undefined) void makeActive(view.repoId, wt.path, view);
+    const why = makeActiveReason(wt, snap);
+    if (why === undefined) void makeActive(view.repoId, wt.path, view);
+    else if (!wt.active) toast("info", `${wt.branch ?? "That worktree"} cannot be made active: ${why.charAt(0).toLowerCase()}${why.slice(1)}.`);
   }
 
   function rowAt(e: Event): number {
@@ -198,12 +204,19 @@
   {#if loading}
     <p class="state">Reading worktrees…</p>
   {:else}
-    <!-- Rows take pointer events here; the list itself takes the keys (aria-activedescendant). -->
+    {#if folders.parent !== null}
+      <!-- The folder most worktrees are in, said once: the rows name their folders only. -->
+      <p class="where" data-testid="worktrees-folder">
+        <span class="in">in</span><MiddleText text={folders.parent} keep={18} title={folders.parentPath} />
+      </p>
+    {/if}
+    <!-- Rows take pointer events here; the grid itself takes the keys (aria-activedescendant). -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-    <ul
+    <div
       class="list"
-      role="listbox"
+      role="grid"
       aria-label="Worktrees"
+      aria-rowcount={rows.length}
       tabindex="0"
       aria-activedescendant={selectedIndex >= 0 ? rowId(selectedIndex) : undefined}
       bind:this={list}
@@ -219,95 +232,100 @@
         {@const note = remoteNote(wt)}
         {@const switching = panel.switching === wt.path}
         {@const canActivate = makeActiveReason(wt, snap) === undefined}
-        <li
+        <div
           id={rowId(i)}
           class="row"
           class:active={wt.active}
           class:missing={wt.prunable}
-          role="option"
+          role="row"
+          aria-rowindex={i + 1}
           aria-selected={wt.path === panel.selected}
           aria-label={label(wt)}
           data-row={i}
           data-path={wt.path}
           data-active={wt.active}
         >
-          <span class="mark" aria-hidden="true">
-            {#if switching}
-              <svg class="spin" width="14" height="14" viewBox="0 0 16 16">
-                <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="1.8" />
-                <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-              </svg>
-            {:else if wt.active}
-              <!-- The ring the graph draws on the active HEAD. -->
-              <svg width="14" height="14" viewBox="0 0 14 14">
-                <circle cx="7" cy="7" r="4.1" fill="none" stroke="currentColor" stroke-width="2" />
-              </svg>
-            {:else}
-              <svg width="14" height="14" viewBox="0 0 14 14">
-                <path
-                  d="M1.8 3.6c0-.6.5-1.1 1.1-1.1h2.8l1.2 1.3h4.2c.6 0 1.1.5 1.1 1.1v5.3c0 .6-.5 1.1-1.1 1.1H2.9c-.6 0-1.1-.5-1.1-1.1z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.15"
-                  stroke-linejoin="round"
-                />
-                {#if wt.prunable}
-                  <path d="M2.2 12.2 11.8 2.2" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+          <div class="cell" role="gridcell">
+            <span class="mark" aria-hidden="true">
+              {#if switching}
+                <svg class="spin" width="14" height="14" viewBox="0 0 16 16">
+                  <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="1.8" />
+                  <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+              {:else if wt.active}
+                <!-- The ring the graph draws on the active HEAD. -->
+                <svg width="14" height="14" viewBox="0 0 14 14">
+                  <circle cx="7" cy="7" r="4.1" fill="none" stroke="currentColor" stroke-width="2" />
+                </svg>
+              {:else}
+                <svg width="14" height="14" viewBox="0 0 14 14">
+                  <path
+                    d="M1.8 3.6c0-.6.5-1.1 1.1-1.1h2.8l1.2 1.3h4.2c.6 0 1.1.5 1.1 1.1v5.3c0 .6-.5 1.1-1.1 1.1H2.9c-.6 0-1.1-.5-1.1-1.1z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.15"
+                    stroke-linejoin="round"
+                  />
+                  {#if wt.prunable}
+                    <path d="M2.2 12.2 11.8 2.2" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+                  {/if}
+                </svg>
+              {/if}
+            </span>
+
+            <span class="line one">
+              {#if wt.branch !== null}
+                <MiddleText class="name" text={wt.branch} />
+              {:else}
+                <span class="name detached" title="Detached HEAD"
+                  ><span class="hash">{wt.head ? shortHash(wt.head) : "—"}</span><span class="what">detached</span></span
+                >
+              {/if}
+              <span class="facts">
+                {#if wt.status === null && !wt.prunable}
+                  <span class="pending" title="Not read yet">…</span>
+                {:else if n > 0 || (wt.status?.conflicted ?? 0) > 0}
+                  <span class="changes" class:conflicts={(wt.status?.conflicted ?? 0) > 0} title={changesText(wt)}
+                    ><span class="dot"></span>{n}</span
+                  >
                 {/if}
-              </svg>
-            {/if}
-          </span>
+                <!-- How it stands with its upstream, in one place. -->
+                {#if ab}
+                  <span class="upstream ab" title={upstreamText(wt)}>{ab}</span>
+                {:else if note}
+                  <span class="upstream note" title={remoteNoteTitle(wt)}>{note}</span>
+                {/if}
+              </span>
+            </span>
 
-          <span class="line one">
-            {#if wt.branch !== null}
-              <bdi class="name" title={wt.branch}>{visibleText(wt.branch)}</bdi>
-            {:else}
-              <span class="name detached" title="Detached HEAD"
-                ><span class="hash">{wt.head ? shortHash(wt.head) : "—"}</span><span class="what">detached</span></span
-              >
-            {/if}
-            <span class="facts">
-              {#if wt.status === null && !wt.prunable}
-                <span class="pending" title="Not read yet">…</span>
-              {:else if n > 0 || (wt.status?.conflicted ?? 0) > 0}
-                <span class="changes" class:conflicts={(wt.status?.conflicted ?? 0) > 0} title={changesText(wt)}
-                  ><span class="dot"></span>{n}</span
-                >
-              {/if}
-              {#if ab}
-                <span class="ab" title={upstreamText(wt)}>{ab}</span>
+            <span class="line two">
+              <MiddleText class="path" text={folders.labels.get(wt.path) ?? wt.path} title={wt.path} />
+              {#if wt.inProgress || wt.prunable || wt.locked}
+                <span class="badges">
+                  {#if wt.inProgress}
+                    <span class="badge warn" title="A {wt.inProgress} stopped there">{IN_PROGRESS[wt.inProgress]}</span>
+                  {/if}
+                  {#if wt.prunable}
+                    <span class="badge warn" title="Its folder is gone: prune stale entries to forget it">folder missing</span>
+                  {/if}
+                  {#if wt.locked}
+                    <span class="badge" title={wt.lockReason ? `Locked: ${wt.lockReason}` : "Locked"}
+                      ><svg width="9" height="10" viewBox="0 0 9 10" aria-hidden="true"
+                        ><rect x="1" y="4.4" width="7" height="4.9" rx="1" fill="currentColor" /><path
+                          d="M2.6 4.6V3.2a1.9 1.9 0 0 1 3.8 0v1.4"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.1"
+                        /></svg
+                      >locked</span
+                    >
+                  {/if}
+                </span>
               {/if}
             </span>
-          </span>
+          </div>
 
-          <span class="line two">
-            <span class="path path-tail" title={wt.path}><bdi>{paths.get(wt.path) ?? wt.path}</bdi></span>
-            <span class="badges">
-              {#if note}
-                <span class="note" title={remoteNoteTitle(wt)}>{note}</span>
-              {/if}
-              {#if wt.inProgress}
-                <span class="badge warn" title="A {wt.inProgress} stopped there">{IN_PROGRESS[wt.inProgress]}</span>
-              {/if}
-              {#if wt.prunable}
-                <span class="badge warn" title="Its folder is gone: prune stale entries to forget it">folder missing</span>
-              {/if}
-              {#if wt.locked}
-                <span class="badge" title={wt.lockReason ? `Locked: ${wt.lockReason}` : "Locked"}
-                  ><svg width="9" height="10" viewBox="0 0 9 10" aria-hidden="true"
-                    ><rect x="1" y="4.4" width="7" height="4.9" rx="1" fill="currentColor" /><path
-                      d="M2.6 4.6V3.2a1.9 1.9 0 0 1 3.8 0v1.4"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.1"
-                    /></svg
-                  >locked</span
-                >
-              {/if}
-            </span>
-          </span>
-
-          <span class="tools">
+          <div class="tools" role="gridcell">
             {#if !wt.active && (canActivate || switching)}
               <button
                 class="activate"
@@ -337,10 +355,10 @@
                 <circle cx="10.8" cy="7" r="1.1" fill="currentColor" />
               </svg>
             </button>
-          </span>
-        </li>
+          </div>
+        </div>
       {/each}
-    </ul>
+    </div>
 
     {#if rows.length === 1}
       <div class="intro" data-testid="worktrees-intro">
@@ -364,6 +382,20 @@
     font-size: var(--fs-sm);
   }
 
+  .where {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    margin: 0;
+    padding: 7px 12px 1px;
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+  }
+
+  .in {
+    flex: none;
+  }
+
   .list {
     margin: 0;
     padding: 4px 0;
@@ -375,16 +407,19 @@
     box-shadow: inset 0 0 0 2px var(--focus-ring);
   }
 
-  /* Two lines: what is checked out and how it stands; where it is and what is unusual. */
   .row {
     position: relative;
+    transition: background-color 60ms linear;
+  }
+
+  /* Two lines: what is checked out and how it stands; where it is and what is unusual. */
+  .cell {
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr);
     grid-template-rows: 18px 16px;
     column-gap: 8px;
     row-gap: 2px;
     padding: 6px 10px 6px 12px;
-    transition: background-color 60ms linear;
   }
 
   .row:hover {
@@ -454,19 +489,16 @@
     font-size: var(--fs-xs);
   }
 
-  .name {
+  .line :global(.name) {
     min-width: 0;
-    overflow: hidden;
     font-weight: 500;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
 
-  .active .name {
+  .active .line :global(.name) {
     font-weight: 650;
   }
 
-  .missing .name {
+  .missing .line :global(.name) {
     color: var(--text-muted);
   }
 
@@ -530,8 +562,8 @@
     letter-spacing: -0.01em;
   }
 
-  .path {
-    flex: 1 1 auto;
+  .line :global(.path) {
+    flex: 0 1 auto;
     min-width: 0;
   }
 
@@ -540,13 +572,16 @@
     align-items: center;
     gap: 5px;
     flex: none;
-    max-width: 60%;
-    overflow: hidden;
+    margin-left: auto;
+  }
+
+  .upstream {
+    white-space: nowrap;
   }
 
   .note {
     color: var(--text-faint);
-    white-space: nowrap;
+    font-weight: 500;
   }
 
   .badge {

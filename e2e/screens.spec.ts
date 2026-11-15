@@ -888,8 +888,8 @@ for (const [prefix, width, height] of SIZES)
   });
 }
 
-// The side panel's worktree list and the worktree dialogs. In the small window the panel
-// lies over the graph once asked for.
+// The side panel's worktree list and the worktree dialogs. In the small window (900 px) the
+// panel is docked at its least width, shown by default.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
     test(`worktrees, ${width}x${height}, ${theme}`, async ({ gg }) => {
@@ -901,15 +901,12 @@ for (const [prefix, width, height] of SIZES)
       await open(page, repo);
       const grid = page.getByRole("grid", { name: "Commits" });
       await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
-      const list = page.getByRole("listbox", { name: "Worktrees" });
-      const row = (folder: string) => list.locator(`[role="option"][data-path$="/${folder}"]`);
+      const list = page.getByRole("grid", { name: "Worktrees" });
+      const row = (folder: string) => list.locator(`[role="row"][data-path$="/${folder}"]`);
       const shot = async (name: string) => {
         await page.waitForTimeout(250);
         await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
       };
-      if (prefix === "small-") {
-        await page.keyboard.press("ControlOrMeta+b");
-      }
       await expect(row("feature-login").locator(".changes")).toHaveText("2");
       await expect(row("hotfix").locator(".changes")).toBeVisible();
 
@@ -948,7 +945,6 @@ for (const [prefix, width, height] of SIZES)
       await page.getByRole("dialog", { name: "Create worktree" }).getByRole("button", { name: "Cancel" }).click();
 
       // Delete, plain, then the core's red confirmation listing the work.
-      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
       await row("feature-login").click({ button: "right" });
       await page.getByRole("menuitem", { name: "Delete…" }).click();
       const del = page.getByRole("dialog", { name: "Delete worktree feature-login" });
@@ -961,17 +957,17 @@ for (const [prefix, width, height] of SIZES)
       await shot("dialog-delete-worktree-red");
       await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
 
-      // Ignored files alone: the ordinary confirmation.
-      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
+      // Ignored files alone: listed in the same dialog, in the ordinary style.
       await row("docs").click({ button: "right" });
       await page.getByRole("menuitem", { name: "Delete…" }).click();
-      await page.getByRole("dialog", { name: "Delete worktree docs" }).getByRole("button", { name: "Delete worktree" }).click();
-      await expect(page.getByRole("dialog", { name: /Remove worktree/ })).toBeVisible();
+      const docs = page.getByRole("dialog", { name: "Delete worktree docs" });
+      await docs.getByRole("button", { name: "Delete worktree" }).click();
+      await expect(docs.getByTestId("dangers")).toBeVisible();
+      await park(page);
       await shot("dialog-delete-worktree-ignored");
-      await page.getByRole("dialog", { name: /Remove worktree/ }).getByRole("button", { name: "Cancel" }).click();
+      await docs.getByRole("button", { name: "Cancel" }).click();
 
       // Prune: the ordinary confirmation naming the entry.
-      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
       await page.getByRole("button", { name: "Worktree actions" }).click();
       await page.getByRole("menuitem", { name: "Prune stale entries…" }).click();
       await expect(page.getByRole("dialog", { name: "Prune stale worktree entries" })).toBeVisible();
@@ -980,7 +976,6 @@ for (const [prefix, width, height] of SIZES)
       await page.keyboard.press("Escape");
 
       // Another worktree made active: the header and the graph follow.
-      if (prefix === "small-" && (await list.count()) === 0) await page.keyboard.press("ControlOrMeta+b");
       await row("feature-login").dblclick();
       await expect(list.locator('[data-active="true"]')).toHaveAttribute("data-path", /feature-login$/);
       await expect(grid.locator('[role="row"].uncommitted')).toHaveCount(1);
@@ -1030,7 +1025,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.evaluate(() => localStorage.setItem("gg.side.v1", JSON.stringify({ width: 240 })));
     await page.reload();
     await open(page, many);
-    await expect(page.getByRole("listbox", { name: "Worktrees" }).getByRole("option")).toHaveCount(21);
+    await expect(page.getByRole("grid", { name: "Worktrees" }).getByRole("row")).toHaveCount(21);
     await park(page);
     await page.waitForTimeout(1000);
     await page.screenshot({ path: path.join(OUT, `worktrees-many-${theme}.png`) });

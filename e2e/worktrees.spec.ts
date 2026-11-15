@@ -18,11 +18,11 @@ async function open(page: Page, dir: string) {
 }
 
 const grid = (page: Page) => page.getByRole("grid", { name: "Commits" });
-const list = (page: Page) => page.getByRole("listbox", { name: "Worktrees" });
-const rows = (page: Page) => list(page).getByRole("option");
+const list = (page: Page) => page.getByRole("grid", { name: "Worktrees" });
+const rows = (page: Page) => list(page).getByRole("row");
 /** The row of the worktree in folder `folder` (its last path component). */
-const row = (page: Page, folder: string) => list(page).locator(`[role="option"][data-path$="${path.sep}${folder}"]`);
-const activeRow = (page: Page) => list(page).locator('[role="option"][data-active="true"]');
+const row = (page: Page, folder: string) => list(page).locator(`[role="row"][data-path$="${path.sep}${folder}"]`);
+const activeRow = (page: Page) => list(page).locator('[role="row"][data-active="true"]');
 const item = (page: Page, name: string | RegExp) => page.getByRole("menuitem", { name, exact: typeof name === "string" });
 const notice = (page: Page, text: string | RegExp) => page.locator("[data-notices] .toast", { hasText: text });
 /** The folder the fixture's linked worktrees are in. */
@@ -35,22 +35,25 @@ test("every worktree is listed with how it stands, the main one first and the ac
   await expect(rows(page)).toHaveCount(8);
   await expect(rows(page).first()).toHaveAttribute("data-path", gg.repoPath("worktrees"));
   await expect(activeRow(page)).toHaveAttribute("data-path", gg.repoPath("worktrees"));
-  await expect(activeRow(page)).toHaveAttribute("aria-label", /^main, …\/worktrees, active, main worktree/);
+  await expect(activeRow(page)).toHaveAttribute("aria-label", /^main, worktrees, active, main worktree/);
 
-  // Changes and ahead/behind; paths with their shared folders elided.
+  // Changes and ahead/behind; each folder by its name, the folder they are in said once.
+  await expect(page.getByTestId("worktrees-folder")).toHaveText("in~/repos/worktrees.worktrees");
   const login = row(page, "feature-login");
   await expect(login.locator(".name")).toHaveText("feature/login");
-  await expect(login.locator(".path")).toHaveText("…/worktrees.worktrees/feature-login");
+  await expect(login.locator(".path")).toHaveText("feature-login");
+  await expect(login.locator(".path")).toHaveAttribute("title", path.join(linked(gg.repoPath("worktrees")), "feature-login"));
+  await expect(activeRow(page).locator(".path")).toHaveText("worktrees");
   await expect(login.locator(".changes")).toHaveText("2");
   await expect(login.locator(".changes")).toHaveAttribute("title", "Uncommitted: 1 changed, 1 new");
   await expect(login.locator(".ab")).toHaveText("↑2 ↓1");
   // No upstream, a commit on no remote.
-  await expect(row(page, "fix-typo").locator(".note")).toHaveText("1 unpushed");
-  await expect(row(page, "docs").locator(".note")).toHaveText("no upstream");
+  await expect(row(page, "fix-typo").locator(".line.one .upstream")).toHaveText("1 unpushed");
+  await expect(row(page, "docs").locator(".line.one .upstream")).toHaveText("no upstream");
   // Detached: the short hash, monospace.
   await expect(row(page, "detached").locator(".hash")).toHaveText(gg.git("worktrees", "rev-parse", "--short=8", "main~2").trim());
   // Locked, missing, a merge stopped there with its conflict.
-  await expect(row(page, "release").locator(".badge")).toHaveText("locked");
+  await expect(row(page, "release").locator(".line.two .badge")).toHaveText("locked");
   await expect(row(page, "release").locator(".badge")).toHaveAttribute("title", "Locked: on a USB drive");
   await expect(row(page, "old-spike").locator(".badge")).toHaveText("folder missing");
   await expect(row(page, "hotfix").locator(".badge")).toHaveText("merging");
@@ -58,8 +61,12 @@ test("every worktree is listed with how it stands, the main one first and the ac
 
   // The header names the active worktree; clicking it puts the focus in the list.
   const header = page.getByTestId("active-worktree");
-  await expect(header).toContainText("main");
-  await expect(header).toContainText("~/repos/worktrees");
+  await expect(header.locator(".wt-branch")).toHaveText("main");
+  await expect(page.locator(".repo-head .wt-folders")).toHaveText("~/repos/");
+  await expect(page.locator(".repo-head .wt-folder")).toHaveText("worktrees");
+  await expect(header).toHaveAttribute("aria-label", /^Active worktree: main, in ~\/repos\/worktrees, one of 8 worktrees/);
+  // Rows hold no interactive element inside an option: a grid of rows, buttons in their own cells.
+  await expect(list(page).locator('[role="option"]')).toHaveCount(0);
   await header.click();
   await expect(list(page)).toBeFocused();
 });
@@ -105,9 +112,9 @@ test("a click shows the worktree's HEAD in the graph; making it active moves the
   await expect(activeRow(page)).toHaveAttribute("data-path", repo);
   await expect(grid(page).locator('[role="row"].uncommitted')).toHaveCount(0);
 
-  // A worktree whose folder is gone cannot be made active.
+  // A worktree whose folder is gone cannot be made active, and says why.
   await row(page, "old-spike").dblclick();
-  await page.waitForTimeout(200);
+  await expect(notice(page, "old-spike cannot be made active: its folder is missing.")).toBeVisible();
   await expect(activeRow(page)).toHaveAttribute("data-path", repo);
 });
 
@@ -235,15 +242,17 @@ test("ignored files alone and pruning are asked in the ordinary style, not red",
   await open(page, repo);
   await row(page, "docs").click({ button: "right" });
   await item(page, "Delete…").click();
-  await page.getByRole("dialog", { name: "Delete worktree docs" }).getByRole("button", { name: "Delete worktree" }).click();
-  const ask = page.getByRole("dialog", { name: /Remove worktree/ });
-  await expect(ask).toBeVisible();
-  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  // One dialog: what the core found (ignored files git deletes) is listed in the same dialog.
+  const ask = page.getByRole("dialog", { name: "Delete worktree docs" });
+  await ask.getByRole("button", { name: "Delete worktree" }).click();
   await expect(ask.getByTestId("dangers")).toContainText("build/");
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
   await expect(ask.locator('[data-severity="ordinary"]')).toHaveCount(1);
   await expect(ask.getByRole("button", { name: "Delete worktree" })).not.toHaveClass(/danger/);
   await ask.getByRole("button", { name: "Delete worktree" }).click();
   await expect(row(page, "docs")).toHaveCount(0);
+  await expect(ask).toHaveCount(0);
 
   // Prune, from the panel's menu: the missing one is named, in the ordinary style.
   await page.getByRole("button", { name: "Worktree actions" }).click();
@@ -339,17 +348,105 @@ test("the panel is shown and hidden with Cmd+B, remembered per repository, and l
   await page.mouse.up();
   await expect.poll(async () => (await panel.boundingBox())!.width).toBe(480);
 
-  // Narrow: hidden until asked for, then over the graph (which keeps its width); Escape hides it.
+  // 900 px: still docked and shown, at its least width.
   await page.setViewportSize({ width: 900, height: 560 });
+  await expect(panel).toBeVisible();
+  await expect(panel).not.toHaveClass(/overlay/);
+  await expect.poll(async () => (await panel.boundingBox())!.width).toBe(240);
+  await expect(page.getByTestId("worktree-count")).toHaveCount(0);
+
+  // Under 840 px: hidden until asked for, the header saying how many there are; then over the
+  // graph (which keeps its width); a click on the graph or Escape hides it.
+  await page.setViewportSize({ width: 820, height: 560 });
   await expect(panel).toHaveCount(0);
+  await expect(page.getByTestId("worktree-count")).toHaveText("· 8\u00a0worktrees");
   const before = (await grid(page).boundingBox())!.width;
   await page.keyboard.press("ControlOrMeta+b");
   await expect(panel).toBeVisible();
   await expect(panel).toHaveClass(/overlay/);
   expect((await grid(page).boundingBox())!.width).toBe(before);
+  await grid(page).locator('[data-index="2"] .subject').click();
+  await expect(panel).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(panel).toBeVisible();
   await list(page).focus();
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
+});
+
+test("over the graph, the panel starts below the conflict banner, whose buttons stay in reach", async ({ gg }) => {
+  const { page } = gg;
+  await page.setViewportSize({ width: 820, height: 560 });
+  await page.goto("/");
+  const repo = gg.repoPath("worktrees");
+  await open(page, repo);
+  // A merge stopped in the main worktree: the banner shows.
+  gg.git("worktrees", "checkout", "-q", "-b", "clash");
+  writeFileSync(path.join(repo, "README.md"), "ours\n");
+  gg.git("worktrees", "commit", "-qam", "Ours");
+  gg.git("worktrees", "checkout", "-q", "main");
+  writeFileSync(path.join(repo, "README.md"), "theirs\n");
+  gg.git("worktrees", "commit", "-qam", "Theirs");
+  try {
+    gg.git("worktrees", "merge", "clash");
+  } catch {
+    // Stops on the conflict.
+  }
+  const abort = page.getByRole("button", { name: "Abort" }).first();
+  await expect(abort).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+b");
+  const panel = page.locator('[data-region="side-panel"]');
+  await expect(panel).toBeVisible();
+  const top = (await panel.boundingBox())!.y;
+  const bannerBox = (await abort.boundingBox())!;
+  expect(top).toBeGreaterThanOrEqual(bannerBox.y + bannerBox.height);
+  await abort.click({ trial: true });
+});
+
+test("the delete dialog says up front what is stopped there, and the create dialog says a refusal about neither field above its buttons", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("worktrees");
+  await open(page, repo);
+  await row(page, "hotfix").click({ button: "right" });
+  await item(page, "Delete…").click();
+  const del = page.getByRole("dialog", { name: "Delete worktree hotfix" });
+  await expect(del.getByTestId("delete-in-progress")).toHaveText("A merge is stopped there; deleting the worktree abandons it.");
+  await del.getByRole("button", { name: "Cancel" }).click();
+  await row(page, "detached").click({ button: "right" });
+  await item(page, "Delete…").click();
+  await expect(page.getByRole("dialog", { name: "Delete worktree detached" })).toContainText("HEAD there is detached at");
+  await page.keyboard.press("Escape");
+
+  // The branch chosen is deleted in a terminal meanwhile: not a problem of the location.
+  await grid(page).locator('.ref[data-ref="patch"]').click({ button: "right" });
+  await item(page, "Create worktree from patch…").click();
+  const dialog = page.getByRole("dialog", { name: "Create worktree" });
+  await expect(dialog.getByTestId("worktree-location")).toHaveValue("~/repos/worktrees.worktrees/patch");
+  gg.git("worktrees", "branch", "-D", "patch");
+  await dialog.getByRole("button", { name: "Create worktree" }).click();
+  await expect(dialog.getByTestId("create-error")).toHaveText("Nothing was created: there is no local branch named “patch”.");
+  await expect(dialog.locator(".field-hint.problem")).toHaveCount(0);
+});
+
+test("the toolbar is never cut off, down to the least window width", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("worktrees"));
+  for (const width of [800, 900]) {
+    await page.setViewportSize({ width, height: 560 });
+    const buttons = page.locator(".repo-head .toolbar").locator("button, label.toggle");
+    const count = await buttons.count();
+    expect(count).toBeGreaterThan(6);
+    for (let i = 0; i < count; i++) {
+      const box = (await buttons.nth(i).boundingBox())!;
+      expect(box.x, `${width}: control ${i}`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${width}: control ${i}`).toBeLessThanOrEqual(width);
+    }
+    // The branch keeps its room.
+    const branch = page.getByTestId("active-worktree").locator(".wt-branch");
+    expect(await branch.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  }
 });
 
 test("the keyboard reaches the panel: F6, arrows, Enter and the menu key", async ({ gg }) => {

@@ -1,8 +1,9 @@
 // The side panel and its worktree list: whether the panel shows (per repository, kept by the
 // core in RepoPrefs.sidePanel), its width (one for the app, in localStorage), which worktree is
-// selected in it, the switch underway, and what its rows and menus do. In a window narrower
-// than DOCK_MIN_W the panel lies over the graph instead of taking room from it, and shows only
-// when asked for in this session.
+// selected in it, the switch underway, and what its rows and menus do. It is docked beside the
+// graph down to DOCK_MIN_W (at its least width below NARROW_W); in a window narrower than that
+// it lies over the graph instead of taking room from it, and shows only when asked for in this
+// session.
 
 import CreateWorktreeDialog, { type CreateFrom } from "../components/dialogs/CreateWorktreeDialog.svelte";
 import DeleteWorktreeDialog from "../components/dialogs/DeleteWorktreeDialog.svelte";
@@ -22,7 +23,9 @@ export const SIDE_MIN_W = 240;
 export const SIDE_MAX_W = 480;
 export const SIDE_DEFAULT_W = 300;
 /** Narrower windows lay the panel over the graph rather than squeezing it. */
-export const DOCK_MIN_W = 1000;
+export const DOCK_MIN_W = 840;
+/** Narrower windows dock the panel at its least width, and the toolbar shows its toggles as icons. */
+export const NARROW_W = 1000;
 
 const STORAGE_KEY = "gg.side.v1";
 
@@ -62,9 +65,14 @@ export function saveWidth(): void {
   }
 }
 
-/** The panel sits beside the graph (a wide window), rather than over it. */
+/** The panel sits beside the graph (a wide enough window), rather than over it. */
 export function docked(): boolean {
   return sidePanel.windowW >= DOCK_MIN_W;
+}
+
+/** The panel's width docked: the user's, or its least in a window narrower than NARROW_W. */
+export function dockedWidth(): number {
+  return sidePanel.windowW < NARROW_W ? SIDE_MIN_W : sidePanel.width;
 }
 
 /** A panel state for a repository with no view (never shown). */

@@ -15,7 +15,7 @@
   import { reportError } from "../state/app.svelte";
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
-  import { panelShown, setPanelShown } from "../state/worktrees.svelte";
+  import { NARROW_W, panelShown, setPanelShown, sidePanel } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
@@ -29,6 +29,8 @@
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
   const sideShown = $derived(panelShown(view.repoId));
+  /** A narrow window: the toggles show as icons (their names in tooltips), so nothing is cut off. */
+  const compact = $derived(sidePanel.windowW < NARROW_W);
 
   function toggleLog() {
     setLogOpen(!logPrefs.open);
@@ -114,41 +116,50 @@
   }
 </script>
 
-<div class="toolbar">
+<div class="toolbar" class:compact>
   <span class="divider" aria-hidden="true"></span>
   <BranchFilter {view} disabled={noCommits} />
 
-  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
-    <input
-      type="checkbox"
-      class="checkbox"
-      disabled={noCommits}
-      checked={view.viewOptions.showRemotes}
-      onchange={(e) => view.setViewOptions({ showRemotes: e.currentTarget.checked })}
-    />
-    <span>Remote branches</span>
-  </label>
-  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
-    <input
-      type="checkbox"
-      class="checkbox"
-      disabled={noCommits}
-      checked={view.viewOptions.showTags}
-      onchange={(e) => view.setViewOptions({ showTags: e.currentTarget.checked })}
-    />
-    <span>Tags</span>
-  </label>
-  <!-- With a branch selection, the stashes on its commits show (R21). -->
-  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
-    <input
-      type="checkbox"
-      class="checkbox"
-      disabled={noCommits}
-      checked={view.viewOptions.showStashes}
-      onchange={(e) => view.setViewOptions({ showStashes: e.currentTarget.checked })}
-    />
-    <span>Stashes</span>
-  </label>
+{#snippet toggle(label: string, checked: boolean, set: (on: boolean) => void, glyph: string)}
+    <label class="toggle" title={noCommits ? NO_COMMITS : compact ? label : undefined}>
+      <input
+        type="checkbox"
+        class="checkbox"
+        aria-label={label}
+        disabled={noCommits}
+        {checked}
+        onchange={(e) => set(e.currentTarget.checked)}
+      />
+      {#if compact}
+        <svg class="glyph" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+          <path d={glyph} fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      {:else}
+        <span aria-hidden="true">{label}</span>
+      {/if}
+    </label>
+  {/snippet}
+  <!-- A cloud: the remotes' branches. -->
+  {@render toggle(
+    "Remote branches",
+    view.viewOptions.showRemotes,
+    (on) => view.setViewOptions({ showRemotes: on }),
+    "M4.9 12.2h6.3a2.8 2.8 0 0 0 .35-5.58 3.7 3.7 0 0 0-7.1-.32A2.95 2.95 0 0 0 4.9 12.2z",
+  )}
+  <!-- A tag. -->
+  {@render toggle(
+    "Tags",
+    view.viewOptions.showTags,
+    (on) => view.setViewOptions({ showTags: on }),
+    "M2.6 7.8V3.4c0-.45.35-.8.8-.8h4.4l5.9 5.9-5.2 5.2zM5.6 5.4h.01",
+  )}
+  <!-- Stacked boxes: stashes. With a branch selection, the stashes on its commits show (R21). -->
+  {@render toggle(
+    "Stashes",
+    view.viewOptions.showStashes,
+    (on) => view.setViewOptions({ showStashes: on }),
+    "M3 5.2h10v7.6H3zM4.6 3h6.8M6.4 8.2h3.2",
+  )}
 
   <span class="spacer"></span>
 
@@ -267,13 +278,29 @@
 </div>
 
 <style>
+  /* Never squeezed or cut off: what gives way in a narrow window is the repository's name
+     and path beside it (and a long operation title, which is contained). */
   .toolbar {
     display: flex;
     align-items: center;
     gap: 4px;
     flex: 1 1 auto;
-    min-width: 0;
+    min-width: min-content;
     height: 100%;
+  }
+
+  .compact {
+    gap: 2px;
+  }
+
+  .compact .toggle {
+    gap: 5px;
+    padding: 0 7px 0 6px;
+  }
+
+  .glyph {
+    display: block;
+    color: var(--text-muted);
   }
 
   /* Separates the repository's name and path from the controls. */
@@ -327,9 +354,11 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    flex: 0 1 auto;
+    flex: 0 1 220px;
     min-width: 0;
     max-width: 280px;
+    /* Its title does not widen the toolbar: it takes the room there is. */
+    contain: inline-size;
     height: 24px;
     margin-right: 6px;
     padding: 0 9px 0 8px;

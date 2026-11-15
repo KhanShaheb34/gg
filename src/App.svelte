@@ -12,7 +12,8 @@
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
   import { detailsRoom, panelRoom } from "./lib/detailsLayout";
-  import { colorIndex, shortHash, shortenPath, visibleText } from "./lib/format";
+  import { colorIndex, shortHash, shortenPath } from "./lib/format";
+  import MiddleText from "./lib/components/MiddleText.svelte";
   import GraphView from "./lib/graph/GraphView.svelte";
   import { api, onEvent, onFolderDrop } from "./lib/ipc";
   import { isMac } from "./lib/platform";
@@ -51,7 +52,18 @@
   const activeWorktree = $derived.by(() => {
     if (!active) return null;
     const snap = repoView(active.repoId).snapshot;
-    return { path: snap.activeWorktree, branch: snap.head.branch, hash: snap.head.hash, count: snap.worktrees.length };
+    const path = shortenPath(snap.activeWorktree || active.path, app.homeDir);
+    const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+    const cut = path.lastIndexOf(sep) + 1;
+    const name = snap.head.branch ?? (snap.head.hash ? `${shortHash(snap.head.hash)} (detached)` : "no commits");
+    return {
+      path,
+      /** The path's folders before its own name ("~/repos/"), which give way first. */
+      folders: path.slice(0, cut),
+      folder: path.slice(cut),
+      name,
+      count: snap.worktrees.length,
+    };
   });
 
   /**
@@ -62,7 +74,7 @@
     const graph = document.querySelector<HTMLElement>('#repo-panel [role="grid"]');
     const notices = document.querySelectorAll<HTMLElement>("[data-notices] .toast");
     const notice = notices[notices.length - 1]?.querySelector<HTMLElement>("button") ?? null;
-    const panel = document.querySelector<HTMLElement>('[data-region="side-panel"] [role="listbox"]');
+    const panel = document.querySelector<HTMLElement>('[data-region="side-panel"] [data-testid="worktree-list"]');
     const regions = [graph, notice, panel];
     const focused = document.activeElement;
     const at = regions.findIndex(
@@ -219,11 +231,17 @@
               <span class="dot" style:background="var(--lane-{colorIndex(active.path)})" aria-hidden="true"></span>
               <h1 class="repo-name">{active.name}</h1>
               {#if activeWorktree}
-                <!-- Where every action runs: the active worktree, always in sight. -->
+                {@const hidden = !panelShown(active.repoId) && activeWorktree.count > 1}
+                <!-- Where every action runs: the active worktree, always in sight. Its branch keeps
+                     its room; its folder, after it, gives way first, down to its own name, then
+                     the repository's name. -->
                 <button
                   class="worktree"
                   data-testid="active-worktree"
-                  title="Active worktree: {shortenPath(activeWorktree.path || active.path, app.homeDir)}{activeWorktree.count > 1
+                  aria-label="Active worktree: {activeWorktree.name}, in {activeWorktree.path}{activeWorktree.count > 1
+                    ? `, one of ${activeWorktree.count} worktrees`
+                    : ''}. Show the worktrees"
+                  title="Active worktree: {activeWorktree.path}{activeWorktree.count > 1
                     ? ` (one of ${activeWorktree.count})`
                     : ''}. Show the worktrees ({PANEL_KEYS})"
                   onclick={showWorktrees}
@@ -231,17 +249,18 @@
                   <svg class="ring" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
                     <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
                   </svg>
-                  <bdi class="wt-branch"
-                    >{activeWorktree.branch !== null
-                      ? visibleText(activeWorktree.branch)
-                      : activeWorktree.hash
-                        ? `${shortHash(activeWorktree.hash)} (detached)`
-                        : "no commits"}</bdi
-                  >
-                  <span class="repo-path path-tail"
-                    ><bdi>{shortenPath(activeWorktree.path || active.path, app.homeDir)}</bdi></span
-                  >
+                  <MiddleText class="wt-branch" text={activeWorktree.name} keep={8} title={null} />
+                  {#if hidden}
+                    <!-- "worktrees" wraps out of sight when there is no room for it. -->
+                    <span class="wt-count" data-testid="worktree-count"
+                      ><span>· {activeWorktree.count}</span><span>&nbsp;worktrees</span></span
+                    >
+                  {/if}
                 </button>
+                <!-- Right to left, wrapping: the folders show only whole, else wrap out of sight. -->
+                <span class="repo-path" title={activeWorktree.path}
+                  ><bdi class="wt-folder">{activeWorktree.folder}</bdi><bdi class="wt-folders">{activeWorktree.folders}</bdi></span
+                >
               {/if}
             </div>
             <Toolbar view={repoView(active.repoId)} />
@@ -253,7 +272,13 @@
               <div class="banner-slot" use:measured={(r) => (bannerRect = r)}>
                 <ConflictBanner view={repoView(active.repoId)} compact={detailsShown > 0 || logPrefs.open} />
               </div>
-              <div class="graph-area">
+              <!-- Over the graph in a narrow window, the side panel goes when the graph is clicked. -->
+              <div
+                class="graph-area"
+                onpointerdowncapture={() => {
+                  if (!docked() && sidePanel.overlayOpen) setPanelShown(active.repoId, false);
+                }}
+              >
                 <GraphView view={repoView(active.repoId)} />
               </div>
             </div>
@@ -280,6 +305,7 @@
                 title="Worktrees"
                 count={view.snapshot.worktrees.length > 1 ? String(view.snapshot.worktrees.length) : null}
                 overlay={!docked()}
+                top={bannerH}
                 onhide={() => {
                   setPanelShown(active.repoId, false);
                   document.querySelector<HTMLElement>('#repo-panel [role="grid"]')?.focus();
@@ -393,13 +419,14 @@
     flex: none;
   }
 
+  /* Gives way before the toolbar does (the toolbar is never cut off). */
   .identity {
     display: flex;
     align-items: center;
     gap: 8px;
-    min-width: 0;
-    max-width: 38%;
     flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .dot {
@@ -420,19 +447,15 @@
     text-overflow: ellipsis;
   }
 
-  .repo-path {
-    min-width: 0;
-    color: var(--text-muted);
-    font-size: var(--fs-sm);
-  }
-
-  /* The active worktree: its branch with the HEAD ring, then its folder; opens the panel. */
+  /* The active worktree: its branch with the HEAD ring (and how many there are while the
+     panel is hidden); opens the panel. It keeps its width: the branch up to 180 px, cut in the
+     middle beyond. */
   .worktree {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: 0 1000 auto;
+    min-width: min-content;
     height: 24px;
     margin-left: 2px;
     padding: 0 8px 0 7px;
@@ -456,15 +479,52 @@
     color: var(--accent);
   }
 
-  .wt-branch {
-    flex: 0 1 auto;
-    min-width: 40px;
+  .worktree :global(.wt-branch) {
+    flex: none;
     max-width: 180px;
-    overflow: hidden;
     color: var(--text);
     font-weight: 600;
+  }
+
+  .wt-count {
+    display: flex;
+    flex-wrap: wrap;
+    flex: 0 1 auto;
+    min-width: 2.4em;
+    height: 18px;
+    overflow: hidden;
+    color: var(--text-muted);
+    line-height: 18px;
     white-space: nowrap;
+  }
+
+  /* The folders before the worktree's own name show only when they fit whole: laid out right
+     to left, they wrap onto a second line, out of sight, when there is no room. */
+  .repo-path {
+    display: flex;
+    flex-flow: row-reverse wrap;
+    justify-content: flex-end;
+    align-content: flex-start;
+    flex: 0 100000 auto;
+    min-width: 0;
+    margin-left: -6px;
+    height: 18px;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    line-height: 18px;
+    white-space: nowrap;
+  }
+
+  .wt-folder {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .wt-folders {
+    flex: none;
   }
 
   /* The graph and the panels docked below it on the left, the side panel on the right (or

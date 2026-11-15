@@ -1072,3 +1072,74 @@ async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
         assert!(!call.env.iter().any(|e| e.starts_with("GH_HOST=")));
     }
 }
+
+/// ssh aliases (Task 8 review): `git@github.com-work:me/r.git` and `git@gh-work:me/r.git`
+/// stand for github.com in the user's ssh config; the real host is asked of `ssh -G` (once
+/// per alias per run), and the GitHub check, `--repo` and the compare page use it. When ssh
+/// cannot tell, the host as written is kept (not GitHub, no credentials stored for it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ssh_aliases_are_resolved_to_the_real_host() {
+    for alias in ["github.com-work", "gh-work"] {
+        let url = format!("git@{alias}:me/cat.git");
+        let s = setup_with(&url).await;
+        s.gh.ssh_alias(alias, "github.com");
+        s.gh.reply("pr-list", 0, "[]", "");
+        s.h.m.set_prs_every(Duration::ZERO);
+        let snap = s.load().await;
+        assert_eq!(snap.prs.status, PrStatus::Ready, "{alias}: {:?}", snap.prs);
+        let listed = &s.gh.calls_of(&["pr", "list"])[0];
+        assert_eq!(listed.argv[2..4], ["--repo", "me/cat"], "{alias}");
+        assert!(
+            !listed.env.iter().any(|e| e.starts_with("GH_HOST=")),
+            "{alias}"
+        );
+        assert!(
+            s.gh.calls_of(&["auth", "token"]).is_empty(),
+            "{alias}: GitHub by name"
+        );
+        let suggested = s.h.m.pr_suggest(s.id, "main").await.unwrap();
+        assert_eq!(
+            suggested.compare_url.as_deref(),
+            Some("https://github.com/me/cat/compare/main...main?expand=1"),
+            "{alias}"
+        );
+        s.load().await;
+        assert_eq!(
+            s.gh.ssh_calls(),
+            [["-G", "--", alias]],
+            "{alias}: asked once for the run of the app"
+        );
+    }
+
+    // ssh cannot tell: the host as written, which gh has no credentials for.
+    let s = setup_with("git@gh-other:me/cat.git").await;
+    s.gh.ssh_fails(Some(255));
+    s.gh.reply("auth-token", 1, "", "");
+    let snap = s.load().await;
+    assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub));
+    assert_eq!(
+        s.gh.calls_of(&["auth", "token"])[0].argv,
+        ["auth", "token", "--hostname", "gh-other"]
+    );
+}
+
+/// A test build never runs the real `gh` or `ssh`: only those in the first folder of a tool
+/// `PATH` that was set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_test_build_runs_only_the_fake_tools() {
+    let s = setup_with("git@gh-work:me/cat.git").await;
+    s.gh.ssh_alias("gh-work", "github.com");
+    let empty = tempfile::tempdir().unwrap();
+    let mut path = empty.path().as_os_str().to_owned();
+    path.push(":");
+    path.push(s.gh.path());
+    s.h.m.set_tool_path(Some(path));
+    s.h.m.set_prs_every(Duration::ZERO);
+    let snap = s.load().await;
+    assert!(s.gh.calls().is_empty() && s.gh.ssh_calls().is_empty());
+    assert_eq!(snap.prs.status, PrStatus::Unavailable);
+    s.h.m.set_tool_path(None);
+    let snap = s.load().await;
+    assert!(s.gh.calls().is_empty() && s.gh.ssh_calls().is_empty());
+    assert_eq!(snap.prs.status, PrStatus::Unavailable);
+}

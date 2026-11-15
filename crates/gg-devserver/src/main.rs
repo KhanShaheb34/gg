@@ -8,7 +8,9 @@
 //! browser): each launch is appended to the file as a line of JSON instead (for the UI's
 //! tests). The `gg` command is looked for on `--cli-path <PATH>` instead of the login shell's
 //! `PATH`, and `--cli-shell <program>` is asked what `gg` is instead of `$SHELL` (the UI's
-//! tests pass both: temp folders and a stand-in shell, never the user's own).
+//! tests pass both: temp folders and a stand-in shell, never the user's own). With
+//! `--tool-path <PATH>`, `gh` and `ssh` are found and run on that `PATH` instead of the login
+//! shell's (the UI's tests pass a folder holding a fake `gh` and `ssh`, never the real ones).
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
@@ -22,7 +24,7 @@ use tokio::net::TcpListener;
 const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>] \
                      [--allow-origin <origin>]... [--exit-on-stdin-eof] \
                      [--record-launches <file>] [--cli-path <PATH>] \
-                     [--cli-shell <program>]";
+                     [--cli-shell <program>] [--tool-path <PATH>]";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -40,6 +42,8 @@ struct Args {
     cli_path: Option<OsString>,
     /// The shell asked what `gg` is.
     cli_shell: Option<PathBuf>,
+    /// The `PATH` `gh` and `ssh` are found and run on.
+    tool_path: Option<OsString>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -52,6 +56,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut record_launches = None;
     let mut cli_path = None;
     let mut cli_shell = None;
+    let mut tool_path = None;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -84,6 +89,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
             "--record-launches" => record_launches = Some(PathBuf::from(value()?)),
             "--cli-path" => cli_path = Some(value()?),
             "--cli-shell" => cli_shell = Some(PathBuf::from(value()?)),
+            "--tool-path" => tool_path = Some(value()?),
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -96,6 +102,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         record_launches,
         cli_path,
         cli_shell,
+        tool_path,
     })
 }
 
@@ -165,6 +172,9 @@ async fn main() -> ExitCode {
     };
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
     core.record_launches_to(args.record_launches);
+    if args.tool_path.is_some() {
+        core.set_tool_path(args.tool_path);
+    }
     core.start_cli(gg_core::cli::CliSetup {
         shell: args
             .cli_shell
@@ -218,6 +228,7 @@ mod tests {
                 record_launches: None,
                 cli_path: None,
                 cli_shell: None,
+                tool_path: None,
             }
         );
         assert_eq!(
@@ -238,6 +249,8 @@ mod tests {
                 "/a:/b",
                 "--cli-shell",
                 "/fake/sh",
+                "--tool-path",
+                "/fake/bin",
             ])
             .unwrap(),
             Args {
@@ -249,6 +262,7 @@ mod tests {
                 record_launches: Some("/e.jsonl".into()),
                 cli_path: Some("/a:/b".into()),
                 cli_shell: Some("/fake/sh".into()),
+                tool_path: Some("/fake/bin".into()),
             }
         );
         for bad in [

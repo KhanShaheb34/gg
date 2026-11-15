@@ -497,19 +497,76 @@ if [ -f "$r.code" ]; then exit "$(cat "$r.code")"; fi
 exit 0
 "#;
 
+    /// A fake `ssh` beside it, so the tool `PATH` never reaches the real one: `ssh -G --
+    /// <alias>` prints `hostname <the host set with ssh_alias, else the alias>`, or exits
+    /// with the code set with `ssh_fails`; each call's arguments are recorded.
+    const SSH: &str = r#"#!/bin/sh
+d="$(cd "$(dirname "$0")/.." && pwd)"
+i=1
+while ! mkdir "$d/ssh-calls/$i" 2>/dev/null; do i=$((i+1)); done
+for a in "$@"; do printf '%s\0' "$a"; done > "$d/ssh-calls/$i/argv"
+for a in "$@"; do alias="$a"; done
+if [ -f "$d/ssh-replies/code" ]; then exit "$(cat "$d/ssh-replies/code")"; fi
+host="$alias"
+if [ -f "$d/ssh-replies/$alias" ]; then host="$(cat "$d/ssh-replies/$alias")"; fi
+printf 'user git\nhostname %s\nport 22\n' "$host"
+"#;
+
     pub fn new() -> Self {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::Builder::new()
             .prefix("gg-fake-gh-")
             .tempdir()
             .expect("temp dir");
-        for sub in ["bin", "calls", "replies"] {
+        for sub in ["bin", "calls", "replies", "ssh-calls", "ssh-replies"] {
             fs::create_dir(dir.path().join(sub)).expect("fake gh folder");
         }
-        let gh = dir.path().join("bin/gh");
-        fs::write(&gh, Self::SCRIPT).expect("write fake gh");
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
+        for (name, script) in [("gh", Self::SCRIPT), ("ssh", Self::SSH)] {
+            let program = dir.path().join("bin").join(name);
+            fs::write(&program, script).expect("write fake tool");
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755))
+                .expect("chmod fake tool");
+        }
         Self { dir }
+    }
+
+    /// Makes the fake `ssh -G` say `alias` stands for host `host`.
+    pub fn ssh_alias(&self, alias: &str, host: &str) {
+        fs::write(self.dir.path().join("ssh-replies").join(alias), host).unwrap();
+    }
+
+    /// Makes the fake `ssh` exit with `code` (`None`: answer again).
+    pub fn ssh_fails(&self, code: Option<i32>) {
+        let file = self.dir.path().join("ssh-replies/code");
+        match code {
+            Some(code) => fs::write(file, code.to_string()).unwrap(),
+            None => {
+                let _ = fs::remove_file(file);
+            }
+        }
+    }
+
+    /// The arguments of each call of the fake `ssh` so far, oldest first.
+    pub fn ssh_calls(&self) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        for i in 1.. {
+            let Ok(argv) = fs::read(
+                self.dir
+                    .path()
+                    .join("ssh-calls")
+                    .join(i.to_string())
+                    .join("argv"),
+            ) else {
+                break;
+            };
+            out.push(
+                argv.split(|&b| b == 0)
+                    .filter(|a| !a.is_empty())
+                    .map(|a| String::from_utf8_lossy(a).into_owned())
+                    .collect(),
+            );
+        }
+        out
     }
 
     /// The `PATH` that finds it first (then the system's own folders, for `sh`, `cat`…).

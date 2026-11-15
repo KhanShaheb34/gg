@@ -150,10 +150,13 @@ pub struct RepoManager {
     /// Hosts other than github.com and `*.ghe.com`, by whether `gh` has credentials stored
     /// for them (they are GitHub then): asked once per host per run of the app.
     pub(super) gh_hosts: Mutex<std::collections::HashMap<String, bool>>,
+    /// ssh address hosts (maybe aliases of the user's ssh config) → the real host name
+    /// `ssh -G` gave (or the host itself when it could not tell): asked once per run.
+    pub(super) ssh_hosts: Mutex<std::collections::HashMap<String, String>>,
     /// How long a `gh` command may run, in milliseconds.
     pub(super) gh_timeout_ms: AtomicU64,
-    /// Tests only: the `PATH` `gh` is found on and run with, instead of the login shell's.
-    #[cfg(any(test, feature = "testutil"))]
+    /// Tests and the devserver only: the `PATH` `gh` and `ssh` are found on and run with,
+    /// instead of the login shell's (in a test build they never run without one).
     pub(super) tool_path: Mutex<Option<std::ffi::OsString>>,
     /// Tests only: the least time between two loads of the pull requests, instead of 60 s.
     #[cfg(any(test, feature = "testutil"))]
@@ -715,8 +718,8 @@ impl RepoManager {
             worktree_reads_at_once: (AtomicU32::new(0), AtomicU32::new(0)),
             prs_said: Mutex::new(std::collections::HashSet::new()),
             gh_hosts: Mutex::new(std::collections::HashMap::new()),
+            ssh_hosts: Mutex::new(std::collections::HashMap::new()),
             gh_timeout_ms: AtomicU64::new(duration_ms(crate::gh::GH_TIMEOUT)),
-            #[cfg(any(test, feature = "testutil"))]
             tool_path: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
             prs_every: Mutex::new(None),

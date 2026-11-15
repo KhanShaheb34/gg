@@ -31,7 +31,7 @@ use crate::git::refs::RefInfo;
 use crate::git::runner::{
     CmdKind, Expired, GitOutput, GitRunner, StdinPolicy, TimeLimit, ToolRunner,
 };
-use crate::hosts::{RemoteRepo, parse_remote};
+use crate::hosts::{RemoteRepo, parse_remote, ssh_host};
 
 /// The variables `gh` takes a token from instead of its stored credentials.
 const TOKEN_VARS: [&str; 4] = [
@@ -49,11 +49,10 @@ pub(crate) const LIST_LIMIT: usize = 1000;
 pub(crate) const PR_FIELDS: &str =
     "number,title,url,isDraft,headRefName,baseRefName,headRepositoryOwner,isCrossRepository";
 
-/// `gh`, found on `path` (the login shell's `PATH`, else the app's): the first `gh` (`gh.exe`
-/// on Windows) in an absolute entry, unless it lies inside the repository at `root` (a
-/// program of the repository's never runs).
-pub(crate) fn find_gh(path: Option<&OsString>, root: &Path) -> Option<PathBuf> {
-    let name = if cfg!(windows) { "gh.exe" } else { "gh" };
+/// Program `name` (`gh`, `ssh`; `.exe` on Windows), found on `path` (the login shell's
+/// `PATH`, else the app's): the first in an absolute entry, unless it lies inside the
+/// repository at `root` (a program of the repository's never runs).
+pub(crate) fn find_tool(name: &str, path: Option<&OsString>, root: &Path) -> Option<PathBuf> {
     let found = crate::launch::find_program(OsStr::new(name), path)?;
     let real = dunce::canonicalize(&found).unwrap_or_else(|_| found.clone());
     let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_owned());
@@ -386,6 +385,8 @@ pub(crate) struct RemoteFacts {
     push_default: Option<String>,
     /// The remote marked `gh-resolved` (by `gh repo set-default`), if any.
     resolved: Option<String>,
+    /// ssh address host (maybe an alias) → the real host name it stands for.
+    real_hosts: HashMap<String, String>,
 }
 
 impl RemoteFacts {
@@ -462,6 +463,21 @@ impl RemoteFacts {
         self.urls.contains_key(remote)
     }
 
+    /// The hosts the remotes' ssh addresses are written with (maybe aliases of the user's
+    /// ssh config), each once.
+    pub(crate) fn ssh_hosts(&self) -> std::collections::BTreeSet<String> {
+        self.urls
+            .values()
+            .flatten()
+            .filter_map(|u| ssh_host(u))
+            .collect()
+    }
+
+    /// Takes `real` as the host ssh address host `alias` stands for (`ssh -G`'s hostname).
+    pub(crate) fn set_real_host(&mut self, alias: String, real: String) {
+        self.real_hosts.insert(alias, real);
+    }
+
     /// The remote `branch` is pushed to: its `pushRemote`, else `remote.pushDefault`, else its
     /// upstream's remote, else `origin`, else the only remote.
     pub(crate) fn push_remote(&self, branch: &str) -> Option<&str> {
@@ -501,9 +517,16 @@ impl RemoteFacts {
         self.known(remote)
     }
 
-    /// The repository `remote` names: the first of its addresses that names one.
+    /// The repository `remote` names: the first of its addresses that names one, on the
+    /// real host when the address's host is an ssh alias resolved ([`Self::set_real_host`]).
     pub(crate) fn repo_of(&self, remote: &str) -> Option<RemoteRepo> {
-        self.urls.get(remote)?.iter().find_map(|u| parse_remote(u))
+        self.urls.get(remote)?.iter().find_map(|u| {
+            let repo = parse_remote(u)?;
+            match ssh_host(u).and_then(|alias| self.real_hosts.get(&alias)) {
+                Some(real) => Some(repo.on_host(real)),
+                None => Some(repo),
+            }
+        })
     }
 
     /// The remote names, longest first (for splitting `origin/x`).
@@ -601,6 +624,21 @@ fn pick<'a>(
         })
         .max_by_key(|l| l.pr.number)
         .map(|l| &l.pr)
+}
+
+/// The host name in `ssh -G <alias>` output `text` (its `hostname` line), if it is one.
+pub(crate) fn ssh_hostname(text: &str) -> Option<String> {
+    let host = text
+        .lines()
+        .find_map(|l| l.strip_prefix("hostname "))?
+        .trim()
+        .to_ascii_lowercase();
+    let plain = !host.is_empty()
+        && !host.starts_with('-')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'));
+    plain.then_some(host)
 }
 
 /// `branch` as a title: its last part, words split at `-` and `_`, the first capitalised
@@ -701,6 +739,19 @@ mod tests {
             already_exists("https://github.com/o/r/pull/3", "github.com"),
             None
         );
+    }
+
+    #[test]
+    fn ssh_tells_the_real_host_name() {
+        let out = "user git\nhostname github.com\nport 22\nidentityfile ~/.ssh/work\n";
+        assert_eq!(ssh_hostname(out).as_deref(), Some("github.com"));
+        assert_eq!(
+            ssh_hostname("hostname GH.Example.COM\n").as_deref(),
+            Some("gh.example.com")
+        );
+        assert_eq!(ssh_hostname("port 22\n"), None);
+        assert_eq!(ssh_hostname("hostname -oProxyCommand=x\n"), None);
+        assert_eq!(ssh_hostname("hostname a b\n"), None);
     }
 
     #[test]

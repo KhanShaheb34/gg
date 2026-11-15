@@ -7,9 +7,7 @@
 
 use crate::dto::{OpHint, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::gh::{
-    GhFailure, RemoteFacts, already_exists, created_url, number_of, unavailable_message,
-};
+use crate::gh::{GhFailure, already_exists, created_url, number_of, unavailable_message};
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
@@ -90,7 +88,10 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
             "Nothing was opened: there is no local branch named \u{201c}{branch}\u{201d}."
         )));
     }
-    let facts = RemoteFacts::read(&ctx.runner, &ctx.cwd).await?;
+    let facts = ctx
+        .manager
+        .remote_facts(ctx.repo, &ctx.runner, &ctx.cwd)
+        .await?;
     if let Some(r) = base_remote
         && !facts.is_remote(r)
     {

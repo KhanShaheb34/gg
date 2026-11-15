@@ -20,10 +20,44 @@ pub struct RemoteRepo {
 /// host: `https://[user@]host[:port]/owner/name[.git]`, `http://…`, `ssh://[user@]host[:port]/
 /// owner/name[.git]`, `git://…`, or `[user@]host:owner/name[.git]` (scp-like). Local paths,
 /// `file://` and anything with more or fewer path segments are `None`. GitHub's ssh-over-443
-/// host (`ssh.github.com`) is `github.com`.
+/// host (`ssh.github.com`) is `github.com`. The host of an ssh address is as written, which
+/// may be an alias of the user's ssh config: see [`ssh_host`] and [`RemoteRepo::on_host`].
 pub fn parse_remote(url: &str) -> Option<RemoteRepo> {
+    parse(url).map(|(repo, _)| repo)
+}
+
+/// The host git reaches `url` at through ssh (`ssh://`, `git+ssh://`, `ssh+git://` or
+/// scp-like), as written there, lowercase: possibly an alias of the user's ssh config
+/// (`github.com-work`), whose real host name `ssh -G` tells. `None` for other addresses.
+pub fn ssh_host(url: &str) -> Option<String> {
+    parse(url).and_then(|(_, ssh)| ssh)
+}
+
+impl RemoteRepo {
+    /// This repository on `host` instead: the real host name an ssh alias stands for. Its
+    /// pages are addressed by that name (an ssh port is not the web server's).
+    pub fn on_host(mut self, host: &str) -> Self {
+        let host = normal_host(host);
+        self.web.clone_from(&host);
+        self.host = host;
+        self
+    }
+}
+
+/// `host` lowercase, without a trailing dot; GitHub's ssh-over-443 host is `github.com`.
+fn normal_host(host: &str) -> String {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "ssh.github.com" {
+        "github.com".to_owned()
+    } else {
+        host
+    }
+}
+
+/// [`parse_remote`], and the host as written when the address is reached through ssh.
+fn parse(url: &str) -> Option<(RemoteRepo, Option<String>)> {
     let url = url.trim();
-    let (host, path, web_port) = if let Some((scheme, _)) = url.split_once("://") {
+    let (host, path, web_port, ssh) = if let Some((scheme, _)) = url.split_once("://") {
         let scheme = scheme.to_ascii_lowercase();
         if !matches!(
             scheme.as_str(),
@@ -34,7 +68,8 @@ pub fn parse_remote(url: &str) -> Option<RemoteRepo> {
         let parsed = url::Url::parse(url).ok()?;
         let host = parsed.host_str()?.to_owned();
         let web_port = parsed.port().filter(|_| scheme == "https");
-        (host, parsed.path().to_owned(), web_port)
+        let ssh = matches!(scheme.as_str(), "ssh" | "git+ssh" | "ssh+git");
+        (host, parsed.path().to_owned(), web_port, ssh)
     } else {
         // scp-like: `[user@]host:path`, the host without `/` (else it is a local path) and
         // longer than a drive letter (`C:\…`).
@@ -46,14 +81,12 @@ pub fn parse_remote(url: &str) -> Option<RemoteRepo> {
         if host.len() < 2 {
             return None;
         }
-        (host.to_owned(), path.to_owned(), None)
+        (host.to_owned(), path.to_owned(), None, true)
     };
-    let mut host = host.trim_end_matches('.').to_ascii_lowercase();
+    let written = host.trim_end_matches('.').to_ascii_lowercase();
+    let host = normal_host(&host);
     if host.is_empty() {
         return None;
-    }
-    if host == "ssh.github.com" {
-        host = "github.com".to_owned();
     }
     let segments: Vec<&str> = path
         .trim_matches('/')
@@ -71,12 +104,13 @@ pub fn parse_remote(url: &str) -> Option<RemoteRepo> {
         Some(port) => format!("{host}:{port}"),
         None => host.clone(),
     };
-    Some(RemoteRepo {
+    let repo = RemoteRepo {
         host,
         web,
         owner: (*owner).to_owned(),
         name: name.to_owned(),
-    })
+    };
+    Some((repo, ssh.then_some(written)))
 }
 
 /// Whether `host` is GitHub by its name alone: `github.com`, or an Enterprise Cloud host
@@ -188,6 +222,31 @@ mod tests {
         ] {
             assert_eq!(parse_remote(url), None, "{url}");
         }
+    }
+
+    /// The host an ssh address is reached at, as written (maybe an alias of the ssh config).
+    #[test]
+    fn ssh_addresses_name_their_host_as_written() {
+        for (url, host) in [
+            ("git@github.com-work:me/r.git", Some("github.com-work")),
+            ("git@gh-work:me/r.git", Some("gh-work")),
+            ("ssh://git@GH-Work:22/me/r.git", Some("gh-work")),
+            (
+                "git+ssh://git@ssh.github.com:443/me/r.git",
+                Some("ssh.github.com"),
+            ),
+            ("https://github.com/me/r.git", None),
+            ("git://github.com/me/r.git", None),
+            ("/srv/git/r.git", None),
+        ] {
+            assert_eq!(ssh_host(url).as_deref(), host, "{url}");
+        }
+        let aliased = parse_remote("git@gh-work:me/r.git").unwrap();
+        assert_eq!(aliased.host, "gh-work");
+        assert_eq!(
+            aliased.on_host("SSH.GitHub.com."),
+            repo("github.com", "github.com", "me", "r")
+        );
     }
 
     /// A user name, password or token in the URL is never kept anywhere in what is parsed,

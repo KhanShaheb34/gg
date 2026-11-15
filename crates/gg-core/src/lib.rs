@@ -182,8 +182,8 @@ impl Core {
         }
     }
 
-    /// Finds and runs `gh` on `path` instead of the login `PATH` (tests only: a fake `gh`).
-    #[cfg(feature = "testutil")]
+    /// Finds and runs `gh` and `ssh` on `path` instead of the login `PATH`: for tests and
+    /// the devserver only (a fake `gh` and `ssh`).
     pub fn set_tool_path(&self, path: Option<std::ffi::OsString>) {
         if let Ok(repos) = self.repos() {
             repos.set_tool_path(path);

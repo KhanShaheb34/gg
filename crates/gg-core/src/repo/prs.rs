@@ -16,8 +16,8 @@ use tokio::time::Instant;
 use crate::dto::{PrState, PrStatus, PrSuggestion, PrUnavailable, RepoSnapshot};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::gh::{
-    Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, find_gh, humanise,
-    parse_default_branch, parse_list, unavailable_message,
+    Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, find_tool, humanise,
+    parse_default_branch, parse_list, ssh_hostname, unavailable_message,
 };
 use crate::git::runner::{CmdKind, GitRunner, StdinPolicy};
 use crate::hosts::{RemoteRepo, compare_url, is_known_github};
@@ -26,6 +26,8 @@ use crate::repo::manager::{ErrorKind, Repo, RepoManager, lock};
 
 /// Least time between two loads of one repository's pull requests (but for one just made).
 const LOAD_EVERY: Duration = Duration::from_secs(60);
+/// How long `ssh -G` may take to say what an alias stands for.
+const SSH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Most commit subjects a suggested description lists.
 const MAX_SUBJECTS: usize = 50;
 
@@ -203,7 +205,8 @@ impl RepoManager {
             };
             (PrUnavailable::Failed, Some(failure), true)
         };
-        let facts = RemoteFacts::read(&repo.runner, &repo.root)
+        let facts = self
+            .remote_facts(repo, &repo.runner, &repo.root)
             .await
             .map_err(failed)?;
         let Some(remote) = facts.base_remote(None) else {
@@ -257,13 +260,82 @@ impl RepoManager {
 
     /// `gh` as found for `repo`, and the `PATH` to run it with (`None`: git's).
     fn gh_program(&self, repo: &Repo) -> Option<(PathBuf, Option<OsString>)> {
-        #[cfg(any(test, feature = "testutil"))]
+        self.tool_program(repo, if cfg!(windows) { "gh.exe" } else { "gh" })
+    }
+
+    /// Program `name` (`gh`, `ssh`) as found for `repo` (see [`find_tool`]: never inside the
+    /// repository), and the `PATH` to run it with (`None`: git's). On the tool `PATH` when
+    /// one was set (tests, the devserver), else the login shell's. A test build runs only
+    /// the tool `PATH`'s own programs (in its first folder): never the real `gh` or `ssh`.
+    fn tool_program(&self, repo: &Repo, name: &str) -> Option<(PathBuf, Option<OsString>)> {
         let tool_path = lock(&self.tool_path).clone();
-        #[cfg(not(any(test, feature = "testutil")))]
-        let tool_path: Option<OsString> = None;
+        #[cfg(any(test, feature = "testutil"))]
+        let first = std::env::split_paths(tool_path.as_ref()?).next()?;
         let path = tool_path.clone().or_else(|| self.login_path());
-        let program = find_gh(path.as_ref(), &repo.root)?;
+        let program = find_tool(name, path.as_ref(), &repo.root)?;
+        #[cfg(any(test, feature = "testutil"))]
+        if !program.starts_with(&first) {
+            return None;
+        }
         Some((program, tool_path))
+    }
+
+    /// The repository's remote facts ([`RemoteFacts::read`] in `cwd` through `runner`), with
+    /// the ssh aliases their addresses use resolved to the real host names as `gh` does it:
+    /// `ssh -G <alias>`'s `hostname` (once per alias per run of the app; the alias itself
+    /// when ssh cannot tell).
+    pub(crate) async fn remote_facts(
+        &self,
+        repo: &Repo,
+        runner: &GitRunner,
+        cwd: &std::path::Path,
+    ) -> Result<RemoteFacts> {
+        let mut facts = RemoteFacts::read(runner, cwd).await?;
+        for alias in facts.ssh_hosts() {
+            let known = lock(&self.ssh_hosts).get(&alias).cloned();
+            let real = match known {
+                Some(real) => real,
+                None => {
+                    let real = self
+                        .ask_ssh(repo, runner, &alias)
+                        .await
+                        .unwrap_or_else(|| alias.clone());
+                    lock(&self.ssh_hosts).insert(alias.clone(), real.clone());
+                    real
+                }
+            };
+            if real != alias {
+                facts.set_real_host(alias, real);
+            }
+        }
+        Ok(facts)
+    }
+
+    /// The real host name ssh address host `alias` stands for: `ssh -G -- <alias>`'s
+    /// `hostname` line (no connection is made). Run as git's children are (no terminal, stdin
+    /// null), within 5 s, logged as a read (its output, the user's ssh settings, is not kept).
+    async fn ask_ssh(&self, repo: &Repo, runner: &GitRunner, alias: &str) -> Option<String> {
+        if alias.starts_with('-') || alias.contains(|c: char| c.is_whitespace() || c.is_control()) {
+            return None;
+        }
+        let (program, tool_path) =
+            self.tool_program(repo, if cfg!(windows) { "ssh.exe" } else { "ssh" })?;
+        let mut ssh = runner.tool(program, "ssh");
+        if tool_path.is_some() {
+            ssh = ssh.with_path(tool_path);
+        }
+        let out = ssh
+            .run(
+                &repo.root,
+                &["-G", "--", alias],
+                CmdKind::Read,
+                StdinPolicy::Null,
+                crate::git::runner::TimeLimit::total(SSH_TIMEOUT),
+            )
+            .await
+            .ok()?
+            .ok()?;
+        (out.code == 0).then(|| ssh_hostname(&out.text())).flatten()
     }
 
     fn gh_limit(&self) -> Duration {
@@ -345,7 +417,7 @@ impl RepoManager {
                 format!("There is no local branch named \u{201c}{branch}\u{201d}."),
             ));
         }
-        let facts = RemoteFacts::read(&repo.runner, root).await?;
+        let facts = self.remote_facts(&repo, &repo.runner, root).await?;
         let base_remote = facts.base_remote(Some(branch)).map(str::to_owned);
         let on = match base_remote.as_deref() {
             Some(r) => self.on_github(&repo, &repo.runner, &facts, r).await,
@@ -503,8 +575,8 @@ impl RepoManager {
         *lock(&self.prs_every) = Some(every);
     }
 
-    /// Sets the `PATH` `gh` is found on and run with (tests only: a fake `gh`).
-    #[cfg(any(test, feature = "testutil"))]
+    /// Sets the `PATH` `gh` and `ssh` are found on and run with, instead of the login
+    /// shell's: for tests and the devserver only (a fake `gh` and `ssh`).
     pub fn set_tool_path(&self, path: Option<std::ffi::OsString>) {
         *lock(&self.tool_path) = path;
     }

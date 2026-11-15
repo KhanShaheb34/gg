@@ -112,6 +112,8 @@ pub struct RepoManager {
     /// Tests only: the next operation's body panics after running.
     #[cfg(any(test, feature = "testutil"))]
     op_panic: AtomicBool,
+    #[cfg(any(test, feature = "testutil"))]
+    op_fail: AtomicBool,
     /// Tests only: refreshes folded into an operation's final refresh so far.
     #[cfg(any(test, feature = "testutil"))]
     folded_refreshes: AtomicU64,
@@ -698,6 +700,8 @@ impl RepoManager {
             op_delay_ms: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             op_panic: AtomicBool::new(false),
+            #[cfg(any(test, feature = "testutil"))]
+            op_fail: AtomicBool::new(false),
             #[cfg(any(test, feature = "testutil"))]
             folded_refreshes: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
@@ -2037,6 +2041,19 @@ impl RepoManager {
     #[cfg(any(test, feature = "testutil"))]
     pub fn panic_next_op(&self) {
         self.op_panic.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes the next operation's body end in an error once it has run (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn fail_next_op(&self) {
+        self.op_fail.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the body that just ran is to end in an error (see
+    /// [`RepoManager::fail_next_op`]).
+    #[cfg(any(test, feature = "testutil"))]
+    pub(crate) fn take_op_fail(&self) -> bool {
+        self.op_fail.swap(false, Ordering::SeqCst)
     }
 
     /// Whether the body that just ran is to panic (see [`RepoManager::panic_next_op`]).

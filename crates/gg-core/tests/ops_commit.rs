@@ -1704,3 +1704,43 @@ async fn many_long_paths_are_staged_in_short_command_lines() {
         assert!(bytes < 9 * 1024, "{bytes} bytes: {:?}", &r.args[..3]);
     }
 }
+
+/// Task 8 review: anything that goes wrong after the commit was made (an error of what
+/// follows it, or the body ending abruptly) is said as done, with the commit, never as a
+/// bare error that would hide it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trouble_after_the_commit_is_made_is_said_with_the_commit() {
+    let repo = three_files();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    repo.write("a.txt", "one\n");
+    h.m.fail_next_op();
+    let out = h.run(id, commit(&["a.txt"], "first", false)).await;
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(out.committed.as_deref(), Some(new.as_str()));
+    assert!(
+        out.message
+            .starts_with(&format!("Committed {}.", &new[..8])),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message.contains("test: the operation's body failed"),
+        "{}",
+        out.message
+    );
+
+    repo.write("a.txt", "two\n");
+    h.m.panic_next_op();
+    let out = h.run(id, commit(&["a.txt"], "second", false)).await;
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(out.committed.as_deref(), Some(new.as_str()));
+    assert!(
+        out.message.contains("stopped unexpectedly"),
+        "{}",
+        out.message
+    );
+}

@@ -795,6 +795,22 @@ enum Ran {
 /// Where a body says what it made (a worktree's path, a commit's hash) for the outcome.
 type Said = Arc<std::sync::Mutex<Option<String>>>;
 
+/// What a body said in `slot`, if anything.
+fn said(slot: &Said) -> Option<String> {
+    slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The outcome of a commit made (`hash`) after which error `e` came: done, the commit said
+/// first, then what went wrong.
+fn after_commit(hash: &str, e: CoreError) -> Step {
+    let short = hash.get(..8).unwrap_or(hash);
+    Step::DoneWith {
+        message: format!("Committed {short}. Then: {}", e.message),
+        detail: e.detail,
+        hints: Vec::new(),
+    }
+}
+
 /// Said when an operation's body panicked.
 const STOPPED_UNEXPECTEDLY: &str = "The operation stopped unexpectedly.";
 
@@ -940,6 +956,14 @@ impl RepoManager {
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
         });
+        // Ended abruptly after a commit was made: said with the commit, never hidden.
+        let ran = match ran {
+            Err(e) => match said(&committed) {
+                Some(hash) => Ok(("Commit".to_owned(), Ran::Step(after_commit(&hash, e)))),
+                None => Err(e),
+            },
+            ran => ran,
+        };
         // A refused continue is read again too (R33): the files it names were edited outside
         // the app, where nothing git watches changes, and the banner must show them as they are.
         let refused_continue = continuing && matches!(ran, Ok((_, Ran::Refused(_))));
@@ -1206,6 +1230,24 @@ impl RepoManager {
         if self.take_op_panic() {
             panic!("test: the operation's body panicked");
         }
+        #[cfg(any(test, feature = "testutil"))]
+        let step = if self.take_op_fail() {
+            Err(CoreError::new(
+                ErrorCode::Io,
+                "test: the operation's body failed",
+            ))
+        } else {
+            step
+        };
+        // An error after a commit was made is said with the commit (done), never instead
+        // of it.
+        let step = match step {
+            Err(e) => match said(&ctx.committed) {
+                Some(hash) => Ok(after_commit(&hash, e)),
+                None => Err(e),
+            },
+            step => step,
+        };
         step.map(|step| (title, Ran::Step(step)))
     }
 }

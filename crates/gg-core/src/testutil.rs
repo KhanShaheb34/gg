@@ -444,7 +444,8 @@ impl EventSink for RecordingSink {
 /// [`FakeGh::path`]) that records each call (its arguments, its environment, its working
 /// folder, what it read on stdin, whether it had a terminal) and answers with what the test
 /// set for that kind of call: `pr-list`, `pr-list-head` (with `--head`), `pr-create`,
-/// `repo-view`. Unset, it prints nothing and exits 0.
+/// `repo-view`, `auth-token`. Unset, it prints nothing and exits 0. A call can also run a
+/// shell script first ([`FakeGh::run_on`]), as `gh` runs `git`; its output is recorded.
 #[cfg(unix)]
 pub struct FakeGh {
     dir: TempDir,
@@ -461,6 +462,8 @@ pub struct FakeGhCall {
     pub stdin: Vec<u8>,
     /// It could open `/dev/tty` (a controlling terminal).
     pub tty: bool,
+    /// What the script set with [`FakeGh::run_on`] printed (stdout and stderr).
+    pub ran: String,
 }
 
 #[cfg(unix)]
@@ -485,6 +488,7 @@ cat > "$c/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
 r="$d/replies/$key"
+if [ -f "$r.run" ]; then sh "$r.run" > "$c/ran" 2>&1; fi
 if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi
 if [ -f "$r.err" ]; then cat "$r.err" >&2; fi
 if [ -f "$r.out" ]; then cat "$r.out"; fi
@@ -529,6 +533,13 @@ exit 0
         fs::write(file("code"), code.to_string()).unwrap();
     }
 
+    /// Makes calls of `key` run `script` (with `sh`, in the folder `gh` was started in, with
+    /// its environment) before answering; what it prints is the call's `ran`.
+    pub fn run_on(&self, key: &str, script: &str) {
+        let base = self.dir.path().join("replies").join(key);
+        fs::write(base.with_extension("run"), script).unwrap();
+    }
+
     /// Makes calls of `key` wait `secs` seconds before answering.
     pub fn slow(&self, key: &str, secs: u32) {
         let base = self.dir.path().join("replies").join(key);
@@ -561,6 +572,7 @@ exit 0
                 cwd: text("cwd").trim_end().to_owned(),
                 stdin: read("stdin"),
                 tty: c.join("tty").exists(),
+                ran: text("ran"),
             });
         }
         out

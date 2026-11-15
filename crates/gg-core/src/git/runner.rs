@@ -58,6 +58,37 @@ const LEADING_ARGS: [&str; 8] = [
     "core.fsmonitor=false",
 ];
 
+/// Where `core.hooksPath` points for the git another program runs: nowhere.
+const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// The environment that gives the git another program runs in a repository (`gh` runs git
+/// itself) the protection the app's own git children have, through what git honours in
+/// every child it is started with: [`GIT_ENV`], and the settings of [`LEADING_ARGS`] as
+/// command-line config (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`), plus
+/// `core.hooksPath` set to the null device (such a program never needs the repository's
+/// hooks). Built from the same constants as git's own, so the two cannot drift; the
+/// variables of an enclosing git process are removed by [`child_command`] for every child.
+pub(crate) fn git_protection_env() -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = GIT_ENV
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    let mut config: Vec<(&str, &str)> = LEADING_ARGS
+        .chunks(2)
+        .filter_map(|pair| match pair {
+            ["-c", setting] => setting.split_once('='),
+            _ => None,
+        })
+        .collect();
+    config.push(("core.hooksPath", NULL_DEVICE));
+    env.push(("GIT_CONFIG_COUNT".to_owned(), config.len().to_string()));
+    for (i, (key, value)) in config.into_iter().enumerate() {
+        env.push((format!("GIT_CONFIG_KEY_{i}"), key.to_owned()));
+        env.push((format!("GIT_CONFIG_VALUE_{i}"), value.to_owned()));
+    }
+    env
+}
+
 /// Variables an enclosing git process (for example a hook) exports. Inherited, they would
 /// point our commands at that process's repository instead of `cwd`.
 const INHERITED_REPO_VARS: [&str; 5] = [
@@ -1033,6 +1064,13 @@ impl ToolRunner {
         self
     }
 
+    /// This runner, giving the git its program runs the protection of the app's own git
+    /// children (see [`git_protection_env`]).
+    pub(crate) fn with_git_protection(mut self) -> Self {
+        self.env.extend(git_protection_env());
+        self
+    }
+
     /// The program it runs.
     pub fn program(&self) -> &Path {
         &self.program
@@ -1593,6 +1631,42 @@ mod tests {
             index_file: None,
         };
         git.for_repo(3).tool(PathBuf::from("/bin/sh"), "gh")
+    }
+
+    /// The git another program runs gets every setting the app gives its own git (each
+    /// `-c` of the leading options), plus no hooks, and git's environment.
+    #[test]
+    fn the_protection_for_another_programs_git_follows_the_apps_own() {
+        let env = git_protection_env();
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        for (k, v) in GIT_ENV {
+            assert_eq!(get(k), Some(v), "{k}");
+        }
+        let settings: Vec<&str> = LEADING_ARGS
+            .iter()
+            .copied()
+            .filter(|a| *a != "-c")
+            .collect();
+        assert_eq!(
+            LEADING_ARGS.len(),
+            settings.len() * 2,
+            "every setting has its -c"
+        );
+        assert_eq!(
+            get("GIT_CONFIG_COUNT"),
+            Some(&*(settings.len() + 1).to_string())
+        );
+        for (i, setting) in settings.iter().enumerate() {
+            let (k, v) = setting.split_once('=').unwrap();
+            assert_eq!(get(&format!("GIT_CONFIG_KEY_{i}")), Some(k));
+            assert_eq!(get(&format!("GIT_CONFIG_VALUE_{i}")), Some(v));
+        }
+        let last = settings.len();
+        assert_eq!(
+            get(&format!("GIT_CONFIG_KEY_{last}")),
+            Some("core.hooksPath")
+        );
+        assert_eq!(get(&format!("GIT_CONFIG_VALUE_{last}")), Some(NULL_DEVICE));
     }
 
     /// Another program runs on git's spawn path: no controlling terminal (a session of its

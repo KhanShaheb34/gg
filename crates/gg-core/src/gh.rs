@@ -4,7 +4,9 @@
 //! the runner (no terminal, stdin null or the bytes given, 60 s, logged and masked) with
 //! `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `NO_COLOR=1`, and `GH_HOST` only for a
 //! host other than github.com. It runs in the main worktree and finds the repository from
-//! the remotes there itself (no `--repo`).
+//! the remotes there itself (no `--repo`). `gh` runs `git` there itself: that git gets the
+//! protection the app's own git children have, through the environment
+//! ([`crate::git::runner::git_protection_env`]).
 //!
 //! Also here: what the repository's config says of its remotes (which one a branch is pushed
 //! to, which one `gh` takes for the repository), and which branches the pull requests listed
@@ -119,7 +121,8 @@ impl Gh {
         runner = runner
             .with_env("GH_PROMPT_DISABLED", "1")
             .with_env("GH_NO_UPDATE_NOTIFIER", "1")
-            .with_env("NO_COLOR", "1");
+            .with_env("NO_COLOR", "1")
+            .with_git_protection();
         if host != "github.com" {
             runner = runner.with_env("GH_HOST", host);
         }

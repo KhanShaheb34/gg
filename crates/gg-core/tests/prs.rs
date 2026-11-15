@@ -892,3 +892,63 @@ async fn an_enterprise_host_is_named_with_gh_host() {
         call.env
     );
 }
+
+/// Security: `gh` runs `git` itself in the repository. Its git gets the protection the app's
+/// own git children have, through the environment git honours in every child: no prompt,
+/// editor or pager, no optional locks, none of an enclosing git's repository variables, and
+/// the app's settings as command-line config (`core.fsmonitor=false`, …) plus no hooks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_git_gh_runs_is_protected_as_the_apps_own() {
+    let s = setup().await;
+    s.repo
+        .git(&["config", "core.fsmonitor", "touch fsmonitor-ran"]);
+    s.repo.git(&["config", "core.hooksPath", ".githooks"]);
+    s.gh.reply("pr-list", 0, "[]", "");
+    s.gh.run_on(
+        "pr-list",
+        "git config --get core.fsmonitor; git config --get core.hooksPath; git status --short >/dev/null",
+    );
+    s.load().await;
+    let call = &s.gh.calls_of(&["pr", "list"])[0];
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let git_env: Vec<&String> = call.env.iter().filter(|e| e.starts_with("GIT_")).collect();
+    assert_eq!(call.ran, format!("false\n{null}\n"), "{git_env:?}");
+    assert!(!s.repo.path().join("fsmonitor-ran").exists());
+    for set in [
+        "GIT_TERMINAL_PROMPT=0",
+        "GIT_OPTIONAL_LOCKS=0",
+        "GIT_EDITOR=true",
+        "GIT_SEQUENCE_EDITOR=true",
+        "GIT_MERGE_AUTOEDIT=no",
+        "GIT_PAGER=cat",
+        "GIT_CONFIG_COUNT=5",
+        "GIT_CONFIG_KEY_0=core.quotePath",
+        "GIT_CONFIG_VALUE_0=false",
+        "GIT_CONFIG_KEY_1=color.ui",
+        "GIT_CONFIG_VALUE_1=false",
+        "GIT_CONFIG_KEY_2=log.showSignature",
+        "GIT_CONFIG_VALUE_2=false",
+        "GIT_CONFIG_KEY_3=core.fsmonitor",
+        "GIT_CONFIG_VALUE_3=false",
+        "GIT_CONFIG_KEY_4=core.hooksPath",
+    ] {
+        assert!(call.env.iter().any(|e| e == set), "{set}: {git_env:?}");
+    }
+    assert!(
+        call.env
+            .iter()
+            .any(|e| *e == format!("GIT_CONFIG_VALUE_4={null}"))
+    );
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+    ] {
+        assert!(
+            !call.env.iter().any(|e| e.starts_with(&format!("{var}="))),
+            "{var}: {git_env:?}"
+        );
+    }
+}

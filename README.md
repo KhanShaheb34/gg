@@ -13,6 +13,13 @@ runs on a schedule you can turn off, updating remote-tracking refs, objects and 
 as in a terminal). Every action runs git itself, with your hooks, one at a time per
 repository, and shows git's own message when it fails.
 
+## Upgrading from a build made before the rename
+
+The app was renamed to gg, which gives it a new identity on macOS. Your settings, recent
+repositories and open tabs are copied over once, but column widths, panel sizes and each repository's
+view filters start fresh, and macOS asks again before the app may read folders such as
+Documents or Desktop.
+
 ## Using it
 
 - Open a repository folder with the + button, ⌘O, by dropping the folder on the window, or

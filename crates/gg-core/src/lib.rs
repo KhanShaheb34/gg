@@ -32,6 +32,10 @@ pub use error::{CoreError, ErrorCode, Result};
 /// built for release with them.
 pub const TEST_HOOKS: bool = cfg!(feature = "testutil");
 
+/// Whether this build can be told where to find `gh` and `ssh` (`tool-path`: the devserver
+/// and tests only; never the app).
+pub const TOOL_PATH_HOOK: bool = cfg!(feature = "tool-path");
+
 use git::runner::{CommandLog, GitRunner};
 use repo::RepoManager;
 use store::Store;
@@ -182,8 +186,10 @@ impl Core {
         }
     }
 
-    /// Finds and runs `gh` and `ssh` on `path` instead of the login `PATH`: for tests and
-    /// the devserver only (a fake `gh` and `ssh`).
+    /// Finds `gh` and `ssh` in the first folder of `path` and runs them with it instead of
+    /// the login `PATH`: for tests and the devserver only (a fake `gh` and `ssh`; the
+    /// `tool-path` feature, never in the app).
+    #[cfg(feature = "tool-path")]
     pub fn set_tool_path(&self, path: Option<std::ffi::OsString>) {
         if let Ok(repos) = self.repos() {
             repos.set_tool_path(path);

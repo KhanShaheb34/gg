@@ -49,6 +49,25 @@ pub(crate) const LIST_LIMIT: usize = 1000;
 pub(crate) const PR_FIELDS: &str =
     "number,title,url,isDraft,headRefName,baseRefName,headRepositoryOwner,isCrossRepository";
 
+/// Program `name` (`gh`, `ssh`; `.exe` on Windows) for the repository at `root`: with a
+/// tool `PATH` set (`tool_path`: tests and the devserver, for a fake `gh` and `ssh`), only
+/// from its first folder, in every build, so a real program in a later folder never runs;
+/// else on `login` (see [`find_tool`]).
+pub(crate) fn tool_on(
+    name: &str,
+    tool_path: Option<&OsString>,
+    login: Option<&OsString>,
+    root: &Path,
+) -> Option<PathBuf> {
+    match tool_path {
+        Some(tool_path) => {
+            let first = std::env::split_paths(tool_path).next()?.into_os_string();
+            find_tool(name, Some(&first), root)
+        }
+        None => find_tool(name, login, root),
+    }
+}
+
 /// Program `name` (`gh`, `ssh`; `.exe` on Windows), found on `path` (the login shell's
 /// `PATH`, else the app's): the first in an absolute entry, unless it lies inside the
 /// repository at `root` (a program of the repository's never runs).
@@ -673,6 +692,31 @@ pub(crate) fn humanise(branch: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 9 review I2: with a tool `PATH` set (tests, the devserver), `gh` and `ssh` come
+    /// from its first folder only, in every build: a real `gh` in a later folder (`/usr/bin`,
+    /// say) never runs. Without one, the login `PATH` is searched as usual.
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_path_gives_programs_from_its_first_folder_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (empty, real) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let gh = real.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let joined = |dirs: &[&Path]| std::env::join_paths(dirs).unwrap();
+        let later = joined(&[empty.path(), real.path()]);
+        assert_eq!(tool_on("gh", Some(&later), None, root.path()), None);
+        let first = joined(&[real.path(), empty.path()]);
+        assert_eq!(
+            tool_on("gh", Some(&first), None, root.path()),
+            Some(gh.clone())
+        );
+        // The login PATH is not looked at once a tool PATH is set.
+        assert_eq!(tool_on("gh", Some(&later), Some(&first), root.path()), None);
+        assert_eq!(tool_on("gh", None, Some(&later), root.path()), Some(gh));
+    }
 
     fn out(code: i32, stdout: &str, stderr: &str) -> GitOutput {
         GitOutput {

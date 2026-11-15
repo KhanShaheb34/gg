@@ -7,7 +7,9 @@ license.workspace = true
 
 [features]
 # Exposes `gg_core::testutil` (temp git repositories) to integration tests and dependent crates.
-testutil = ["dep:tempfile"]
+testutil = ["dep:tempfile", "tool-path"]
+# Lets the devserver and tests say where `gh` and `ssh` are (a fake of each). Never in the app.
+tool-path = []
 
 [dependencies]
 dunce = "1"

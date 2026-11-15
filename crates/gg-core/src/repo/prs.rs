@@ -16,8 +16,8 @@ use tokio::time::Instant;
 use crate::dto::{PrState, PrStatus, PrSuggestion, PrUnavailable, RepoSnapshot};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::gh::{
-    Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, find_tool, humanise,
-    parse_default_branch, parse_list, ssh_hostname, unavailable_message,
+    Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, humanise, parse_default_branch,
+    parse_list, ssh_hostname, tool_on, unavailable_message,
 };
 use crate::git::runner::{CmdKind, GitRunner, StdinPolicy};
 use crate::hosts::{RemoteRepo, compare_url, is_known_github, is_plain_host};
@@ -273,20 +273,21 @@ impl RepoManager {
         self.tool_program(repo, if cfg!(windows) { "gh.exe" } else { "gh" })
     }
 
-    /// Program `name` (`gh`, `ssh`) as found for `repo` (see [`find_tool`]: never inside the
-    /// repository), and the `PATH` to run it with (`None`: git's). On the tool `PATH` when
-    /// one was set (tests, the devserver), else the login shell's. A test build runs only
-    /// the tool `PATH`'s own programs (in its first folder): never the real `gh` or `ssh`.
+    /// Program `name` (`gh`, `ssh`) as found for `repo` (see [`tool_on`]: never inside the
+    /// repository), and the `PATH` to run it with (`None`: git's). With a tool `PATH` set
+    /// (tests, the devserver) only from its first folder, in every build: never the real
+    /// `gh` or `ssh`; else on the login shell's. A test build without a tool `PATH` runs
+    /// none.
     fn tool_program(&self, repo: &Repo, name: &str) -> Option<(PathBuf, Option<OsString>)> {
         let tool_path = lock(&self.tool_path).clone();
         #[cfg(any(test, feature = "testutil"))]
-        let first = std::env::split_paths(tool_path.as_ref()?).next()?;
-        let path = tool_path.clone().or_else(|| self.login_path());
-        let program = find_tool(name, path.as_ref(), &repo.root)?;
-        #[cfg(any(test, feature = "testutil"))]
-        if !program.starts_with(&first) {
-            return None;
-        }
+        tool_path.as_ref()?;
+        let program = tool_on(
+            name,
+            tool_path.as_ref(),
+            self.login_path().as_ref(),
+            &repo.root,
+        )?;
         Some((program, tool_path))
     }
 
@@ -605,8 +606,10 @@ impl RepoManager {
         *lock(&self.prs_every) = Some(every);
     }
 
-    /// Sets the `PATH` `gh` and `ssh` are found on and run with, instead of the login
-    /// shell's: for tests and the devserver only (a fake `gh` and `ssh`).
+    /// Sets the `PATH` `gh` and `ssh` are run with, instead of the login shell's, found in
+    /// its first folder only: for tests and the devserver only (a fake `gh` and `ssh`; the
+    /// `tool-path` feature, never in the app).
+    #[cfg(feature = "tool-path")]
     pub fn set_tool_path(&self, path: Option<std::ffi::OsString>) {
         *lock(&self.tool_path) = path;
     }

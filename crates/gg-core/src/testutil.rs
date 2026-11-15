@@ -476,6 +476,8 @@ impl Default for FakeGh {
 #[cfg(unix)]
 impl FakeGh {
     const SCRIPT: &str = r#"#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
 d="$(cd "$(dirname "$0")/.." && pwd)"
 i=1
 while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
@@ -501,6 +503,8 @@ exit 0
     /// <alias>` prints `hostname <the host set with ssh_alias, else the alias>`, or exits
     /// with the code set with `ssh_fails`; each call's arguments are recorded.
     const SSH: &str = r#"#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
 d="$(cd "$(dirname "$0")/.." && pwd)"
 i=1
 while ! mkdir "$d/ssh-calls/$i" 2>/dev/null; do i=$((i+1)); done

@@ -14,6 +14,11 @@ const _: () = assert!(
     !gg_core::TEST_HOOKS,
     "gg-core's `testutil` feature must not be built into the release app"
 );
+#[cfg(not(debug_assertions))]
+const _: () = assert!(
+    !gg_core::TOOL_PATH_HOOK,
+    "gg-core's `tool-path` feature must not be built into the release app"
+);
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::OnceCell;

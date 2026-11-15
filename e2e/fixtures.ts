@@ -34,8 +34,12 @@ const EMPTY_CONFIG = (() => {
 
 /** The environment every fixture git (and the devserver) runs with: no user or system config. */
 function isolatedEnv(): NodeJS.ProcessEnv {
+  // No GitHub host, token or repository of the user's reaches anything a test runs.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GH_") && !name.startsWith("GITHUB_")),
+  );
   return {
-    ...process.env,
+    ...env,
     GIT_CONFIG_GLOBAL: EMPTY_CONFIG,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
@@ -676,6 +680,8 @@ export function cliFolders(home: string, extra = 0): string[] {
  * `auth-token`), else prints nothing. `ssh -G` says the host it is asked about is itself.
  */
 const FAKE_GH = `#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
 d="$(cd "$(dirname "$0")/.." && pwd)/gh"
 i=1
 while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
@@ -691,6 +697,8 @@ if [ -f "$r.code" ]; then exit "$(cat "$r.code")"; fi
 exit 0
 `;
 const FAKE_SSH = `#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
 for a in "$@"; do host="$a"; done
 printf 'hostname %s\\n' "$host"
 `;
@@ -701,7 +709,9 @@ function fakeTools(home: string): string {
   for (const dir of [tools, path.join(home, "gh", "calls"), path.join(home, "gh", "replies")]) mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(tools, "gh"), FAKE_GH, { mode: 0o755 });
   writeFileSync(path.join(tools, "ssh"), FAKE_SSH, { mode: 0o755 });
-  return [tools, "/usr/bin", "/bin"].join(path.delimiter);
+  // The fakes set their own PATH; nothing else is found here (the core takes gh and ssh from
+  // the first folder only).
+  return tools;
 }
 
 /** The fake `gh` of a test (see FAKE_GH). */

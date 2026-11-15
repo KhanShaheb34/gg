@@ -19,6 +19,8 @@ use crate::dto::CliState;
 use crate::error::{CoreError, ErrorCode, Result};
 
 /// The launcher, with `@GG_VERSION@` and `@GG_APP@` to fill in (see [`launcher_script`]).
+/// (The Windows one, `gg.cmd`, is filled in with the Windows release: every `%` in the app's
+/// path must be doubled there.)
 const TEMPLATE: &str = include_str!("../../../src-tauri/resources/gg");
 
 /// What the marker line says after its comment sign (`#`; `rem` in the Windows launcher),
@@ -191,13 +193,19 @@ pub fn install(dir: &Path, script: &str) -> Result<PathBuf> {
     // Whole or absent: written beside it under a hidden name, then renamed over it. The temp
     // file is made new (a stale one of ours goes first), never written through a link.
     let tmp = dir.join(format!(".{COMMAND}.{}.tmp", std::process::id()));
-    let written = (|| {
+    // Set once the launcher is moved into place: only then does "already exists" mean a gg
+    // that appeared meanwhile (before, it is about the temp file).
+    let mut placing = false;
+    // Set once the temp file is ours to remove.
+    let mut made = false;
+    let mut written = || {
         // Removing a link someone put there removes the link, not what it points at.
         match fs::symlink_metadata(&tmp) {
             Ok(meta) if !meta.is_dir() => fs::remove_file(&tmp)?,
             _ => {}
         }
         let mut file = crate::store::create_new_file(&tmp, 0o755)?;
+        made = true;
         file.write_all(script.as_bytes())?;
         file.sync_all()?;
         #[cfg(unix)]
@@ -206,16 +214,21 @@ pub fn install(dir: &Path, script: &str) -> Result<PathBuf> {
             // The umask may have taken bits off at creation.
             fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
         }
+        placing = true;
         if replacing {
             fs::rename(&tmp, &target)
         } else {
             // A first install never replaces a gg that appeared meanwhile.
             crate::store::move_no_overwrite(&tmp, &target)
         }
-    })();
+    };
+    let written = written();
     if let Err(e) = written {
-        let _ = fs::remove_file(&tmp);
-        if e.kind() == io::ErrorKind::AlreadyExists
+        if made {
+            let _ = fs::remove_file(&tmp);
+        }
+        if placing
+            && e.kind() == io::ErrorKind::AlreadyExists
             && let Ok(meta) = fs::symlink_metadata(&target)
         {
             return Err(not_ours(dir, &target, &meta));
@@ -539,7 +552,7 @@ mod tests {
     #[test]
     fn the_windows_launcher_never_expands_a_path_outside_quotes() {
         const CMD: &str = include_str!("../../../src-tauri/resources/gg.cmd");
-        const NAMES: [&str; 4] = ["TARGET", "GG_APP", "GG_APP_BIN", "TOP"];
+        const NAMES: [&str; 3] = ["TARGET", "GG_APP", "GG_APP_BIN"];
         let quoted = |line: &str, at: usize| line[..at].matches('"').count() % 2 == 1;
         let mut delayed = false;
         let mut echoed = 0;
@@ -573,6 +586,18 @@ mod tests {
         }
         assert!(echoed >= 3, "the messages name the paths");
         assert!(CMD.contains("setlocal DisableDelayedExpansion"));
+        // No output is captured: `for /f` runs its command through another cmd, which
+        // parses the path again.
+        assert!(!CMD.to_lowercase().contains("for /f"));
+        assert!(!CMD.contains("%%T"));
+        assert!(
+            CMD.contains(
+                r#"git -C "!TARGET!" rev-parse --show-toplevel >nul 2>nul || goto notrepo"#
+            )
+        );
+        // A root's trailing backslash would escape the argument's closing quote.
+        assert!(CMD.contains(r#"if "!TARGET:~-1!"=="\" set "TARGET=!TARGET!.""#));
+        assert!(CMD.contains(r#"start "" "!GG_APP!" "!TARGET!""#));
     }
 
     #[test]
@@ -774,6 +799,14 @@ mod tests {
         fs::write(&tmp, "half a script").unwrap();
         install(dir.path(), &script).unwrap();
         assert!(fs::symlink_metadata(&tmp).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), script);
+        // A folder in the temp file's place: a plain failure, never "a gg gg did not write"
+        // (the gg there is ours).
+        fs::create_dir(&tmp).unwrap();
+        let err = install(dir.path(), &script).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io, "{}", err.message);
+        assert!(!err.message.contains("did not write"), "{}", err.message);
+        assert!(tmp.is_dir(), "left as it was");
         assert_eq!(fs::read_to_string(&path).unwrap(), script);
     }
 

@@ -10,6 +10,9 @@ rem
 rem Paths may hold & ( ) ! and spaces. So every value is set with delayed expansion off
 rem (a ! in it stays as it is), always inside quotes, and every later use is !VAR! with
 rem delayed expansion on, quoted wherever it is an argument; no ( ) block holds a value.
+rem No command's output is captured: capturing runs the command through another cmd.
+rem Whoever fills in @GG_APP@ must double every % in the path: the line below is parsed
+rem with % expansion on.
 setlocal DisableDelayedExpansion
 set "GG_APP=@GG_APP@"
 
@@ -25,21 +28,20 @@ for %%I in ("%TARGET%") do set "TARGET=%%~fI"
 if not exist "%TARGET%\" goto nofolder
 
 where git >nul 2>nul || goto nogit
-set "TOP="
-rem The child cmd that runs git expands %TARGET% itself, inside its quotes.
-for /f "delims=" %%T in ('git -C "%%TARGET%%" rev-parse --show-toplevel 2^>nul') do set "TOP=%%T"
-if not defined TOP goto notrepo
-set "TOP=%TOP:/=\%"
-
 setlocal EnableDelayedExpansion
+rem A drive or share root (C:\) ends with \, which would escape the closing quote of the
+rem argument: the trailing \ is taken off, keeping the root (C:\.).
+if "!TARGET:~-1!"=="\" set "TARGET=!TARGET!."
+git -C "!TARGET!" rev-parse --show-toplevel >nul 2>nul || goto notrepo
+rem The app finds the repository's top level itself.
 rem Tests put a recording stub here.
 if defined GG_APP_BIN goto stub
 if not exist "!GG_APP!" goto moved
-start "" "!GG_APP!" "!TOP!"
+start "" "!GG_APP!" "!TARGET!"
 exit /b 0
 
 :stub
-start "" "!GG_APP_BIN!" "!TOP!"
+start "" "!GG_APP_BIN!" "!TARGET!"
 exit /b 0
 
 :moved

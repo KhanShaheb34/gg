@@ -223,6 +223,9 @@ pub struct RepoSnapshot {
     pub worktrees: Vec<WorktreeInfo>,
     /// Status of the active worktree.
     pub status: WorktreeStatus,
+    /// The uncommitted row's subject for `status` ("Uncommitted changes (3)"): a count that
+    /// changes moves no row, so rows already read may carry an older one.
+    pub uncommitted_subject: String,
     pub view_options: ViewOptions,
     pub fetch: FetchState,
     /// The operation running on this repository, if any.
@@ -245,6 +248,15 @@ pub struct RunningOp {
     pub started_at_ms: i64,
     /// Requests waiting behind it.
     pub queued: u32,
+}
+
+/// The uncommitted row's subject for a worktree whose status is `status`: its changed and
+/// untracked files counted.
+pub fn uncommitted_subject(status: &WorktreeStatus) -> String {
+    format!(
+        "Uncommitted changes ({})",
+        status.changed.saturating_add(status.untracked)
+    )
 }
 
 /// What git is in the middle of. Serialized as `"merge"`, `"rebase"`, `"cherry-pick"`,
@@ -1211,6 +1223,7 @@ mod tests {
                 remotes: vec![],
                 worktrees: vec![],
                 status: WorktreeStatus::default(),
+                uncommitted_subject: "Uncommitted changes (0)".into(),
                 view_options: ViewOptions {
                     branches: None,
                     show_remotes: true,
@@ -1415,7 +1428,12 @@ mod tests {
             remote_branches: vec!["origin/main".into()],
             remotes: vec!["origin".into()],
             worktrees: vec![],
-            status: WorktreeStatus::default(),
+            status: WorktreeStatus {
+                changed: 2,
+                untracked: 1,
+                ..WorktreeStatus::default()
+            },
+            uncommitted_subject: "Uncommitted changes (3)".into(),
             view_options: ViewOptions {
                 branches: None,
                 show_remotes: true,
@@ -1454,8 +1472,9 @@ mod tests {
                 "generation": 3, "totalRows": 10, "loading": true, "maxLane": 2,
                 "head": {"branch": null, "hash": "h"},
                 "branches": ["main"], "remoteBranches": ["origin/main"], "remotes": ["origin"],
-                "worktrees": [], "status": {"changed": 0, "untracked": 0, "conflicted": 0,
+                "worktrees": [], "status": {"changed": 2, "untracked": 1, "conflicted": 0,
                            "conflictedPaths": []},
+                "uncommittedSubject": "Uncommitted changes (3)",
                 "viewOptions": {"branches": null, "showRemotes": true, "showTags": true,
                                 "showStashes": true},
                 "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},

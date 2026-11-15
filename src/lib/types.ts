@@ -61,6 +61,8 @@ export type RepoSnapshot = {
   remotes: string[];
   worktrees: WorktreeInfo[];
   status: WorktreeStatus;
+  /** The uncommitted row's subject for `status` ("Uncommitted changes (3)"); rows read before a count changed keep the old one. */
+  uncommittedSubject: string;
   viewOptions: ViewOptions;
   fetch: FetchState;
   /** The operation running on this repository; `queued`: requests waiting behind it. */

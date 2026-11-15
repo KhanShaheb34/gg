@@ -50,6 +50,7 @@
   import { GraphColumns } from "./graphColumns.svelte";
   import { gridKey } from "./gridKeys";
   import { LanesCanvas, type RowSource } from "./lanesCanvas";
+  import { rowSubject } from "./rowSubject";
   import RefLabels, { ownLabels } from "./RefLabels.svelte";
 
   let { view }: { view: RepoView } = $props();
@@ -112,14 +113,8 @@
   /** Height of the rendered rows' container: the rows needed, and room to stay put a step. */
   const poolRows = $derived(neededRows + POOL_STEP + alignSlack);
   const detachedHead = $derived(view.snapshot.head.branch === null);
-  /**
-   * The uncommitted row's subject, from the snapshot's change counts: a count that changes
-   * moves no row, so it comes without a new generation (rows already loaded keep the old one).
-   */
-  const uncommittedSubject = $derived(
-    `Uncommitted changes (${view.snapshot.status.changed + view.snapshot.status.untracked})`,
-  );
-  const subjectOf = (r: CommitRow) => (r.kind === "uncommitted" ? uncommittedSubject : r.subject);
+  /** A row's subject; the uncommitted row's is the snapshot's (see `rowSubject`). */
+  const subjectOf = (r: CommitRow) => rowSubject(r, view.snapshot);
   /** Rows matching the search, and how to find the match in their subjects. */
   // The set stays the same object while only load progress changes, so rows do not re-render.
   const hits = $derived(view.search.liveHitSet);

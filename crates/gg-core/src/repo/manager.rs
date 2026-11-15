@@ -401,6 +401,7 @@ impl Slot {
             snapshot.view_options = pending.view().clone();
             snapshot.in_progress.clone_from(&pending.info().in_progress);
             snapshot.status.clone_from(&pending.info().status);
+            snapshot.uncommitted_subject = crate::dto::uncommitted_subject(&snapshot.status);
         }
         snapshot.op.clone_from(&self.op);
         snapshot.seq = self.emit_seq;

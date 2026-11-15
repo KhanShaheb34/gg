@@ -64,6 +64,7 @@ function placeholder(repoId: number): RepoSnapshot {
     remotes: [],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
+    uncommittedSubject: "Uncommitted changes (0)",
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,

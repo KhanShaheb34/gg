@@ -42,8 +42,8 @@ pub enum Update {
     Nothing,
     /// Only what git is stopped in, or the working tree's change counts with the uncommitted
     /// row where it was: no row moves, so no new generation. (The uncommitted row's subject
-    /// names the count: rows read later carry the new one, and the UI shows the count from the
-    /// snapshot's `status`.)
+    /// names the count: rows read later carry the new one, and the UI shows the snapshot's
+    /// `uncommittedSubject`.)
     StateOnly,
     /// Something the rows show (labels, the uncommitted row) may have changed.
     Rows,
@@ -438,6 +438,7 @@ impl RepoState {
             remotes: self.info.remotes.clone(),
             worktrees: self.info.worktrees.clone(),
             status: self.info.status.clone(),
+            uncommitted_subject: crate::dto::uncommitted_subject(&self.info.status),
             view_options: self.view.clone(),
             fetch: fetch.clone(),
             op: None,
@@ -455,8 +456,6 @@ impl RepoState {
         let layout = &self.layouts[i as usize];
         let offset = self.row_offset();
         if i < offset {
-            let status = &self.info.status;
-            let n = status.changed.saturating_add(status.untracked);
             return CommitRow {
                 index: i,
                 kind: RowKind::Uncommitted,
@@ -465,7 +464,7 @@ impl RepoState {
                 author: String::new(),
                 email: String::new(),
                 time: 0,
-                subject: format!("Uncommitted changes ({n})"),
+                subject: crate::dto::uncommitted_subject(&self.info.status),
                 lane: layout.lane,
                 color: layout.color,
                 edges: layout.edges.clone(),
@@ -1731,6 +1730,7 @@ mod tests {
         assert_eq!(snap.remote_branches, ["origin/alpha", "origin/zeta"]);
         assert_eq!(snap.remotes, ["origin"]);
         assert_eq!(snap.status, i.status);
+        assert_eq!(snap.uncommitted_subject, "Uncommitted changes (3)");
         assert_eq!(snap.head, i.head);
         assert_eq!(snap.worktrees, i.worktrees);
         assert_eq!(snap.view_options, all());

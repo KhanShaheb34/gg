@@ -339,11 +339,19 @@ fn names_ending_in_a_newline_or_holding_a_backslash_are_kept_whole() {
         let repo = repo_with_commit(name);
         let out = gg.run(repo.path(), &[]);
         assert!(out.status.success(), "{name:?}: {}", stderr(&out));
-        assert_eq!(launched_raw(&gg), format!("{}\n", real(repo.path())), "{name:?}");
+        assert_eq!(
+            launched_raw(&gg),
+            format!("{}\n", real(repo.path())),
+            "{name:?}"
+        );
         // Given as an argument too, from elsewhere.
         let out = gg.run(Path::new("/"), &[&repo.path().to_string_lossy()]);
         assert!(out.status.success(), "{name:?}: {}", stderr(&out));
-        assert_eq!(launched_raw(&gg), format!("{}\n", real(repo.path())), "{name:?}");
+        assert_eq!(
+            launched_raw(&gg),
+            format!("{}\n", real(repo.path())),
+            "{name:?}"
+        );
     }
     // A message naming such a path prints it as it is (printf, not echo).
     let plain = tempfile::tempdir().unwrap();

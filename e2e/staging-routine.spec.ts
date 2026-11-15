@@ -290,6 +290,9 @@ test("the merge dialog never writes the default over a stored choice it has not 
     return route.continue();
   });
   await pickOnLabel(page, "feature/login", "Merge feature/login into main…");
+  // The dialog is up and has the focus before Enter goes to it.
+  await expect(dialog(page)).toBeVisible();
+  await expect.poll(() => dialog(page).evaluate((d) => d.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Enter");
   await expect(notice(page, /Merged feature\/login into main/)).toBeVisible();
   release();

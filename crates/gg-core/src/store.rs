@@ -525,14 +525,102 @@ fn unix_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// The config folder to use instead of the platform's: `GG_CONFIG_DIR` when it is set and
-/// not empty. Performance runs use it so they never read or change the user's own state.
-pub fn config_dir_override() -> Option<PathBuf> {
-    config_dir_from(std::env::var_os("GG_CONFIG_DIR"))
+/// The app's config folder: `GG_CONFIG_DIR` when it is set and not empty (performance runs
+/// use it so they never read or change the user's own state), and nothing else happens;
+/// otherwise `platform_dir()`, into which the state of the app's config folder from before
+/// it was renamed is first copied, once (see [`migrate_config`]). Call it once, before the
+/// store loads. A copy that fails is reported on stderr and the app starts without it.
+pub fn config_dir(platform_dir: impl FnOnce() -> Result<PathBuf>) -> Result<PathBuf> {
+    config_dir_with(std::env::var_os("GG_CONFIG_DIR"), platform_dir)
+}
+
+fn config_dir_with(
+    gg_config_dir: Option<std::ffi::OsString>,
+    platform_dir: impl FnOnce() -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(dir) = config_dir_from(gg_config_dir) {
+        return Ok(dir);
+    }
+    let dir = platform_dir()?;
+    if let Some(old) = old_config_dir(&dir)
+        && let Err(e) = migrate_config(&old, &dir)
+    {
+        eprintln!("gg: {e}: {}", e.detail.as_deref().unwrap_or_default());
+    }
+    Ok(dir)
 }
 
 fn config_dir_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The name of the app's config folder before the app was renamed to gg (its identifier
+/// then), in the same parent folder as the current one.
+const OLD_CONFIG_DIR_NAME: &str = "dev.gitgraph.desktop";
+
+/// Where the app kept its config before it was renamed: the folder next to `new_dir` named
+/// after its old identifier. `None` when `new_dir` has no parent.
+pub fn old_config_dir(new_dir: &Path) -> Option<PathBuf> {
+    new_dir
+        .parent()
+        .map(|parent| parent.join(OLD_CONFIG_DIR_NAME))
+}
+
+/// Copies `state.json` from `old_dir` into `new_dir` (created if need be) when `new_dir` is
+/// empty: true when it copied. Once the app has written anything there (its state file, or
+/// a broken one it moved aside), nothing is copied again, and an existing state file is
+/// never written over; `old_dir` is left as it is. The copy is written to a temp file and
+/// renamed into place, so it is whole or absent.
+pub fn migrate_config(old_dir: &Path, new_dir: &Path) -> Result<bool> {
+    let from = old_dir.join(FILE_NAME);
+    let failed = |e: io::Error| {
+        CoreError::new(
+            ErrorCode::Io,
+            format!(
+                "Could not copy the settings from {} to {}",
+                from.display(),
+                new_dir.display()
+            ),
+        )
+        .with_detail(e.to_string())
+    };
+    if !is_empty_dir(new_dir).map_err(failed)? {
+        return Ok(false);
+    }
+    let bytes = match fs::read(&from) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(failed(e)),
+    };
+    let tmp = new_dir.join(format!("{FILE_NAME}.{}.tmp", std::process::id()));
+    let written = (|| {
+        fs::create_dir_all(new_dir)?;
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(&tmp, new_dir.join(FILE_NAME))
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(failed(e));
+    }
+    Ok(true)
+}
+
+/// Whether `dir` is missing or holds nothing but hidden files (a `.DS_Store` the Finder
+/// left, say).
+fn is_empty_dir(dir: &Path) -> io::Result<bool> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        if !entry?.file_name().to_string_lossy().starts_with('.') {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1088,5 +1176,121 @@ mod tests {
         );
         assert_eq!(config_dir_from(Some("".into())), None);
         assert_eq!(config_dir_from(None), None);
+    }
+
+    /// A config folder of the app under its old name, holding `state` as its state file,
+    /// and the path of the new one next to it (not created).
+    fn old_and_new(root: &Path, state: &str) -> (PathBuf, PathBuf) {
+        let old = root.join(OLD_CONFIG_DIR_NAME);
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join(FILE_NAME), state).unwrap();
+        (old, root.join("com.shakirul.gg"))
+    }
+
+    #[test]
+    fn migrate_config_copies_the_old_state_once_and_keeps_the_old_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), r#"{"recents":[]}"#);
+        assert!(migrate_config(&old, &new).unwrap());
+        assert_eq!(
+            fs::read_to_string(new.join(FILE_NAME)).unwrap(),
+            r#"{"recents":[]}"#
+        );
+        assert_eq!(
+            fs::read_to_string(old.join(FILE_NAME)).unwrap(),
+            r#"{"recents":[]}"#
+        );
+        // No temp file is left behind.
+        assert_eq!(fs::read_dir(&new).unwrap().count(), 1);
+        // Once only: the state saved since is kept.
+        fs::write(new.join(FILE_NAME), "{}").unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "{}");
+        // Nor once that state was found broken and moved aside: it gives defaults.
+        fs::rename(new.join(FILE_NAME), new.join(format!("{BAD_FILE_PREFIX}1"))).unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert!(!new.join(FILE_NAME).exists());
+    }
+
+    #[test]
+    fn migrate_config_into_a_folder_with_hidden_files_only() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(".DS_Store"), "").unwrap();
+        assert!(migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "old");
+    }
+
+    #[test]
+    fn migrate_config_never_overwrites_a_new_state() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(FILE_NAME), "new").unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "new");
+        assert_eq!(fs::read_to_string(old.join(FILE_NAME)).unwrap(), "old");
+    }
+
+    #[test]
+    fn migrate_config_without_an_old_state_does_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join(OLD_CONFIG_DIR_NAME);
+        let new = root.path().join("com.shakirul.gg");
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert!(!new.exists());
+        // An old folder without a state file is no different.
+        fs::create_dir_all(&old).unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn migrate_config_that_cannot_write_is_io() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        // The new folder's path is taken by a file.
+        fs::write(&new, "").unwrap();
+        assert_eq!(migrate_config(&old, &new).unwrap_err().code, ErrorCode::Io);
+    }
+
+    #[test]
+    fn the_old_config_folder_is_next_to_the_new_one() {
+        let new = Path::new("/config/home/com.shakirul.gg");
+        assert_eq!(
+            old_config_dir(new),
+            Some(Path::new("/config/home").join(OLD_CONFIG_DIR_NAME))
+        );
+        assert_eq!(old_config_dir(Path::new("/")), None);
+    }
+
+    #[test]
+    fn config_dir_migrates_into_the_platform_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, new) = old_and_new(root.path(), "old");
+        let dir = config_dir_with(None, || Ok(new.clone())).unwrap();
+        assert_eq!(dir, new);
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "old");
+    }
+
+    #[test]
+    fn config_dir_skips_the_migration_with_gg_config_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, new) = old_and_new(root.path(), "old");
+        let override_dir = root.path().join("override");
+        let dir = config_dir_with(Some(override_dir.clone().into_os_string()), || {
+            Ok(new.clone())
+        })
+        .unwrap();
+        assert_eq!(dir, override_dir);
+        assert!(!new.exists());
+        assert!(!override_dir.exists());
+    }
+
+    #[test]
+    fn config_dir_without_a_platform_folder_fails() {
+        let err = config_dir_with(None, || Err(CoreError::new(ErrorCode::Io, "none"))).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io);
     }
 }

@@ -1161,14 +1161,27 @@ pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Op
     use std::io::Read;
     use std::sync::mpsc;
 
+    use std::os::unix::process::CommandExt as _;
+
     let deadline = Instant::now() + timeout;
-    let mut child = std::process::Command::new(shell)
-        .args(args)
+    let mut cmd = std::process::Command::new(shell);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    // A session (and process group) of its own, without a terminal: given up on, the shell
+    // is ended with everything its profile started.
+    // SAFETY: the closure runs in the child between fork and exec and calls only setsid,
+    // which is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().ok()?;
 
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = mpsc::channel();
@@ -1183,6 +1196,12 @@ pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Op
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             _ => {
+                if let Ok(pid) = i32::try_from(child.id()) {
+                    // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+                    unsafe {
+                        libc::killpg(pid, libc::SIGKILL);
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -1813,6 +1832,31 @@ mod tests {
                 "{:?}",
                 started.elapsed()
             );
+        }
+
+        /// Given up on, the shell is ended with what its profile started (its process
+        /// group), not only the shell itself.
+        #[test]
+        fn a_shell_given_up_on_is_ended_with_its_children() {
+            let dir = tempfile::tempdir().unwrap();
+            let pidfile = dir.path().join("child.pid");
+            let shell = script(
+                &dir,
+                "shell",
+                &format!("sleep 30 & echo $! > '{}'; wait", pidfile.display()),
+            );
+            assert_eq!(shell_output(&shell, &[], Duration::from_millis(500)), None);
+            let pid: i32 = std::fs::read_to_string(&pidfile)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            // SAFETY: signal 0 only checks that the process exists.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(Instant::now() < deadline, "the profile's child still runs");
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
 
         #[test]

@@ -121,6 +121,16 @@ struct Opened {
     opened_worktree: Option<String>,
 }
 
+/// What `uninstall_cli` returns: the command's state, and the files it removed (none when
+/// there was nothing to remove).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Uninstalled {
+    #[serde(flatten)]
+    state: crate::dto::CliState,
+    removed: Vec<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StopOpArgs {
@@ -365,7 +375,14 @@ impl Core {
             }
             "uninstall_cli" => {
                 let NoArgs {} = parse(cmd, args)?;
-                to_json(self.off_runtime(|core| core.uninstall_cli()).await?)
+                let (removed, state) = self.off_runtime(|core| core.uninstall_cli()).await?;
+                to_json(Uninstalled {
+                    state,
+                    removed: removed
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect(),
+                })
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;

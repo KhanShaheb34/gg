@@ -158,12 +158,13 @@ fn in_repository(dir: &Path) -> bool {
         .any(|p| p.ancestors().any(|d| d.join(".git").exists()))
 }
 
-/// The first launcher the app wrote on `search_path`, if any.
+/// The first launcher the app wrote on `search_path`, if any: a plain file with the marker,
+/// never a link to one (which uninstall would not remove either).
 pub fn installed(search_path: &OsStr) -> Option<PathBuf> {
     path_dirs(search_path)
         .into_iter()
         .map(|d| d.join(COMMAND))
-        .find(|f| f.is_file() && has_marker(f))
+        .find(|f| fs::symlink_metadata(f).is_ok_and(|m| m.is_file()) && has_marker(f))
 }
 
 /// Writes `script` as `gg` (mode 0755) in `dir` and returns its path. A `gg` the app wrote
@@ -505,13 +506,14 @@ impl Core {
         Ok(self.cli_state())
     }
 
-    /// Removes the launchers the app wrote on the `PATH`, then asks the shell again.
+    /// Removes the launchers the app wrote on the `PATH`, then asks the shell again. Returns
+    /// the files actually removed (none when there was nothing to remove) and the new state.
     /// Blocking: call on the blocking pool.
-    pub(crate) fn uninstall_cli(&self) -> Result<CliState> {
+    pub(crate) fn uninstall_cli(&self) -> Result<(Vec<PathBuf>, CliState)> {
         let search_path = crate::lock_ignoring_poison(&self.cli).search_path.clone();
-        uninstall(&search_path)?;
+        let removed = uninstall(&search_path)?;
         self.check_shadow();
-        Ok(self.cli_state())
+        Ok((removed, self.cli_state()))
     }
 }
 
@@ -825,6 +827,14 @@ mod tests {
         assert_eq!(installed(&search), None);
         // Nothing left to remove: fine.
         assert!(uninstall(&search).unwrap().is_empty());
+        // A link to a launcher is not one the app wrote there: neither installed nor removed.
+        install(&ours, &script).unwrap();
+        let linked = mkdir(&root.path().join("linked"));
+        std::os::unix::fs::symlink(ours.join("gg"), linked.join("gg")).unwrap();
+        let search = path_of(&[&linked]);
+        assert_eq!(installed(&search), None);
+        assert!(uninstall(&search).unwrap().is_empty());
+        assert!(ours.join("gg").exists());
     }
 
     /// A stand-in login shell: a POSIX sh script that runs `setup` and then the command it

@@ -7,7 +7,7 @@
   import { launcherPath, preferredFolder } from "../../cli";
   import { shortenPath } from "../../format";
   import { app, notify, toast } from "../../state/app.svelte";
-  import { installCli, uninstallCli } from "../../state/cli.svelte";
+  import { installCli, removedMessage, uninstallCli } from "../../state/cli.svelte";
   import Dialog from "../Dialog.svelte";
 
   type Props = { close: () => void };
@@ -60,10 +60,8 @@
   }
 
   function remove() {
-    const was = shown.installed;
     void run(async () => {
-      await uninstallCli();
-      toast("info", was === null ? "Removed the gg command." : `Removed the gg command: ${short(was)}.`);
+      toast("info", removedMessage(await uninstallCli()));
     });
   }
 </script>

@@ -46,8 +46,8 @@ describe("the gg command's state", () => {
     expect(await cli.installCli("/h/bin")).toEqual(after);
     expect(vi.mocked(ipc.api.installCli).mock.calls).toEqual([["/h/bin"]]);
     expect(app.cli).toEqual(after);
-    vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce(before);
-    await cli.uninstallCli();
+    vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce({ ...before, removed: ["/h/bin/gg"] });
+    expect(await cli.uninstallCli()).toEqual(["/h/bin/gg"]);
     expect(app.cli).toEqual(before);
   });
 
@@ -61,10 +61,16 @@ describe("the gg command's state", () => {
 
   it("removes the command from the welcome screen and says so, or why not", async () => {
     app.cli = after;
-    vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce(before);
+    vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce({ ...before, removed: ["/h/bin/gg", "/h/.local/bin/gg"] });
     await cli.removeCli();
     expect(app.cli).toEqual(before);
-    expect(app.toasts.map((t) => [t.kind, t.message])).toEqual([["info", "Removed the gg command: /h/bin/gg."]]);
+    expect(app.toasts.map((t) => [t.kind, t.message])).toEqual([
+      ["info", "Removed the gg command: /h/bin/gg, /h/.local/bin/gg."],
+    ]);
+    // Removed meanwhile by hand: nothing went, and only that is said.
+    vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce({ ...before, removed: [] });
+    await cli.removeCli();
+    expect(app.toasts.at(-1)?.message).toBe("Nothing to remove: no gg command written by gg was found on your PATH.");
     app.cli = after;
     const refusal = new ipc.CoreError({ code: "io", message: "Could not remove /h/bin/gg", detail: "denied" });
     vi.mocked(ipc.api.uninstallCli).mockRejectedValueOnce(refusal);

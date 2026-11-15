@@ -24,11 +24,20 @@ export async function installCli(dir: string): Promise<CliState> {
   return state;
 }
 
-/** Removes the launchers the app wrote; the new state, or the core's error (thrown). */
-export async function uninstallCli(): Promise<CliState> {
-  const state = await api.uninstallCli();
+/**
+ * Removes the launchers the app wrote; the files that went (none when there was nothing to
+ * remove), or the core's error (thrown).
+ */
+export async function uninstallCli(): Promise<string[]> {
+  const { removed, ...state } = await api.uninstallCli();
   app.cli = state;
-  return state;
+  return removed;
+}
+
+/** What removing the command did, in one line: only the files that actually went. */
+export function removedMessage(removed: string[]): string {
+  if (removed.length === 0) return "Nothing to remove: no gg command written by gg was found on your PATH.";
+  return `Removed the gg command: ${removed.map((p) => shortenPath(p, app.homeDir)).join(", ")}.`;
 }
 
 /**
@@ -36,14 +45,14 @@ export async function uninstallCli(): Promise<CliState> {
  * besides the dialog): says what went, or why it could not.
  */
 export async function removeCli(): Promise<void> {
-  const was = app.cli.installed;
+  let removed;
   try {
-    await uninstallCli();
+    removed = await uninstallCli();
   } catch (e) {
     reportError(e, "Could not remove the gg command");
     return;
   }
-  toast("info", was === null ? "Removed the gg command." : `Removed the gg command: ${shortenPath(was, app.homeDir)}.`);
+  toast("info", removedMessage(removed));
 }
 
 /** Shows the install dialog with the command's state read afresh; nothing if one is open. */

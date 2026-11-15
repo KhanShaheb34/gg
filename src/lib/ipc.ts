@@ -354,7 +354,8 @@ export const api = {
    */
   installCli: (dir: string) => call<CliState>("install_cli", { dir }),
   /** Removes the launchers the app wrote on the PATH; resolves to the command's state after. */
-  uninstallCli: () => call<CliState>("uninstall_cli", {}),
+  /** Removes the launchers the app wrote; `removed`: the files that went (none: nothing to remove). */
+  uninstallCli: () => call<CliState & { removed: string[] }>("uninstall_cli", {}),
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */

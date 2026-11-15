@@ -1095,7 +1095,11 @@ async fn the_gg_command_installs_and_uninstalls() {
 
     let cli = h.call("uninstall_cli", json!({})).await;
     assert_eq!(cli["installed"], Value::Null);
+    assert_eq!(cli["removed"], json!([s(&bin.join("gg"))]));
     assert!(!bin.join("gg").exists());
+    // Again: nothing to remove, and it says so.
+    let cli = h.call("uninstall_cli", json!({})).await;
+    assert_eq!(cli["removed"], json!([]));
 
     let err = h.fail("uninstall_cli", json!({ "dir": bin })).await;
     assert_eq!(err.code, ErrorCode::BadRequest);

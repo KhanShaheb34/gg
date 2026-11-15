@@ -79,36 +79,31 @@ pub fn parse_remote(url: &str) -> Option<RemoteRepo> {
     })
 }
 
-/// Whether `host` is GitHub: `github.com`, an Enterprise Server host named `github.*`, or an
-/// Enterprise Cloud host (`*.ghe.com`). Other hosts are not supported (spec §5.5).
-pub fn is_github(host: &str) -> bool {
-    host == "github.com" || host.starts_with("github.") || host.ends_with(".ghe.com")
+/// Whether `host` is GitHub by its name alone: `github.com`, or an Enterprise Cloud host
+/// (`*.ghe.com`). Any other host (an Enterprise Server's) is taken for GitHub only when `gh`
+/// already has credentials stored for exactly that host (`RepoManager::on_github`), never by
+/// its name (`github.example.net` may be anyone's): otherwise `gh` would be pointed at it
+/// with `GH_HOST` and could send it a token. Other hosts are not supported (spec §5.5).
+pub fn is_known_github(host: &str) -> bool {
+    host == "github.com" || host.ends_with(".ghe.com")
 }
 
 /// The page on `repo`'s GitHub host that compares `head` (a branch of `head_owner`'s fork,
 /// when given) with `base` and offers to open a pull request: `https://<host>/<owner>/<repo>/
-/// compare/<base>...[<head owner>:]<head>?expand=1`, each name percent-encoded. `None` when
-/// the host is not GitHub.
-pub fn compare_url(
-    repo: &RemoteRepo,
-    base: &str,
-    head: &str,
-    head_owner: Option<&str>,
-) -> Option<String> {
-    if !is_github(&repo.host) {
-        return None;
-    }
+/// compare/<base>...[<head owner>:]<head>?expand=1`, each name percent-encoded. Only for a
+/// repository whose host is known to be GitHub (`RepoManager::on_github`).
+pub fn compare_url(repo: &RemoteRepo, base: &str, head: &str, head_owner: Option<&str>) -> String {
     let head = match head_owner {
         Some(owner) => format!("{}:{}", encode(owner), encode(head)),
         None => encode(head),
     };
-    Some(format!(
+    format!(
         "https://{}/{}/{}/compare/{}...{head}?expand=1",
         repo.web,
         encode(&repo.owner),
         encode(&repo.name),
         encode(base)
-    ))
+    )
 }
 
 /// `text` percent-encoded for a URL path: every byte but letters, digits, `-._~` and `/`.
@@ -207,7 +202,7 @@ mod tests {
             let parsed = parse_remote(url).unwrap();
             let all = format!("{parsed:?}");
             assert!(!all.contains("SECRET") && !all.contains("ada"), "{all}");
-            let page = compare_url(&parsed, "main", "x", None).unwrap();
+            let page = compare_url(&parsed, "main", "x", None);
             assert!(!page.contains("SECRET") && !page.contains('@'), "{page}");
             assert_eq!(
                 (parsed.owner.as_str(), parsed.name.as_str()),
@@ -216,23 +211,24 @@ mod tests {
         }
     }
 
+    /// Only github.com and Enterprise Cloud are GitHub by name; a host named `github.*` is
+    /// not (it needs credentials stored in `gh` for it).
     #[test]
     fn github_hosts_are_known_by_name() {
-        for host in [
-            "github.com",
-            "github.example.com",
-            "github.corp",
-            "acme.ghe.com",
-        ] {
-            assert!(is_github(host), "{host}");
+        for host in ["github.com", "acme.ghe.com"] {
+            assert!(is_known_github(host), "{host}");
         }
         for host in [
+            "github.example.com",
+            "github.example.net",
+            "github.corp",
+            "ghe.com.evil.example",
             "gitlab.com",
             "bitbucket.org",
             "git.example.com",
             "notgithub.com",
         ] {
-            assert!(!is_github(host), "{host}");
+            assert!(!is_known_github(host), "{host}");
         }
     }
 
@@ -240,25 +236,22 @@ mod tests {
     fn the_compare_page_names_both_branches_encoded() {
         let gh = repo("github.com", "github.com", "octo", "cat");
         assert_eq!(
-            compare_url(&gh, "main", "feature/login", None).as_deref(),
-            Some("https://github.com/octo/cat/compare/main...feature/login?expand=1")
+            compare_url(&gh, "main", "feature/login", None),
+            "https://github.com/octo/cat/compare/main...feature/login?expand=1"
         );
         assert_eq!(
-            compare_url(&gh, "release 1", "fix#2+é", None).as_deref(),
-            Some("https://github.com/octo/cat/compare/release%201...fix%232%2B%C3%A9?expand=1")
+            compare_url(&gh, "release 1", "fix#2+é", None),
+            "https://github.com/octo/cat/compare/release%201...fix%232%2B%C3%A9?expand=1"
         );
         // A fork's branch, by its owner.
         assert_eq!(
-            compare_url(&gh, "main", "topic", Some("ada")).as_deref(),
-            Some("https://github.com/octo/cat/compare/main...ada:topic?expand=1")
+            compare_url(&gh, "main", "topic", Some("ada")),
+            "https://github.com/octo/cat/compare/main...ada:topic?expand=1"
         );
         let ghe = repo("github.example.com", "github.example.com:8443", "t", "a");
         assert_eq!(
-            compare_url(&ghe, "main", "x", None).as_deref(),
-            Some("https://github.example.com:8443/t/a/compare/main...x?expand=1")
+            compare_url(&ghe, "main", "x", None),
+            "https://github.example.com:8443/t/a/compare/main...x?expand=1"
         );
-        // Other hosts: none (no other host is supported).
-        let lab = repo("gitlab.com", "gitlab.com", "g", "a");
-        assert_eq!(compare_url(&lab, "main", "x", None), None);
     }
 }

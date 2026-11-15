@@ -8,6 +8,12 @@
 //! protection the app's own git children have, through the environment
 //! ([`crate::git::runner::git_protection_env`]).
 //!
+//! Which hosts are GitHub: github.com and `*.ghe.com` by name; any other host only when `gh`
+//! has credentials stored for exactly that host ([`Gh::has_stored_credentials`], asked with
+//! the token variables removed and its output never read). A command for a host other than
+//! github.com runs without `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN`, so a token in
+//! the user's environment is never sent to a host because a repository's remote names it.
+//!
 //! Also here: what the repository's config says of its remotes (which one a branch is pushed
 //! to, which one `gh` takes for the repository), and which branches the pull requests listed
 //! belong to.
@@ -22,8 +28,18 @@ use serde::Deserialize;
 use crate::dto::{PrUnavailable, PullRequest, PullRequestState, RefKind, RefPr};
 use crate::error::Result;
 use crate::git::refs::RefInfo;
-use crate::git::runner::{CmdKind, Expired, GitOutput, GitRunner, StdinPolicy, TimeLimit};
+use crate::git::runner::{
+    CmdKind, Expired, GitOutput, GitRunner, StdinPolicy, TimeLimit, ToolRunner,
+};
 use crate::hosts::{RemoteRepo, parse_remote};
+
+/// The variables `gh` takes a token from instead of its stored credentials.
+const TOKEN_VARS: [&str; 4] = [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+];
 
 /// How long a `gh` command may run.
 pub(crate) const GH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -97,7 +113,7 @@ pub(crate) fn unavailable_message(reason: PrUnavailable, failure: Option<&GhFail
 
 /// Runs `gh` for one repository.
 pub(crate) struct Gh {
-    runner: crate::git::runner::ToolRunner,
+    runner: ToolRunner,
     cwd: PathBuf,
     limit: TimeLimit,
 }
@@ -118,18 +134,62 @@ impl Gh {
         if path.is_some() {
             runner = runner.with_path(path);
         }
-        runner = runner
-            .with_env("GH_PROMPT_DISABLED", "1")
-            .with_env("GH_NO_UPDATE_NOTIFIER", "1")
-            .with_env("NO_COLOR", "1")
-            .with_git_protection();
+        runner = Self::base(runner);
         if host != "github.com" {
-            runner = runner.with_env("GH_HOST", host);
+            runner = runner
+                .with_env("GH_HOST", host)
+                .without_env("GH_ENTERPRISE_TOKEN")
+                .without_env("GITHUB_ENTERPRISE_TOKEN");
         }
         Self {
             runner,
             cwd: cwd.to_owned(),
             limit: TimeLimit::total(limit),
+        }
+    }
+
+    /// What every `gh` command gets: no prompt, no update notice, no colour, and the
+    /// protection of the git it runs.
+    fn base(runner: ToolRunner) -> ToolRunner {
+        runner
+            .with_env("GH_PROMPT_DISABLED", "1")
+            .with_env("GH_NO_UPDATE_NOTIFIER", "1")
+            .with_env("NO_COLOR", "1")
+            .with_git_protection()
+    }
+
+    /// Whether `gh` (at `program`, with `path` as for [`Gh::new`]) has credentials stored
+    /// for exactly `host`: `gh auth token --hostname <host>` exits 0. Its output (the
+    /// token) is discarded, never read, and the command log records the command alone; the
+    /// token variables of the environment are removed, so only credentials stored for that
+    /// host count. `None` when it could not tell (it did not start or answer in time).
+    pub(crate) async fn has_stored_credentials(
+        git: &GitRunner,
+        program: PathBuf,
+        path: Option<OsString>,
+        cwd: &Path,
+        host: &str,
+        limit: Duration,
+    ) -> Option<bool> {
+        let mut runner = git.tool(program, "gh");
+        if path.is_some() {
+            runner = runner.with_path(path);
+        }
+        runner = Self::base(runner);
+        for var in TOKEN_VARS {
+            runner = runner.without_env(var);
+        }
+        let ran = runner
+            .run_status_only(
+                cwd,
+                &["auth", "token", "--hostname", host],
+                CmdKind::Read,
+                TimeLimit::total(limit),
+            )
+            .await;
+        match ran {
+            Ok(Ok(out)) => Some(out.code == 0),
+            _ => None,
         }
     }
 

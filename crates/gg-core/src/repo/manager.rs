@@ -147,6 +147,9 @@ pub struct RepoManager {
     /// Repositories (by main worktree) whose pull requests' unavailability has been said
     /// this run: said once per repository per run of the app.
     pub(super) prs_said: Mutex<std::collections::HashSet<PathBuf>>,
+    /// Hosts other than github.com and `*.ghe.com`, by whether `gh` has credentials stored
+    /// for them (they are GitHub then): asked once per host per run of the app.
+    pub(super) gh_hosts: Mutex<std::collections::HashMap<String, bool>>,
     /// How long a `gh` command may run, in milliseconds.
     pub(super) gh_timeout_ms: AtomicU64,
     /// Tests only: the `PATH` `gh` is found on and run with, instead of the login shell's.
@@ -711,6 +714,7 @@ impl RepoManager {
             #[cfg(any(test, feature = "testutil"))]
             worktree_reads_at_once: (AtomicU32::new(0), AtomicU32::new(0)),
             prs_said: Mutex::new(std::collections::HashSet::new()),
+            gh_hosts: Mutex::new(std::collections::HashMap::new()),
             gh_timeout_ms: AtomicU64::new(duration_ms(crate::gh::GH_TIMEOUT)),
             #[cfg(any(test, feature = "testutil"))]
             tool_path: Mutex::new(None),

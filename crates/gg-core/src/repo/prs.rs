@@ -6,6 +6,8 @@
 //! `repo-error`). A reload that fails after one that worked keeps the list shown, marked as
 //! of when it was loaded.
 
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,8 +19,8 @@ use crate::gh::{
     Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, find_gh, humanise,
     parse_default_branch, parse_list, unavailable_message,
 };
-use crate::git::runner::{CmdKind, StdinPolicy};
-use crate::hosts::{RemoteRepo, compare_url, is_github};
+use crate::git::runner::{CmdKind, GitRunner, StdinPolicy};
+use crate::hosts::{RemoteRepo, compare_url, is_known_github};
 use crate::repo::fetch::unix_ms;
 use crate::repo::manager::{ErrorKind, Repo, RepoManager, lock};
 
@@ -207,7 +209,7 @@ impl RepoManager {
         let Some(remote) = facts.base_remote() else {
             return Err((PrUnavailable::NotGithub, None, false));
         };
-        let Some(on) = facts.repo_of(remote).filter(|r| is_github(&r.host)) else {
+        let Some(on) = self.on_github(repo, &repo.runner, &facts, remote).await else {
             return Err((PrUnavailable::NotGithub, None, true));
         };
         let Some(gh) = self.gh(repo, &repo.runner, &on) else {
@@ -230,27 +232,69 @@ impl RepoManager {
         }
     }
 
-    /// `gh` for `repo`, on the repository's host `on`, logged through `runner` (an
-    /// operation's, for `pr_create`), if it is installed.
-    pub(crate) fn gh(
-        &self,
-        repo: &Repo,
-        runner: &crate::git::runner::GitRunner,
-        on: &RemoteRepo,
-    ) -> Option<Gh> {
+    /// `gh` for `repo`, on the repository's host `on` (one [`RepoManager::on_github`] gave),
+    /// logged through `runner` (an operation's, for `pr_create`), if it is installed.
+    pub(crate) fn gh(&self, repo: &Repo, runner: &GitRunner, on: &RemoteRepo) -> Option<Gh> {
+        let (program, tool_path) = self.gh_program(repo)?;
+        Some(Gh::new(
+            runner,
+            program,
+            tool_path,
+            &repo.root,
+            &on.host,
+            self.gh_limit(),
+        ))
+    }
+
+    /// `gh` as found for `repo`, and the `PATH` to run it with (`None`: git's).
+    fn gh_program(&self, repo: &Repo) -> Option<(PathBuf, Option<OsString>)> {
         #[cfg(any(test, feature = "testutil"))]
         let tool_path = lock(&self.tool_path).clone();
         #[cfg(not(any(test, feature = "testutil")))]
-        let tool_path: Option<std::ffi::OsString> = None;
+        let tool_path: Option<OsString> = None;
         let path = tool_path.clone().or_else(|| self.login_path());
         let program = find_gh(path.as_ref(), &repo.root)?;
-        let limit = Duration::from_millis(
+        Some((program, tool_path))
+    }
+
+    fn gh_limit(&self) -> Duration {
+        Duration::from_millis(
             self.gh_timeout_ms
                 .load(std::sync::atomic::Ordering::Relaxed),
-        );
-        Some(Gh::new(
-            runner, program, tool_path, &repo.root, &on.host, limit,
-        ))
+        )
+    }
+
+    /// The repository `remote` names, when its host is GitHub: github.com and `*.ghe.com` by
+    /// name ([`is_known_github`]); any other host only when `gh` has credentials stored for
+    /// exactly that host ([`Gh::has_stored_credentials`], asked once per host per run of the
+    /// app, through `runner`). Otherwise `None`: no `gh` command runs for it, no `GH_HOST`
+    /// names it, and no compare page is made for it.
+    pub(crate) async fn on_github(
+        &self,
+        repo: &Repo,
+        runner: &GitRunner,
+        facts: &RemoteFacts,
+        remote: &str,
+    ) -> Option<RemoteRepo> {
+        let on = facts.repo_of(remote)?;
+        if is_known_github(&on.host) {
+            return Some(on);
+        }
+        if let Some(known) = lock(&self.gh_hosts).get(&on.host).copied() {
+            return known.then_some(on);
+        }
+        let (program, tool_path) = self.gh_program(repo)?;
+        let stored = Gh::has_stored_credentials(
+            runner,
+            program,
+            tool_path,
+            &repo.root,
+            &on.host,
+            self.gh_limit(),
+        )
+        .await?;
+        lock(&self.gh_hosts).insert(on.host.clone(), stored);
+        stored.then_some(on)
     }
 
     /// What to offer for a new pull request of local branch `branch` (see [`PrSuggestion`]):
@@ -294,10 +338,10 @@ impl RepoManager {
         }
         let facts = RemoteFacts::read(&repo.runner, root).await?;
         let base_remote = facts.base_remote().map(str::to_owned);
-        let on = base_remote
-            .as_deref()
-            .and_then(|r| facts.repo_of(r))
-            .filter(|r| is_github(&r.host));
+        let on = match base_remote.as_deref() {
+            Some(r) => self.on_github(&repo, &repo.runner, &facts, r).await,
+            None => None,
+        };
         let gh = on.as_ref().and_then(|on| self.gh(&repo, &repo.runner, on));
 
         // The base: the one remembered, if still on the remote; gh's default branch; the
@@ -405,7 +449,7 @@ impl RepoManager {
             existing = data.of_branch(branch).cloned();
         }
 
-        let compare = on.as_ref().and_then(|on| {
+        let compare = on.as_ref().map(|on| {
             let pushed = facts.push_remote(branch).and_then(|r| facts.repo_of(r));
             let fork = pushed
                 .filter(|p| !p.owner.eq_ignore_ascii_case(&on.owner))

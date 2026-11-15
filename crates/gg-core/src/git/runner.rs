@@ -885,7 +885,7 @@ impl GitRunner {
             kind,
             stdin: StdinPolicy::Null,
             limit,
-            keep_stdout: KEPT_TAIL,
+            keep_stdout: Some(KEPT_TAIL),
         };
         exec_limited(exec, cmd, run, on_stderr, cancel).await
     }
@@ -986,6 +986,7 @@ impl GitRunner {
             program,
             path: self.path.clone(),
             env: Vec::new(),
+            removed: Vec::new(),
             tags: Tags {
                 program: name,
                 ..self.tags
@@ -1047,6 +1048,8 @@ pub struct ToolRunner {
     path: Option<OsString>,
     /// Set for every command, beside the inherited environment.
     env: Vec<(String, String)>,
+    /// Removed from the inherited environment for every command.
+    removed: Vec<&'static str>,
     tags: Tags,
     stop: Option<Arc<Stop>>,
 }
@@ -1071,6 +1074,12 @@ impl ToolRunner {
         self
     }
 
+    /// This runner, removing `var` from the environment its commands inherit.
+    pub(crate) fn without_env(mut self, var: &'static str) -> Self {
+        self.removed.push(var);
+        self
+    }
+
     /// The program it runs.
     pub fn program(&self) -> &Path {
         &self.program
@@ -1087,9 +1096,41 @@ impl ToolRunner {
         stdin: StdinPolicy,
         limit: TimeLimit,
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_keeping(cwd, args, kind, stdin, limit, Some(TOOL_STDOUT))
+            .await
+    }
+
+    /// Runs the program as [`ToolRunner::run`] does, with nothing on stdin and its output
+    /// (stdout and stderr) discarded, never read: only its exit status is known, and the
+    /// command log records the command without any output. For a command whose output must
+    /// not reach the app (`gh auth token`).
+    pub async fn run_status_only(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_keeping(cwd, args, kind, StdinPolicy::Null, limit, None)
+            .await
+    }
+
+    /// `keep_stdout`: most bytes of stdout kept; `None`: stdout and stderr discarded.
+    async fn run_keeping(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        stdin: StdinPolicy,
+        limit: TimeLimit,
+        keep_stdout: Option<usize>,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
         let mut cmd = child_command(self.program.as_os_str(), self.path.as_ref(), Some(cwd));
         cmd.args(args)
             .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        for var in &self.removed {
+            cmd.env_remove(var);
+        }
         let exec = Exec {
             log: &self.log,
             tags: self.tags,
@@ -1101,7 +1142,7 @@ impl ToolRunner {
             kind,
             stdin,
             limit,
-            keep_stdout: TOOL_STDOUT,
+            keep_stdout,
         };
         exec_limited(exec, cmd, run, &|_| {}, None).await
     }
@@ -1128,8 +1169,9 @@ struct Run<'a> {
     kind: CmdKind,
     stdin: StdinPolicy,
     limit: TimeLimit,
-    /// Most bytes of stdout kept (the last ones).
-    keep_stdout: usize,
+    /// Most bytes of stdout kept (the last ones); `None`: stdout and stderr are discarded,
+    /// never read.
+    keep_stdout: Option<usize>,
 }
 
 /// Runs `cmd` (built by [`child_command`] and the runner's own options) as
@@ -1157,7 +1199,11 @@ async fn exec_limited(
         return Err(stopped_error(""));
     }
     let started = Instant::now();
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if keep_stdout.is_some() {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
     let input = match stdin {
         StdinPolicy::Null => {
             cmd.stdin(Stdio::null());
@@ -1187,7 +1233,7 @@ async fn exec_limited(
     // Outside the reading future, so what was read is still there when it is dropped
     // on timeout.
     let (out, err) = (
-        Mutex::new(Tail::keeping(keep_stdout)),
+        Mutex::new(Tail::keeping(keep_stdout.unwrap_or(0))),
         Mutex::new(Tail::default()),
     );
     let take = |t: &Mutex<Tail>| {
@@ -1667,6 +1713,33 @@ mod tests {
             Some("core.hooksPath")
         );
         assert_eq!(get(&format!("GIT_CONFIG_VALUE_{last}")), Some(NULL_DEVICE));
+    }
+
+    /// A command whose output must not reach the app: discarded, never read, and the log
+    /// records the command alone; variables removed are not inherited.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_status_only_command_keeps_no_output_and_loses_the_variables_removed() {
+        let log = CommandLog::new();
+        let tool = sh_tool(log.clone(), None).without_env("HOME");
+        let out = tool
+            .run_status_only(
+                Path::new("/"),
+                &[
+                    "-c",
+                    "echo SECRET; echo SECRET >&2; [ -z \"$HOME\" ] && exit 3",
+                ],
+                CmdKind::Read,
+                TimeLimit::total(Duration::from_secs(10)),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.code, 3, "HOME was removed");
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        let records = log.since(0);
+        assert_eq!(records.len(), 1);
+        assert!(records[0].stdout.is_empty() && records[0].stderr.is_empty());
     }
 
     /// Another program runs on git's spawn path: no controlling terminal (a session of its

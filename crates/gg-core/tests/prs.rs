@@ -334,20 +334,26 @@ async fn signed_out_is_unavailable_and_said_once() {
     assert_eq!(s.notices()[0]["prs"], "signed_out");
 }
 
-/// Review Focus 4: a remote not on GitHub: `not_github`, without running `gh`; the compare
-/// page cannot be built either.
+/// Review Focus 4: a remote not on GitHub: `not_github`. A host not GitHub by name is asked
+/// of `gh` once (`gh auth token --hostname <host>`: has it credentials stored for it?); with
+/// none, no other `gh` command runs, and the compare page cannot be built either.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_remote_not_on_github_never_runs_gh() {
     let s = setup_with("https://gitlab.com/octo/cat.git").await;
+    s.gh.reply("auth-token", 1, "", "no oauth token found for gitlab.com\n");
     let snap = s.load().await;
     assert_eq!(snap.prs.status, PrStatus::Unavailable);
     assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub));
-    assert!(s.gh.calls().is_empty());
     assert_eq!(s.notices().len(), 1);
     assert_eq!(s.notices()[0]["prs"], "not_github");
     let suggested = s.h.m.pr_suggest(s.id, "main").await.unwrap();
     assert_eq!(suggested.compare_url, None);
-    assert!(s.gh.calls().is_empty());
+    let argv: Vec<Vec<String>> = s.gh.calls().into_iter().map(|c| c.argv).collect();
+    assert_eq!(
+        argv,
+        [["auth", "token", "--hostname", "gitlab.com"]],
+        "asked once for the run of the app, nothing else"
+    );
 }
 
 /// Review Focus 4: slow (past the limit) or rate-limited after a load that worked: the
@@ -879,13 +885,15 @@ async fn bad_pull_request_requests_are_refused_before_anything_runs() {
     assert!(s.gh.calls().is_empty());
 }
 
-/// An Enterprise host: `GH_HOST` names it.
+/// An Enterprise host `gh` has credentials stored for: `GH_HOST` names it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_enterprise_host_is_named_with_gh_host() {
     let s = setup_with("https://github.example.com/team/app.git").await;
+    s.gh.reply("auth-token", 0, "", "");
     s.gh.reply("pr-list", 0, "[]", "");
-    s.load().await;
-    let call = &s.gh.calls()[0];
+    let snap = s.load().await;
+    assert_eq!(snap.prs.status, PrStatus::Ready);
+    let call = &s.gh.calls_of(&["pr", "list"])[0];
     assert!(
         call.env.iter().any(|e| e == "GH_HOST=github.example.com"),
         "{:?}",

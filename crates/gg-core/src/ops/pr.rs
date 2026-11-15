@@ -12,7 +12,7 @@ use crate::gh::{
 };
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, StdinPolicy};
-use crate::hosts::{compare_url, is_github};
+use crate::hosts::compare_url;
 use crate::ops::network::{push, ref_commit};
 use crate::ops::{OpCtx, Step};
 use crate::repo::prs::PrTrigger;
@@ -69,7 +69,11 @@ pub(crate) async fn create(
             "Nothing was opened: it is not clear which remote to push {branch} to."
         )));
     };
-    let Some(on) = facts.repo_of(base_remote).filter(|r| is_github(&r.host)) else {
+    let Some(on) = ctx
+        .manager
+        .on_github(ctx.repo, &ctx.runner, &facts, base_remote)
+        .await
+    else {
         return Ok(refused(format!(
             "Nothing was opened: {}",
             unavailable_message(PrUnavailable::NotGithub, None)
@@ -93,13 +97,10 @@ pub(crate) async fn create(
         Some(owner) => format!("{owner}:{branch}"),
         None => branch.to_owned(),
     };
-    let compare: Vec<OpHint> = compare_url(&on, base, branch, fork.as_deref())
-        .map(|url| OpHint::OpenUrl {
-            url,
-            label: "Open the compare page".to_owned(),
-        })
-        .into_iter()
-        .collect();
+    let compare = vec![OpHint::OpenUrl {
+        url: compare_url(&on, base, branch, fork.as_deref()),
+        label: "Open the compare page".to_owned(),
+    }];
 
     // Pushed first (R38) when its namesake there is missing or behind.
     let tracking = format!("refs/remotes/{remote}/{branch}");

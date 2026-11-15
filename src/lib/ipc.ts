@@ -32,7 +32,9 @@ export type EventName =
   | "paths-opened"
   | "op-progress"
   | "cli-changed"
-  | "menu-install-cli";
+  | "menu-install-cli"
+  | "menu-settings"
+  | "menu-shortcuts";
 
 /** Files or folders dragged onto the window (Tauri only). `drop` carries their paths. */
 export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "drop"; paths: string[] };
@@ -298,6 +300,10 @@ export const api = {
   },
   updateSettings: (patch: Partial<Settings>) => call<Settings>("update_settings", { patch }),
   removeRecent: (path: string) => call<Recent[]>("remove_recent", { path }),
+  /** Puts every setting back to its default ("Reset to defaults"); the settings after. */
+  restoreDefaultSettings: () => call<Settings>("restore_default_settings"),
+  /** Opens gg's home page or source code in the browser, or shows the settings file in the file manager. */
+  openAppLink: (link: "home" | "source" | "settingsFile") => call<{ note: string | null }>("open_app_link", { link }),
   /** Moves an unreadable settings file aside, so settings are saved again. */
   async resetSettings(): Promise<void> {
     await call("reset_settings");

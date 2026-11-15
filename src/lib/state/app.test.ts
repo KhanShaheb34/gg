@@ -44,6 +44,7 @@ function appState(overrides: Partial<AppState> = {}): AppState {
     settingsFile: "/c/state.json",
     gitProblem: null,
     cli: { installed: null, shadowedBy: null, candidates: [] },
+    version: "0.1.0",
     ...overrides,
   };
 }

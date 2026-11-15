@@ -52,6 +52,10 @@ export const app = $state({
   } as Settings,
   /** The file settings are kept in, as the core says. */
   settingsFile: "",
+  /** Why settings are not being saved (the file could not be read), or null. */
+  settingsProblem: null as string | null,
+  /** gg's version. */
+  version: "",
   toasts: [] as Toast[],
   /** The stored state has been loaded (or failed to load); until then nothing is drawn. */
   ready: false,
@@ -130,6 +134,7 @@ function reportSettingsProblem(problem: string): void {
             return;
           }
           dismissToast(id);
+          app.settingsProblem = null;
           toast("info", "Settings reset: saving again.");
         },
       },
@@ -467,6 +472,8 @@ export async function init(): Promise<void> {
   app.recents = state.recents;
   app.settings = state.settings;
   app.settingsFile = state.settingsFile;
+  app.settingsProblem = state.settingsProblem;
+  app.version = state.version;
   app.homeDir = state.homeDir;
   app.cli = state.cli;
   applyTheme(state.settings.theme);

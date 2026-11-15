@@ -161,7 +161,15 @@ async fn invoke_core(
 #[cfg(target_os = "macos")]
 const MENU_INSTALL_CLI: &str = "install-cli";
 
-/// The macOS menu bar: Tauri's default with "Install ‘gg’ Command…" in the app menu, minus
+/// The app menu's "Settings…" (Cmd+,) and Help's "Keyboard Shortcuts": the UI opens them on
+/// the `menu-settings` and `menu-shortcuts` events.
+#[cfg(target_os = "macos")]
+const MENU_SETTINGS: &str = "settings";
+#[cfg(target_os = "macos")]
+const MENU_SHORTCUTS: &str = "shortcuts";
+
+/// The macOS menu bar: Tauri's default with "Settings…" and "Install ‘gg’ Command…" in the
+/// app menu and a Help menu with "Keyboard Shortcuts", minus
 /// "Close Window", whose Cmd+W would close the whole window; the UI uses Cmd+W to close the
 /// active tab instead (the red traffic light still closes the window).
 #[cfg(target_os = "macos")]
@@ -181,6 +189,15 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
         true,
         None::<&str>,
     )?;
+    let settings =
+        tauri::menu::MenuItem::with_id(app, MENU_SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let shortcuts = tauri::menu::MenuItem::with_id(
+        app,
+        MENU_SHORTCUTS,
+        "Keyboard Shortcuts",
+        true,
+        None::<&str>,
+    )?;
     Menu::with_items(
         app,
         &[
@@ -190,6 +207,8 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
                 true,
                 &[
                     &Item::about(app, None, Some(about))?,
+                    &Item::separator(app)?,
+                    &settings,
                     &Item::separator(app)?,
                     &install_cli,
                     &Item::separator(app)?,
@@ -223,6 +242,7 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
                 true,
                 &[&Item::minimize(app, None)?, &Item::maximize(app, None)?],
             )?,
+            &Submenu::with_items(app, "Help", true, &[&shortcuts])?,
         ],
     )
 }
@@ -292,8 +312,13 @@ pub fn run() {
         }));
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu).on_menu_event(|app, event| {
-        if event.id() == MENU_INSTALL_CLI {
+        let id = event.id();
+        if id == MENU_INSTALL_CLI {
             let _ = app.emit("menu-install-cli", ());
+        } else if id == MENU_SETTINGS {
+            let _ = app.emit("menu-settings", ());
+        } else if id == MENU_SHORTCUTS {
+            let _ = app.emit("menu-shortcuts", ());
         }
     });
     // Performance runs only (`--features perf`, see scripts/perf.sh).

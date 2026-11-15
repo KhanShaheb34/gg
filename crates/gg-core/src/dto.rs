@@ -1342,6 +1342,8 @@ pub struct AppState {
     pub git_problem: Option<String>,
     /// The `gg` terminal command.
     pub cli: CliState,
+    /// gg's version ("0.1.0").
+    pub version: String,
 }
 
 /// The `gg` terminal command: where it is installed, what in the user's shell would win over
@@ -1389,6 +1391,7 @@ mod tests {
                 shadowed_by: None,
                 candidates: vec!["/b".into()],
             },
+            version: "0.1.0".into(),
         };
         let v = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -1404,7 +1407,8 @@ mod tests {
                 "settingsProblem": null,
                 "settingsFile": "/c/state.json",
                 "gitProblem": null,
-                "cli": {"installed": "/b/gg", "shadowedBy": null, "candidates": ["/b"]}
+                "cli": {"installed": "/b/gg", "shadowedBy": null, "candidates": ["/b"]},
+                "version": "0.1.0"
             })
         );
         assert_eq!(serde_json::from_value::<AppState>(v).unwrap(), state);

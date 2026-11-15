@@ -32,12 +32,14 @@
     windowFocusChanged,
   } from "./lib/state/app.svelte";
   import { openCliDialog } from "./lib/state/cli.svelte";
+  import { openSettings, openShortcuts } from "./lib/state/settings.svelte";
   import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
   import { overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import {
     addWorktree,
     closeCommit,
+    makeActive,
     docked,
     openCommit,
     panelState,
@@ -166,6 +168,9 @@
     });
     // The app menu's "Install ‘gg’ Command…" (macOS).
     const stopCliMenu = onEvent("menu-install-cli", () => void openCliDialog());
+    // The app menu's "Settings…" and Help's "Keyboard Shortcuts" (macOS).
+    const stopSettingsMenu = onEvent("menu-settings", () => openSettings());
+    const stopShortcutsMenu = onEvent("menu-shortcuts", () => openShortcuts());
     // The webview's own context menu (Reload, Inspect…) is not the app's; text fields keep
     // theirs. The graph opens the app's own menus on its rows (GraphView), before this.
     const onContextMenu = (e: MouseEvent) => {
@@ -177,12 +182,41 @@
       stopFocus();
       stopDrop();
       stopCliMenu();
+      stopSettingsMenu();
+      stopShortcutsMenu();
       document.removeEventListener("contextmenu", onContextMenu);
     };
   });
 
+  /** The focus is in a field that takes text: plain keys (?) are its own. */
+  function typing(): boolean {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && (el.isContentEditable || !!el.closest("input, textarea, select"));
+  }
+
+  /**
+   * Makes worktree `index` (0-based, as the side panel lists them) of the active tab the active
+   * one; says why not when there is no such worktree or its folder is gone.
+   */
+  function switchWorktree(index: number) {
+    if (!active) return;
+    const view = repoView(active.repoId);
+    const wt = view.snapshot.worktrees[index];
+    if (!wt) {
+      const n = view.snapshot.worktrees.length;
+      toast("info", n <= 1 ? "This repository has one worktree." : `This repository has ${n} worktrees.`);
+      return;
+    }
+    if (wt.active) return;
+    if (wt.prunable) {
+      toast("info", `${wt.branch ?? shortHash(wt.head ?? "")} cannot be made active: its folder is missing.`);
+      return;
+    }
+    void makeActive(active.repoId, wt.path, view);
+  }
+
   function onKeydown(e: KeyboardEvent) {
-    const shortcut = shortcutFor(e, mac);
+    const shortcut = shortcutFor(e, mac, typing());
     if (!shortcut) return;
     // Always: Cmd/Ctrl+R must never reload the page, nor Cmd/Ctrl+F open the browser's find.
     e.preventDefault();
@@ -190,7 +224,7 @@
     if (e.repeat && !repeatable(shortcut)) return;
     // A dialog is modal: nothing behind it changes while it is open.
     if (overlays.dialog) return;
-    if (app.gitMissing && shortcut.kind !== "close") return;
+    if (app.gitMissing && !["close", "settings", "help"].includes(shortcut.kind)) return;
     const view = active ? repoView(active.repoId) : null;
     switch (shortcut.kind) {
       case "open":
@@ -228,6 +262,19 @@
       case "log":
         if (active) setLogOpen(!logPrefs.open, true);
         break;
+      case "settings":
+        openSettings();
+        break;
+      case "help":
+        openShortcuts();
+        break;
+      case "worktree":
+        switchWorktree(shortcut.index);
+        break;
+      default: {
+        const unhandled: never = shortcut;
+        void unhandled;
+      }
     }
   }
 </script>

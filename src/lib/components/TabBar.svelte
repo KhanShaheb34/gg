@@ -1,6 +1,6 @@
 <!--
-  The window's top bar: one tab per open repository, a button to open another, and the theme
-  toggle. On macOS in the app it doubles as the title bar: empty space drags the window and
+  The window's top bar: one tab per open repository, a button to open another, the settings
+  and the theme toggle. On macOS in the app it doubles as the title bar: empty space drags the window and
   the traffic lights sit in the left inset.
 -->
 <script lang="ts">
@@ -8,6 +8,7 @@
   import { colorIndex, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
   import { activate, app, closeTab, cycleTheme, openViaPicker } from "../state/app.svelte";
+  import { openSettings } from "../state/settings.svelte";
   import { findRepoView } from "../state/repo.svelte";
 
   const trafficLights = isTauri() && isMac();
@@ -112,6 +113,21 @@
   </button>
 
   <div class="drag" data-tauri-drag-region></div>
+
+  <button
+    class="icon-btn"
+    aria-label="Settings"
+    title="Settings ({isMac() ? '⌘,' : 'Ctrl+,'})"
+    data-testid="open-settings"
+    onclick={openSettings}
+  >
+    <!-- Two sliders: settings. -->
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M2.5 5h6.2M12 5h1.5M2.5 11h1.5M7.3 11h6.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+      <circle cx="10.3" cy="5" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4" />
+      <circle cx="5.7" cy="11" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4" />
+    </svg>
+  </button>
 
   <button
     class="icon-btn"

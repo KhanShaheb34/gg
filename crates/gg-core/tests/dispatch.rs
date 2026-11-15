@@ -772,7 +772,8 @@ async fn launch_path_is_reported() {
             "settingsProblem": null,
             "settingsFile": none.config.path().join("state.json").to_string_lossy(),
             // The git installed here is new enough (M3).
-            "gitProblem": null
+            "gitProblem": null,
+            "version": env!("CARGO_PKG_VERSION")
         })
     );
 }

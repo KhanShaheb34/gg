@@ -589,6 +589,7 @@ impl Core {
             settings_file: self.store.file().to_string_lossy().into_owned(),
             git_problem: self.repos().ok().and_then(|r| r.git_problem()),
             cli: self.cli_state(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
         }
     }
 }

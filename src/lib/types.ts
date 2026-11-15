@@ -227,6 +227,7 @@ export type AppState = {
   settingsFile: string; // the file settings are kept in (it may not exist until something is saved)
   gitProblem: string | null; // the git found is too old (before 2.29), said once; null when it is not
   cli: CliState; // the `gg` terminal command
+  version: string; // gg's own ("0.1.0")
 };
 
 /** The `gg` terminal command (`install_cli`, `uninstall_cli`). */

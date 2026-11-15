@@ -173,7 +173,7 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
         if let Some((branch, path)) = delete_refused_by_worktree(line) {
             return Some(format!(
                 "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, so \
-                 it cannot be deleted. Check out another branch there, or remove that worktree, \
+                 it cannot be deleted. Check out another branch there, or delete that worktree, \
                  first."
             ));
         }
@@ -597,6 +597,8 @@ mod tests {
             };
             assert!(message.contains("/w/f"), "{args:?}: {message}");
             assert!(message.contains("\u{201c}f\u{201d}"), "{args:?}: {message}");
+            // Worktrees are deleted, in the app's words (P3-R20), never "removed".
+            assert!(!message.to_lowercase().contains("remove"), "{args:?}: {message}");
             assert_eq!(
                 hints,
                 [OpHint::MakeActive {

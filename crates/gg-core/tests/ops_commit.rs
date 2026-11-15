@@ -1404,7 +1404,8 @@ async fn a_stop_during_the_push_keeps_the_commit_and_offers_the_push() {
         "{out:#?}"
     );
     assert!(
-        out.message.contains("Stopped before the push"),
+        out.message
+            .ends_with("Stopped during the push; it may not have reached origin."),
         "{}",
         out.message
     );
@@ -1516,4 +1517,171 @@ async fn temporary_folders_of_a_gone_process_are_removed_at_the_next_commit() {
     assert!(!old.exists(), "a gone process's folder is removed");
     assert!(alive.exists(), "a running process's folder is kept");
     fs::remove_dir_all(&alive).unwrap();
+}
+
+/// Task 6 review: a folder older than a day goes whatever its pid says (another program may
+/// have that pid by now); a fresh one of a running process stays.
+#[cfg(unix)]
+#[tokio::test]
+async fn temporary_folders_older_than_a_day_are_removed_whatever_their_pid() {
+    let repo = three_files();
+    let git_dir = repo.path().join(".git");
+    // pid 1 always runs.
+    let stale = git_dir.join("gg-commit-1-3");
+    let fresh = git_dir.join("gg-commit-1-4");
+    for dir in [&stale, &fresh] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("index"), "x").unwrap();
+    }
+    let touched = std::process::Command::new("touch")
+        .args(["-t", "202001010000"])
+        .arg(&stale)
+        .status()
+        .unwrap();
+    assert!(touched.success());
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, commit(&["a.txt"], "m", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(!stale.exists(), "older than a day: removed");
+    assert!(fresh.exists(), "a running process's fresh folder is kept");
+    fs::remove_dir_all(&fresh).unwrap();
+}
+
+/// Task 6 review: when another program holds the index a moment after the commit (an
+/// editor's `git status`), the staging area is updated on a second try 300 ms later; when it
+/// still holds it, the commit stands and the notice says how to update the staging area.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_index_lock_after_the_commit_is_waited_for_once_then_explained() {
+    let repo = three_files();
+    let lock = dunce::canonicalize(repo.path())
+        .unwrap()
+        .join(".git/index.lock");
+    // Held for 150 ms after the commit: the second try gets it.
+    hook(
+        &repo,
+        "post-commit",
+        &format!(
+            "touch '{0}'\n( sleep 0.15; rm -f '{0}' ) >/dev/null 2>&1 &",
+            lock.display()
+        ),
+    );
+    repo.write("a.txt", "edited\n");
+    repo.write("b c.txt", "new\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, commit(&["a.txt", "b c.txt"], "m", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(
+        out.message.starts_with("Committed 2 files"),
+        "{}",
+        out.message
+    );
+    assert!(!lock.exists());
+    assert!(
+        porcelain(repo.path()).is_empty(),
+        "the index follows the commit"
+    );
+
+    // Held for good: the commit stands, and the notice says what to run.
+    hook(&repo, "post-commit", &format!("touch '{}'", lock.display()));
+    repo.write("a.txt", "again\n");
+    repo.write("it's.txt", "new\n");
+    let started = Instant::now();
+    let out = h.run(id, commit(&["a.txt", "it's.txt"], "m2", false)).await;
+    fs::remove_file(&lock).unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(300),
+        "waited once"
+    );
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        out.message,
+        format!(
+            "Committed 2 files to main ({}). gg could not update the staging area (another \
+             program holds its lock, index.lock), so the committed files may show as staged \
+             changes. Run the command below in the worktree to update it.",
+            &new[..8]
+        )
+    );
+    let detail = out.detail.as_deref().unwrap();
+    assert!(
+        detail.starts_with("git reset -q -- a.txt 'it'\\''s.txt'\n"),
+        "{detail}"
+    );
+    assert_eq!(changed_by(repo.path(), &new), set(&["a.txt", "it's.txt"]));
+}
+
+/// Task 6 review: git ending with an error after it made the commit (here killed by a
+/// post-commit hook), with a push asked for: the commit stands, and the push did not run.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_push_does_not_run_after_git_failed_once_the_commit_was_made() {
+    let repo = three_files();
+    let origin = repo.clone_as_remote();
+    hook(&repo, "post-commit", "kill -9 $PPID");
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let before = origin.git(&["rev-parse", "main"]);
+    let out = h.run(id, commit(&["a.txt"], "m", true)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message.starts_with("Committed 1 file to main ("),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message.ends_with("The push did not run."),
+        "{}",
+        out.message
+    );
+    assert_eq!(origin.git(&["rev-parse", "main"]), before, "not pushed");
+    assert_eq!(
+        out.hints.first(),
+        Some(&OpHint::Push {
+            branch: "main".into(),
+            remote: "origin".into()
+        })
+    );
+}
+
+/// Task 6 review: paths go to `update-index` in runs that keep each command line short, by
+/// count and by length: 250 long names, added and deleted, all committed exactly.
+#[tokio::test]
+async fn many_long_paths_are_staged_in_short_command_lines() {
+    let repo = TestRepo::new();
+    let long = "a-rather-long-folder-name-for-a-test/".repeat(3);
+    for i in 0..125 {
+        repo.write(&format!("{long}old-{i:03}.txt"), "x\n");
+    }
+    repo.commit_all("many");
+    let mut ticked = Vec::new();
+    for i in 0..125 {
+        fs::remove_file(repo.path().join(format!("{long}old-{i:03}.txt"))).unwrap();
+        ticked.push(format!("{long}old-{i:03}.txt"));
+        repo.write(&format!("{long}new-{i:03}.txt"), format!("{i}\n"));
+        ticked.push(format!("{long}new-{i:03}.txt"));
+    }
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let paths: Vec<&str> = ticked.iter().map(String::as_str).collect();
+    let out = h.run(id, commit(&paths, "250", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    let expected: BTreeSet<String> = ticked.iter().cloned().collect();
+    assert_eq!(changed_by(repo.path(), &new), expected);
+    assert!(porcelain(repo.path()).is_empty());
+    let updates: Vec<_> = op_records(&h.log, &out)
+        .into_iter()
+        .filter(|r| r.args.first().map(String::as_str) == Some("update-index"))
+        .collect();
+    assert!(updates.len() > 3, "{} runs", updates.len());
+    for r in &updates {
+        let bytes: usize = r.args.iter().map(|a| a.len() + 1).sum();
+        assert!(bytes < 9 * 1024, "{bytes} bytes: {:?}", &r.args[..3]);
+    }
 }

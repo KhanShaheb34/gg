@@ -61,6 +61,34 @@ const REFUSED: &str = "Nothing was committed: git or one of the repository's hoo
 /// Most paths given to one command, so the command line stays short on any platform.
 const CHUNK: usize = 100;
 
+/// Most bytes of paths (and what goes with each) given to one command: long names fill a
+/// command line before `CHUNK` of them do.
+const ARG_BUDGET: usize = 8 * 1024;
+
+/// `items` in runs of at most [`CHUNK`] items and [`ARG_BUDGET`] bytes as `cost` counts them
+/// (an item over the budget goes alone).
+fn chunks_by<T>(items: &[T], cost: impl Fn(&T) -> usize) -> Vec<&[T]> {
+    let mut out = Vec::new();
+    let (mut start, mut bytes) = (0, 0);
+    for (i, item) in items.iter().enumerate() {
+        let c = cost(item);
+        if i > start && (i - start == CHUNK || bytes + c > ARG_BUDGET) {
+            out.push(&items[start..i]);
+            (start, bytes) = (i, 0);
+        }
+        bytes += c;
+    }
+    if start < items.len() {
+        out.push(&items[start..]);
+    }
+    out
+}
+
+/// `paths` in runs that fit one command line (see [`chunks_by`]).
+fn path_chunks<'a>(paths: &'a [&'a str]) -> Vec<&'a [&'a str]> {
+    chunks_by(paths, |p| p.len() + 1)
+}
+
 /// "1 file", "3 files".
 pub(crate) fn files(n: usize) -> String {
     if n == 1 {
@@ -357,9 +385,9 @@ impl Scratch {
 }
 
 /// Removes the temporary folders in `dir` that a gg process which is gone left (it crashed
-/// mid-commit): `gg-commit-<pid>-…` of a process no longer running (P3-R17). Where that
-/// cannot be told (not Unix), those older than a day. Failures are ignored: the folders are
-/// only clutter.
+/// mid-commit): `gg-commit-<pid>-…` of a process no longer running (P3-R17; where that
+/// cannot be told, not Unix, none), and any older than a day. Failures are ignored: the
+/// folders are only clutter.
 fn remove_left_over(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -374,8 +402,9 @@ fn remove_left_over(dir: &Path) {
         else {
             continue;
         };
-        if pid != std::process::id() && process_gone(pid, &entry.path()) {
-            let _ = fs::remove_dir_all(entry.path());
+        let path = entry.path();
+        if pid != std::process::id() && (process_gone(pid, &path) || older_than_a_day(&path)) {
+            let _ = fs::remove_dir_all(path);
         }
     }
 }
@@ -392,10 +421,16 @@ fn process_gone(pid: u32, _made: &Path) -> bool {
     !alive
 }
 
-/// Whether process `pid`, which made the folder `made`, is gone: not known without Unix's
-/// signal 0, so a folder older than a day counts as left over.
+/// Whether process `pid` is gone: not known without Unix's signal 0 (a folder older than a
+/// day counts as left over all the same).
 #[cfg(not(unix))]
-fn process_gone(_pid: u32, made: &Path) -> bool {
+fn process_gone(_pid: u32, _made: &Path) -> bool {
+    false
+}
+
+/// Whether folder `made` was last changed more than a day ago: no commit takes that long,
+/// whatever process made it (its pid may be another program's by now).
+fn older_than_a_day(made: &Path) -> bool {
     fs::metadata(made)
         .and_then(|m| m.modified())
         .ok()
@@ -489,7 +524,7 @@ async fn update_index(
     options: &[&str],
     paths: &[&str],
 ) -> Result<Option<(Vec<String>, GitOutput)>> {
-    for chunk in paths.chunks(CHUNK) {
+    for chunk in path_chunks(paths) {
         let mut args = vec!["update-index"];
         args.extend_from_slice(options);
         args.push("--");
@@ -571,7 +606,7 @@ async fn stale_entries(
         return Ok(candidates.into_iter().map(str::to_owned).collect());
     };
     let mut in_head = BTreeSet::new();
-    for chunk in candidates.chunks(CHUNK) {
+    for chunk in path_chunks(&candidates) {
         let mut args = vec![
             "--literal-pathspecs",
             "ls-tree",
@@ -638,7 +673,10 @@ async fn follow_commit(
     if let Some((_, out)) = update_index(ctx, runner, &["--force-remove"], &removed).await? {
         return Ok(Some(output(&out)));
     }
-    for chunk in set.chunks(CHUNK) {
+    // `--cacheinfo <mode> <sha> <path>` for each.
+    for chunk in chunks_by(&set, |(mode, sha, path)| {
+        mode.len() + sha.len() + path.len() + 15
+    }) {
         let mut args = vec!["update-index", "--add", "--replace"];
         for (mode, sha, path) in chunk {
             args.extend(["--cacheinfo", mode.as_str(), sha.as_str(), path.as_str()]);
@@ -663,6 +701,94 @@ async fn follow_commit(
             .await?;
     }
     Ok(None)
+}
+
+/// Brings the user's index to commit `new` for the paths it changed from `parent`, and
+/// drops the `stale` entries (see [`follow_commit`]); git's output when a step fails.
+async fn follow_into_index(
+    ctx: &OpCtx<'_>,
+    runner: &GitRunner,
+    parent: Option<&str>,
+    new: &str,
+    stale: &[String],
+) -> Result<Option<String>> {
+    if let Some(failed) = follow_commit(ctx, runner, parent, new).await? {
+        return Ok(Some(failed));
+    }
+    let stale: Vec<&str> = stale.iter().map(String::as_str).collect();
+    Ok(update_index(ctx, runner, &["--force-remove"], &stale)
+        .await?
+        .map(|(_, out)| output(&out)))
+}
+
+/// The paths commit `new` changed from `parent` (from nothing, for a first commit), without
+/// rename detection; none if they cannot be read.
+async fn committed_paths(
+    ctx: &OpCtx<'_>,
+    runner: &GitRunner,
+    parent: Option<&str>,
+    new: &str,
+) -> Vec<String> {
+    let args: Vec<&str> = match parent {
+        Some(parent) => vec![
+            "diff-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--no-renames",
+            parent,
+            new,
+        ],
+        None => vec![
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-r",
+            "-z",
+            "--name-only",
+            new,
+        ],
+    };
+    match runner.run_unchecked(&ctx.cwd, &args, CmdKind::Read).await {
+        Ok(out) if out.code == 0 => out
+            .stdout
+            .split(|&b| b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Why git could not write the index, in a few words, from its `output`.
+fn index_trouble(output: &str) -> String {
+    if output.contains("index.lock") {
+        return "another program holds its lock, index.lock".to_owned();
+    }
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("git failed");
+    let line = line.strip_prefix("fatal: ").unwrap_or(line);
+    match line.char_indices().nth(120) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line.to_owned(),
+    }
+}
+
+/// `path` as one word for a POSIX shell: in single quotes unless it is plain.
+fn shell_quoted(path: &str) -> String {
+    let plain = !path.is_empty()
+        && !path.starts_with('-')
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/+@%=,:".contains(c));
+    if plain {
+        path.to_owned()
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
 }
 
 /// The commit HEAD is on, read with `runner` (None before the first commit).
@@ -844,12 +970,11 @@ pub(crate) async fn commit(
     // nothing else there changes.
     let mut note = None;
     if !in_merge {
-        note = follow_commit(ctx, &after, parent.as_deref(), &new).await?;
-        if note.is_none() && !stale.is_empty() {
-            let stale: Vec<&str> = stale.iter().map(String::as_str).collect();
-            note = update_index(ctx, &after, &["--force-remove"], &stale)
-                .await?
-                .map(|(_, out)| output(&out));
+        note = follow_into_index(ctx, &after, parent.as_deref(), &new, &stale).await?;
+        if note.is_some() {
+            // Another program may hold the index a moment (an editor's git status): once more.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            note = follow_into_index(ctx, &after, parent.as_deref(), &new, &stale).await?;
         }
     }
     drop(scratch);
@@ -880,6 +1005,8 @@ pub(crate) async fn commit(
         let stopped = ctx.runner.is_stopped();
         let message = if stopped && push {
             format!("{committed} Stopped before the push.")
+        } else if push {
+            format!("{committed} {why} The push did not run.")
         } else {
             format!("{committed} {why}")
         };
@@ -901,13 +1028,21 @@ pub(crate) async fn commit(
             }
         });
     }
-    if let Some(detail) = note {
+    if let Some(output) = note {
+        let mut paths = committed_paths(ctx, &after, parent.as_deref(), &new).await;
+        paths.extend(stale.iter().cloned());
+        let quoted: Vec<String> = paths.iter().map(|p| shell_quoted(p)).collect();
+        let mut message = format!(
+            "{committed} gg could not update the staging area ({}), so the committed files may \
+             show as staged changes. Run the command below in the worktree to update it.",
+            index_trouble(&output)
+        );
+        if push {
+            message.push_str(" The push did not run.");
+        }
         return Ok(Step::DoneWith {
-            message: format!(
-                "{committed} The committed files may still show as changed: updating the index \
-                 failed (below)."
-            ),
-            detail: Some(detail),
+            message,
+            detail: Some(format!("git reset -q -- {}\n\n{output}", quoted.join(" "))),
             hints: retry,
         });
     }
@@ -971,7 +1106,9 @@ async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) 
     if ctx.runner.is_stopped() {
         // The commit stands; the push did not go (or not to its end).
         return Step::Failed {
-            message: format!("{committed} Stopped before the push."),
+            message: format!(
+                "{committed} Stopped during the push; it may not have reached {remote}."
+            ),
             detail: match &pushed {
                 Ok(Step::Failed { detail, .. } | Step::Stopped { detail, .. }) => detail.clone(),
                 Err(e) => e.detail.clone().unwrap_or_default(),
@@ -1042,6 +1179,43 @@ impl RepoManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_go_in_runs_short_by_count_and_by_length() {
+        let short: Vec<String> = (0..250).map(|i| format!("{i}")).collect();
+        let short: Vec<&str> = short.iter().map(String::as_str).collect();
+        let runs: Vec<usize> = path_chunks(&short).iter().map(|c| c.len()).collect();
+        assert_eq!(runs, [100, 100, 50]);
+        let long = "x".repeat(3000);
+        let long: Vec<&str> = vec![long.as_str(); 5];
+        let runs: Vec<usize> = path_chunks(&long).iter().map(|c| c.len()).collect();
+        assert_eq!(runs, [2, 2, 1]);
+        let huge = "y".repeat(20_000);
+        let mixed = vec!["a", huge.as_str(), "b"];
+        let runs: Vec<usize> = path_chunks(&mixed).iter().map(|c| c.len()).collect();
+        assert_eq!(runs, [1, 1, 1], "an item over the budget goes alone");
+        assert!(path_chunks(&[]).is_empty());
+    }
+
+    #[test]
+    fn paths_are_quoted_for_a_shell_when_they_need_it() {
+        assert_eq!(shell_quoted("src/a.rs"), "src/a.rs");
+        assert_eq!(shell_quoted("a b.txt"), "'a b.txt'");
+        assert_eq!(shell_quoted("it's"), "'it'\\''s'");
+        assert_eq!(shell_quoted("-x"), "'-x'");
+        assert_eq!(shell_quoted("$(rm)"), "'$(rm)'");
+        assert_eq!(shell_quoted(""), "''");
+    }
+
+    #[test]
+    fn index_trouble_is_said_in_a_few_words() {
+        assert_eq!(
+            index_trouble("fatal: Unable to create '/r/.git/index.lock': File exists.\n"),
+            "another program holds its lock, index.lock"
+        );
+        assert_eq!(index_trouble("\nfatal: bad thing\nmore"), "bad thing");
+        assert!(index_trouble(&"z".repeat(500)).ends_with('…'));
+    }
 
     fn entry(path: &str, status: EntryStatus, orig: Option<&str>) -> FileEntry {
         FileEntry {

@@ -74,6 +74,8 @@
   const tickable = $derived((files ?? []).filter((f) => blocked(f) === null));
   const chosen = $derived((files ?? []).filter(isTicked));
   const conflicts = $derived((files ?? []).filter((f) => f.status === "U").length);
+  /** Tracked files a merge needs that cannot go in yet, with why (said up front). */
+  const mergeBlocked = $derived(merging ? (files ?? []).filter((f) => f.status !== "?" && blocked(f) !== null) : []);
 
   // ---- Reading the files ----
 
@@ -409,6 +411,12 @@
   {:else if merging}
     <p class="banner" data-testid="commit-merge">
       Concluding the merge{stopped?.incoming ? ` of ${visibleText(stopped.incoming)}` : ""}: every changed tracked file goes into it.
+      {#each mergeBlocked.slice(0, 3) as f (f.path)}
+        <span class="blocked">{visibleText(f.path)} cannot go in yet: {blocked(f)}</span>
+      {/each}
+      {#if mergeBlocked.length > 3}
+        <span class="blocked">And {mergeBlocked.length - 3} more.</span>
+      {/if}
     </p>
   {/if}
 
@@ -559,6 +567,11 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
+  }
+
+  .banner .blocked {
+    display: block;
+    margin-top: 4px;
   }
 
   .elsewhere,

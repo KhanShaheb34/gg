@@ -398,16 +398,17 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   }, topic);
   await expect(page.getByTestId("active-worktree")).toContainText("topic");
   await page.keyboard.press("ControlOrMeta+k");
-  // Still conflicted: the row says why it cannot be ticked, to the eye and in its name, and
-  // why Commit cannot be pressed.
+  // Still conflicted: the row says why it cannot be ticked, to the eye and in its name; the
+  // panel says it up front, and why Commit cannot be pressed.
   await expect(file(page, "shared.txt")).toHaveAttribute("aria-checked", "false");
   await expect(file(page, "shared.txt")).toHaveAccessibleName(/shared\.txt.*Resolve its conflicts first\./);
+  await expect(page.getByTestId("commit-merge")).toContainText("shared.txt");
   await expect(reason(page)).toHaveText("Resolve the conflicts, then conclude the merge.");
   // Resolved and staged.
   writeFileSync(path.join(topic, "shared.txt"), "both\n");
   at("add", "shared.txt");
   await expect(page.getByTestId("commit-merge")).toContainText("Concluding the merge of other");
-
+  await expect(page.getByTestId("commit-merge")).not.toContainText("shared.txt");
   for (const tracked of ["shared.txt", "src/app.ts"]) {
     await expect(file(page, tracked)).toHaveAttribute("aria-selected", "true");
     await expect(file(page, tracked)).toHaveAttribute("aria-checked", "true");

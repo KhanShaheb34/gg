@@ -21,6 +21,8 @@ export default defineConfig({
   webServer: {
     command: port === 1420 ? "pnpm dev" : `pnpm dev --port ${port}`,
     url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    // Never another server already on the port (another checkout's app): the run fails
+    // loudly instead (vite's strictPort refuses a taken port too); use GG_E2E_PORT then.
+    reuseExistingServer: false,
   },
 });

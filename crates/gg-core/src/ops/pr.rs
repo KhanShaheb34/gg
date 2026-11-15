@@ -2,8 +2,9 @@
 //! branch to its namesake on its remote (R38) when that is missing or behind, then `gh pr
 //! create --head <branch> --base <base> --title <title> --body-file - [--draft]`, the
 //! description written to `gh`'s stdin. Runs from the main worktree; needs no working tree.
-//! When `gh` cannot make it (not installed, signed out, a failure), the outcome says so
-//! plainly and offers the host's compare page, which opens one in the browser.
+//! When `gh` cannot make it (not installed, signed out), the branch is still pushed and the
+//! outcome is done with the host's compare page to finish on; any other failure says so
+//! plainly and offers the compare page too.
 
 use crate::dto::{OpHint, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
@@ -13,7 +14,7 @@ use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
 use crate::ops::network::{push, ref_commit};
 use crate::ops::{OpCtx, Step};
-use crate::repo::prs::PrTrigger;
+use crate::repo::prs::{PrTrigger, push_plan};
 
 /// The step said (`op-progress`) while `gh pr create` runs.
 pub const CREATING: &str = "Creating the pull request…";
@@ -102,8 +103,9 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
             "Nothing was opened: there is no remote named {r}."
         )));
     }
-    let base_remote = base_remote.or_else(|| facts.base_remote(Some(branch)));
-    let (Some(remote), Some(base_remote)) = (facts.push_remote(branch), base_remote) else {
+    let base_remote = base_remote.or_else(|| facts.base_remote());
+    let plan = push_plan(&ctx.runner, &ctx.cwd, &facts, branch).await?;
+    let (Some((remote, behind)), Some(base_remote)) = (plan, base_remote) else {
         return Ok(refused(format!(
             "Nothing was opened: it is not clear which remote to push {branch} to."
         )));
@@ -128,6 +130,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         )));
     }
     // A branch pushed to a fork is offered from there (`<owner>:<branch>`).
+    let remote = remote.as_str();
     let fork = facts
         .repo_of(remote)
         .filter(|p| !p.owner.eq_ignore_ascii_case(&on.owner))
@@ -141,20 +144,18 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         label: "Open the compare page".to_owned(),
     }];
 
-    // gh looked for before anything is pushed: without it, the branch is still pushed and
-    // the pull request is finished on GitHub's compare page.
-    let gh = ctx.manager.gh(ctx.repo, &ctx.runner, &on);
-
-    // Pushed first (R38) when its namesake there is missing or behind.
-    let tracking = format!("refs/remotes/{remote}/{branch}");
-    let behind = match ref_commit(ctx, &tracking).await? {
-        None => true,
-        Some(_) => {
-            let range = format!("{tracking}..refs/heads/{branch}");
-            let out = ctx.read(&["rev-list", "--count", &range, "--"]).await?;
-            out.code != 0 || out.text().trim() != "0"
-        }
+    // gh looked for before anything is pushed: without it, or signed out (as the list last
+    // said), the branch is still pushed and the pull request is finished on GitHub's compare
+    // page.
+    let signed_out = ctx.repo.prs_unavailable().await == Some(PrUnavailable::SignedOut);
+    let gh = if signed_out {
+        None
+    } else {
+        ctx.manager.gh(ctx.repo, &ctx.runner, &on)
     };
+
+    // Pushed first (R38) when its namesake there is missing or behind (`push_plan`, as the
+    // suggestion said).
     let mut pushed = String::new();
     if behind {
         ctx.step(&format!("Pushing {branch} to {remote}/{branch}…"));
@@ -165,17 +166,20 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         }
     }
 
-    let Some(gh) = gh else {
+    let on_github_instead = |compare: Vec<OpHint>| {
         let message = if behind {
             format!("Pushed {branch} to {remote}/{branch}. Finish on GitHub:")
         } else {
             format!("{branch} is on {remote}/{branch} already. Finish on GitHub:")
         };
-        return Ok(Step::DoneWith {
+        Step::DoneWith {
             message,
             detail: None,
             hints: compare,
-        });
+        }
+    };
+    let Some(gh) = gh else {
+        return Ok(on_github_instead(compare));
     };
     let mut args = vec![
         "pr",
@@ -240,7 +244,11 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
                     format!("{pushed}{branch} has a pull request open already{number}."),
                 ));
             }
-            // Not signed in (or no gh): said as such; anything else is gh's own reason.
+            // Not signed in: as without gh, finished on the compare page (Task 9 review I5).
+            if matches!(failure, GhFailure::SignedOut(_)) {
+                return Ok(on_github_instead(compare));
+            }
+            // Not installed after all: said as such; anything else is gh's own reason.
             let why = match &failure {
                 GhFailure::Failed { message, .. } => {
                     format!("gh could not open the pull request: {message}")

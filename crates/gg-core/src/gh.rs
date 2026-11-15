@@ -425,8 +425,9 @@ pub(crate) struct RemoteFacts {
     branch_remote: HashMap<String, String>,
     /// `remote.pushDefault`.
     push_default: Option<String>,
-    /// The remote marked `gh-resolved` (by `gh repo set-default`), if any.
-    resolved: Option<String>,
+    /// The remote marked `gh-resolved` (by `gh repo set-default`) and the mark's value
+    /// (`base`, or the `OWNER/REPO` chosen), if any.
+    resolved: Option<(String, String)>,
     /// ssh address host (maybe an alias) → the real host name it stands for.
     real_hosts: HashMap<String, String>,
 }
@@ -468,7 +469,7 @@ impl RemoteFacts {
             } else if let Some(rest) = key.strip_prefix("remote.") {
                 if let Some(remote) = rest.strip_suffix(".gh-resolved") {
                     if !value.is_empty() {
-                        facts.resolved = Some(remote.to_owned());
+                        facts.resolved = Some((remote.to_owned(), value.to_owned()));
                     }
                 } else if let Some(remote) = rest.strip_suffix(".pushurl") {
                     push_urls.push((remote.to_owned(), value.to_owned()));
@@ -540,17 +541,28 @@ impl RemoteFacts {
     }
 
     /// The remote of the repository pull requests go to (the base repository) unless the
-    /// user names another: the one marked by `gh repo set-default`, else `upstream`,
-    /// `github`, `origin`, else the remote `branch` (when given) is pushed to, else the first.
-    /// Every `gh` command is then told this repository (`--repo`).
-    pub(crate) fn base_remote(&self, branch: Option<&str>) -> Option<&str> {
-        if let Some(r) = self.resolved.as_deref().filter(|r| self.known(r)) {
-            return Some(r);
+    /// user names another, the same for the list and for a new pull request: the one `gh
+    /// repo set-default` chose (`remote.<r>.gh-resolved`: `base` marks that remote; an
+    /// `OWNER/REPO` value names the repository, so the remote whose address names it, else
+    /// the marked one), else `upstream`, `github`, `origin`, else the first. Every `gh`
+    /// command is then told this repository (`--repo`).
+    pub(crate) fn base_remote(&self) -> Option<&str> {
+        if let Some((marked, value)) = &self.resolved
+            && self.known(marked)
+        {
+            let named = value.split_once('/').and_then(|(owner, name)| {
+                self.urls.keys().map(String::as_str).find(|r| {
+                    self.repo_of(r).is_some_and(|repo| {
+                        repo.owner.eq_ignore_ascii_case(owner)
+                            && repo.name.eq_ignore_ascii_case(name)
+                    })
+                })
+            });
+            return Some(named.unwrap_or(marked));
         }
         ["upstream", "github", "origin"]
             .into_iter()
             .find(|r| self.known(r))
-            .or_else(|| branch.and_then(|b| self.push_remote(b)))
             .or_else(|| self.urls.keys().next().map(String::as_str))
     }
 
@@ -855,7 +867,7 @@ mod tests {
                     let b = k.strip_prefix("branch.").unwrap().strip_suffix(".remote");
                     f.branch_remote.insert(b.unwrap().into(), (*value).into());
                 }
-                k => f.resolved = Some(k.into()),
+                k => f.resolved = Some((k.into(), (*value).into())),
             }
         }
         f
@@ -900,21 +912,31 @@ mod tests {
             ("upstream", "git@github.com:o/r"),
             ("zz", "git@github.com:z/r"),
         ];
-        assert_eq!(facts(&three, &[]).base_remote(None), Some("upstream"));
+        assert_eq!(facts(&three, &[]).base_remote(), Some("upstream"));
+        assert_eq!(facts(&three, &[("zz", "base")]).base_remote(), Some("zz"));
+        // Task 9 review minor 3: an OWNER/REPO value names the repository, whichever remote
+        // carries the mark; one no remote names leaves the marked remote.
         assert_eq!(
-            facts(&three, &[("zz", "base")]).base_remote(None),
+            facts(&three, &[("zz", "O/R")]).base_remote(),
+            Some("upstream")
+        );
+        assert_eq!(
+            facts(&three, &[("upstream", "me/r")]).base_remote(),
+            Some("origin")
+        );
+        assert_eq!(
+            facts(&three, &[("zz", "nobody/r")]).base_remote(),
             Some("zz")
         );
-        // None of those names: the branch's push remote, else the first.
+        // None of those names: the first, whatever branch it is for (the list and a new
+        // pull request agree).
         let forked = [
             ("fork", "git@github.com:ada/r"),
             ("main-repo", "git@github.com:o/r"),
             ("zzz", "git@github.com:z/r"),
         ];
         let f = facts(&forked, &[("branch.x.remote", "main-repo")]);
-        assert_eq!(f.base_remote(Some("x")), Some("main-repo"));
-        assert_eq!(f.base_remote(Some("y")), Some("fork"));
-        assert_eq!(f.base_remote(None), Some("fork"));
+        assert_eq!(f.base_remote(), Some("fork"));
     }
 
     fn listed(number: u32, head: &str, owner: &str, cross: bool) -> ListedPr {

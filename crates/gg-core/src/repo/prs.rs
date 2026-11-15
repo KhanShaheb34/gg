@@ -249,7 +249,7 @@ impl RepoManager {
             .remote_facts(repo, &repo.runner, &repo.root)
             .await
             .map_err(failed)?;
-        let Some(remote) = facts.base_remote(None) else {
+        let Some(remote) = facts.base_remote() else {
             return Err((PrUnavailable::NotGithub, None, false));
         };
         let Some(on) = self.on_github(repo, &repo.runner, &facts, remote).await else {
@@ -440,7 +440,7 @@ impl RepoManager {
             ));
         }
         let facts = self.remote_facts(&repo, &repo.runner, root).await?;
-        let base_remote = facts.base_remote(Some(branch)).map(str::to_owned);
+        let base_remote = facts.base_remote().map(str::to_owned);
         let on = match base_remote.as_deref() {
             Some(r) => self.on_github(&repo, &repo.runner, &facts, r).await,
             None => None,
@@ -572,6 +572,11 @@ impl RepoManager {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let push = push_plan(&repo.runner, root, &facts, branch).await?;
+        let repo_name = base_remote
+            .as_deref()
+            .and_then(|r| on.clone().or_else(|| facts.repo_of(r)))
+            .map(|r| format!("{}/{}", r.owner, r.name));
         let compare = on.as_ref().map(|on| {
             let pushed = facts.push_remote(branch).and_then(|r| facts.repo_of(r));
             let fork = pushed
@@ -586,6 +591,10 @@ impl RepoManager {
             base_remote,
             existing,
             compare_url: compare,
+            repo: repo_name,
+            push_to: push.as_ref().map(|(r, _)| format!("{r}/{branch}")),
+            needs_push: push.as_ref().is_some_and(|(_, needs)| *needs),
+            push_remote: push.map(|(r, _)| r),
         })
     }
 
@@ -639,4 +648,37 @@ impl RepoManager {
         let mut loads = repo.prs_loads.subscribe();
         let _ = loads.wait_for(|done| *done > n).await;
     }
+}
+
+/// Where `pr_create` pushes local `branch` before opening its pull request, and whether it
+/// must: the branch's push remote ([`RemoteFacts::push_remote`]) and whether its namesake
+/// there is missing or behind it (as last fetched). `None` when the remote is not clear.
+/// The suggestion and `pr_create` both ask this, so what the dialog says is what is done.
+pub(crate) async fn push_plan(
+    runner: &GitRunner,
+    cwd: &std::path::Path,
+    facts: &RemoteFacts,
+    branch: &str,
+) -> Result<Option<(String, bool)>> {
+    let Some(remote) = facts.push_remote(branch) else {
+        return Ok(None);
+    };
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let there = runner
+        .run_unchecked(
+            cwd,
+            &["rev-parse", "--verify", "--quiet", &tracking],
+            CmdKind::Read,
+        )
+        .await?;
+    let needs = if there.code != 0 {
+        true
+    } else {
+        let range = format!("{tracking}..refs/heads/{branch}");
+        let out = runner
+            .run_unchecked(cwd, &["rev-list", "--count", &range, "--"], CmdKind::Read)
+            .await?;
+        out.code != 0 || out.text().trim() != "0"
+    };
+    Ok(Some((remote.to_owned(), needs)))
 }

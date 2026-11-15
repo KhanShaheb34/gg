@@ -880,7 +880,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
         "feature is on origin/feature already. Finish on GitHub:"
     );
 
-    // Signed out.
+    // Signed out (Task 9 review I5): as without gh, done, finished on the compare page.
     s.h.m.set_tool_path(Some(s.gh.path()));
     s.gh.reply(
         "pr-create",
@@ -888,12 +888,38 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
         "",
         "To get started with GitHub CLI, please run:  gh auth login\n",
     );
+    s.repo.git(&["switch", "-q", "feature"]);
+    s.repo.commit("one more");
+    s.repo.git(&["switch", "-q", "main"]);
     let out =
         s.h.run(s.id, create("feature", "main", "T", "b", false))
             .await;
-    assert_eq!(out.status, OpStatus::Failed);
-    assert!(out.message.contains("not signed in"), "{}", out.message);
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "Pushed feature to origin/feature. Finish on GitHub:"
+    );
     assert!(matches!(&out.hints[..], [OpHint::OpenUrl { url, .. }] if url.contains("/compare/")));
+    assert_eq!(s.gh.calls_of(&["pr", "create"]).len(), 1);
+    // Once the list says signed out, gh is not asked to create at all.
+    s.gh.reply(
+        "pr-list",
+        4,
+        "",
+        "To get started with GitHub CLI, please run:  gh auth login\n",
+    );
+    s.h.m.set_prs_every(Duration::ZERO);
+    let snap = s.load().await;
+    assert_eq!(snap.prs.reason, Some(PrUnavailable::SignedOut));
+    let out =
+        s.h.run(s.id, create("feature", "main", "T", "b", false))
+            .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "feature is on origin/feature already. Finish on GitHub:"
+    );
+    assert_eq!(s.gh.calls_of(&["pr", "create"]).len(), 1, "not asked again");
 
     // The remote has moved on: the push is rejected, nothing is made.
     let other = TestRepo::clone_of(&s._origin);
@@ -1043,7 +1069,7 @@ async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
     assert_eq!(
         suggested.base_remote.as_deref(),
         Some("fork"),
-        "no upstream/github/origin: the branch's push remote"
+        "no upstream/github/origin: the first remote, as for the list"
     );
 
     s.gh.reply("pr-create", 0, "https://github.com/octo/cat/pull/5\n", "");
@@ -1103,6 +1129,62 @@ async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
         assert!(!call.env.iter().any(|e| e.starts_with("GH_REPO=")));
         assert!(!call.env.iter().any(|e| e.starts_with("GH_HOST=")));
     }
+}
+
+/// Task 9 review I3: the suggestion says where `pr_create` will push and whether it must,
+/// worked out by the same code: `remote.pushDefault=fork` sends the branch to the fork
+/// (not the base repository's remote); a namesake there that is behind needs a push; one
+/// that is up to date does not. It also names the base repository.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_suggestion_says_where_the_branch_is_pushed_and_whether_it_must_be() {
+    let s = setup().await;
+    let fork = s.repo.clone_as_remote_named("fork");
+    s.repo
+        .git(&["remote", "set-url", "fork", "git@github.com:ada/cat.git"]);
+    behind(&s.repo, "git@github.com:ada/cat.git", &fork);
+    s.repo.git(&["config", "remote.pushDefault", "fork"]);
+    s.repo.branch("topic");
+    s.gh.reply("pr-list", 0, "[]", "");
+    s.load().await;
+
+    let suggested = s.h.m.pr_suggest(s.id, "topic").await.unwrap();
+    assert_eq!(suggested.base_remote.as_deref(), Some("origin"));
+    assert_eq!(suggested.repo.as_deref(), Some("octo/cat"));
+    assert_eq!(suggested.push_remote.as_deref(), Some("fork"));
+    assert_eq!(suggested.push_to.as_deref(), Some("fork/topic"));
+    assert!(suggested.needs_push, "not on the fork yet");
+
+    // On the fork and up to date: no push.
+    s.repo.git(&["push", "-q", "fork", "topic"]);
+    let suggested = s.h.m.pr_suggest(s.id, "topic").await.unwrap();
+    assert!(!suggested.needs_push);
+    // Behind there (a new commit here): a push.
+    s.repo.git(&["switch", "-q", "topic"]);
+    s.repo.commit("more");
+    let suggested = s.h.m.pr_suggest(s.id, "topic").await.unwrap();
+    assert!(suggested.needs_push);
+
+    // pr_create pushes exactly there.
+    s.gh.reply("pr-create", 0, "https://github.com/octo/cat/pull/9\n", "");
+    let mark = s.h.last_log_id();
+    let out =
+        s.h.run(s.id, create("topic", "main", "Topic", "", false))
+            .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let pushes: Vec<Vec<String>> =
+        s.h.writes_since(mark)
+            .into_iter()
+            .filter(|r| r.args.first().map(String::as_str) == Some("push"))
+            .map(|r| r.args)
+            .collect();
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert!(pushes[0].iter().any(|a| a == "fork"), "{pushes:?}");
+    let made = &s.gh.calls_of(&["pr", "create"])[0];
+    assert!(
+        made.argv.iter().any(|a| a == "ada:topic"),
+        "{:?}",
+        made.argv
+    );
 }
 
 /// ssh aliases (Task 8 review): `git@github.com-work:me/r.git` and `git@gh-work:me/r.git`

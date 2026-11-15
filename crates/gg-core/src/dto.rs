@@ -145,6 +145,14 @@ pub struct PrSuggestion {
     pub existing: Option<PullRequest>,
     /// The host's page comparing the branch with `base`, when it can be built.
     pub compare_url: Option<String>,
+    /// The base repository, `owner/name`, when the base remote names one.
+    pub repo: Option<String>,
+    /// The remote `pr_create` pushes the branch to; `None` when that is not clear.
+    pub push_remote: Option<String>,
+    /// Where it pushes it: `<push remote>/<branch>`.
+    pub push_to: Option<String>,
+    /// `pr_create` pushes first: the branch's namesake there is missing or behind it.
+    pub needs_push: bool,
 }
 
 /// Change counts for one worktree.
@@ -1662,11 +1670,16 @@ mod tests {
             base_remote: Some("origin".into()),
             existing: None,
             compare_url: Some("https://github.com/o/r/compare/main...b?expand=1".into()),
+            repo: Some("o/r".into()),
+            push_remote: Some("fork".into()),
+            push_to: Some("fork/b".into()),
+            needs_push: true,
         };
         assert_eq!(
             serde_json::to_value(&suggestion).unwrap(),
             json!({"title": "t", "body": "- a", "base": "main", "baseRemote": "origin", "existing": null,
-                   "compareUrl": "https://github.com/o/r/compare/main...b?expand=1"})
+                   "compareUrl": "https://github.com/o/r/compare/main...b?expand=1",
+                   "repo": "o/r", "pushRemote": "fork", "pushTo": "fork/b", "needsPush": true})
         );
         for (reason, name) in [
             (PrUnavailable::NoGh, "no_gh"),

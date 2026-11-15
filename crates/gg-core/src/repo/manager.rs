@@ -550,6 +550,15 @@ impl TreeState {
 }
 
 impl Repo {
+    /// Why the repository's pull requests are not shown, as the last load said (`None`
+    /// while they are, or before any load).
+    pub(crate) async fn prs_unavailable(&self) -> Option<crate::dto::PrUnavailable> {
+        let slot = self.slot.read().await;
+        (slot.prs.state.status == crate::dto::PrStatus::Unavailable)
+            .then_some(slot.prs.state.reason)
+            .flatten()
+    }
+
     /// Emits `repo-error` with `payload`, or, while nobody has asked for this repository yet,
     /// keeps it (the latest of each kind) until [`Repo::adopt`].
     pub(super) fn report_error(

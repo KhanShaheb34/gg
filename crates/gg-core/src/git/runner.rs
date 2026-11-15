@@ -64,29 +64,45 @@ const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 /// The environment that gives the git another program runs in a repository (`gh` runs git
 /// itself) the protection the app's own git children have, through what git honours in
 /// every child it is started with: [`GIT_ENV`], and the settings of [`LEADING_ARGS`] as
-/// command-line config (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`), plus
-/// `core.hooksPath` set to the null device (such a program never needs the repository's
-/// hooks). Built from the same constants as git's own, so the two cannot drift; the
-/// variables of an enclosing git process are removed by [`child_command`] for every child.
+/// command-line config, plus `core.hooksPath` set to the null device (such a program never
+/// needs the repository's hooks). The settings go into `GIT_CONFIG_PARAMETERS` (what `-c`
+/// passes on), after whatever the app inherited there: git reads it after the
+/// `GIT_CONFIG_COUNT` settings and takes the last of a key, so neither can override them,
+/// and a user's own `GIT_CONFIG_COUNT` settings of other keys still apply. Built from the
+/// same constants as git's own, so the two cannot drift; the variables of an enclosing git
+/// process are removed by [`child_command`] for every child.
 pub(crate) fn git_protection_env() -> Vec<(String, String)> {
+    protection_env_after(
+        std::env::var("GIT_CONFIG_PARAMETERS")
+            .ok()
+            .as_deref()
+            .filter(|v| !v.trim().is_empty()),
+    )
+}
+
+/// [`git_protection_env`] with `inherited` as the `GIT_CONFIG_PARAMETERS` inherited.
+fn protection_env_after(inherited: Option<&str>) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = GIT_ENV
         .iter()
         .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
         .collect();
-    let mut config: Vec<(&str, &str)> = LEADING_ARGS
+    let mut settings: Vec<String> = LEADING_ARGS
         .chunks(2)
         .filter_map(|pair| match pair {
-            ["-c", setting] => setting.split_once('='),
+            ["-c", setting] => Some((*setting).to_owned()),
             _ => None,
         })
         .collect();
-    config.push(("core.hooksPath", NULL_DEVICE));
-    env.push(("GIT_CONFIG_COUNT".to_owned(), config.len().to_string()));
-    for (i, (key, value)) in config.into_iter().enumerate() {
-        env.push((format!("GIT_CONFIG_KEY_{i}"), key.to_owned()));
-        env.push((format!("GIT_CONFIG_VALUE_{i}"), value.to_owned()));
-    }
+    settings.push(format!("core.hooksPath={NULL_DEVICE}"));
+    let mut params: Vec<String> = inherited.map(str::to_owned).into_iter().collect();
+    params.extend(settings.iter().map(|s| config_quoted(s)));
+    env.push(("GIT_CONFIG_PARAMETERS".to_owned(), params.join(" ")));
     env
+}
+
+/// `text` quoted for `GIT_CONFIG_PARAMETERS`: in single quotes, a quote in it as `'\''`.
+fn config_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// Variables an enclosing git process (for example a hook) exports. Inherited, they would
@@ -1680,14 +1696,18 @@ mod tests {
     }
 
     /// The git another program runs gets every setting the app gives its own git (each
-    /// `-c` of the leading options), plus no hooks, and git's environment.
+    /// `-c` of the leading options), plus no hooks, and git's environment. The settings go
+    /// into `GIT_CONFIG_PARAMETERS` after whatever was inherited there (the last of a key
+    /// wins), and the user's own `GIT_CONFIG_COUNT` settings are left alone (Task 9 review
+    /// minor 1).
     #[test]
     fn the_protection_for_another_programs_git_follows_the_apps_own() {
-        let env = git_protection_env();
+        let env = protection_env_after(Some("'core.fsmonitor=evil' 'user.name=it'\\''s'"));
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         for (k, v) in GIT_ENV {
             assert_eq!(get(k), Some(v), "{k}");
         }
+        assert_eq!(get("GIT_CONFIG_COUNT"), None, "the user's own are kept");
         let settings: Vec<&str> = LEADING_ARGS
             .iter()
             .copied()
@@ -1698,21 +1718,63 @@ mod tests {
             settings.len() * 2,
             "every setting has its -c"
         );
-        assert_eq!(
-            get("GIT_CONFIG_COUNT"),
-            Some(&*(settings.len() + 1).to_string())
-        );
-        for (i, setting) in settings.iter().enumerate() {
-            let (k, v) = setting.split_once('=').unwrap();
-            assert_eq!(get(&format!("GIT_CONFIG_KEY_{i}")), Some(k));
-            assert_eq!(get(&format!("GIT_CONFIG_VALUE_{i}")), Some(v));
+        let mut expected = "'core.fsmonitor=evil' 'user.name=it'\\''s'".to_owned();
+        for setting in &settings {
+            expected.push_str(&format!(" '{setting}'"));
         }
-        let last = settings.len();
-        assert_eq!(
-            get(&format!("GIT_CONFIG_KEY_{last}")),
-            Some("core.hooksPath")
+        expected.push_str(&format!(" 'core.hooksPath={NULL_DEVICE}'"));
+        assert_eq!(get("GIT_CONFIG_PARAMETERS"), Some(expected.as_str()));
+        let alone = protection_env_after(None);
+        let params = alone
+            .iter()
+            .find(|(n, _)| n == "GIT_CONFIG_PARAMETERS")
+            .unwrap();
+        assert!(
+            params.1.starts_with("'core.quotePath=false'"),
+            "{}",
+            params.1
         );
-        assert_eq!(get(&format!("GIT_CONFIG_VALUE_{last}")), Some(NULL_DEVICE));
+        assert_eq!(config_quoted("a'b"), "'a'\\''b'");
+    }
+
+    /// What git makes of it (checked against git itself): the app's settings win over an
+    /// inherited `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`, and other keys of the
+    /// user's stay.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_protection_wins_over_inherited_config_and_keeps_the_rest() {
+        let repo = crate::testutil::TestRepo::new();
+        let mut tool = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+        }
+        .tool(PathBuf::from("/bin/sh"), "gh")
+        .with_env("GIT_CONFIG_COUNT", "2")
+        .with_env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .with_env("GIT_CONFIG_VALUE_0", "from-count")
+        .with_env("GIT_CONFIG_KEY_1", "user.name")
+        .with_env("GIT_CONFIG_VALUE_1", "Ada");
+        tool.env
+            .extend(protection_env_after(Some("'core.fsmonitor=from-params'")));
+        let out = tool
+            .run(
+                repo.path(),
+                &[
+                    "-c",
+                    "git config --get core.fsmonitor; git config --get user.name",
+                ],
+                CmdKind::Read,
+                StdinPolicy::Null,
+                TimeLimit::total(Duration::from_secs(10)),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.text(), "false\nAda\n", "{}", out.stderr);
     }
 
     /// A command whose output must not reach the app: discarded, never read, and the log

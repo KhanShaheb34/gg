@@ -1744,3 +1744,31 @@ async fn trouble_after_the_commit_is_made_is_said_with_the_commit() {
         out.message
     );
 }
+
+/// The merge message's comment lines are those of the repository's comment character
+/// (`core.commentChar`), not always `#` (Task 8 review); `auto` is `#`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_merge_message_loses_the_lines_of_the_repositorys_comment_character() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    let msg = repo.path().join(".git/MERGE_MSG");
+    fs::write(
+        &msg,
+        "Merge branch 'feature'\n\n#123 is fixed here\n; Conflicts:\n;\tclash.txt\n",
+    )
+    .unwrap();
+    repo.git(&["config", "core.commentChar", ";"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(
+        files_of(&h, id, repo.path()).await.merge_message.as_deref(),
+        Some("Merge branch 'feature'\n\n#123 is fixed here")
+    );
+    repo.git(&["config", "core.commentChar", "auto"]);
+    fs::write(&msg, "Merge branch 'feature'\n# Conflicts:\n#\tclash.txt\n").unwrap();
+    assert_eq!(
+        files_of(&h, id, repo.path()).await.merge_message.as_deref(),
+        Some("Merge branch 'feature'")
+    );
+}

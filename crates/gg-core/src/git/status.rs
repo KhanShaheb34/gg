@@ -115,13 +115,35 @@ async fn read_merge_message(r: &GitRunner, worktree: &Path) -> Result<Option<Str
     let Ok(raw) = std::fs::read(worktree.join(msg)) else {
         return Ok(None);
     };
-    Ok(Some(merge_message_text(&String::from_utf8_lossy(&raw))).filter(|m| !m.is_empty()))
+    let comment = comment_string(r, worktree).await?;
+    Ok(
+        Some(merge_message_text(&String::from_utf8_lossy(&raw), &comment))
+            .filter(|m| !m.is_empty()),
+    )
 }
 
-/// `MERGE_MSG`'s text as the commit panel offers it: `#` comment lines removed, trimmed.
-fn merge_message_text(raw: &str) -> String {
+/// What starts a comment line in the repository's messages: `core.commentString`, else
+/// `core.commentChar`, else `#` (also for `auto`, which git settles only while it writes a
+/// message of its own, keeping `#` for a merge's).
+async fn comment_string(r: &GitRunner, worktree: &Path) -> Result<String> {
+    for key in ["core.commentString", "core.commentChar"] {
+        let out = r
+            .run_unchecked(worktree, &["config", "--get", key], CmdKind::Read)
+            .await?;
+        let value = out.text();
+        let value = value.trim_end_matches(['\n', '\r']);
+        if out.code == 0 && !value.is_empty() {
+            return Ok(if value == "auto" { "#" } else { value }.to_owned());
+        }
+    }
+    Ok("#".to_owned())
+}
+
+/// `MERGE_MSG`'s text as the commit panel offers it: lines starting with `comment` (the
+/// repository's comment string) removed, trimmed.
+fn merge_message_text(raw: &str, comment: &str) -> String {
     raw.lines()
-        .filter(|l| !l.starts_with('#'))
+        .filter(|l| !l.starts_with(comment))
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -304,8 +326,12 @@ mod tests {
     #[test]
     fn a_merge_message_loses_its_comment_lines() {
         let raw = "Merge branch 'feature'\n\n# Conflicts:\n#\tclash.txt\n";
-        assert_eq!(merge_message_text(raw), "Merge branch 'feature'");
-        assert_eq!(merge_message_text("# only comments\n\n"), "");
+        assert_eq!(merge_message_text(raw, "#"), "Merge branch 'feature'");
+        assert_eq!(merge_message_text("# only comments\n\n", "#"), "");
+        assert_eq!(
+            merge_message_text("Merge x\n# kept\n; gone\n", ";"),
+            "Merge x\n# kept"
+        );
     }
 
     const ORDINARY: &str = "1 .M N... 100644 100644 100644 aaaa aaaa file one.txt\0";

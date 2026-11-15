@@ -566,11 +566,18 @@ pub fn old_config_dir(new_dir: &Path) -> Option<PathBuf> {
         .map(|parent| parent.join(OLD_CONFIG_DIR_NAME))
 }
 
+/// The hidden file [`migrate_config`] leaves in the new config folder once it has done its
+/// work (copied the old state, or found nothing to copy): it never runs there again.
+const MIGRATED_MARKER: &str = ".migrated";
+
 /// Copies `state.json` from `old_dir` into `new_dir` (created if need be) when `new_dir` is
-/// empty: true when it copied. Once the app has written anything there (its state file, or
-/// a broken one it moved aside), nothing is copied again, and an existing state file is
-/// never written over; `old_dir` is left as it is. The copy is written to a temp file and
-/// renamed into place, so it is whole or absent.
+/// empty: true when it copied. It runs to an end once: after a copy, or when there is
+/// nothing to copy (no old state, or the app has written its own state there already), it
+/// leaves [`MIGRATED_MARKER`] in `new_dir` and does nothing from then on, so a state file
+/// the user deleted is never filled again from the old one. A copy that fails leaves no
+/// marker and is tried again at the next start. An existing state file is never written
+/// over, and `old_dir` is left as it is. The copy is written to a hidden temp file and moved
+/// into place without replacing anything, so it is whole or absent.
 pub fn migrate_config(old_dir: &Path, new_dir: &Path) -> Result<bool> {
     let from = old_dir.join(FILE_NAME);
     let failed = |e: io::Error| {
@@ -584,27 +591,63 @@ pub fn migrate_config(old_dir: &Path, new_dir: &Path) -> Result<bool> {
         )
         .with_detail(e.to_string())
     };
+    let marker = new_dir.join(MIGRATED_MARKER);
+    // Done before; or done now, with nothing to copy (both best effort: without the marker,
+    // the next start only looks again).
+    if marker.exists() {
+        return Ok(false);
+    }
+    let done = || {
+        let _ = fs::create_dir_all(new_dir).and_then(|()| fs::write(&marker, ""));
+    };
     if !is_empty_dir(new_dir).map_err(failed)? {
+        done();
         return Ok(false);
     }
     let bytes = match fs::read(&from) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            done();
+            return Ok(false);
+        }
         Err(e) => return Err(failed(e)),
     };
-    let tmp = new_dir.join(format!("{FILE_NAME}.{}.tmp", std::process::id()));
+    let tmp = new_dir.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
     let written = (|| {
         fs::create_dir_all(new_dir)?;
         let mut file = fs::File::create(&tmp)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
-        fs::rename(&tmp, new_dir.join(FILE_NAME))
+        move_no_overwrite(&tmp, &new_dir.join(FILE_NAME))
     })();
-    if let Err(e) = written {
-        let _ = fs::remove_file(&tmp);
-        return Err(failed(e));
+    let _ = fs::remove_file(&tmp);
+    match written {
+        Ok(()) => {
+            done();
+            Ok(true)
+        }
+        // The app wrote its own state meanwhile: that one stays.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            done();
+            Ok(false)
+        }
+        Err(e) => Err(failed(e)),
     }
-    Ok(true)
+}
+
+/// Gives file `from` the name `to` unless `to` exists (then `AlreadyExists`): a hard link,
+/// which never replaces anything, then `from` is removed. Where hard links are not
+/// supported, a rename, only when `to` is absent. `from` may be left behind on failure.
+fn move_no_overwrite(from: &Path, to: &Path) -> io::Result<()> {
+    match fs::hard_link(from, to) {
+        Ok(()) => {
+            let _ = fs::remove_file(from);
+            Ok(())
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) if fs::symlink_metadata(to).is_ok() => Err(io::ErrorKind::AlreadyExists.into()),
+        Err(_) => fs::rename(from, to),
+    }
 }
 
 /// Whether `dir` is missing or holds nothing but hidden files (a `.DS_Store` the Finder
@@ -1200,8 +1243,8 @@ mod tests {
             fs::read_to_string(old.join(FILE_NAME)).unwrap(),
             r#"{"recents":[]}"#
         );
-        // No temp file is left behind.
-        assert_eq!(fs::read_dir(&new).unwrap().count(), 1);
+        // No temp file is left behind; the marker says it is done.
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER, FILE_NAME]);
         // Once only: the state saved since is kept.
         fs::write(new.join(FILE_NAME), "{}").unwrap();
         assert!(!migrate_config(&old, &new).unwrap());
@@ -1210,6 +1253,59 @@ mod tests {
         fs::rename(new.join(FILE_NAME), new.join(format!("{BAD_FILE_PREFIX}1"))).unwrap();
         assert!(!migrate_config(&old, &new).unwrap());
         assert!(!new.join(FILE_NAME).exists());
+        // Nor once the user deleted everything but the marker.
+        fs::remove_file(new.join(format!("{BAD_FILE_PREFIX}1"))).unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert!(!new.join(FILE_NAME).exists());
+    }
+
+    /// The names in folder `dir`, sorted.
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn migrate_config_marks_a_folder_the_app_wrote_already() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(FILE_NAME), "new").unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        // Its state deleted by hand later, it is not filled from the old one.
+        fs::remove_file(new.join(FILE_NAME)).unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER]);
+    }
+
+    #[test]
+    fn migrate_config_retries_after_a_crashed_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        // A copy that died half-way left its hidden temp file and no marker.
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(format!(".{FILE_NAME}.1.tmp")), "ol").unwrap();
+        assert!(migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "old");
+    }
+
+    #[test]
+    fn move_no_overwrite_never_replaces() {
+        let root = tempfile::tempdir().unwrap();
+        let (from, to) = (root.path().join("from"), root.path().join("to"));
+        fs::write(&from, "a").unwrap();
+        fs::write(&to, "b").unwrap();
+        let err = move_no_overwrite(&from, &to).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "b");
+        fs::remove_file(&to).unwrap();
+        move_no_overwrite(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "a");
+        assert!(!from.exists());
     }
 
     #[test]
@@ -1239,20 +1335,42 @@ mod tests {
         let old = root.path().join(OLD_CONFIG_DIR_NAME);
         let new = root.path().join("com.shakirul.gg");
         assert!(!migrate_config(&old, &new).unwrap());
-        assert!(!new.exists());
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER]);
         // An old folder without a state file is no different.
+        let other = root.path().join("other");
         fs::create_dir_all(&old).unwrap();
+        assert!(!migrate_config(&old, &other).unwrap());
+        assert_eq!(dir_names(&other), [MIGRATED_MARKER]);
+        // A state appearing in the old folder later is not taken.
+        fs::write(old.join(FILE_NAME), "old").unwrap();
         assert!(!migrate_config(&old, &new).unwrap());
-        assert!(!new.exists());
+        assert!(!new.join(FILE_NAME).exists());
     }
 
     #[test]
-    fn migrate_config_that_cannot_write_is_io() {
+    fn migrate_config_whose_new_folder_is_a_file_is_io() {
         let root = tempfile::tempdir().unwrap();
         let (old, new) = old_and_new(root.path(), "old");
         // The new folder's path is taken by a file.
         fs::write(&new, "").unwrap();
         assert_eq!(migrate_config(&old, &new).unwrap_err().code, ErrorCode::Io);
+    }
+
+    /// The copy itself fails (the new folder cannot be written): `Io`, nothing left there,
+    /// and no marker, so the next start tries again.
+    #[cfg(unix)]
+    #[test]
+    fn migrate_config_that_cannot_write_is_io() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::set_permissions(&new, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = migrate_config(&old, &new);
+        fs::set_permissions(&new, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap_err().code, ErrorCode::Io);
+        assert!(dir_names(&new).is_empty());
+        assert!(migrate_config(&old, &new).unwrap());
     }
 
     #[test]

@@ -20,7 +20,7 @@ crop() {
 
 crop graph graph-branchy 1280x800+0+0
 crop graph-narrow graph-branchy 600x640+0+0
-crop search small-search 900x440+0+0
+crop search small-search 900x400+0+0 # stops above the details' author line (an email address)
 crop menu menu-branch 560x320+0+80
 crop notice notice-merge-push 410x164+870+636
 crop force dialog-force-push 490x214+395+98

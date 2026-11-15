@@ -1103,7 +1103,7 @@ async fn open_external_opens_the_repositorys_worktrees_only() {
     h.core.record_launches_to(Some(file.clone()));
     let snap = h.open_loaded(repo.path()).await;
     let id = snap["repoId"].clone();
-    let patch = json!({"patch": {"editorCommand": "my-editor -n", "terminalCommand": "my-term --cwd={path} -x"}});
+    let patch = json!({"patch": {"editorCommand": "my-editor -n", "terminalCommand": "my-term --cwd {path} -x"}});
     h.call("update_settings", patch).await;
 
     // A worktree added after the repository was opened counts: the list is read afresh.
@@ -1123,13 +1123,14 @@ async fn open_external_opens_the_repositorys_worktrees_only() {
         assert_eq!(out, json!({"note": null}), "{target} {path:?}");
     }
     h.call("open_external", open("reveal", Some(&linked))).await;
-    let mut cwd = std::ffi::OsString::from("--cwd=");
-    cwd.push(&linked);
     let reveal = if cfg!(target_os = "macos") {
         json!(["/usr/bin/open", "-R", linked])
     } else if cfg!(windows) {
         let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-        json!([format!(r"{windows}\explorer.exe"), "/select,", linked])
+        json!([
+            format!(r"{windows}\explorer.exe"),
+            format!("/select,\"{}\"", linked.display())
+        ])
     } else {
         json!(["xdg-open", linked.parent().unwrap()])
     };
@@ -1137,7 +1138,7 @@ async fn open_external_opens_the_repositorys_worktrees_only() {
         recorded(&file),
         [
             json!(["my-editor", "-n", linked]),
-            json!(["my-term", cwd.to_string_lossy(), "-x"]),
+            json!(["my-term", "--cwd", linked, "-x"]),
             json!(["my-editor", "-n", later]),
             json!(["my-editor", "-n", root]),
             reveal,

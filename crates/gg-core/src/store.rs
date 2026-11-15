@@ -320,6 +320,9 @@ impl Store {
                 format!("The fetch interval must be 0 (off) or 30 to 86400 seconds, not {secs}."),
             ));
         }
+        if let Some(Some(command)) = &patch.terminal_command {
+            crate::launch::check_terminal_command(command)?;
+        }
         if let Some(pattern) = &patch.worktree_pattern
             && !pattern.trim().is_empty()
         {
@@ -1339,6 +1342,15 @@ mod tests {
             .update_settings(patch(serde_json::json!({"terminalCommand": " "})))
             .unwrap();
         assert_eq!(s.terminal_command, None, "blank is the platform's terminal");
+        // `{path}` inside a word is refused when saved, and nothing is saved.
+        let err = store
+            .update_settings(patch(
+                serde_json::json!({"terminalCommand": "wezterm --cwd={path}"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(err.message, "Write {path} as a separate word.");
+        assert_eq!(store.settings().terminal_command, None);
         store
             .update_settings(patch(serde_json::json!({"terminalCommand": "wezterm"})))
             .unwrap();

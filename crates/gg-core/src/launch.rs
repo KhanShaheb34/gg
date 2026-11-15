@@ -404,8 +404,10 @@ fn launch_plan(os: &str, command: Option<&str>, root: &Path, file: Option<Target
         .transpose()?
         .unwrap_or_default();
     if !words.is_empty() {
+        let path = file.map_or(root, |f| f.path);
+        refuse_for_shell(&words[0], path)?;
         let mut argv: Vec<OsString> = words.into_iter().map(OsString::from).collect();
-        argv.push(file.map_or(root, |f| f.path).as_os_str().to_owned());
+        argv.push(path.as_os_str().to_owned());
         return Ok(Plan {
             argv,
             cwd: root.to_owned(),
@@ -462,7 +464,9 @@ fn terminal_plan(
         raw: None,
     };
     if !words.is_empty() {
-        let placed = words.iter().any(|w| w.contains("{path}"));
+        check_path_words(&words)?;
+        refuse_for_shell(&words[0], dir)?;
+        let placed = words.iter().any(|w| w == PATH_WORD);
         let mut argv: Vec<OsString> = words
             .iter()
             .map(|w| with_path(w, dir.as_os_str()))
@@ -512,18 +516,81 @@ fn terminal_plan(
     }
 }
 
-/// `word` with every `{path}` in it replaced by `path`.
+/// The word of a terminal command that stands for the folder.
+const PATH_WORD: &str = "{path}";
+
+/// `word`, or `path` when the word is `{path}` (only a whole word stands for it).
 fn with_path(word: &str, path: &OsStr) -> OsString {
-    let mut out = OsString::new();
-    let mut parts = word.split("{path}");
-    if let Some(first) = parts.next() {
-        out.push(first);
+    if word == PATH_WORD {
+        path.to_owned()
+    } else {
+        word.into()
     }
-    for part in parts {
-        out.push(path);
-        out.push(part);
+}
+
+/// `Ok` unless a word of a terminal command has `{path}` inside it (`--cwd={path}`): the
+/// folder is given as one argument of its own, never spliced into another.
+fn check_path_words(words: &[String]) -> Result<()> {
+    if words
+        .iter()
+        .any(|w| w != PATH_WORD && w.contains(PATH_WORD))
+    {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            "Write {path} as a separate word.",
+        ));
     }
-    out
+    Ok(())
+}
+
+/// Checks a terminal command as the settings save it: quotes closed, `{path}` a word of its
+/// own. A blank command is the platform's terminal.
+pub(crate) fn check_terminal_command(command: &str) -> Result<()> {
+    check_path_words(&split_command(command, "terminal")?)
+}
+
+/// Programs that read their arguments as commands of their own, by file name (lowercase).
+const SHELLS: [&str; 11] = [
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+    "wt",
+    "wt.exe",
+    "sh",
+    "bash",
+    "zsh",
+];
+
+/// Characters a shell or `cmd` reads as more than a name.
+const SHELL_SPECIAL: [char; 14] = [
+    '&', '|', ';', '<', '>', '^', '%', '$', '`', '(', ')', '"', '\'', '\n',
+];
+
+/// `Err` when the configured `program` (its first word) is a shell, `cmd`, `wt` or a batch
+/// file (`.bat`, `.cmd`), which would read characters of `path` as commands, and `path` has
+/// one: the path is then not given to it at all.
+fn refuse_for_shell(program: &str, path: &Path) -> Result<()> {
+    let name = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_lowercase();
+    let shell = SHELLS.contains(&name.as_str()) || name.ends_with(".bat") || name.ends_with(".cmd");
+    let text = path.to_string_lossy();
+    if shell && text.contains(SHELL_SPECIAL) {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!(
+                "Not opened: {program} would read characters in {text} (such as & ; $ or quotes) \
+                 as commands. Rename the folder, or set a program in Settings that takes the \
+                 path as a plain argument."
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The program and arguments that show folder `dir` in the file manager on `os`: selected
@@ -1036,11 +1103,15 @@ mod tests {
                 ["alacritty", "--working-directory", "/w/a b"]
             );
             assert_eq!(plan.cwd, Path::new("/w/a b"));
-            let plan =
-                terminal(os, Some("wezterm start --cwd={path} ; rm"), "/w/a b", &[]).unwrap();
+            // `{path}` stands for the folder only as a word of its own.
+            let err =
+                terminal(os, Some("wezterm start --cwd={path} ; rm"), "/w/a b", &[]).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest);
+            assert_eq!(err.message, "Write {path} as a separate word.");
+            let plan = terminal(os, Some("wezterm start --cwd {path} ;"), "/w/a b", &[]).unwrap();
             assert_eq!(
                 strings(&plan.argv),
-                ["wezterm", "start", "--cwd=/w/a b", ";", "rm"]
+                ["wezterm", "start", "--cwd", "/w/a b", ";"]
             );
             let plan = terminal(os, Some("'my term' -x"), "/w/$(x)", &[]).unwrap();
             assert_eq!(strings(&plan.argv), ["my term", "-x", "/w/$(x)"]);
@@ -1049,6 +1120,52 @@ mod tests {
             assert!(terminal(os, Some("  "), "/w", &["xterm", "wt.exe"]).is_ok());
             let err = terminal(os, Some("term 'x"), "/w", &[]).unwrap_err();
             assert_eq!(err.code, ErrorCode::BadRequest);
+        }
+    }
+
+    /// A configured program that reads its arguments as commands (a shell, `cmd`, `wt`, a
+    /// batch file) is not given a path with characters it would take as such; any other
+    /// program gets any path.
+    #[test]
+    fn a_shell_as_the_program_never_gets_a_path_it_would_run() {
+        for program in [
+            "cmd",
+            "cmd.exe",
+            "CMD.EXE",
+            "powershell",
+            "pwsh",
+            "wt",
+            "wt.exe",
+            "sh",
+            "bash",
+            "/bin/zsh",
+            "open.bat",
+            r"C:\tools\edit.CMD",
+        ] {
+            for bad in [
+                "/w/a&b", "/w/a|b", "/w/a;b", "/w/a<b", "/w/a>b", "/w/a^b", "/w/a%b", "/w/a$b",
+                "/w/a`b", "/w/a(b", "/w/a)b", "/w/a\"b", "/w/a'b", "/w/a\nb",
+            ] {
+                let quoted = format!("'{program}' -x");
+                let err = terminal("linux", Some(&quoted), bad, &[]).unwrap_err();
+                assert_eq!(err.code, ErrorCode::BadRequest, "{program} {bad:?}");
+                assert!(err.message.starts_with("Not opened:"), "{}", err.message);
+                let target = Target {
+                    path: Path::new(bad),
+                    regular: true,
+                };
+                let err =
+                    launch_plan("linux", Some(&quoted), Path::new("/w"), Some(target)).unwrap_err();
+                assert_eq!(err.code, ErrorCode::BadRequest, "{program} {bad:?}");
+            }
+            let quoted = format!("'{program}'");
+            assert!(terminal("linux", Some(&quoted), "/w/plain dir-1.2", &[]).is_ok());
+        }
+        for program in ["code", "kitty", "shell-tool", "bashful"] {
+            assert!(
+                terminal("linux", Some(program), "/w/a&b;$(c)", &[]).is_ok(),
+                "{program}"
+            );
         }
     }
 

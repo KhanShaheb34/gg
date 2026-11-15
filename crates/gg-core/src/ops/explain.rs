@@ -598,7 +598,10 @@ mod tests {
             assert!(message.contains("/w/f"), "{args:?}: {message}");
             assert!(message.contains("\u{201c}f\u{201d}"), "{args:?}: {message}");
             // Worktrees are deleted, in the app's words (P3-R20), never "removed".
-            assert!(!message.to_lowercase().contains("remove"), "{args:?}: {message}");
+            assert!(
+                !message.to_lowercase().contains("remove"),
+                "{args:?}: {message}"
+            );
             assert_eq!(
                 hints,
                 [OpHint::MakeActive {

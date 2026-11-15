@@ -1,10 +1,10 @@
 // The menu of a worktree in the side panel (spec §5.4), and the panel's own menu. Like the
 // other builders, a pure function of the worktree and the snapshot the panel shows (and, for
-// the file manager's name, the platform). The pull-request items come with the pull requests.
+// the file manager's name, the platform).
 
 import { revealLabel } from "../platform";
 import type { RepoSnapshot, WorktreeInfo } from "../types";
-import { firstReason, item, noRemoteReason, SEPARATOR, shown } from "./common";
+import { firstReason, item, noRemoteReason, pullRequestItem, SEPARATOR, shown } from "./common";
 import type { MenuItem } from "./types";
 
 /** Why worktree `wt` cannot be made active now, or undefined. */
@@ -50,6 +50,7 @@ export function worktreeMenu(wt: WorktreeInfo, snap: RepoSnapshot): MenuItem[] {
         noRemoteReason(snap),
       ),
     }),
+    pullRequestItem(wt.branch, wt.pr, snap),
     SEPARATOR,
   );
   if (wt.locked) {

@@ -37,10 +37,13 @@ export async function runOp(
   {
     ownErrors = [],
     ownRefusals = false,
+    ownOutcome = false,
     confirmWith,
   }: {
     ownErrors?: CoreErrorDto["code"][];
     ownRefusals?: boolean;
+    /** The caller says how it went (a dialog that stays open on a failure): no notice. */
+    ownOutcome?: boolean;
     /**
      * Asks the user itself (the dialog that sent the request, inside it) when it returns a
      * promise of the answer; null: the usual confirmation.
@@ -59,7 +62,8 @@ export async function runOp(
     }
     findRepoView(repoId)?.applySnapshot(outcome.snapshot);
     if (outcome.status !== "needs_confirmation") {
-      if (!(ownRefusals && isRefusal(outcome))) report(repoId, outcome, request);
+      if (ownOutcome) settle(repoId, outcome);
+      else if (!(ownRefusals && isRefusal(outcome))) report(repoId, outcome, request);
       return outcome;
     }
     const again = confirmed.length > 0;
@@ -109,16 +113,24 @@ function confirm(repoId: number, outcome: OpOutcome, again: boolean): Promise<bo
   });
 }
 
+/**
+ * What every outcome does besides its notice: a stopped operation is marked so for the log,
+ * and notices whose buttons may no longer hold go (R30).
+ */
+function settle(repoId: number, outcome: OpOutcome): void {
+  if (outcome.status === "stopped") markStopped(outcome.opId);
+  for (const t of app.toasts) {
+    if (t.until && t.until.repoId === repoId && outcome.opId > t.until.opId) dismissToast(t.id);
+  }
+}
+
 function report(repoId: number, outcome: OpOutcome, request: OpRequest): void {
   // Where the operation ran: the worktree it was asked for, not whichever is active by the
   // time its outcome arrives (one that names none ran from the active one).
   const ranIn = "expectWorktree" in request ? request.expectWorktree : outcome.snapshot.activeWorktree;
-  if (outcome.status === "stopped") markStopped(outcome.opId);
   // What earlier notices offered may no longer hold once a later operation ran there (R30):
   // its snapshot may never have shown it running.
-  for (const t of app.toasts) {
-    if (t.until && t.until.repoId === repoId && outcome.opId > t.until.opId) dismissToast(t.id);
-  }
+  settle(repoId, outcome);
   const choose = outcome.hints.find((h) => h.kind === "choose_pull_mode");
   if (outcome.status === "failed" && choose) {
     const upstream = findRepoView(repoId)?.loadedLabel(choose.branch)?.upstream ?? null;

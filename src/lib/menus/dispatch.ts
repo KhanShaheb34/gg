@@ -22,8 +22,9 @@ import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
 import { runOp } from "../state/ops.svelte";
 import { showDialog as show } from "../state/overlays.svelte";
+import { openComparePage, openCreatePullRequest, openPullRequest } from "../state/prs.svelte";
 import { openCreateWorktree } from "../state/worktrees.svelte";
-import type { CommitRow, OpRequest, RefLabel, RepoSnapshot } from "../types";
+import type { CommitRow, OpRequest, PullRequest, RefLabel, RepoSnapshot } from "../types";
 import { branchMenu } from "./branchMenu";
 import { checkOutBranch } from "./checkout";
 import { remoteOf, shown } from "./common";
@@ -50,7 +51,7 @@ export function pick(id: string, target: MenuTarget, snap: RepoSnapshot): void {
   // Labels share some ids with commits ("checkout", "push", "delete"): theirs go first.
   if (label?.kind === "tag" && pickTag(id, label.name, snap)) return;
   if (label?.kind === "branch" && pickBranch(id, label, snap, row)) return;
-  if (label?.kind === "remote" && pickRemote(id, label.name, snap)) return;
+  if (label?.kind === "remote" && pickRemote(id, label, snap)) return;
   if (label === null && row.kind === "commit" && pickCommit(id, row, snap)) return;
   if ((row.kind === "stash" || label?.kind === "stash") && pickStash(id, row, snap)) return;
   if (row.kind === "uncommitted" && id === "stash.save") {
@@ -197,6 +198,11 @@ function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot, row: Commit
     case "pull":
       run(repoId, { op: "pull", branch, mode: "default", expectHead: snap.head, expectWorktree: worktree });
       return true;
+    case "pr.open":
+    case "pr.create":
+    case "pr.compare":
+      pickPullRequest(id, branch, label.pr, snap);
+      return true;
     case "worktree.create": {
       // Checked out in a worktree (this one included): a new branch at it instead.
       const checkedOutIn = label.worktreePath ?? (label.current ? snap.activeWorktree : null);
@@ -209,8 +215,9 @@ function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot, row: Commit
   }
 }
 
-/** Remote branch item `id` on remote branch `name` ("origin/x"); false if `id` is not one. */
-function pickRemote(id: string, name: string, snap: RepoSnapshot): boolean {
+/** Remote branch item `id` on remote branch `label` ("origin/x"); false if `id` is not one. */
+function pickRemote(id: string, label: RefLabel, snap: RepoSnapshot): boolean {
+  const name = label.name;
   const { repoId, activeWorktree: worktree } = snap;
   const { remotes, branches } = snap;
   switch (id) {
@@ -224,6 +231,9 @@ function pickRemote(id: string, name: string, snap: RepoSnapshot): boolean {
       if (snap.head.branch !== null) {
         show(MergeDialog, { repoId, target: { kind: "remote" as const, name }, into: snap.head.branch, head: snap.head, worktree });
       }
+      return true;
+    case "pr.open":
+      if (label.pr) openPullRequest(repoId, label.pr);
       return true;
     case "delete": {
       // The core asks to confirm, saying what would be lost: no dialog of its own.
@@ -257,4 +267,14 @@ async function copyMessage(repoId: number, hash: string): Promise<void> {
     return;
   }
   await copy(message, "message");
+}
+
+/**
+ * A pull-request item (`pr.open`, `pr.create`, `pr.compare`) of local `branch`, whose open
+ * pull request was `pr` when the menu opened (the side panel's worktree menu too).
+ */
+export function pickPullRequest(id: string, branch: string, pr: PullRequest | null, snap: RepoSnapshot): void {
+  if (id === "pr.open" && pr) openPullRequest(snap.repoId, pr);
+  else if (id === "pr.create") openCreatePullRequest(snap, branch);
+  else if (id === "pr.compare") void openComparePage(snap.repoId, branch, snap);
 }

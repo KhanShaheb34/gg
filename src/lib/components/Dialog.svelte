@@ -30,6 +30,8 @@
     cancellable?: boolean;
     /** Submits at most once (default). */
     once?: boolean;
+    /** Wider than most: room for a form with a long button label (Create pull request). */
+    wide?: boolean;
     /** A second way to go ahead, beside the primary one ("No" to "Yes"); counts as submitting. */
     secondary?: string;
     onSecondary?: () => void;
@@ -46,6 +48,7 @@
     cancelLabel = "Cancel",
     cancellable = true,
     once = true,
+    wide = false,
     secondary,
     onSecondary,
     onSubmit,
@@ -132,6 +135,7 @@
 <div class="backdrop" role="presentation" onmousedown={(e) => e.target === e.currentTarget && e.preventDefault()}>
   <div
     class="dialog"
+    class:wide
     role={danger ? "alertdialog" : "dialog"}
     aria-modal="true"
     aria-labelledby="dialog-title-{uid}"
@@ -182,6 +186,10 @@
     animation: rise 160ms var(--ease);
   }
 
+  .dialog.wide {
+    width: min(540px, 100%);
+  }
+
   .title {
     padding: 16px 18px 0;
     font-size: 14px;
@@ -199,14 +207,16 @@
   .buttons {
     display: flex;
     justify-content: flex-end;
+    align-items: flex-end;
     gap: 8px;
     padding: 14px 18px 16px;
   }
 
   .button {
     min-width: 76px;
-    height: 28px;
-    padding: 0 14px;
+    min-height: 28px;
+    padding: 5px 14px;
+    line-height: 16px;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
     background: var(--bg);
@@ -236,6 +246,8 @@
   }
 
   .primary {
+    /* A long label (it names the branch it pushes) wraps into balanced lines. */
+    text-wrap: balance;
     border-color: var(--accent);
     background: var(--accent);
     color: var(--accent-contrast);

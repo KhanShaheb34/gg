@@ -11,6 +11,7 @@ import PushDialog from "../components/dialogs/PushDialog.svelte";
 import { api } from "../ipc";
 import { openExternal } from "./editor";
 import { shown } from "../menus/common";
+import { pickPullRequest } from "../menus/dispatch";
 import { worktreeMenu, worktreePanelMenu } from "../menus/worktreeMenu";
 import type { RepoSnapshot, WorktreeInfo } from "../types";
 import { app, reportError, toast } from "./app.svelte";
@@ -235,6 +236,11 @@ function pickWorktree(id: string, view: RepoView, wt: WorktreeInfo, snap: RepoSn
       if (wt.branch !== null) {
         showDialog(PushDialog, { repoId: view.repoId, branch: wt.branch, upstream: wt.upstream?.name ?? null, remotes: snap.remotes });
       }
+      return;
+    case "pr.open":
+    case "pr.create":
+    case "pr.compare":
+      if (wt.branch !== null) pickPullRequest(id, wt.branch, wt.pr, snap);
       return;
     case "copy.path":
       navigator.clipboard.writeText(wt.path).then(

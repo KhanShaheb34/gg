@@ -291,6 +291,16 @@ describe("runOp", () => {
     expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: "Disk full" })]);
   });
 
+  it("leaves the whole outcome to a caller that says how it went (ownOutcome): no notice, earlier ones still go", async () => {
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 3, hints: [{ kind: "fetch" }] }));
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts).toHaveLength(1);
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 4, status: "failed", message: "gh failed." }));
+    const out = await ops.runOp(1, RESET, { ownOutcome: true });
+    expect(out.message).toBe("gh failed.");
+    expect(app.app.toasts).toEqual([]);
+  });
+
   it("leaves a refusal in the request's turn to a caller that shows it, and reports git's failures", async () => {
     const add: OpRequest = { op: "worktree_add", path: "../wt", branch: { existing: "feature/x" } };
     const refused = outcome({ status: "failed", message: "Nothing was created: there is a worktree at /wt already." });

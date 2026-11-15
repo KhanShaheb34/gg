@@ -30,6 +30,7 @@
   import { api } from "../ipc";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
+  import { clock, openPullRequest, staleSince } from "../state/prs.svelte";
   import { openCommit } from "../state/worktrees.svelte";
   import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
   import {
@@ -55,6 +56,9 @@
   import RefLabels, { ownLabels } from "./RefLabels.svelte";
 
   let { view }: { view: RepoView } = $props();
+
+  /** The pull-request markers' "as of" when they may be out of date. */
+  const prStale = $derived(staleSince(view.snapshot.prs, clock.now));
 
   const NO_LABELS: RefLabel[] = [];
   const NO_PATHS: string[] = [];
@@ -720,6 +724,8 @@
                 detachedHead={!!r?.isHead && detachedHead}
                 detachedWorktrees={otherDetached(r)}
                 homeDir={app.homeDir}
+                {prStale}
+                onOpenPr={(pr) => openPullRequest(view.repoId, pr)}
               />
               <span class="subject"
                 ><span>{subj ? subj[0] : r ? subjectOf(r) : ""}</span><mark>{subj ? subj[1] : ""}</mark><span

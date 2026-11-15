@@ -21,8 +21,9 @@
 </script>
 
 <script lang="ts">
+  import PrChip from "../components/PrChip.svelte";
   import { shortenPath } from "../format";
-  import type { RefLabel } from "../types";
+  import type { PullRequest, RefLabel } from "../types";
 
   type Props = {
     labels: RefLabel[];
@@ -31,9 +32,12 @@
     /** Paths of other worktrees detached at this commit. */
     detachedWorktrees: string[];
     homeDir: string | null;
+    /** "as of 14:05" when the pull-request markers may be out of date. */
+    prStale?: string | null;
+    onOpenPr?: (pr: PullRequest) => void;
   };
 
-  let { labels, detachedHead, detachedWorktrees, homeDir }: Props = $props();
+  let { labels, detachedHead, detachedWorktrees, homeDir, prStale = null, onOpenPr = () => {} }: Props = $props();
 
   /**
    * Labels with a slot of their own: all of up to 3; else 2, and "+k" for the rest, whose
@@ -113,6 +117,7 @@
       <path d="M1 2.2c0-.5.4-.9.9-.9h2.4l1 1.1h3.8c.5 0 .9.4.9.9v4.6c0 .5-.4.9-.9.9H1.9c-.5 0-.9-.4-.9-.9z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
     </svg>
   </span>
+  <PrChip pr={label?.pr ?? null} stale={prStale} onOpen={onOpenPr} />
 {/each}
 <span class="ref more" data-slot="more" hidden={rest === 0} title={rest === 0 ? undefined : labels.slice(own).map(title).join("\n")}
   >+{rest}</span

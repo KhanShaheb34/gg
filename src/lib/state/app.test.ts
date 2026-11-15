@@ -495,6 +495,39 @@ describe("repo-error before the tab exists", () => {
   });
 });
 
+describe("pull requests unavailable (said once by the core)", () => {
+  it("is a plain notice that stays until dismissed: not an error, named with the tab", async () => {
+    await s.init();
+    await s.openPath("/r/b");
+    const call = vi.mocked(ipc.onEvent).mock.calls.find(([name]) => name === "repo-error");
+    const handler = call![1] as (p: { repoId: number; error: CoreErrorDto; prs?: string }) => void;
+    handler({
+      repoId: 2,
+      error: { code: "io", message: "Pull requests need the GitHub CLI (gh), which was not found.", detail: null },
+      prs: "no_gh",
+    });
+    expect(s.app.toasts).toHaveLength(1);
+    expect(s.app.toasts[0]).toMatchObject({
+      kind: "info",
+      message: "b: Pull requests need the GitHub CLI (gh), which was not found.",
+      persistent: true,
+    });
+    expect(s.app.toasts[0].actions ?? []).toEqual([]);
+  });
+
+  it("held for a repository with no tab yet, it is still a plain notice", async () => {
+    await s.init();
+    const call = vi.mocked(ipc.onEvent).mock.calls.find(([name]) => name === "repo-error");
+    const handler = call![1] as (p: { repoId: number; error: CoreErrorDto; prs?: string }) => void;
+    vi.mocked(ipc.api.openRepo).mockImplementation(async (path) => {
+      handler({ repoId: 3, error: { code: "io", message: "The GitHub CLI (gh) is not signed in.", detail: "x" }, prs: "signed_out" });
+      return fakeOpenRepo(path);
+    });
+    await s.openPath("/r/c");
+    expect(s.app.toasts).toMatchObject([{ kind: "info", message: "c: The GitHub CLI (gh) is not signed in.", detail: "x" }]);
+  });
+});
+
 describe("settings that cannot be saved", () => {
   const problem = "/c/state.json could not be read (Permission denied (os error 13))";
 

@@ -235,7 +235,7 @@ function addTab(snapshot: RepoSnapshot, rank?: number): void {
   repoView(snapshot.repoId, snapshot).onNotice = (message, detail) => toast("error", message, detail);
   const held = heldErrors.get(snapshot.repoId);
   heldErrors.delete(snapshot.repoId);
-  for (const error of held ?? []) reportError(new CoreError(error), snapshot.name);
+  for (const { error, prs } of held ?? []) showRepoError(error, prs, snapshot.name);
 }
 
 /**
@@ -243,19 +243,32 @@ function addTab(snapshot: RepoSnapshot, rank?: number): void {
  * repository it opened at start while the UI's `open_repo` for it is being answered, before
  * its tab exists. Shown, named, when the tab is added. A few repositories' worth at most.
  */
-const heldErrors = new Map<number, CoreErrorDto[]>();
+const heldErrors = new Map<number, { error: CoreErrorDto; prs: boolean }[]>();
 const MAX_HELD_REPOS = 16;
 
-function onRepoError(repoId: number, error: CoreErrorDto): void {
+function onRepoError(repoId: number, error: CoreErrorDto, prs: boolean): void {
   const tab = app.tabs.find((t) => t.repoId === repoId);
   if (tab) {
-    reportError(new CoreError(error), tab.name);
+    showRepoError(error, prs, tab.name);
     return;
   }
   const held = heldErrors.get(repoId) ?? [];
-  held.push(error);
+  held.push({ error, prs });
   heldErrors.set(repoId, held);
   if (heldErrors.size > MAX_HELD_REPOS) heldErrors.delete(heldErrors.keys().next().value!);
+}
+
+/**
+ * A `repo-error` of repository `name`: reported; or, when it says why pull requests are not
+ * shown (`prs`: said once per repository by the core), a plain notice that stays until
+ * dismissed, never an error and never in the way.
+ */
+function showRepoError(error: CoreErrorDto, prs: boolean, name: string): void {
+  if (!prs) {
+    reportError(new CoreError(error), name);
+    return;
+  }
+  notify({ kind: "info", message: `${name}: ${error.message}`, detail: error.detail ?? undefined, foldDetail: true, persistent: true });
 }
 
 /** Opens the repository at `path` in a tab and activates it; failures become toasts. */
@@ -417,7 +430,9 @@ export async function init(): Promise<void> {
   if (!started) {
     started = true;
     onSystemThemeChange(() => applyTheme(app.settings.theme));
-    onEvent<{ repoId: number; error: CoreErrorDto }>("repo-error", ({ repoId, error }) => onRepoError(repoId, error));
+    onEvent<{ repoId: number; error: CoreErrorDto; prs?: string }>("repo-error", ({ repoId, error, prs }) =>
+      onRepoError(repoId, error, prs !== undefined),
+    );
     onEvent("paths-opened", () => void openSystemPaths());
     // What the login shell says of `gg` arrives a moment after start.
     onEvent<CliState>("cli-changed", (cli) => (app.cli = cli));

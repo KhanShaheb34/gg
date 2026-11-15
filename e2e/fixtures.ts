@@ -337,6 +337,40 @@ const REPOS: Record<string, RepoScript> = {
     advanceClock(dir, clocks.get(other) ?? 0);
     git("fetch", "-q", "origin");
   },
+  /**
+   * Pull requests: `origin` is https://github.com/octo/cat.git for the app, which git's
+   * `insteadOf` sends to a bare repository beside it (`prs-origin.git`), so pushes stay on disk.
+   * `main` ("Initial commit", "Set up the parser"); `feature/login` ("Add login form",
+   * "Validate the login form") and `feature/search-indexing-across-every-workspace-package`
+   * ("Index the search") pushed with upstreams; `docs/readme` ("Explain the parser") pushed;
+   * `fix/typo` ("Fix a typo in the README") not pushed. A worktree on `feature/login` beside it
+   * (`prs.worktrees/login`). `main` is checked out.
+   */
+  prs(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    const commit = (file: string, subject: string) => {
+      write(file, `${subject}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit("README.md", "Initial commit");
+    commit("parser.ts", "Set up the parser");
+    const branch = (name: string, subjects: string[]) => {
+      git("switch", "-q", "-c", name, "main");
+      subjects.forEach((subject, i) => commit(`${name.replaceAll("/", "-")}-${i}.txt`, subject));
+    };
+    branch("feature/login", ["Add login form", "Validate the login form"]);
+    branch("feature/search-indexing-across-every-workspace-package", ["Index the search"]);
+    branch("docs/readme", ["Explain the parser"]);
+    branch("fix/typo", ["Fix a typo in the README"]);
+    git("switch", "-q", "main");
+    const bare = path.join(path.dirname(dir), "prs-origin.git");
+    git("init", "-q", "--bare", "-b", "main", bare);
+    git("remote", "add", "origin", "https://github.com/octo/cat.git");
+    git("config", `url.${bare}.insteadOf`, "https://github.com/octo/cat.git");
+    git("push", "-q", "-u", "origin", "main", "feature/login", "feature/search-indexing-across-every-workspace-package", "docs/readme");
+    git("worktree", "add", "-q", path.join(path.dirname(dir), "prs.worktrees", "login"), "feature/login");
+  },
   /** A shallow clone (depth 2) of three commits, "One" to "Three": "Two" is where its history is cut. */
   shallow(git, _write, dir) {
     const source = makeRepo(
@@ -635,6 +669,85 @@ export function cliFolders(home: string, extra = 0): string[] {
 }
 
 /**
+ * A recording stand-in for `gh` (and `ssh` beside it) in `<home>/tools`, the folder the
+ * devserver finds and runs them in (`--tool-path`): the real ones are never run, nothing
+ * reaches GitHub. Each `gh` call's arguments are recorded; it answers with what the test set
+ * for that kind of call (`pr-list`, `pr-list-head` with `--head`, `repo-view`, `pr-create`,
+ * `auth-token`), else prints nothing. `ssh -G` says the host it is asked about is itself.
+ */
+const FAKE_GH = `#!/bin/sh
+d="$(cd "$(dirname "$0")/.." && pwd)/gh"
+i=1
+while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
+for a in "$@"; do printf '%s\\0' "$a"; done > "$d/calls/$i/argv"
+cat > "$d/calls/$i/stdin"
+key="$1-$2"
+case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
+r="$d/replies/$key"
+if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi
+if [ -f "$r.err" ]; then cat "$r.err" >&2; fi
+if [ -f "$r.out" ]; then cat "$r.out"; fi
+if [ -f "$r.code" ]; then exit "$(cat "$r.code")"; fi
+exit 0
+`;
+const FAKE_SSH = `#!/bin/sh
+for a in "$@"; do host="$a"; done
+printf 'hostname %s\\n' "$host"
+`;
+
+/** Writes the fake `gh` and `ssh` into `home`; returns the `PATH` the devserver runs them on. */
+function fakeTools(home: string): string {
+  const tools = path.join(home, "tools");
+  for (const dir of [tools, path.join(home, "gh", "calls"), path.join(home, "gh", "replies")]) mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(tools, "gh"), FAKE_GH, { mode: 0o755 });
+  writeFileSync(path.join(tools, "ssh"), FAKE_SSH, { mode: 0o755 });
+  return [tools, "/usr/bin", "/bin"].join(path.delimiter);
+}
+
+/** The fake `gh` of a test (see FAKE_GH). */
+export type FakeGh = {
+  /** Answers calls of `key` (`pr-list`, `pr-list-head`, `repo-view`, `pr-create`, `auth-token`). */
+  reply(key: string, code: number, stdout: string, stderr?: string): void;
+  /** Makes calls of `key` wait `secs` seconds before answering. */
+  slow(key: string, secs: number): void;
+  /** Each call's arguments so far, oldest first. */
+  calls(): string[][];
+  /** What the call `i` (0 = first) read on stdin. */
+  stdin(i: number): string;
+  /** Takes `gh` away: the devserver finds none, as when it is not installed. */
+  uninstall(): void;
+};
+
+function fakeGh(home: string): FakeGh {
+  const dir = path.join(home, "gh");
+  const callDir = (i: number) => path.join(dir, "calls", String(i + 1));
+  return {
+    reply(key, code, stdout, stderr = "") {
+      const base = path.join(dir, "replies", key);
+      writeFileSync(`${base}.out`, stdout);
+      writeFileSync(`${base}.err`, stderr);
+      writeFileSync(`${base}.code`, String(code));
+    },
+    slow(key, secs) {
+      writeFileSync(path.join(dir, "replies", `${key}.sleep`), String(secs));
+    },
+    calls() {
+      const out: string[][] = [];
+      for (let i = 0; existsSync(path.join(callDir(i), "argv")); i++) {
+        out.push(readFileSync(path.join(callDir(i), "argv"), "utf8").split("\0").filter((a) => a !== ""));
+      }
+      return out;
+    },
+    stdin(i) {
+      return readFileSync(path.join(callDir(i), "stdin"), "utf8");
+    },
+    uninstall() {
+      rmSync(path.join(home, "tools", "gh"));
+    },
+  };
+}
+
+/**
  * A stand-in for the login shell the devserver asks what `gg` is (`--cli-shell`): a POSIX sh
  * script with a bare `PATH` that runs `setup` (an alias, say) and then the command it is
  * given. The user's own shell and its files are never run.
@@ -677,6 +790,9 @@ export function startDevserver(
       cliPath,
       "--cli-shell",
       shell,
+      // gh and ssh: the fakes only (see FAKE_GH).
+      "--tool-path",
+      fakeTools(home),
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
@@ -798,6 +914,8 @@ export type GG = {
   gitAt(dir: string, ...args: string[]): string;
   /** The launches asked for so far (editor, terminal, file manager, browser: program and arguments each), oldest first; none is started. */
   launches(): string[][];
+  /** The fake `gh` the devserver runs (the real one never runs). */
+  gh: FakeGh;
 };
 
 /**
@@ -873,7 +991,7 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: nu
           .map((l) => JSON.parse(l) as string[]);
       };
 
-      await use({ page, home: root, repoPath, folder, git, gitAt, launches });
+      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root) });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

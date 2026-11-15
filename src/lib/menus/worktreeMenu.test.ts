@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { disabled, find, ids, RUNNING, snap, worktree } from "./menuTestData";
+import { disabled, find, ids, pullRequest, RUNNING, snap, worktree } from "./menuTestData";
 import { worktreeMenu, worktreePanelMenu } from "./worktreeMenu";
 
 /** A worktree with changes to commit. */
 const DIRTY = { status: { changed: 2, untracked: 0, conflicted: 0, conflictedPaths: [] } };
 
-const IDS = ["make_active", "commit", "-", "push", "-", "open.editor", "open.terminal", "open.reveal", "copy.path", "-", "delete"];
+const IDS = ["make_active", "commit", "-", "push", "pr.create", "-", "open.editor", "open.terminal", "open.reveal", "copy.path", "-", "delete"];
 
 describe("worktreeMenu", () => {
   it("another worktree on a branch: make active, commit, push its branch, open it outside, copy the path, delete", () => {
@@ -16,9 +16,17 @@ describe("worktreeMenu", () => {
     expect(find(items, "delete").danger).toBe(true);
   });
 
-  it("leaves out what is not built yet: no pull request items", () => {
-    const all = ids(worktreeMenu(worktree(), snap()));
-    for (const id of ["pr.create", "pr.open"]) expect(all).not.toContain(id);
+  it("its branch's pull request: open it when there is one, else create one; none for a detached HEAD", () => {
+    const withPr = worktreeMenu(worktree({ pr: pullRequest({ number: 9 }) }), snap());
+    expect(find(withPr, "pr.open").label).toBe("Open pull request #9");
+    expect(ids(withPr)).not.toContain("pr.create");
+    expect(find(worktreeMenu(worktree(), snap()), "pr.create").label).toBe("Create pull request…");
+    const detached = worktreeMenu(worktree({ branch: null }), snap());
+    expect(find(detached, "pr.create").disabledReason).toBe("HEAD is detached there: there is no branch to propose");
+    const signedOut = snap({ prs: { status: "unavailable", reason: "signed_out", loadedAtMs: null, partial: false } });
+    expect(find(worktreeMenu(worktree(), signedOut), "pr.compare").label).toBe("Open compare page on GitHub");
+    const notGithub = snap({ prs: { status: "unavailable", reason: "not_github", loadedAtMs: null, partial: false } });
+    expect(find(worktreeMenu(worktree(), notGithub), "pr.create").disabledReason).toBe("This remote is not on GitHub");
   });
 
   it("commits a worktree with changes; one without has nothing to commit", () => {
@@ -62,6 +70,7 @@ describe("worktreeMenu", () => {
       "commit",
       "-",
       "push",
+      "pr.create",
       "-",
       "locked",
       "open.editor",

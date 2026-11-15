@@ -1,6 +1,6 @@
 // Rows, labels and snapshots for the menu builders' tests, and ways to look into menus.
 
-import type { CommitRow, InProgress, RefLabel, RepoSnapshot, WorktreeInfo } from "../types";
+import type { CommitRow, InProgress, PullRequest, RefLabel, RepoSnapshot, WorktreeInfo } from "../types";
 import type { MenuItem } from "./types";
 
 export const HASH = "a".repeat(40);
@@ -132,6 +132,18 @@ export function worktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
     inProgress: null,
     lockReason: null,
     pr: null,
+    ...overrides,
+  };
+}
+
+export function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
+  return {
+    number: 12,
+    title: "Add the parser",
+    url: "https://github.com/octo/cat/pull/12",
+    state: "open",
+    head: "feature/x",
+    base: "main",
     ...overrides,
   };
 }

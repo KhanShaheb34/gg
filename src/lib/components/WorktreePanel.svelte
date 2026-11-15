@@ -22,8 +22,10 @@
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { addWorktree, makeActive, openCommit, openWorktreeMenu, panelState, revealWorktree } from "../state/worktrees.svelte";
+  import { clock, openPullRequest, staleSince } from "../state/prs.svelte";
   import type { WorktreeInfo } from "../types";
   import MiddleText from "./MiddleText.svelte";
+  import PrChip from "./PrChip.svelte";
 
   let { view }: { view: RepoView } = $props();
 
@@ -34,6 +36,8 @@
   const folders = $derived(worktreeFolders(rows.map((w) => w.path), rows.find((w) => w.isMain)?.path ?? null, app.homeDir));
   const loading = $derived(snap.generation < 0 && rows.length === 0);
   const selectedIndex = $derived(rows.findIndex((w) => w.path === panel.selected));
+  /** The pull-request markers' "as of" when they may be out of date. */
+  const prStale = $derived(staleSince(snap.prs, clock.now));
 
   let list: HTMLElement | undefined = $state();
   const uid = Math.random().toString(36).slice(2, 8);
@@ -113,6 +117,7 @@
     if (wt.locked) parts.push(wt.lockReason ? `locked: ${wt.lockReason}` : "locked");
     if (wt.prunable) parts.push("folder missing");
     if (wt.inProgress) parts.push(`${wt.inProgress} in progress`);
+    if (wt.pr) parts.push(`${wt.pr.state === "draft" ? "draft " : ""}pull request #${wt.pr.number}`);
     return parts.join(", ");
   }
 
@@ -212,6 +217,12 @@
         <span class="in">in</span><MiddleText text={folders.parent} keep={18} title={folders.parentPath} />
       </p>
     {/if}
+    {#if snap.prs.partial}
+      <!-- 1000 were listed: some branches' markers may be missing. -->
+      <p class="where partial" data-testid="prs-partial" title="Branches with a pull request beyond those show none">
+        Showing the first 1000 open pull requests
+      </p>
+    {/if}
     <!-- Rows take pointer events here; the grid itself takes the keys (aria-activedescendant). -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
     <div
@@ -278,6 +289,9 @@
             <span class="line one">
               {#if wt.branch !== null}
                 <MiddleText class="name" text={wt.branch} />
+                {#if wt.pr}
+                  <PrChip pr={wt.pr} stale={prStale} onOpen={(pr) => openPullRequest(view.repoId, pr)} />
+                {/if}
               {:else}
                 <span class="name detached" title="Detached HEAD"
                   ><span class="hash">{wt.head ? shortHash(wt.head) : "—"}</span><span class="what">detached</span></span
@@ -406,6 +420,10 @@
 
   .in {
     flex: none;
+  }
+
+  .partial {
+    padding-top: 2px;
   }
 
   .list {

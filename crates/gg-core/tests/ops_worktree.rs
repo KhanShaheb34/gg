@@ -571,8 +571,25 @@ async fn the_active_worktree_is_removed_after_main_becomes_active() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
     h.m.set_active_worktree(id, &wt).await.unwrap();
+    let mark = h.last_log_id();
     let out = h.run(id, remove(&wt, false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    // Main became active (its status was read for the switch) before the folder went.
+    let all = h.log.since(mark);
+    let is_remove = |r: &CommandRecord| {
+        r.args.first().is_some_and(|a| a == "worktree")
+            && r.args.get(1).is_some_and(|a| a == "remove")
+    };
+    let removed_at = all.iter().position(is_remove).expect("removed");
+    let main_status_at = all
+        .iter()
+        .position(|r| {
+            r.args.first().is_some_and(|a| a == "status")
+                && r.args.iter().any(|a| a == "--ignore-submodules=all")
+                && r.cwd == real(repo.path())
+        })
+        .expect("main's status read for the switch");
+    assert!(main_status_at < removed_at, "{all:#?}");
     assert_eq!(
         out.message,
         format!(
@@ -983,6 +1000,67 @@ async fn a_branch_checked_out_in_yet_another_worktree_is_kept_and_said_so() {
         }]
     );
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/feature"]));
+}
+
+/// The worktree went, the branch could not: the outcome is done, saying so.
+#[tokio::test]
+async fn a_branch_that_cannot_be_deleted_after_its_worktree_is_said_in_a_done_outcome() {
+    let (repo, _origin, wt) = pushed_worktree();
+    // A lock file git leaves behind holds the branch.
+    fs::write(repo.path().join(".git/refs/heads/feature.lock"), "").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, remove(&wt, true)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(
+        out.message.starts_with(&format!(
+            "Removed the worktree at {}. Branch \u{201c}feature\u{201d} was not deleted: ",
+            real_gone(&wt)
+        )),
+        "{}",
+        out.message
+    );
+    assert!(out.detail.is_some());
+    assert!(!wt.exists());
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/feature"]));
+}
+
+/// The path git keeps for a worktree must be its own folder (Task 4 review): not a link to
+/// another worktree's, nor one of two entries leading to the same folder.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worktree_path_that_is_a_link_is_refused() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let one = repo.add_worktree("one");
+    let two = repo.add_worktree("two");
+    let moved = repo.dir.path().join("moved");
+    fs::rename(&two, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &two).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+    let out = h.run(id, remove(&two, false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message
+            .ends_with("is a link to another folder; remove the worktree from a terminal."),
+        "{}",
+        out.message
+    );
+    // Two entries leading to one folder: `two` made a link to `one`.
+    fs::remove_file(&two).unwrap();
+    std::os::unix::fs::symlink(&one, &two).unwrap();
+    let out = h.run(id, remove(&one, false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message.contains("is a link to another folder")
+            || out.message.contains("entries that lead to"),
+        "{}",
+        out.message
+    );
+    assert!(h.writes_since(mark).is_empty());
+    assert!(one.is_dir() && moved.is_dir());
 }
 
 #[tokio::test]

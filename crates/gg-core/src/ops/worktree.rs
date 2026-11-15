@@ -293,6 +293,29 @@ async fn remove_refused(
         )));
     };
     let shown = &wt.path;
+    // The folder must be that worktree's own, by the path git keeps: not a link to another
+    // folder, and not one two entries lead to.
+    let raw = read_worktrees(&ctx.runner, &ctx.repo.root).await?;
+    let same: Vec<&WorktreeInfo> = raw
+        .iter()
+        .filter(|w| canonical(Path::new(&w.path)) == Path::new(shown))
+        .collect();
+    if let Some(link) = same
+        .iter()
+        .find(|w| fs::symlink_metadata(&w.path).is_ok_and(|m| m.file_type().is_symlink()))
+    {
+        return Ok(Some(format!(
+            "{} is a link to another folder; remove the worktree from a terminal.",
+            link.path
+        )));
+    }
+    if same.len() > 1 {
+        return Ok(Some(format!(
+            "Nothing was removed: git lists {} entries that lead to {shown}; remove the \
+             worktree from a terminal.",
+            same.len()
+        )));
+    }
     if wt.is_main || Path::new(shown) == ctx.repo.root {
         return Ok(Some(format!(
             "Nothing was removed: {shown} is the main worktree, which holds the repository \
@@ -935,9 +958,10 @@ pub(crate) async fn remove(
             message: why,
             detail,
             hints,
-        } => Step::Failed {
+        } => Step::DoneWith {
+            // The worktree is gone all the same: done, with what became of the branch.
             message: format!("{message} Branch \u{201c}{branch}\u{201d} was not deleted: {why}"),
-            detail,
+            detail: Some(detail),
             hints,
         },
         other => other,

@@ -662,6 +662,105 @@ async fn a_missing_folder_suggests_pruning() {
     assert_eq!(listed(&repo).len(), 2, "still listed");
 }
 
+/// Asks to remove `wt` (everything confirmed that is asked about) and checks it is refused
+/// with a message containing `says`, with nothing written and `inner` still there.
+async fn refused_for(h: &Harness, id: u32, wt: &Path, inner: &Path, says: &str) {
+    let mark = h.last_log_id();
+    let out = h
+        .run_confirmed(
+            id,
+            remove(wt, false),
+            &[
+                DangerKind::RemoveWorktreeWithWork,
+                DangerKind::RemoveWorktreeIgnoredFiles,
+            ],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(out.message.contains(says), "{}", out.message);
+    assert!(h.writes_since(mark).is_empty(), "nothing ran");
+    assert!(wt.is_dir());
+    assert!(inner.join(".git").exists(), "{} is kept", inner.display());
+}
+
+/// Critical (Task 4 review): `git worktree remove` deletes whatever is inside the folder,
+/// another worktree included; one in an ignored folder showed only as `! build/`.
+#[tokio::test]
+async fn a_worktree_inside_an_ignored_folder_is_never_removed_with_it() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let inner = wt.join("build/nested");
+    repo.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "inner",
+        &inner.to_string_lossy(),
+    ]);
+    fs::write(inner.join("work.txt"), "uncommitted\n").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let says = format!(
+        "{} contains the worktree at {}. Remove that one first.",
+        real(&wt),
+        real(&inner)
+    );
+    refused_for(&h, id, &wt, &inner, &says).await;
+    assert!(inner.join("work.txt").exists());
+}
+
+#[tokio::test]
+async fn a_worktree_inside_in_an_untracked_folder_is_never_removed_with_it() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let inner = wt.join("nested");
+    repo.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "inner",
+        &inner.to_string_lossy(),
+    ]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let says = format!("contains the worktree at {}", real(&inner));
+    refused_for(&h, id, &wt, &inner, &says).await;
+}
+
+#[tokio::test]
+async fn another_repository_inside_is_never_removed_with_it() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    // One level inside an ignored folder (git shows only `! build/`).
+    let deep = wt.join("build/other");
+    fs::create_dir_all(&deep).unwrap();
+    git_in(&deep, &["init", "-q"]);
+    fs::write(deep.join("mine.txt"), "x").unwrap();
+    let says = format!(
+        "{} contains another repository at {}, which git would delete with it. Move or \
+         remove it first.",
+        real(&wt),
+        real(&deep)
+    );
+    refused_for(&h, id, &wt, &deep, &says).await;
+    fs::remove_dir_all(wt.join("build")).unwrap();
+    // An ignored folder that is a repository itself.
+    fs::write(wt.join(".gitignore"), "build/\n*.log\nvendored/\n").unwrap();
+    git_in(&wt, &["commit", "-q", "-am", "ignore vendored"]);
+    git_in(&wt, &["push", "-q", "origin", "feature"]);
+    let vendored = wt.join("vendored");
+    fs::create_dir(&vendored).unwrap();
+    git_in(&vendored, &["init", "-q"]);
+    refused_for(&h, id, &wt, &vendored, "contains another repository at").await;
+    fs::remove_dir_all(&vendored).unwrap();
+    // An untracked folder that is a repository.
+    let plain = wt.join("plain");
+    fs::create_dir(&plain).unwrap();
+    git_in(&plain, &["init", "-q"]);
+    refused_for(&h, id, &wt, &plain, "contains another repository at").await;
+}
+
 // ---- Removing with the branch ----
 
 #[tokio::test]

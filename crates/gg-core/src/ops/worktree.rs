@@ -285,7 +285,7 @@ async fn remove_refused(
     path: &str,
     delete_branch: bool,
 ) -> Result<Option<String>> {
-    let (found, _) = find(ctx, path).await?;
+    let (found, list) = find(ctx, path).await?;
     let Some(wt) = found else {
         return Ok(Some(format!(
             "Nothing was removed: {path} is not a worktree of this repository (git does not \
@@ -321,8 +321,91 @@ async fn remove_refused(
              is detached), so there is no branch to delete with it."
         )));
     }
+    // `git worktree remove` deletes the whole folder, whatever is inside: never another
+    // worktree or repository.
+    if let Some(inner) = list
+        .iter()
+        .find(|w| w.path != wt.path && Path::new(&w.path).starts_with(shown))
+    {
+        return Ok(Some(format!(
+            "{shown} contains the worktree at {}. Remove that one first.",
+            inner.path
+        )));
+    }
+    if let Some(inner) = nested_repository(ctx, &wt).await? {
+        return Ok(Some(format!(
+            "{shown} contains another repository at {}, which git would delete with it. Move \
+             or remove it first.",
+            inner.display()
+        )));
+    }
     Ok(None)
 }
+
+/// Most entries of an ignored folder looked into for a repository one level down.
+const MAX_LOOKED_INTO: usize = 200;
+
+/// A repository (a folder with a `.git` file or folder) inside the worktree `wt`, if one is
+/// found: an untracked or ignored folder git lists that is one (git does not go into
+/// another repository, and lists an ignored folder as one entry), or a folder directly
+/// inside an ignored one that is ([`MAX_LOOKED_INTO`] entries at most). A repository deeper
+/// inside an ignored folder is not found.
+async fn nested_repository(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Option<PathBuf>> {
+    let dir = Path::new(&wt.path);
+    let out = ctx
+        .runner
+        .run_unchecked(dir, &STATUS_WITH_IGNORED, CmdKind::Read)
+        .await?;
+    if out.code != 0 {
+        return Err(CoreError::new(
+            ErrorCode::GitFailed,
+            format!(
+                "Could not read what the worktree at {} holds, so nothing was removed.",
+                wt.path
+            ),
+        )
+        .with_detail(out.stderr));
+    }
+    let is_repo = |p: &Path| fs::symlink_metadata(p.join(".git")).is_ok();
+    let mut fields = out.stdout.split(|&b| b == 0);
+    while let Some(entry) = fields.next() {
+        if entry.starts_with(b"2 ") {
+            fields.next();
+            continue;
+        }
+        let (ignored, rest) = match entry {
+            [b'?', b' ', rest @ ..] => (false, rest),
+            [b'!', b' ', rest @ ..] => (true, rest),
+            _ => continue,
+        };
+        if rest.last() != Some(&b'/') {
+            continue;
+        }
+        let folder = dir.join(String::from_utf8_lossy(rest).trim_end_matches('/'));
+        if is_repo(&folder) {
+            return Ok(Some(folder));
+        }
+        if ignored && let Ok(entries) = fs::read_dir(&folder) {
+            for child in entries.flatten().take(MAX_LOOKED_INTO) {
+                let child = child.path();
+                if child.is_dir() && is_repo(&child) {
+                    return Ok(Some(child));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The status read of a worktree being removed: every untracked file, and what is ignored
+/// (folders collapsed).
+const STATUS_WITH_IGNORED: [&str; 5] = [
+    "status",
+    "--porcelain=v2",
+    "-z",
+    "--untracked-files=all",
+    "--ignored=matching",
+];
 
 /// What a worktree holds that removing it would lose, read in the operation's turn.
 #[derive(Debug, Default)]
@@ -361,14 +444,10 @@ impl Work {
 /// worktree. Stashes are shared by all worktrees and not lost with one.
 async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
     let dir = Path::new(&wt.path);
-    let args = [
-        "status",
-        "--porcelain=v2",
-        "-z",
-        "--untracked-files=all",
-        "--ignored=matching",
-    ];
-    let out = ctx.runner.run_unchecked(dir, &args, CmdKind::Read).await?;
+    let out = ctx
+        .runner
+        .run_unchecked(dir, &STATUS_WITH_IGNORED, CmdKind::Read)
+        .await?;
     if out.code != 0 {
         return Err(CoreError::new(
             ErrorCode::GitFailed,

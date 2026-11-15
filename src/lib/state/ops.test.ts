@@ -55,6 +55,7 @@ function outcome(overrides: Partial<OpOutcome> = {}): OpOutcome {
     logTo: 0,
     dangers: [],
     hints: [],
+    created: null,
     snapshot: snap({ seq: 5 }),
     ...overrides,
   };

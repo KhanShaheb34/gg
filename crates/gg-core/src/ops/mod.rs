@@ -82,6 +82,8 @@ pub(crate) struct OpCtx<'a> {
     /// A read the operation's turn made that its later steps in the turn reuse (the worktree
     /// removal's status with ignored files: the folder read, and git's output).
     pub(crate) held_read: std::sync::Mutex<Option<(PathBuf, Vec<u8>)>>,
+    /// The worktree the operation made (its canonical path, as the snapshot lists it).
+    pub(crate) created: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Fewest milliseconds between two `op-progress` events of one operation.
@@ -888,9 +890,11 @@ impl RepoManager {
         // refresh. A request that needs confirmation shows nothing.
         let started = Arc::new(AtomicBool::new(false));
         let continuing = matches!(turn.request, OpRequest::Continue { .. });
+        // Where the body says which worktree it made (worktree_add).
+        let created = Arc::new(std::sync::Mutex::new(None));
         let inner = tokio::spawn({
-            let (m, started) = (self.clone(), started.clone());
-            async move { m.run_body(turn, op_id, &started).await }
+            let (m, started, created) = (self.clone(), started.clone(), created.clone());
+            async move { m.run_body(turn, op_id, &started, &created).await }
         });
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
@@ -917,6 +921,7 @@ impl RepoManager {
             log_to,
             dangers: Vec::new(),
             hints: Vec::new(),
+            created: created.lock().unwrap_or_else(|e| e.into_inner()).take(),
             snapshot,
         };
         match ran {
@@ -978,6 +983,7 @@ impl RepoManager {
         turn: Turn,
         op_id: u64,
         started: &AtomicBool,
+        created: &Arc<std::sync::Mutex<Option<String>>>,
     ) -> Result<(String, Ran)> {
         let Turn {
             repo,
@@ -1004,6 +1010,7 @@ impl RepoManager {
             net_limit: self.net_limit(),
             kept: std::sync::atomic::AtomicBool::new(false),
             held_read: std::sync::Mutex::new(None),
+            created: created.clone(),
         };
         // A request runs only in the worktree it was asked for: switching worktrees never
         // redirects one already asked for. Checked before anything is read there.
@@ -1550,6 +1557,7 @@ mod tests {
             net_limit: m.net_limit(),
             kept: std::sync::atomic::AtomicBool::new(false),
             held_read: std::sync::Mutex::new(None),
+            created: Arc::default(),
         };
         let mark = log.since(0).last().map_or(0, |c| c.id);
 

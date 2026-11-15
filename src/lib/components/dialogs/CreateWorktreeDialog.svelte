@@ -148,7 +148,6 @@
   async function submit() {
     if (!valid) return;
     const request: OpRequest = { op: "worktree_add", path: expand(location), branch: branchOf() };
-    const before = new Set(worktrees.map((w) => w.path));
     const sent = { name, location };
     pending = true;
     try {
@@ -160,9 +159,9 @@
         return;
       }
       close();
-      if (outcome.status === "done" && makeActiveAfter) {
-        const made = outcome.snapshot.worktrees.find((w) => !before.has(w.path));
-        if (made) void makeActive(repoId, made.path, findRepoView(repoId));
+      // Exactly the worktree this request made, never one another program added meanwhile.
+      if (outcome.status === "done" && makeActiveAfter && outcome.created !== null) {
+        void makeActive(repoId, outcome.created, findRepoView(repoId));
       }
     } catch (e) {
       if (e instanceof CoreError && (e.code === "bad_name" || e.code === "bad_request") && open) {

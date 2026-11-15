@@ -1128,6 +1128,9 @@ pub struct OpOutcome {
     /// Non-empty only for `needs_confirmation`.
     pub dangers: Vec<Danger>,
     pub hints: Vec<OpHint>,
+    /// `worktree_add`: the worktree it made (its path as the snapshot lists it), so the UI
+    /// can act on exactly that one; else `None`.
+    pub created: Option<String>,
     /// The repository after the operation and its refresh. After a pull or a fetch into a
     /// local branch it may still be the state before the log reload has caught up; a
     /// `repo-changed` with a higher `seq` follows.
@@ -1410,6 +1413,7 @@ mod tests {
                 },
                 OpHint::ChoosePullMode { branch: "b".into() },
             ],
+            created: Some("/r.worktrees/x".into()),
             snapshot: RepoSnapshot {
                 repo_id: 1,
                 name: "r".into(),
@@ -1459,6 +1463,7 @@ mod tests {
                 {"kind": "choose_pull_mode", "branch": "b"}
             ])
         );
+        assert_eq!(v["created"], "/r.worktrees/x");
         assert_eq!(v["snapshot"]["op"], Value::Null);
         assert_eq!(serde_json::from_value::<OpOutcome>(v).unwrap(), outcome);
         for (status, name) in [

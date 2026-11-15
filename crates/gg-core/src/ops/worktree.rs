@@ -233,7 +233,15 @@ pub(crate) async fn add(ctx: &OpCtx<'_>, path: &str, branch: &WorktreeBranch) ->
     let out = ctx.git(&args).await?;
     // Said as git lists it, links resolved.
     let shown = real(&resolved).to_string_lossy().into_owned();
+    let note_created = |ctx: &OpCtx<'_>| {
+        *ctx.created.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+            crate::repo::canonical(&resolved)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    };
     if out.code == 0 {
+        note_created(ctx);
         let what = match branch {
             WorktreeBranch::Existing { existing } => format!("on branch {existing}"),
             WorktreeBranch::Create { create, at: commit } => {
@@ -260,6 +268,9 @@ pub(crate) async fn add(ctx: &OpCtx<'_>, path: &str, branch: &WorktreeBranch) ->
     let made = listed(ctx)
         .await
         .is_ok_and(|list| list.iter().any(|w| Path::new(&w.path) == target));
+    if made {
+        note_created(ctx);
+    }
     let message = if made {
         format!(
             "The worktree at {shown} was created, but git reported a failure after making it \

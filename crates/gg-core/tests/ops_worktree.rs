@@ -1290,6 +1290,43 @@ async fn a_worktree_is_added_for_an_existing_branch_and_not_made_active() {
     );
 }
 
+/// The outcome names the worktree the request made, as the snapshot lists it, so the UI can
+/// make exactly that one active: never one another program added meanwhile. A request that
+/// made none names none.
+#[tokio::test]
+async fn the_outcome_names_the_worktree_it_made() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("mine");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    // An agent adds one from a terminal while the dialog is open.
+    let theirs = repo.add_worktree("agent");
+    let out = h
+        .run(id, add("../repo.worktrees/mine", existing("mine")))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let mine = real(&repo.dir.path().join("repo.worktrees/mine"));
+    assert_eq!(out.created.as_deref(), Some(mine.as_str()));
+    let listed: Vec<&str> = out
+        .snapshot
+        .worktrees
+        .iter()
+        .map(|w| w.path.as_str())
+        .collect();
+    assert!(listed.contains(&mine.as_str()), "{listed:?}");
+    assert!(listed.contains(&real(&theirs).as_str()), "{listed:?}");
+
+    // Refused (the folder is a worktree already): nothing made, nothing named.
+    let out = h
+        .run(id, add("../repo.worktrees/mine", existing("main")))
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(out.created, None);
+    let out = h.run(id, OpRequest::WorktreePrune {}).await;
+    assert_eq!(out.created, None);
+}
+
 #[tokio::test]
 async fn a_worktree_is_added_with_a_new_branch_or_detached() {
     let repo = TestRepo::new();

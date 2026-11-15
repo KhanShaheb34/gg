@@ -137,10 +137,15 @@ test("a worktree is created from the panel, checked out and made active, then de
   await expect(dialog).toContainText("inside the worktree at ~/repos/worktrees.worktrees/docs");
   await location.fill("~/repos/worktrees.worktrees/payments");
   await dialog.getByRole("checkbox", { name: /Make it the active worktree/ }).check();
+  // An agent adds a worktree from a terminal while the dialog is open: the one made here is
+  // made active, not that one.
+  const agents = path.join(linked(repo), "agent-task");
+  gg.git("worktrees", "worktree", "add", "-q", "-b", "agent/task", agents);
   await create.click();
   await expect(dialog).toHaveCount(0);
   const made = path.join(linked(repo), "payments");
   await expect(row(page, "payments")).toBeVisible();
+  await expect(row(page, "agent-task")).toBeVisible();
   await expect(activeRow(page)).toHaveAttribute("data-path", made);
   expect(gg.gitAt(made, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("feature/payments");
 

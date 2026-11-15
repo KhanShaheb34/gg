@@ -616,8 +616,8 @@ const COMMAND_OPTIONS: [&str; 7] = [
 ];
 
 /// Whether `word` is an option after which a program takes a command: one of
-/// [`COMMAND_OPTIONS`], or short flags run together ending in `c` (`-lc`, `-ic`, `-lic`:
-/// a shell's login or interactive flag, then `-c`).
+/// [`COMMAND_OPTIONS`], or short flags run together with a `c` among them (`-lc`, `-cl`,
+/// `-lic`: a shell's `-c` with its login or interactive flag, in any order).
 fn takes_a_command(word: &str) -> bool {
     let word = word.to_lowercase();
     if COMMAND_OPTIONS.contains(&word.as_str()) {
@@ -626,7 +626,7 @@ fn takes_a_command(word: &str) -> bool {
     word.strip_prefix('-').is_some_and(|flags| {
         !flags.starts_with('-')
             && flags.len() > 1
-            && flags.ends_with('c')
+            && flags.contains('c')
             && flags.chars().all(|c| c.is_ascii_alphabetic())
     })
 }
@@ -1423,6 +1423,11 @@ vim",
             "bash -lic {path}",
             "fish --command {path}",
             "my-term --COMMAND {path}",
+            // Task 10 review minor 5: `c` anywhere among the flags (bash -cl runs its
+            // first argument).
+            "bash -cl {path}",
+            "bash -ci {path}",
+            "sh -lci {path}",
         ] {
             let err = check_terminal_command(command).unwrap_err();
             assert_eq!(err.code, ErrorCode::BadRequest, "{command}");

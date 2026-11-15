@@ -462,17 +462,58 @@ impl RepoManager {
         {
             base = Some(b);
         }
-        if base.is_none()
-            && let Some(gh) = &gh
-            && let Ok(Ok(out)) = gh
-                .run(
-                    &["repo", "view", gh.repo(), "--json", "defaultBranchRef"],
-                    CmdKind::Read,
-                    StdinPolicy::Null,
+        // gh is asked two things at once, under one time limit: the default branch (when no
+        // base is remembered) and the branch's open pull request (`gh pr list --head`, never
+        // the list shown, which may not hold it).
+        let (default_branch, existing) = match &gh {
+            Some(gh) => {
+                let need_view = base.is_none();
+                let view = async {
+                    if !need_view {
+                        return None;
+                    }
+                    let args = ["repo", "view", gh.repo(), "--json", "defaultBranchRef"];
+                    match gh.run(&args, CmdKind::Read, StdinPolicy::Null).await {
+                        Ok(Ok(out)) => parse_default_branch(&out.stdout),
+                        _ => None,
+                    }
+                };
+                let limit = LIST_LIMIT.to_string();
+                let open = async {
+                    let args = [
+                        "pr",
+                        "list",
+                        "--repo",
+                        gh.repo(),
+                        "--head",
+                        branch,
+                        "--state",
+                        "open",
+                        "--limit",
+                        &limit,
+                        "--json",
+                        PR_FIELDS,
+                    ];
+                    let Ok(Ok(out)) = gh.run(&args, CmdKind::Read, StdinPolicy::Null).await else {
+                        return None;
+                    };
+                    let data = PrData {
+                        listed: parse_list(&out.stdout).ok()?,
+                        facts: facts.clone(),
+                    };
+                    data.of_branch(branch).cloned()
+                };
+                tokio::time::timeout(
+                    self.gh_limit(),
+                    Box::pin(async { tokio::join!(view, open) }),
                 )
                 .await
-        {
-            base = parse_default_branch(&out.stdout);
+                .unwrap_or((None, None))
+            }
+            None => (None, None),
+        };
+        if base.is_none() {
+            base = default_branch;
         }
         if base.is_none()
             && let Some(r) = &base_remote
@@ -527,38 +568,6 @@ impl RepoManager {
             .map(|s| format!("- {s}"))
             .collect::<Vec<_>>()
             .join("\n");
-
-        // Its open pull request, asked for this branch.
-        let mut existing = None;
-        if let Some(gh) = &gh
-            && let Ok(Ok(out)) = gh
-                .run(
-                    &[
-                        "pr",
-                        "list",
-                        "--repo",
-                        gh.repo(),
-                        "--head",
-                        branch,
-                        "--state",
-                        "open",
-                        "--limit",
-                        &LIST_LIMIT.to_string(),
-                        "--json",
-                        PR_FIELDS,
-                    ],
-                    CmdKind::Read,
-                    StdinPolicy::Null,
-                )
-                .await
-            && let Ok(listed) = parse_list(&out.stdout)
-        {
-            let data = PrData {
-                listed,
-                facts: facts.clone(),
-            };
-            existing = data.of_branch(branch).cloned();
-        }
 
         let compare = on.as_ref().map(|on| {
             let pushed = facts.push_remote(branch).and_then(|r| facts.repo_of(r));

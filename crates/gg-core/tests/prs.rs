@@ -1258,3 +1258,34 @@ async fn loading_is_shown_only_when_gh_will_be_asked() {
     s.load().await;
     assert_eq!(loading(&s), 1, "gh asked");
 }
+
+/// `pr_suggest` asks gh for the default branch and for the branch's pull request at once
+/// (Task 8 review), under one time limit: two slow answers take the time of one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_suggestion_asks_gh_both_questions_at_once() {
+    let s = setup().await;
+    s.repo.branch("feature");
+    s.gh.reply(
+        "repo-view",
+        0,
+        r#"{"defaultBranchRef":{"name":"main"}}"#,
+        "",
+    );
+    s.gh.reply(
+        "pr-list-head",
+        0,
+        &list(&[pr(3, "feature", "octo", false, false)]),
+        "",
+    );
+    s.gh.slow("repo-view", 2);
+    s.gh.slow("pr-list-head", 2);
+    let started = std::time::Instant::now();
+    let suggested = s.h.m.pr_suggest(s.id, "feature").await.unwrap();
+    let took = started.elapsed();
+    assert_eq!(suggested.base, "main");
+    assert_eq!(suggested.existing.map(|p| p.number), Some(3));
+    assert!(
+        took < Duration::from_millis(3500),
+        "{took:?}: one after the other"
+    );
+}

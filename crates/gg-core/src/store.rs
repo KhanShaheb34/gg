@@ -615,7 +615,9 @@ pub fn migrate_config(old_dir: &Path, new_dir: &Path) -> Result<bool> {
     let tmp = new_dir.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
     let written = (|| {
         fs::create_dir_all(new_dir)?;
-        let mut file = fs::File::create(&tmp)?;
+        // A copy that died half-way leaves its temp file: ours, so it goes first.
+        remove_stale_temps(new_dir, &format!(".{FILE_NAME}."))?;
+        let mut file = create_new_file(&tmp, 0o600)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
         move_no_overwrite(&tmp, &new_dir.join(FILE_NAME))
@@ -635,10 +637,46 @@ pub fn migrate_config(old_dir: &Path, new_dir: &Path) -> Result<bool> {
     }
 }
 
+/// Removes the temp files this app leaves in `dir` when it dies half-way through a write:
+/// the plain files named `<prefix><digits>.tmp` (a link or folder of that name is left).
+pub(crate) fn remove_stale_temps(dir: &Path, prefix: &str) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let ours = name
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if ours && entry.file_type()?.is_file() {
+            match fs::remove_file(entry.path()) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Creates `path`, which must not exist (never through a link someone put there), for
+/// writing, with permissions `mode` where there are such.
+pub(crate) fn create_new_file(path: &Path, mode: u32) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    options.open(path)
+}
+
 /// Gives file `from` the name `to` unless `to` exists (then `AlreadyExists`): a hard link,
 /// which never replaces anything, then `from` is removed. Where hard links are not
 /// supported, a rename, only when `to` is absent. `from` may be left behind on failure.
-fn move_no_overwrite(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn move_no_overwrite(from: &Path, to: &Path) -> io::Result<()> {
     match fs::hard_link(from, to) {
         Ok(()) => {
             let _ = fs::remove_file(from);
@@ -1289,8 +1327,13 @@ mod tests {
         // A copy that died half-way left its hidden temp file and no marker.
         fs::create_dir_all(&new).unwrap();
         fs::write(new.join(format!(".{FILE_NAME}.1.tmp")), "ol").unwrap();
+        // One of this very process too (a pid reused): never written through.
+        let mine = new.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
+        fs::write(&mine, "stale").unwrap();
         assert!(migrate_config(&old, &new).unwrap());
         assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "old");
+        // The stale temp files are gone.
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER, FILE_NAME]);
     }
 
     #[test]

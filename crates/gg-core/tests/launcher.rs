@@ -303,3 +303,90 @@ fn elsewhere_the_app_is_the_program_it_was_installed_from() {
     assert!(err.contains("Install 'gg' Command again"), "{err}");
     moved.not_launched();
 }
+
+/// The launched path as the stub wrote it, whole (a name may end with a newline).
+fn launched_raw(gg: &Launcher) -> String {
+    let file = gg.path("launched");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !file.exists() {
+        assert!(Instant::now() < deadline, "the app was not started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let text = fs::read_to_string(&file).unwrap();
+    fs::remove_file(&file).unwrap();
+    text
+}
+
+#[test]
+fn a_folder_reached_through_a_link_opens_where_it_really_is() {
+    let repo = repo_with_commit("repo");
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("shortcut");
+    std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+    let gg = Launcher::new(None);
+    let out = gg.run(&link.join("src"), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(gg.launched(), [real(repo.path())]);
+    let out = gg.run(Path::new("/"), &[&link.to_string_lossy()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(gg.launched(), [real(repo.path())]);
+}
+
+#[test]
+fn names_ending_in_a_newline_or_holding_a_backslash_are_kept_whole() {
+    let gg = Launcher::new(None);
+    for name in ["ends in newline\n", r"back\slash \n not one", "two\n\n"] {
+        let repo = repo_with_commit(name);
+        let out = gg.run(repo.path(), &[]);
+        assert!(out.status.success(), "{name:?}: {}", stderr(&out));
+        assert_eq!(launched_raw(&gg), format!("{}\n", real(repo.path())), "{name:?}");
+        // Given as an argument too, from elsewhere.
+        let out = gg.run(Path::new("/"), &[&repo.path().to_string_lossy()]);
+        assert!(out.status.success(), "{name:?}: {}", stderr(&out));
+        assert_eq!(launched_raw(&gg), format!("{}\n", real(repo.path())), "{name:?}");
+    }
+    // A message naming such a path prints it as it is (printf, not echo).
+    let plain = tempfile::tempdir().unwrap();
+    let odd = plain.path().join(r"a\nb");
+    fs::create_dir(&odd).unwrap();
+    let out = gg.run(Path::new("/"), &[&odd.to_string_lossy()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        stderr(&out),
+        format!("gg: {} is not inside a git repository\n", odd.display())
+    );
+}
+
+#[test]
+fn a_git_dir_set_in_the_environment_does_not_decide_the_repository() {
+    let repo = repo_with_commit("repo");
+    let other = repo_with_commit("other");
+    let gg = Launcher::new(None);
+    let out = gg
+        .command(repo.path(), &[])
+        .env("GG_APP_BIN", gg.path("app-stub"))
+        .env("GIT_DIR", other.path().join(".git"))
+        .env("GIT_WORK_TREE", other.path())
+        .env("GIT_INDEX_FILE", other.path().join(".git/index"))
+        .env("GIT_COMMON_DIR", other.path().join(".git"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(gg.launched(), [real(repo.path())]);
+}
+
+/// git's own refusal (other than "not a repository") is shown as git says it.
+#[test]
+fn git_explains_a_refusal_of_its_own() {
+    let repo = repo_with_commit("repo");
+    // Like a repository owned by another user (which cannot be made here): one git refuses
+    // to read, for a reason of its own.
+    repo.git(&["config", "core.repositoryformatversion", "99"]);
+    let gg = Launcher::new(None);
+    let out = gg.run(repo.path(), &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(!err.contains("is not inside a git repository"), "{err}");
+    assert!(err.contains("repo version"), "{err}");
+    gg.not_launched();
+}

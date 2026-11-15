@@ -8,6 +8,9 @@
 # On macOS the app is found by its bundle identifier, wherever it is. Elsewhere it is the
 # program the app was installed from (below); if it moves, install the command again.
 
+# A repository the calling shell points git at must not decide which one opens.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
+
 GG_VERSION='@GG_VERSION@'
 GG_APP=@GG_APP@
 GG_BUNDLE_ID='com.shakirul.gg'
@@ -38,7 +41,7 @@ case "${1-}" in
     shift
     ;;
   -?*)
-    echo "gg: unknown option $1 (for a path starting with -, use: gg -- $1)" >&2
+    printf '%s\n' "gg: unknown option $1 (for a path starting with -, use: gg -- $1)" >&2
     usage >&2
     exit 2
     ;;
@@ -53,25 +56,45 @@ path=${1-.}
 
 # The folder as an absolute path (an existing file stands for its folder). `cd --` takes a
 # path starting with -, except - itself (the previous folder); CDPATH must not send it
-# elsewhere.
+# elsewhere. Each `$(… && echo x)` keeps the newlines a name may end with: only the `x` and
+# the one newline the command printed are taken off.
 dir=$path
 [ "$dir" = - ] && dir=./-
 if [ ! -d "$dir" ] && [ -e "$dir" ]; then
-  dir=$(dirname -- "$dir")
+  dir=$(dirname -- "$dir" && echo x)
+  dir=${dir%x}
+  dir=${dir%?}
 fi
-if ! dir=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P); then
-  echo "gg: $path: no such folder" >&2
+if ! dir=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P && echo x); then
+  printf '%s\n' "gg: $path: no such folder" >&2
   exit 1
 fi
+dir=${dir%x}
+dir=${dir%?}
 
 if ! command -v git >/dev/null 2>&1; then
   echo "gg: git was not found on PATH" >&2
   exit 1
 fi
 # The worktree holding it (a linked worktree is its own); none for a bare repository or a
-# folder outside any repository.
-if ! top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || [ -z "$top" ]; then
-  echo "gg: $path is not inside a git repository" >&2
+# folder outside any repository. Any other refusal (a repository owned by someone else, say)
+# is git's to explain.
+if top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null && echo x); then
+  top=${top%x}
+  top=${top%?}
+else
+  top=
+fi
+if [ -z "$top" ]; then
+  why=$(git -C "$dir" rev-parse --show-toplevel 2>&1 >/dev/null)
+  case $why in
+    *"not a git repository"* | *"must be run in a work tree"* | "")
+      printf '%s\n' "gg: $path is not inside a git repository" >&2
+      ;;
+    *)
+      printf '%s\n' "$why" >&2
+      ;;
+  esac
   exit 1
 fi
 
@@ -95,14 +118,14 @@ if [ "$(uname -s)" = Darwin ]; then
   # -n: a new instance, which hands the path to the one running (if any) and quits.
   if ! out=$(open -n -b "$GG_BUNDLE_ID" --args "$top" 2>&1); then
     echo "gg: the gg app was not found (bundle $GG_BUNDLE_ID). Put gg.app in Applications and try again." >&2
-    [ -n "$out" ] && echo "$out" >&2
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
     exit 1
   fi
   exit 0
 fi
 
 if [ -z "$GG_APP" ] || [ ! -x "$GG_APP" ]; then
-  echo "gg: the gg app is no longer at ${GG_APP:-the place it was installed from}." >&2
+  printf '%s\n' "gg: the gg app is no longer at ${GG_APP:-the place it was installed from}." >&2
   echo "gg: open gg and choose Install 'gg' Command again to point this command at it." >&2
   exit 1
 fi

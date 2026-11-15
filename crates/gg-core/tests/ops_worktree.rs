@@ -588,6 +588,47 @@ async fn the_active_worktree_is_removed_after_main_becomes_active() {
     assert!(gone.is_empty(), "{gone:?}");
 }
 
+/// Task 4 review: removing the active worktree switches to main first, which takes a moment;
+/// a file written meanwhile is not deleted unconfirmed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_written_while_main_becomes_active_stops_the_removal() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("seen.txt"), "x").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_active_worktree(id, &wt).await.unwrap();
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    // The switch waits for the main worktree's status, slow here.
+    h.m.set_status_delay(std::time::Duration::from_millis(1500));
+    let run = tokio::spawn({
+        let (m, request) = (h.m.clone(), remove(&wt, false));
+        async move { m.run_op(id, request, &confirmed(&[danger])).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the removal runs");
+    fs::write(wt.join("late.txt"), "written during the switch").unwrap();
+    let out = tokio::time::timeout(TIMEOUT, run)
+        .await
+        .expect("ends")
+        .unwrap()
+        .unwrap();
+    h.m.set_status_delay(std::time::Duration::ZERO);
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message
+            .starts_with("It changed since you confirmed; nothing was removed."),
+        "{}",
+        out.message
+    );
+    assert!(wt.join("late.txt").exists());
+    assert!(worktree_writes(&h, &out).is_empty(), "no remove ran");
+    assert_eq!(out.snapshot.active_worktree, real(repo.path()));
+}
+
 #[tokio::test]
 async fn an_active_worktree_that_git_will_not_remove_says_main_is_active_now() {
     // A submodule checked out there: git refuses even a clean one.

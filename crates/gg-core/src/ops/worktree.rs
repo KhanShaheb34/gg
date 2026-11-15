@@ -438,11 +438,53 @@ impl Work {
     }
 }
 
-/// Reads what the worktree `wt` holds: `status --porcelain=v2 -z --untracked-files=all
-/// --ignored=matching` there (ignored folders come collapsed), what git is stopped in there,
-/// and its commits on no remote (detached: on no branch or remote), counted from the main
-/// worktree. Stashes are shared by all worktrees and not lost with one.
+/// Reads what the worktree `wt` holds: what git is stopped in there, its commits on no
+/// remote (detached: on no branch or remote), counted from the main worktree, and, read
+/// last, its files ([`read_files_held`]). Stashes are shared by all worktrees and not lost
+/// with one.
 async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
+    let dir = Path::new(&wt.path);
+    let in_progress = read_kind(&ctx.runner, dir).await?;
+    let (mut commit_count, mut commits_hash, mut commits) = (0, 0, Vec::new());
+    if let Some(head) = &wt.head {
+        let mut only_here = vec![head.as_str(), "--not"];
+        if wt.branch.is_none() {
+            only_here.push("--branches");
+        }
+        only_here.push("--remotes");
+        let mut list = vec!["rev-list"];
+        list.extend(&only_here);
+        let out = ctx.read(&list).await?;
+        if out.code == 0 {
+            commit_count = out.text().lines().filter(|l| !l.is_empty()).count();
+            commits_hash = fnv1a(&out.stdout);
+        }
+        if commit_count > 0 {
+            let limit = MAX_LOST_LISTED.to_string();
+            let mut log = vec!["log", "--abbrev=8", "--format=%h %s", "-n", &limit];
+            log.extend(&only_here);
+            let out = ctx.read(&log).await?;
+            commits = out
+                .text()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+    }
+    Ok(Work {
+        in_progress,
+        commit_count,
+        commits_hash,
+        commits,
+        ..read_files_held(ctx, wt).await?
+    })
+}
+
+/// The files the worktree `wt` holds, from `status --porcelain=v2 -z --untracked-files=all
+/// --ignored=matching` there (ignored folders come collapsed): changed, untracked and
+/// ignored, with the hashes of the records.
+async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
     let dir = Path::new(&wt.path);
     let out = ctx
         .runner
@@ -458,35 +500,17 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
         )
         .with_detail(out.stderr));
     }
-    let mut work = parse_status(&out.stdout);
-    work.in_progress = read_kind(&ctx.runner, dir).await?;
-    if let Some(head) = &wt.head {
-        let mut only_here = vec![head.as_str(), "--not"];
-        if wt.branch.is_none() {
-            only_here.push("--branches");
-        }
-        only_here.push("--remotes");
-        let mut list = vec!["rev-list"];
-        list.extend(&only_here);
-        let out = ctx.read(&list).await?;
-        if out.code == 0 {
-            work.commit_count = out.text().lines().filter(|l| !l.is_empty()).count();
-            work.commits_hash = fnv1a(&out.stdout);
-        }
-        if work.commit_count > 0 {
-            let limit = MAX_LOST_LISTED.to_string();
-            let mut log = vec!["log", "--abbrev=8", "--format=%h %s", "-n", &limit];
-            log.extend(&only_here);
-            let out = ctx.read(&log).await?;
-            work.commits = out
-                .text()
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(str::to_owned)
-                .collect();
-        }
+    Ok(parse_status(&out.stdout))
+}
+
+/// The status and ignored-file hashes in a `remove_worktree_*` danger's `token`, as
+/// [`work_danger`] wrote them.
+fn token_hashes(token: &str) -> Option<(&str, &str)> {
+    let parts: Vec<&str> = token.split('\n').collect();
+    match parts.as_slice() {
+        [_, _, status, _, ignored] => Some((status, ignored)),
+        _ => None,
     }
-    Ok(work)
 }
 
 /// The paths of `status --porcelain=v2 -z` output (`1`, `2` with its original path, `u`,
@@ -539,10 +563,6 @@ pub(crate) async fn removal_dangers(
         return Ok(Vec::new());
     };
     let mut dangers = Vec::new();
-    if !has_submodules(ctx, &wt).await? {
-        let work = read_work(ctx, &wt).await?;
-        dangers.extend(work_danger(&work, &wt, delete_branch));
-    }
     if delete_branch
         && let Some(branch) = &wt.branch
         && holder(&list, &wt, branch).is_none()
@@ -563,6 +583,13 @@ pub(crate) async fn removal_dangers(
             )),
         }
         dangers.push(danger);
+    }
+    // The files last, so the dialog shows them as late as can be.
+    if !has_submodules(ctx, &wt).await? {
+        let work = read_work(ctx, &wt).await?;
+        if let Some(danger) = work_danger(&work, &wt, delete_branch) {
+            dangers.insert(0, danger);
+        }
     }
     Ok(dangers)
 }
@@ -764,9 +791,10 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
 }
 
 /// `git worktree remove -- <path>` for the worktree git lists at `path`, with `--force`
-/// only when its work was confirmed (`remove_worktree_with_work` among `dangers`; ignored
-/// files alone git deletes without it). The active worktree is left first: the main one
-/// becomes active. Then, with `delete_branch`, its branch goes (`branch -d`, or `-D` when
+/// only when changed or untracked files were confirmed (`remove_worktree_with_work` among
+/// `dangers`; ignored files, commits and something in progress git removes without it). The
+/// active worktree is left first: the main one becomes active. Its files are then read again
+/// and must be as confirmed (the danger's token), else nothing is removed. Then, with `delete_branch`, its branch goes (`branch -d`, or `-D` when
 /// `delete_unmerged_branch_with_worktree` was confirmed), unless another worktree has it
 /// checked out.
 pub(crate) async fn remove(
@@ -793,9 +821,37 @@ pub(crate) async fn remove(
         " The main worktree, {}, is active now.",
         ctx.repo.root.display()
     );
-    let force = dangers
-        .iter()
-        .any(|d| d.kind == DangerKind::RemoveWorktreeWithWork);
+    // Read again now (after the switch, for the active one): what is removed must be what
+    // was confirmed.
+    let confirmed = dangers.iter().find(|d| {
+        matches!(
+            d.kind,
+            DangerKind::RemoveWorktreeWithWork | DangerKind::RemoveWorktreeIgnoredFiles
+        )
+    });
+    let now = read_files_held(ctx, &wt).await?;
+    if let Some(token) = confirmed.and_then(|d| d.token.as_deref()) {
+        let (status, ignored) = (
+            format!("{:016x}", now.status_hash),
+            format!("{:016x}", now.ignored_hash),
+        );
+        if token_hashes(token) != Some((status.as_str(), ignored.as_str())) {
+            let mut message = "It changed since you confirmed; nothing was removed.".to_owned();
+            if left {
+                message.push_str(&main_now);
+            }
+            return Ok(Step::Failed {
+                message,
+                detail: String::new(),
+                hints: Vec::new(),
+            });
+        }
+    }
+    // `--force` only for what git would otherwise refuse: changed or untracked files the user
+    // confirmed. Anything else (ignored files, commits, something in progress) goes with a
+    // plain remove, which keeps git's own check for changes at the moment it deletes.
+    let force = confirmed.is_some_and(|d| d.kind == DangerKind::RemoveWorktreeWithWork)
+        && (!now.changed.is_empty() || !now.untracked.is_empty());
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");

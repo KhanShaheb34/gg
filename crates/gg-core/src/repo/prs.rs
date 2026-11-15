@@ -405,6 +405,11 @@ impl RepoManager {
     /// of `gh` for this branch (`gh pr list --head <branch>`), never taken from the list shown,
     /// which may not hold it.
     pub async fn pr_suggest(&self, repo_id: u32, branch: &str) -> Result<PrSuggestion> {
+        // On the heap: its future is large (it asks git and gh several things).
+        Box::pin(self.suggest(repo_id, branch)).await
+    }
+
+    async fn suggest(&self, repo_id: u32, branch: &str) -> Result<PrSuggestion> {
         let repo = self.get(repo_id)?;
         crate::git::names::check_branch_name(branch)
             .map_err(|e| CoreError::new(ErrorCode::BadRequest, e.message))?;

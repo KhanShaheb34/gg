@@ -283,39 +283,48 @@ async fn ignored_files_beside_other_work_are_a_line_of_the_red_danger() {
     );
 }
 
+/// Removing a worktree never deletes its branch: commits on no remote stay on it, so they
+/// are no danger, only a line in a dialog shown for something else (Task 4 review).
 #[tokio::test]
-async fn commits_on_no_remote_are_work_and_listed() {
+async fn unpushed_commits_on_a_branch_are_kept_by_it_and_need_no_confirmation() {
     let (repo, _origin, wt) = pushed_worktree();
     git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "local one"]);
     git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "local two"]);
+    // With something else to confirm, they are a line of that dialog.
+    fs::write(wt.join("new.txt"), "x").unwrap();
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
     let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
     assert!(
-        danger.message.contains("has 2 commits on no remote."),
+        danger
+            .message
+            .ends_with(" 2 commits are not pushed; branch feature keeps them."),
         "{}",
         danger.message
     );
     assert!(
-        danger
-            .message
-            .contains("Branch \u{201c}feature\u{201d} keeps them; they are not pushed anywhere."),
+        !danger.message.contains("on no remote"),
         "{}",
         danger.message
     );
-    let detail = danger.detail.as_deref().unwrap();
-    let lines: Vec<&str> = detail.lines().collect();
-    assert_eq!(lines[0], "Commits on no remote (2):");
-    assert!(lines[1].ends_with(" local two"), "{detail}");
-    assert!(lines[2].ends_with(" local one"), "{detail}");
-    let out = h
-        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
-        .await;
+    assert_eq!(
+        danger.detail.as_deref(),
+        Some("Untracked files (1):\n  new.txt"),
+        "commits are not listed as lost"
+    );
+    fs::remove_file(wt.join("new.txt")).unwrap();
+    // Alone, they ask nothing.
+    let out = h.run(id, remove(&wt, false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    // The branch keeps them.
+    assert!(!wt.exists());
+    assert_eq!(
+        worktree_writes(&h, &out)[0],
+        ["worktree", "remove", "--", &real_gone(&wt)]
+    );
     assert_eq!(
         repo.git(&["log", "-1", "--format=%s", "feature"]),
-        "local two"
+        "local two",
+        "the branch keeps them"
     );
 }
 
@@ -331,7 +340,7 @@ async fn a_detached_head_with_commits_on_no_branch_lists_what_is_lost() {
     assert!(
         danger
             .message
-            .contains("has 1 commit on no branch or remote."),
+            .contains("has 1 commit on no branch, tag or remote."),
         "{}",
         danger.message
     );
@@ -344,21 +353,32 @@ async fn a_detached_head_with_commits_on_no_branch_lists_what_is_lost() {
         danger.detail.as_deref(),
         Some(
             format!(
-                "Commits on no branch or remote (1):\n  {} only here",
+                "Commits on no branch, tag or remote (1):\n  {} only here",
                 &lost[..8]
             )
             .as_str()
         )
     );
-    // Commits that are on a branch (not pushed) are not lost with a detached worktree.
-    let (repo2, _origin2, wt2) = pushed_worktree();
-    repo2.git(&["branch", "keep", "feature"]);
-    git_in(&wt2, &["checkout", "-q", "--detach"]);
-    git_in(&wt2, &["commit", "-q", "--allow-empty", "-m", "kept"]);
-    git_in(&wt2, &["branch", "-f", "keep", "HEAD"]);
-    let id2 = h.open(repo2.path()).await.repo_id;
-    let out = h.run(id2, remove(&wt2, false)).await;
+    // Confirmed, it goes with a plain remove: git needs no --force for commits.
+    let out = h
+        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
+        .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        worktree_writes(&h, &out)[0],
+        ["worktree", "remove", "--", &real_gone(&wt)]
+    );
+    // Commits that are on a branch or a tag (not pushed) are not lost with a detached
+    // worktree.
+    for keep in ["branch", "tag"] {
+        let (repo2, _origin2, wt2) = pushed_worktree();
+        git_in(&wt2, &["checkout", "-q", "--detach"]);
+        git_in(&wt2, &["commit", "-q", "--allow-empty", "-m", "kept"]);
+        git_in(&wt2, &[keep, "keep", "HEAD"]);
+        let id2 = h.open(repo2.path()).await.repo_id;
+        let out = h.run(id2, remove(&wt2, false)).await;
+        assert_eq!(out.status, OpStatus::Done, "{keep}: {out:#?}");
+    }
 }
 
 #[tokio::test]
@@ -852,9 +872,9 @@ async fn an_unmerged_unpushed_branch_and_the_work_are_asked_about_together() {
         branch.message
     );
     assert!(
-        branch
-            .message
-            .ends_with("1 of its commits is not pushed anywhere (it is on no remote)."),
+        branch.message.ends_with(
+            "1 of its commits is not pushed anywhere (it is on no other branch, tag or remote)."
+        ),
         "{}",
         branch.message
     );
@@ -863,7 +883,11 @@ async fn an_unmerged_unpushed_branch_and_the_work_are_asked_about_together() {
         Some(git_in(&wt, &["rev-parse", "HEAD"]).as_str()),
         "R9: the branch's tip"
     );
-    assert!(out.dangers[0].message.contains("asked about separately"));
+    assert!(
+        !out.dangers[0].message.contains("not pushed"),
+        "the branch's danger says it: {}",
+        out.dangers[0].message
+    );
     // Only one of the two confirmed: asked again, nothing removed.
     let half = h
         .run_with(id, remove(&wt, true), &confirmed(&out.dangers[..1]))
@@ -887,6 +911,29 @@ async fn an_unmerged_unpushed_branch_and_the_work_are_asked_about_together() {
         writes[1],
         ["branch", "-D", "--", "feature"],
         "after the removal"
+    );
+}
+
+/// The branch's "not pushed anywhere" counts only what deleting it loses: commits on no
+/// other branch, tag or remote.
+#[tokio::test]
+async fn commits_another_branch_has_are_not_counted_as_lost_with_the_branch() {
+    let (repo, _origin, wt) = pushed_worktree();
+    git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "local"]);
+    repo.git(&["branch", "copy", "feature"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, remove(&wt, true)).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:#?}");
+    assert_eq!(out.dangers.len(), 1, "{:#?}", out.dangers);
+    assert_eq!(
+        out.dangers[0].kind,
+        DangerKind::DeleteUnmergedBranchWithWorktree
+    );
+    assert!(
+        !out.dangers[0].message.contains("not pushed anywhere"),
+        "{}",
+        out.dangers[0].message
     );
 }
 

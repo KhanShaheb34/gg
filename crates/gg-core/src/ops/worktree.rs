@@ -419,17 +419,19 @@ struct Work {
     /// Hashes of the status records (all but the ignored) and of the ignored ones.
     status_hash: u64,
     ignored_hash: u64,
-    /// The commits only this worktree has: on no remote (on a branch: the branch keeps
-    /// them), or on no branch or remote (detached: lost with it). The first
+    /// Detached only: the commits lost with it, on no branch, tag or remote. The first
     /// [`MAX_LOST_LISTED`] as `hash subject`, how many, and a hash of the whole list.
     commits: Vec<String>,
     commit_count: usize,
     commits_hash: u64,
+    /// On a branch: its commits on no remote, which the branch keeps (removing a worktree
+    /// never deletes its branch), said in a line, never a danger of their own.
+    unpushed: usize,
     in_progress: Option<InProgressKind>,
 }
 
 impl Work {
-    /// Anything beside ignored files: then it is removed with `--force` only.
+    /// Anything beside ignored files and commits its branch keeps: the red danger.
     fn holds_work(&self) -> bool {
         !self.changed.is_empty()
             || !self.untracked.is_empty()
@@ -438,20 +440,22 @@ impl Work {
     }
 }
 
-/// Reads what the worktree `wt` holds: what git is stopped in there, its commits on no
-/// remote (detached: on no branch or remote), counted from the main worktree, and, read
-/// last, its files ([`read_files_held`]). Stashes are shared by all worktrees and not lost
+/// Reads what the worktree `wt` holds: what git is stopped in there, its commits (detached:
+/// those on no branch, tag or remote, lost with it; on a branch: how many are on no remote),
+/// counted from the main worktree, and, read last, its files ([`read_files_held`]). Stashes are shared by all worktrees and not lost
 /// with one.
 async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
     let dir = Path::new(&wt.path);
     let in_progress = read_kind(&ctx.runner, dir).await?;
     let (mut commit_count, mut commits_hash, mut commits) = (0, 0, Vec::new());
-    if let Some(head) = &wt.head {
-        let mut only_here = vec![head.as_str(), "--not"];
-        if wt.branch.is_none() {
-            only_here.push("--branches");
-        }
-        only_here.push("--remotes");
+    let mut unpushed = 0;
+    if let (Some(head), Some(_)) = (&wt.head, &wt.branch) {
+        let out = ctx
+            .read(&["rev-list", "--count", head, "--not", "--remotes"])
+            .await?;
+        unpushed = out.text().trim().parse().unwrap_or(0);
+    } else if let Some(head) = &wt.head {
+        let only_here = [head.as_str(), "--not", "--branches", "--tags", "--remotes"];
         let mut list = vec!["rev-list"];
         list.extend(&only_here);
         let out = ctx.read(&list).await?;
@@ -474,6 +478,7 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
     }
     Ok(Work {
         in_progress,
+        unpushed,
         commit_count,
         commits_hash,
         commits,
@@ -570,16 +575,30 @@ pub(crate) async fn removal_dangers(
     {
         danger.kind = DangerKind::DeleteUnmergedBranchWithWorktree;
         let full = format!("refs/heads/{branch}");
+        // Its commits on no other branch, tag or remote: what deleting it loses. (With
+        // `--branches`, `--exclude` takes the name without `refs/heads/`; a branch name has no
+        // glob characters.)
         let out = ctx
-            .read(&["rev-list", "--count", &full, "--not", "--remotes"])
+            .read(&[
+                "rev-list",
+                "--count",
+                &full,
+                "--not",
+                &format!("--exclude={branch}"),
+                "--branches",
+                "--tags",
+                "--remotes",
+            ])
             .await?;
         match out.text().trim().parse::<u64>().unwrap_or(0) {
             0 => {}
-            1 => danger
-                .message
-                .push_str(" 1 of its commits is not pushed anywhere (it is on no remote)."),
+            1 => danger.message.push_str(
+                " 1 of its commits is not pushed anywhere (it is on no other branch, tag or \
+                 remote).",
+            ),
             n => danger.message.push_str(&format!(
-                " {n} of its commits are not pushed anywhere (they are on no remote)."
+                " {n} of its commits are not pushed anywhere (they are on no other branch, tag \
+                 or remote)."
             )),
         }
         dangers.push(danger);
@@ -657,13 +676,26 @@ fn section(lines: &mut Vec<String>, title: &str, items: &[String], total: usize)
 /// The danger of removing the worktree `wt`, holding `work`: none when it holds nothing;
 /// `remove_worktree_ignored_files` (ordinary) when ignored files are all it holds (git
 /// deletes them without asking, P3-R6); else the red `remove_worktree_with_work`, with the
-/// ignored files as a line of it. Its token is the worktree's HEAD, what is in progress
-/// there, and hashes of its status, its commits only there and its ignored files.
+/// ignored files as a line of it. Commits its branch keeps are no danger (removing a worktree
+/// never deletes its branch): a line in either, unless the branch goes too (`delete_branch`:
+/// its own danger says what is lost). Its token is the worktree's HEAD, what is in progress
+/// there, and hashes of its status, its lost commits and its ignored files.
 fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Danger> {
     if !work.holds_work() && work.ignored.is_empty() {
         return None;
     }
     let shown = &wt.path;
+    let kept = match &wt.branch {
+        Some(branch) if work.unpushed > 0 && !delete_branch => {
+            let (n, them) = (
+                work.unpushed,
+                if work.unpushed == 1 { "it" } else { "them" },
+            );
+            let verb = if n == 1 { "commit is" } else { "commits are" };
+            format!(" {n} {verb} not pushed; branch {branch} keeps {them}.")
+        }
+        _ => String::new(),
+    };
     let token = Some(format!(
         "{}\n{}\n{:016x}\n{:016x}\n{:016x}",
         wt.head.as_deref().unwrap_or(""),
@@ -685,14 +717,13 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
             kind: DangerKind::RemoveWorktreeIgnoredFiles,
             message: format!(
                 "The worktree at {shown} has nothing uncommitted, but it holds {}, which git \
-                 deletes with it without asking (listed below).",
+                 deletes with it without asking (listed below).{kept}",
                 ignored_count(&work.ignored)
             ),
             detail: Some(detail.join("\n")),
             token,
         });
     }
-    let detached = wt.branch.is_none();
     let mut parts = Vec::new();
     if !work.changed.is_empty() {
         parts.push(format!(
@@ -709,11 +740,7 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
     }
     if work.commit_count > 0 {
         let commits = count(work.commit_count, "commit", "commits");
-        parts.push(if detached {
-            format!("{commits} on no branch or remote")
-        } else {
-            format!("{commits} on no remote")
-        });
+        parts.push(format!("{commits} on no branch, tag or remote"));
     }
     let mut message = if parts.is_empty() {
         format!("The worktree at {shown} has work in it.")
@@ -732,19 +759,10 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
     }
     if work.commit_count > 0 {
         let them = if work.commit_count == 1 { "it" } else { "them" };
-        match &wt.branch {
-            None => message.push_str(&format!(
-                " Its commits on no branch are lost with it, unless a branch is made for \
-                 {them} first."
-            )),
-            Some(branch) if delete_branch => message.push_str(&format!(
-                " Branch \u{201c}{branch}\u{201d} keeps {them} only until it is deleted too \
-                 (asked about separately)."
-            )),
-            Some(branch) => message.push_str(&format!(
-                " Branch \u{201c}{branch}\u{201d} keeps {them}; they are not pushed anywhere."
-            )),
-        }
+        message.push_str(&format!(
+            " Its commits on no branch are lost with it, unless a branch is made for {them} \
+             first."
+        ));
     }
     if let Some(kind) = work.in_progress {
         let what = kind_name(kind);
@@ -758,6 +776,7 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
             ignored_count(&work.ignored)
         ));
     }
+    message.push_str(&kept);
     section(
         &mut detail,
         "Uncommitted changes",
@@ -770,12 +789,12 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
         &work.untracked,
         work.untracked.len(),
     );
-    let commits_title = if detached {
-        "Commits on no branch or remote"
-    } else {
-        "Commits on no remote"
-    };
-    section(&mut detail, commits_title, &work.commits, work.commit_count);
+    section(
+        &mut detail,
+        "Commits on no branch, tag or remote",
+        &work.commits,
+        work.commit_count,
+    );
     section(
         &mut detail,
         ignored_title,

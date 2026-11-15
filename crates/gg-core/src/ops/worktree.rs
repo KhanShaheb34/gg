@@ -30,10 +30,10 @@ const MAX_SUFFIX: u32 = 1000;
 
 /// Said when git refuses to remove a worktree that holds submodules (it does so even for a
 /// clean one).
-const SUBMODULES: &str = "git does not remove a worktree that contains submodules, even a \
-                          clean one (git's message is below), so nothing was removed. \
+const SUBMODULES: &str = "git does not delete a worktree that contains submodules, even a \
+                          clean one (git's message is below), so nothing was deleted. \
                           Deinitialize them there first (git submodule deinit --all), then \
-                          remove the worktree again.";
+                          delete the worktree again.";
 
 /// `path` (absolute, or relative to the main worktree `root`) with `.` and `..` worked out,
 /// without looking at the disk.
@@ -299,7 +299,7 @@ async fn remove_refused(
     let (found, list) = find(ctx, path).await?;
     let Some(wt) = found else {
         return Ok(Some(format!(
-            "Nothing was removed: {path} is not a worktree of this repository (git does not \
+            "Nothing was deleted: {path} is not a worktree of this repository (git does not \
              list it)."
         )));
     };
@@ -316,21 +316,21 @@ async fn remove_refused(
         .find(|w| fs::symlink_metadata(&w.path).is_ok_and(|m| m.file_type().is_symlink()))
     {
         return Ok(Some(format!(
-            "{} is a link to another folder; remove the worktree from a terminal.",
+            "{} is a link to another folder; delete the worktree from a terminal.",
             link.path
         )));
     }
     if same.len() > 1 {
         return Ok(Some(format!(
-            "Nothing was removed: git lists {} entries that lead to {shown}; remove the \
+            "Nothing was deleted: git lists {} entries that lead to {shown}; delete the \
              worktree from a terminal.",
             same.len()
         )));
     }
     if wt.is_main || Path::new(shown) == ctx.repo.root {
         return Ok(Some(format!(
-            "Nothing was removed: {shown} is the main worktree, which holds the repository \
-             itself. Only linked worktrees can be removed."
+            "Nothing was deleted: {shown} is the main worktree, which holds the repository \
+             itself. Only linked worktrees can be deleted."
         )));
     }
     if wt.locked {
@@ -339,19 +339,19 @@ async fn remove_refused(
             .as_deref()
             .map_or_else(String::new, |r| format!(" ({r})"));
         return Ok(Some(format!(
-            "Nothing was removed: the worktree at {shown} is locked{why}. git keeps a locked \
+            "Nothing was deleted: the worktree at {shown} is locked{why}. git keeps a locked \
              worktree; unlock it first (git worktree unlock) if it may go."
         )));
     }
     if wt.prunable || !Path::new(shown).is_dir() {
         return Ok(Some(format!(
-            "Nothing was removed: the folder of the worktree at {shown} is missing, so there \
-             is nothing to remove. Prune stale entries to make git forget it."
+            "Nothing was deleted: the folder of the worktree at {shown} is missing, so there \
+             is nothing to delete. Prune stale entries to make git forget it."
         )));
     }
     if delete_branch && wt.branch.is_none() {
         return Ok(Some(format!(
-            "Nothing was removed: the worktree at {shown} has no branch checked out (its HEAD \
+            "Nothing was deleted: the worktree at {shown} has no branch checked out (its HEAD \
              is detached), so there is no branch to delete with it."
         )));
     }
@@ -376,7 +376,7 @@ fn nested_refusal(list: &[WorktreeInfo], wt: &WorktreeInfo, raw: &[u8]) -> Optio
             )
         } else {
             format!(
-                "{shown} contains the worktree at {}. Remove that one first.",
+                "{shown} contains the worktree at {}. Delete that one first.",
                 inner.path
             )
         });
@@ -384,7 +384,7 @@ fn nested_refusal(list: &[WorktreeInfo], wt: &WorktreeInfo, raw: &[u8]) -> Optio
     nested_repository(Path::new(shown), raw).map(|inner| {
         format!(
             "{shown} contains another repository at {}, which git would delete with it. Move \
-             or remove it first.",
+             or delete it first.",
             inner.display()
         )
     })
@@ -409,7 +409,7 @@ async fn status_with_ignored(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) ->
         return Err(CoreError::new(
             ErrorCode::GitFailed,
             format!(
-                "Could not read what the worktree at {} holds, so nothing was removed.",
+                "Could not read what the worktree at {} holds, so nothing was deleted.",
                 wt.path
             ),
         )
@@ -854,9 +854,9 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
     };
     match (work.changed.is_empty(), work.untracked.is_empty()) {
         (false, false) => message
-            .push_str(" Removing it deletes the uncommitted changes and untracked files for good."),
-        (false, true) => message.push_str(" Removing it deletes the uncommitted changes for good."),
-        (true, false) => message.push_str(" Removing it deletes the untracked files for good."),
+            .push_str(" Deleting it loses the uncommitted changes and untracked files for good."),
+        (false, true) => message.push_str(" Deleting it loses the uncommitted changes for good."),
+        (true, false) => message.push_str(" Deleting it loses the untracked files for good."),
         (true, true) => {}
     }
     if work.commit_count > 0 {
@@ -869,7 +869,7 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
     if let Some(kind) = work.in_progress {
         let what = kind_name(kind);
         message.push_str(&format!(
-            " A {what} is in progress there; removing the worktree abandons it."
+            " A {what} is in progress there; deleting the worktree abandons it."
         ));
     }
     if !work.ignored.is_empty() {
@@ -927,7 +927,7 @@ pub(crate) async fn remove(
     let (Some(wt), list) = find(ctx, path).await? else {
         return Ok(Step::Failed {
             message: format!(
-                "Nothing was removed: {path} is no longer a worktree of this repository."
+                "Nothing was deleted: {path} is no longer a worktree of this repository."
             ),
             detail: String::new(),
             hints: Vec::new(),
@@ -984,7 +984,11 @@ pub(crate) async fn remove(
         }
     };
     if changed {
-        return refuse("It changed since you confirmed; nothing was removed.".to_owned());
+        return refuse(if confirmed.is_some() {
+            "It changed since you confirmed; nothing was deleted.".to_owned()
+        } else {
+            "It changed while gg was getting ready; nothing was deleted.".to_owned()
+        });
     }
     // `--force` only for what git would otherwise refuse: changed or untracked files the user
     // confirmed. Anything else (ignored files, commits, something in progress) goes with a
@@ -1022,7 +1026,7 @@ pub(crate) async fn remove(
             hints,
         });
     }
-    let mut message = format!("Removed the worktree at {shown}.");
+    let mut message = format!("Deleted the worktree at {shown}.");
     if left {
         message.push_str(&main_now);
     }

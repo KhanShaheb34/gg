@@ -637,9 +637,9 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         } => {
             check_path(&path)?;
             let title = if delete_branch {
-                format!("Remove worktree {path} and its branch")
+                format!("Delete worktree {path} and its branch")
             } else {
-                format!("Remove worktree {path}")
+                format!("Delete worktree {path}")
             };
             (
                 fixed(title),

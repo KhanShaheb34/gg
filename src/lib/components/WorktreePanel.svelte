@@ -38,6 +38,8 @@
   let list: HTMLElement | undefined = $state();
   const uid = Math.random().toString(36).slice(2, 8);
   const rowId = (i: number) => `wt-${uid}-${i}`;
+  /** The row's first cell: the grid's active descendant, named for the worktree. */
+  const cellId = (i: number) => `wt-${uid}-${i}-cell`;
 
   // "Show the worktrees" asks for the focus here.
   let seenFocus = 0;
@@ -218,7 +220,7 @@
       aria-label="Worktrees"
       aria-rowcount={rows.length}
       tabindex="0"
-      aria-activedescendant={selectedIndex >= 0 ? rowId(selectedIndex) : undefined}
+      aria-activedescendant={selectedIndex >= 0 ? cellId(selectedIndex) : undefined}
       bind:this={list}
       onkeydown={onKeydown}
       onclick={onClick}
@@ -245,7 +247,7 @@
           data-path={wt.path}
           data-active={wt.active}
         >
-          <div class="cell" role="gridcell">
+          <div class="cell" role="gridcell" id={cellId(i)} aria-label={label(wt)}>
             <span class="mark" aria-hidden="true">
               {#if switching}
                 <svg class="spin" width="14" height="14" viewBox="0 0 16 16">

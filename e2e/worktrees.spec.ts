@@ -468,7 +468,10 @@ test("the keyboard reaches the panel: F6, arrows, Enter and the menu key", async
   await expect(rows(page).first()).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowDown");
   await expect(rows(page).nth(1)).toHaveAttribute("aria-selected", "true");
-  await expect(list(page)).toHaveAttribute("aria-activedescendant", (await rows(page).nth(1).getAttribute("id"))!);
+  // The active descendant is the row's gridcell, which names the worktree.
+  const cell = rows(page).nth(1).getByRole("gridcell").first();
+  await expect(list(page)).toHaveAttribute("aria-activedescendant", (await cell.getAttribute("id")) ?? "(no id)");
+  await expect(cell).toHaveAttribute("aria-label", /.+/);
   const target = (await rows(page).nth(1).getAttribute("data-path"))!;
   await page.keyboard.press("Enter");
   await expect(activeRow(page)).toHaveAttribute("data-path", target);

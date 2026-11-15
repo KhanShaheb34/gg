@@ -167,6 +167,21 @@ test("over 5,000 changed files the list says it shows the first 5,000", async ({
   await files(page).focus();
   await page.keyboard.press("End");
   await expect(files(page).getByRole("option").last()).toBeVisible();
+  // The active descendant is only ever a row that is drawn.
+  const target = () =>
+    files(page).evaluate((el) => {
+      const id = el.getAttribute("aria-activedescendant");
+      if (id === null) return "none";
+      return document.getElementById(id) ? "rendered" : "missing";
+    });
+  await expect.poll(target).toBe("rendered");
+  await files(page).evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(target).not.toBe("missing");
+  await expect(files(page).getByRole("option").first()).toHaveAttribute("data-path", "a file with spaces.txt");
+  expect(await target()).toBe("none");
 });
 
 test("the ways in: the menu, the row's changes, the uncommitted row; another worktree is made active in one click", async ({ gg }) => {
@@ -373,9 +388,6 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   writeFileSync(path.join(topic, "shared.txt"), "topic\n");
   at("commit", "-q", "-am", "Topic side");
   expect(() => at("merge", "-q", "other")).toThrow();
-  // Resolved and staged, and another tracked file changed during the merge.
-  writeFileSync(path.join(topic, "shared.txt"), "both\n");
-  at("add", "shared.txt");
   writeFileSync(path.join(topic, "src", "app.ts"), "export const app = 3;\n");
 
   await open(page, repo);
@@ -386,9 +398,20 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   }, topic);
   await expect(page.getByTestId("active-worktree")).toContainText("topic");
   await page.keyboard.press("ControlOrMeta+k");
+  // Still conflicted: the row says why it cannot be ticked, to the eye and in its name, and
+  // why Commit cannot be pressed.
+  await expect(file(page, "shared.txt")).toHaveAttribute("aria-checked", "false");
+  await expect(file(page, "shared.txt")).toHaveAccessibleName(/shared\.txt.*Resolve its conflicts first\./);
+  await expect(reason(page)).toHaveText("Resolve the conflicts, then conclude the merge.");
+  // Resolved and staged.
+  writeFileSync(path.join(topic, "shared.txt"), "both\n");
+  at("add", "shared.txt");
   await expect(page.getByTestId("commit-merge")).toContainText("Concluding the merge of other");
+
   for (const tracked of ["shared.txt", "src/app.ts"]) {
     await expect(file(page, tracked)).toHaveAttribute("aria-selected", "true");
+    await expect(file(page, tracked)).toHaveAttribute("aria-checked", "true");
+    await expect(file(page, tracked)).toHaveAccessibleName(/goes in with the merge/);
     await expect(file(page, tracked)).toHaveAttribute("aria-disabled", "true");
     await file(page, tracked).click({ force: true });
     await expect(file(page, tracked)).toHaveAttribute("aria-selected", "true");

@@ -195,6 +195,12 @@
   const first = $derived(Math.max(0, rowAtY(top) - OVERSCAN));
   const last = $derived(Math.min(files?.length ?? 0, rowAtY(top + height) + 1 + OVERSCAN));
   const shown = $derived((files ?? []).slice(first, last));
+  /** The row the keys are on, when it is drawn (the active descendant is never a row that is not). */
+  const activeRow = $derived.by(() => {
+    if (!files || files.length === 0) return null;
+    const i = Math.min(cursor, files.length - 1);
+    return i >= first && i < last ? i : null;
+  });
 
   function moveTo(i: number) {
     if (!files || files.length === 0 || !scroller) return;
@@ -362,9 +368,12 @@
     return `${STATUS_NAMES[f.status]}: ${p}${blocked(f) ? `\n${blocked(f)}` : ""}${locked(f) ? "\nPart of the merge: it goes in with it." : ""}`;
   }
 
+  /** The row's accessible name: what changed, and why it cannot be ticked or unticked. */
   function rowLabel(f: FileEntry): string {
     const p = visibleText(f.origPath === null ? f.path : `${f.origPath} to ${f.path}`);
-    return `${STATUS_NAMES[f.status].toLowerCase()}, ${p}`;
+    const why = blocked(f);
+    const note = why !== null ? `, ${why}` : locked(f) ? ", goes in with the merge" : "";
+    return `${STATUS_NAMES[f.status].toLowerCase()}, ${p}${note}`;
   }
 
   /** "src/a.ts" → keep the file name: the characters after the last "/". */
@@ -425,7 +434,7 @@
     aria-label="Changed files"
     aria-multiselectable="true"
     tabindex="0"
-    aria-activedescendant={files && files.length > 0 ? `cf-${uid}-${Math.min(cursor, files.length - 1)}` : undefined}
+    aria-activedescendant={activeRow !== null ? `cf-${uid}-${activeRow}` : undefined}
     bind:this={scroller}
     bind:clientHeight={height}
     onscroll={() => (top = scroller!.scrollTop)}
@@ -452,6 +461,7 @@
             role="option"
             tabindex="-1"
             aria-selected={on}
+            aria-checked={on}
             aria-disabled={why !== null || locked(f)}
             aria-label={rowLabel(f)}
             title={rowTitle(f)}

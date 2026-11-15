@@ -113,8 +113,9 @@ async fn malformed_args_is_bad_request() {
 }
 
 /// Opening a folder of a linked worktree opens the repository (or the tab it has) with that
-/// worktree active, and the choice is remembered for the next start; the main worktree's
-/// folder means the repository, whichever worktree is active (replaces R42's notice).
+/// worktree active, and the choice is remembered for the next start. The main worktree's
+/// folder opened by the user makes the main worktree active, like any other; a tab restored
+/// from the last session (`restore`) keeps the worktree remembered (replaces R42's notice).
 #[tokio::test]
 async fn opening_a_linked_worktree_makes_it_active_and_it_is_remembered() {
     let repo = TestRepo::new();
@@ -133,7 +134,10 @@ async fn opening_a_linked_worktree_makes_it_active_and_it_is_remembered() {
     assert_eq!(again["head"]["branch"], "hotfix");
     assert_eq!(again["openedWorktree"], Value::Null);
     assert!(again["seq"].as_u64() > first["seq"].as_u64());
-    let same = h.call("open_repo", json!({ "path": repo.path() })).await;
+    // Restored, the main worktree's folder changes nothing.
+    let same = h
+        .call("open_repo", json!({ "path": repo.path(), "restore": true }))
+        .await;
     assert_eq!(same["activeWorktree"], json!(path_string(&hotfix)));
 
     // Remembered (in the background) by the main worktree's path.
@@ -148,17 +152,69 @@ async fn opening_a_linked_worktree_makes_it_active_and_it_is_remembered() {
         assert!(std::time::Instant::now() < deadline, "not remembered");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // A new start opening the main worktree's folder starts in it.
+    // A new start restoring the main worktree's folder starts in it.
     let config = h.config.path().to_path_buf();
     let next = Core::new(config.clone(), None, Arc::new(RecordingSink::default()))
         .await
         .unwrap();
     let snap = next
-        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .dispatch("open_repo", json!({ "path": repo.path(), "restore": true }))
         .await
         .unwrap();
     assert_eq!(snap["activeWorktree"], json!(path_string(&hotfix)));
     assert_eq!(snap["head"]["branch"], "hotfix");
+    // Opened by the user, the main worktree's folder makes the main worktree active, and
+    // that is remembered.
+    let main = next
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(main["repoId"], snap["repoId"]);
+    assert_eq!(main["activeWorktree"], json!(path_string(repo.path())));
+    assert_eq!(main["head"]["branch"], "main");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let prefs = next
+            .dispatch("get_repo_prefs", json!({ "repoId": main["repoId"] }))
+            .await
+            .unwrap();
+        if prefs["activeWorktree"].is_null() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "main not remembered");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // A new start opening the main worktree's folder (the `gg` command) starts in main;
+    // remembered as the hotfix again, a restored tab starts there.
+    next.dispatch(
+        "set_active_worktree",
+        json!({ "repoId": main["repoId"], "path": hotfix }),
+    )
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let prefs = next
+            .dispatch("get_repo_prefs", json!({ "repoId": main["repoId"] }))
+            .await
+            .unwrap();
+        if prefs["activeWorktree"] == json!(path_string(&hotfix)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "hotfix not remembered"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let fresh = Core::new(config.clone(), None, Arc::new(RecordingSink::default()))
+        .await
+        .unwrap();
+    let snap = fresh
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["activeWorktree"], json!(path_string(repo.path())));
 
     // Gone since: the main worktree, quietly.
     repo.git(&["worktree", "remove", "--force", &path_string(&hotfix)]);
@@ -166,7 +222,7 @@ async fn opening_a_linked_worktree_makes_it_active_and_it_is_remembered() {
         .await
         .unwrap();
     let snap = last
-        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .dispatch("open_repo", json!({ "path": repo.path(), "restore": true }))
         .await
         .unwrap();
     assert_eq!(snap["activeWorktree"], json!(path_string(repo.path())));

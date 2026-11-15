@@ -712,24 +712,28 @@ impl RepoManager {
     /// path in a linked worktree also makes that worktree active; see
     /// [`RepoManager::open_noting_worktree`]).
     pub async fn open(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
-        Ok(self.open_as(path, true).await?.0)
+        Ok(self.open_as(path, true, false).await?.0)
     }
 
-    /// Like [`RepoManager::open`], for a path the user opened (the app, `gg`): a path in a
-    /// linked worktree makes that worktree active, in a repository already open too. When it
-    /// cannot be made active now (an operation runs or waits there), its path comes back
-    /// beside the snapshot, and the repository goes on in the worktree it was in.
+    /// Like [`RepoManager::open`], for a path the user opened (`explicit`: the app's Open,
+    /// `gg`, a dropped folder) or a tab restored from the last session (not `explicit`). A
+    /// path in a linked worktree makes that worktree active, in a repository already open
+    /// too; so does the main worktree's folder opened explicitly (restored, it keeps the
+    /// worktree remembered as active). When it cannot be made active now (an operation runs
+    /// or waits there), its path comes back beside the snapshot, and the repository goes on
+    /// in the worktree it was in.
     pub async fn open_noting_worktree(
         self: &Arc<Self>,
         path: &Path,
+        explicit: bool,
     ) -> Result<(RepoSnapshot, Option<String>)> {
-        self.open_as(path, true).await
+        self.open_as(path, true, explicit).await
     }
 
     /// Like [`RepoManager::open`], for a repository the UI has not asked for yet (opened
     /// ahead at start): its `repo-error`s are held until a later `open` adopts it.
     pub async fn open_in_background(self: &Arc<Self>, path: &Path) -> Result<RepoSnapshot> {
-        Ok(self.open_as(path, false).await?.0)
+        Ok(self.open_as(path, false, false).await?.0)
     }
 
     /// Opens the repository holding `path` (see [`RepoManager::open_noting_worktree`]). A
@@ -739,6 +743,7 @@ impl RepoManager {
         self: &Arc<Self>,
         path: &Path,
         adopt: bool,
+        explicit: bool,
     ) -> Result<(RepoSnapshot, Option<String>)> {
         if !path.exists() {
             return Err(CoreError::new(
@@ -753,7 +758,7 @@ impl RepoManager {
         // Held until this open ends; then the next one waiting for it goes on.
         let _opening = loop {
             if let Some(repo) = self.find_open(&location.common_dir) {
-                return self.reopened(&repo, &location, adopt).await;
+                return self.reopened(&repo, &location, adopt, explicit).await;
             }
             let waiting = {
                 let mut opening = lock(&self.opening);
@@ -778,7 +783,7 @@ impl RepoManager {
         };
 
         let runner = self.runner.clone();
-        let (worktree, info, stash_error) = self.first_read(&runner, &location).await?;
+        let (worktree, info, stash_error) = self.first_read(&runner, &location, explicit).await?;
         let root = info
             .worktrees
             .iter()
@@ -887,7 +892,7 @@ impl RepoManager {
                 common_dir: existing.common_dir.clone(),
                 is_main: location.is_main,
             };
-            return self.reopened(&existing, &location, adopt).await;
+            return self.reopened(&existing, &location, adopt, explicit).await;
         }
         if slot.current.has_tips() {
             start_load(&repo, &mut slot, &self.sink);
@@ -916,21 +921,23 @@ impl RepoManager {
                     .await;
             });
         }
-        if !location.is_main {
+        if !location.is_main || explicit {
             self.remember_active(&repo, &worktree);
         }
         Ok((snapshot, None))
     }
 
     /// The worktree a repository newly opened at `location` starts in, and what is read
-    /// there: the linked worktree opened; for the main one, the worktree remembered as
-    /// active, if it is still one of this repository's (and not prunable), else the main one.
+    /// there: the worktree opened; for the main one not opened `explicit`ly (a restored tab),
+    /// the worktree remembered as active, if it is still one of this repository's (and not
+    /// prunable), else the main one.
     async fn first_read(
         &self,
         runner: &GitRunner,
         location: &Location,
+        explicit: bool,
     ) -> Result<(PathBuf, RepoInfo, Option<CoreError>)> {
-        let remembered = if location.is_main {
+        let remembered = if location.is_main && !explicit {
             let memory = lock(&self.memory).clone();
             memory
                 .and_then(|m| m.remembered(&location.worktree))
@@ -957,19 +964,20 @@ impl RepoManager {
         Ok((location.worktree.clone(), info, stash_error))
     }
 
-    /// The answer to opening `location` in `repo`, already open: a linked worktree other
-    /// than the active one is made active, if no operation runs or waits (else its path
-    /// comes back beside the snapshot).
+    /// The answer to opening `location` in `repo`, already open: a worktree other than the
+    /// active one is made active (the main one only when opened `explicit`ly), if no
+    /// operation runs or waits (else its path comes back beside the snapshot).
     async fn reopened(
         self: &Arc<Self>,
         repo: &Arc<Repo>,
         location: &Location,
         adopt: bool,
+        explicit: bool,
     ) -> Result<(RepoSnapshot, Option<String>)> {
         if adopt {
             repo.adopt(self.sink.as_ref());
         }
-        if location.is_main || location.worktree == repo.worktree() {
+        if (location.is_main && !explicit) || location.worktree == repo.worktree() {
             return Ok((repo.snapshot().await, None));
         }
         let Some(_queue) = idle_queue(repo) else {

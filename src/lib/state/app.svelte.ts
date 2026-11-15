@@ -464,7 +464,8 @@ export async function init(): Promise<void> {
   tabs.forEach((path, rank) => stillReopening.set(rank, path));
   const reopen = tabs.map(async (path, rank) => {
     try {
-      const snapshot = await api.openRepo(path);
+      // A restored tab keeps the worktree remembered as active.
+      const snapshot = await api.openRepo(path, true);
       stillReopening.delete(rank);
       opened(path, snapshot, rank);
     } catch (e) {

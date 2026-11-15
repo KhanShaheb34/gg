@@ -294,7 +294,12 @@ export const api = {
   async resetSettings(): Promise<void> {
     await call("reset_settings");
   },
-  openRepo: (path: string) => call<OpenedRepo>("open_repo", { path }),
+  /**
+   * Opens the repository holding `path`. A worktree's folder makes that worktree active (the main
+   * one's too); `restore` (a tab of the last session) keeps the worktree remembered as active.
+   */
+  openRepo: (path: string, restore = false) =>
+    call<OpenedRepo>("open_repo", restore ? { path, restore } : { path }),
   async closeRepo(repoId: number): Promise<void> {
     await call("close_repo", { repoId });
   },

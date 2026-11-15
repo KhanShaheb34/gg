@@ -43,6 +43,10 @@ struct RemoveRecentArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OpenRepoArgs {
     path: PathBuf,
+    /// A tab restored from the last session: the main worktree's folder then keeps the
+    /// worktree remembered as active (opened by the user, it makes the main one active).
+    #[serde(default)]
+    restore: bool,
 }
 
 #[derive(Deserialize)]
@@ -242,8 +246,10 @@ impl Core {
             }
             "open_repo" => {
                 let a: OpenRepoArgs = parse(cmd, args)?;
-                let (snapshot, opened_worktree) =
-                    self.repos()?.open_noting_worktree(&a.path).await?;
+                let (snapshot, opened_worktree) = self
+                    .repos()?
+                    .open_noting_worktree(&a.path, !a.restore)
+                    .await?;
                 // The repository is open either way; a recent that cannot be saved is only
                 // missing from the next start's list.
                 let root = snapshot.root_path.clone();

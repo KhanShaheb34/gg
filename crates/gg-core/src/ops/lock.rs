@@ -393,23 +393,61 @@ pub(crate) async fn remove(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> 
             "Nothing was removed: the lock file is gone already, or is no plain file.",
         ));
     };
-    if lock.token() != token {
-        return Ok(failed(
+    let changed = || {
+        failed(
             "Nothing was removed: the lock file changed while gg was getting ready, so \
              another git process may be using it.",
-        ));
+        )
+    };
+    if lock.token() != token {
+        return Ok(changed());
     }
-    if let Err(e) = std::fs::remove_file(&lock.path) {
-        return Ok(Step::Failed {
-            message: format!("Could not remove {}.", lock.path.display()),
-            detail: e.to_string(),
-            hints: Vec::new(),
-        });
+    match remove_if_still(&lock.path, &token) {
+        Ok(true) => {}
+        Ok(false) => return Ok(changed()),
+        Err(e) => {
+            return Ok(Step::Failed {
+                message: format!("Could not remove {}.", lock.path.display()),
+                detail: e.to_string(),
+                hints: Vec::new(),
+            });
+        }
     }
     Ok(Step::Done(format!(
         "Removed the lock file {}. Try again what failed.",
         named(&lock.path, &ctx.cwd)
     )))
+}
+
+/// Removes the lock file at `path` if it is still the plain file of `token`, with no gap
+/// between that check and the removal: the file is first moved aside (a git that starts
+/// meanwhile makes a new lock, which is never touched), checked there, then removed; if it
+/// is not the file confirmed, it is put back (unless a new lock took its place: then it is
+/// left aside, named in the error). `Ok(false)`: not the same file, nothing removed.
+fn remove_if_still(path: &Path, token: &str) -> std::io::Result<bool> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let aside = path.with_file_name(format!(
+        "index.lock.gg-removing-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::rename(path, &aside)?;
+    let same = matches!(look(&aside), Ok(Some(moved)) if LockFile { path: path.to_owned(), ..moved }.token() == token);
+    if same {
+        std::fs::remove_file(&aside)?;
+        return Ok(true);
+    }
+    if let Err(e) = crate::store::move_no_overwrite(&aside, path) {
+        return Err(std::io::Error::new(
+            e.kind(),
+            format!(
+                "the lock file changed and could not be put back; it is at {}",
+                aside.display()
+            ),
+        ));
+    }
+    Ok(false)
 }
 
 /// A failure with nothing to show beside its line.
@@ -442,6 +480,45 @@ mod tests {
         assert!(!index_lock_exists(
             "error: cannot lock ref 'refs/heads/x': Unable to create '/r/.git/refs/heads/x.lock': File exists."
         ));
+    }
+
+    #[test]
+    fn a_lock_is_removed_only_while_it_is_the_file_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.lock");
+        std::fs::write(&path, "").unwrap();
+        let token = look(&path).unwrap().unwrap().token();
+        // Another file under the name since: put back, nothing removed, nothing left aside.
+        std::fs::write(&path, "someone else's").unwrap();
+        assert!(!remove_if_still(&path, &token).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else's");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // The file confirmed: removed.
+        let token = look(&path).unwrap().unwrap().token();
+        assert!(remove_if_still(&path, &token).unwrap());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_put_in_place_of_the_lock_is_put_back_not_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.lock");
+        std::fs::write(&path, "").unwrap();
+        let token = look(&path).unwrap().unwrap().token();
+        let target = dir.path().join("precious");
+        std::fs::write(&target, "keep").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(!remove_if_still(&path, &token).unwrap());
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
     }
 
     #[test]

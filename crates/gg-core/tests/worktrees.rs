@@ -961,3 +961,32 @@ async fn the_last_of_two_quick_switches_is_remembered() {
         Some(Path::new(&real(&b)))
     );
 }
+
+/// More changes at once than a batch keeps by name (5,000 files in a folder that appears
+/// now, ignored by a pattern): judged by their folders against what git ignores, read again
+/// first, they read no status (Task 3 review, item 4).
+#[tokio::test]
+async fn thousands_of_files_in_a_new_ignored_folder_read_no_status() {
+    let repo = TestRepo::new();
+    repo.write(".gitignore", "gen/\n");
+    repo.commit_all("ignore generated files");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let mark = h.last_log_id();
+    for d in 0..10 {
+        let dir = repo.path().join(format!("gen/{d}"));
+        fs::create_dir_all(&dir).unwrap();
+        for f in 0..500 {
+            fs::write(dir.join(format!("{f}.out")), "x").unwrap();
+        }
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let reads = status_reads(&h, mark, None);
+    assert!(reads.is_empty(), "no status read: {} reads", reads.len());
+    repo.write("seen.txt", "x");
+    until(&h, id, "a file that is not ignored shows", |s| {
+        s.status.untracked == 1
+    })
+    .await;
+}

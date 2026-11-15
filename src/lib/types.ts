@@ -161,6 +161,14 @@ export type AppState = {
   homeDir: string | null; // the user's home folder, for showing paths as ~/…
   settingsProblem: string | null; // why settings are not being saved (unreadable file); null when they are
   gitProblem: string | null; // the git found is too old (before 2.29), said once; null when it is not
+  cli: CliState; // the `gg` terminal command
+};
+
+/** The `gg` terminal command (`install_cli`, `uninstall_cli`). */
+export type CliState = {
+  installed: string | null; // the launcher the app wrote, first on the login PATH; null when none
+  shadowedBy: string | null; // what the login shell runs for `gg` instead ("an alias for …"); null when nothing or not known
+  candidates: string[]; // folders it can be written to, best first (on PATH, writable, not in a repository)
 };
 
 /**

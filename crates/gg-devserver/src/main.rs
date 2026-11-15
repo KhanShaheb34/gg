@@ -5,7 +5,10 @@
 //! picks a free port). Env `GG_PERF_LOG` names a file perf marks are appended to. With
 //! `--exit-on-stdin-eof` it quits when its stdin closes (a test runner that started it died).
 //! With `--record-editor-launches <file>` it never starts an editor: each launch is appended
-//! to the file as a line of JSON instead (for the UI's tests).
+//! to the file as a line of JSON instead (for the UI's tests). The `gg` command is looked for
+//! on `--cli-path <PATH>` instead of the login shell's `PATH`, and `--cli-shell <program>` is
+//! asked what `gg` is instead of `$SHELL` (the UI's tests pass both: temp folders and a
+//! stand-in shell, never the user's own).
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
@@ -18,7 +21,8 @@ use tokio::net::TcpListener;
 
 const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>] \
                      [--allow-origin <origin>]... [--exit-on-stdin-eof] \
-                     [--record-editor-launches <file>]";
+                     [--record-editor-launches <file>] [--cli-path <PATH>] \
+                     [--cli-shell <program>]";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -32,6 +36,10 @@ struct Args {
     exit_on_stdin_eof: bool,
     /// Where editor launches are recorded instead of run.
     record_editor: Option<PathBuf>,
+    /// The `PATH` the `gg` command is looked for on.
+    cli_path: Option<OsString>,
+    /// The shell asked what `gg` is.
+    cli_shell: Option<PathBuf>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -42,6 +50,8 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut allow_origins = Vec::new();
     let mut exit_on_stdin_eof = false;
     let mut record_editor = None;
+    let mut cli_path = None;
+    let mut cli_shell = None;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -72,6 +82,8 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
             }
             "--exit-on-stdin-eof" => exit_on_stdin_eof = true,
             "--record-editor-launches" => record_editor = Some(PathBuf::from(value()?)),
+            "--cli-path" => cli_path = Some(value()?),
+            "--cli-shell" => cli_shell = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -82,6 +94,8 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         allow_origins,
         exit_on_stdin_eof,
         record_editor,
+        cli_path,
+        cli_shell,
     })
 }
 
@@ -151,6 +165,13 @@ async fn main() -> ExitCode {
     };
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
     core.record_editor_launches_to(args.record_editor);
+    core.start_cli(gg_core::cli::CliSetup {
+        shell: args
+            .cli_shell
+            .or_else(|| std::env::var_os("SHELL").map(PathBuf::from)),
+        search_path: args.cli_path,
+        home: None,
+    });
     let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, args.port)).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -195,6 +216,8 @@ mod tests {
                 allow_origins: vec![],
                 exit_on_stdin_eof: false,
                 record_editor: None,
+                cli_path: None,
+                cli_shell: None,
             }
         );
         assert_eq!(
@@ -211,6 +234,10 @@ mod tests {
                 "http://[::1]:5173",
                 "--record-editor-launches",
                 "/e.jsonl",
+                "--cli-path",
+                "/a:/b",
+                "--cli-shell",
+                "/fake/sh",
             ])
             .unwrap(),
             Args {
@@ -220,6 +247,8 @@ mod tests {
                 allow_origins: vec!["http://127.0.0.1:5173".into(), "http://[::1]:5173".into()],
                 exit_on_stdin_eof: false,
                 record_editor: Some("/e.jsonl".into()),
+                cli_path: Some("/a:/b".into()),
+                cli_shell: Some("/fake/sh".into()),
             }
         );
         for bad in [

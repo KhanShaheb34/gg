@@ -4,6 +4,7 @@
   import { colorIndex, displayFolder, relativeTime, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
   import { app, openPath, openViaPicker, removeRecent } from "../state/app.svelte";
+  import { openCliDialog } from "../state/cli.svelte";
   import Mark from "./Mark.svelte";
 
   const shortcut = isMac() ? "⌘O" : "Ctrl+O";
@@ -80,6 +81,13 @@
         <p class="empty">Repositories you open will be listed here.</p>
       {/if}
     </div>
+
+    {#if app.cli.installed === null}
+      <p class="cli-hint" data-testid="cli-hint">
+        Open a repository from a terminal with <code>gg</code>.
+        <button class="link" onclick={() => void openCliDialog()}>Install the command…</button>
+      </p>
+    {/if}
   </div>
 </section>
 
@@ -285,6 +293,29 @@
 
   .remove:active {
     background: var(--bg-pressed);
+  }
+
+  .cli-hint {
+    margin-top: 28px;
+    padding: 0 8px;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+  }
+
+  .cli-hint code {
+    font-family: var(--font-mono);
+  }
+
+  .link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+  }
+
+  .link:hover {
+    text-decoration: underline;
   }
 
   .empty {

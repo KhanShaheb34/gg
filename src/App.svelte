@@ -12,7 +12,7 @@
   import { detailsRoom, panelRoom } from "./lib/detailsLayout";
   import { colorIndex, shortenPath } from "./lib/format";
   import GraphView from "./lib/graph/GraphView.svelte";
-  import { api, onFolderDrop } from "./lib/ipc";
+  import { api, onEvent, onFolderDrop } from "./lib/ipc";
   import { isMac } from "./lib/platform";
   import { repeatable, shortcutFor } from "./lib/shortcuts";
   import {
@@ -27,6 +27,7 @@
     toast,
     windowFocusChanged,
   } from "./lib/state/app.svelte";
+  import { openCliDialog } from "./lib/state/cli.svelte";
   import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
   import { overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
@@ -81,6 +82,8 @@
       dragging = event.kind === "enter";
       if (event.kind === "drop") for (const path of event.paths) await openPath(path);
     });
+    // The app menu's "Install ‘gg’ Command…" (macOS).
+    const stopCliMenu = onEvent("menu-install-cli", () => void openCliDialog());
     // The webview's own context menu (Reload, Inspect…) is not the app's; text fields keep
     // theirs. The graph opens the app's own menus on its rows (GraphView), before this.
     const onContextMenu = (e: MouseEvent) => {
@@ -91,6 +94,7 @@
     return () => {
       stopFocus();
       stopDrop();
+      stopCliMenu();
       document.removeEventListener("contextmenu", onContextMenu);
     };
   });

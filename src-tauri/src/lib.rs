@@ -54,6 +54,14 @@ async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
     })?;
     let launch = launch_path(std::env::args_os().nth(1), std::env::var_os("GG_OPEN"));
     let core = Core::new(config_dir, launch, Arc::new(TauriSink(app))).await?;
+    // The `gg` command: the login shell is asked (in the background) whether it has a `gg`
+    // of its own.
+    core.start_cli(gg_core::cli::CliSetup {
+        shell: std::env::var_os("SHELL")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from),
+        ..Default::default()
+    });
     // Performance runs only (`--features perf`, see scripts/perf.sh).
     #[cfg(feature = "perf")]
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
@@ -123,9 +131,14 @@ async fn invoke_core(
     slot.get().await?.dispatch(&cmd, args).await
 }
 
-/// The macOS menu bar: Tauri's default minus "Close Window", whose Cmd+W would close the
-/// whole window; the UI uses Cmd+W to close the active tab instead (the red traffic light
-/// still closes the window).
+/// The app menu item that opens the UI's "Install ‘gg’ Command" dialog (the UI listens for
+/// the `menu-install-cli` event).
+#[cfg(target_os = "macos")]
+const MENU_INSTALL_CLI: &str = "install-cli";
+
+/// The macOS menu bar: Tauri's default with "Install ‘gg’ Command…" in the app menu, minus
+/// "Close Window", whose Cmd+W would close the whole window; the UI uses Cmd+W to close the
+/// active tab instead (the red traffic light still closes the window).
 #[cfg(target_os = "macos")]
 fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem as Item, Submenu};
@@ -136,6 +149,13 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
         version: Some(app.package_info().version.to_string()),
         ..Default::default()
     };
+    let install_cli = tauri::menu::MenuItem::with_id(
+        app,
+        MENU_INSTALL_CLI,
+        "Install ‘gg’ Command…",
+        true,
+        None::<&str>,
+    )?;
     Menu::with_items(
         app,
         &[
@@ -145,6 +165,8 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
                 true,
                 &[
                     &Item::about(app, None, Some(about))?,
+                    &Item::separator(app)?,
+                    &install_cli,
                     &Item::separator(app)?,
                     &Item::services(app, None)?,
                     &Item::separator(app)?,
@@ -236,7 +258,11 @@ pub fn run() {
     gg_core::git::runner::prefetch_login_path();
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
-    let builder = builder.menu(app_menu);
+    let builder = builder.menu(app_menu).on_menu_event(|app, event| {
+        if event.id() == MENU_INSTALL_CLI {
+            let _ = app.emit("menu-install-cli", ());
+        }
+    });
     // Performance runs only (`--features perf`, see scripts/perf.sh).
     #[cfg(feature = "perf")]
     let builder = match perf_scroll_script(std::env::var_os("GG_PERF_SCROLL")) {

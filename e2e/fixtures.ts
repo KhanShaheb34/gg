@@ -507,11 +507,42 @@ function editorRecord(configDir: string): string {
 }
 
 /**
+ * Where the `gg` command may go in a test: `~/.local/bin` and `~/bin` of the test's home
+ * folder, made here; the `PATH` the devserver looks for it on (`--cli-path`). Never a folder
+ * of the user's own `PATH`.
+ */
+export function cliFolders(home: string): string[] {
+  const dirs = [path.join(home, ".local", "bin"), path.join(home, "bin")];
+  for (const dir of dirs) mkdirSync(dir, { recursive: true });
+  return dirs;
+}
+
+/**
+ * A stand-in for the login shell the devserver asks what `gg` is (`--cli-shell`): a POSIX sh
+ * script with a bare `PATH` that runs `setup` (an alias, say) and then the command it is
+ * given. The user's own shell and its files are never run.
+ */
+function fakeShell(home: string, setup: string): string {
+  const file = path.join(home, "fake-shell");
+  writeFileSync(file, `#!/bin/sh\nPATH=/usr/bin:/bin\n${setup}\neval "$2"\n`, { mode: 0o755 });
+  return file;
+}
+
+/**
  * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
  * debug build unless `binary` names another. The debug build records editor launches instead
- * of starting an editor (see `GG.editorLaunches`).
+ * of starting an editor (see `GG.editorLaunches`). The `gg` command is looked for in
+ * `cliFolders(home)` only, and the stand-in shell, set up with `shellSetup`, is what is asked
+ * what `gg` is.
  */
-export function startDevserver(configDir: string, home: string, binary = DEVSERVER): Promise<Devserver> {
+export function startDevserver(
+  configDir: string,
+  home: string,
+  binary = DEVSERVER,
+  shellSetup = "",
+): Promise<Devserver> {
+  const cliPath = cliFolders(home).join(path.delimiter);
+  const shell = fakeShell(home, shellSetup);
   const child = spawn(
     binary,
     [
@@ -524,6 +555,10 @@ export function startDevserver(configDir: string, home: string, binary = DEVSERV
       "--exit-on-stdin-eof",
       // The perf runs' release build (built on its own) need not know it.
       ...(binary === DEVSERVER ? ["--record-editor-launches", editorRecord(configDir)] : []),
+      "--cli-path",
+      cliPath,
+      "--cli-shell",
+      shell,
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
@@ -624,6 +659,8 @@ export function closeButton(page: Page, name: string) {
 
 export type GG = {
   page: Page;
+  /** The test's home folder (`HOME` of its devserver); the `gg` command may go in its `.local/bin` and `bin`. */
+  home: string;
   /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`, `details`, `stashes`…), created on first use. */
   repoPath(name: string): string;
   /** Path of a plain (non-repository) folder `name`, created on first use. */
@@ -655,13 +692,15 @@ export async function buildDevserver(): Promise<void> {
   }
 }
 
-export const test = base.extend<{ gg: GG }>({
-  gg: async ({ page }, use) => {
+export const test = base.extend<{ gg: GG; ggShellSetup: string }>({
+  /** What the stand-in login shell defines before it is asked what `gg` is (`alias gg=…`). */
+  ggShellSetup: ["", { option: true }],
+  gg: async ({ page, ggShellSetup }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
     let server: Devserver | null = null;
     try {
-      server = await startDevserver(path.join(root, "config"), root);
+      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup);
       await page.addInitScript((url) => {
         (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
       }, server.url);
@@ -705,7 +744,7 @@ export const test = base.extend<{ gg: GG }>({
           .map((l) => JSON.parse(l) as string[]);
       };
 
-      await use({ page, repoPath, folder, git, gitAt, editorLaunches });
+      await use({ page, home: root, repoPath, folder, git, gitAt, editorLaunches });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

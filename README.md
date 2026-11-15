@@ -154,6 +154,32 @@ On Windows and Linux, Ctrl stands for ⌘.
 In the command log: ↑/↓, Home/End move between rows, Enter or Space opens one, C copies its
 command line.
 
+## Open from the terminal
+
+`gg` in a terminal opens the repository you are in; `gg <path>` the one that holds `path`
+(a subfolder opens its repository, a linked worktree opens as itself, and `gg -- <path>`
+takes a path that starts with `-`). It returns at once. If gg is already running, the
+repository opens there (or its tab comes to the front) and the window comes forward; only
+one copy of the app runs. `gg --help` and `gg --version` say what they say.
+
+To install the command, choose **gg → Install ‘gg’ Command…** (or "Install the command…" on
+the welcome screen). Pick one of the offered folders: they are already on your login shell's
+`PATH`, writable by you and not inside a repository (`~/.local/bin`, `/opt/homebrew/bin` and
+`/usr/local/bin` first). The app writes one small script there, named `gg`, and changes
+nothing else: no administrator rights, no edits to your shell files. It never replaces a
+`gg` it did not write, and the same dialog removes the one it did. If no folder is offered,
+add one such as `~/.local/bin` to your `PATH` in your shell's profile and open the dialog
+again.
+
+If your shell already has a `gg` (an alias such as Oh My Zsh's `gg` for `git gui
+citool`, a function, or another program earlier on `PATH`), the dialog says so: that one
+wins until you remove it or rename it. Past an alias or a function, `command gg` reaches
+this command anyway.
+
+On macOS the command finds the app by its identifier, wherever it is. On Linux it starts the
+app from where it was when the command was installed; after moving the app, install the
+command again (the command says so when it cannot find the app).
+
 ## Dev commands
 
 ```sh

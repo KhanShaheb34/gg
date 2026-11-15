@@ -4,7 +4,7 @@
 import { shortenPath } from "../format";
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
-import type { CoreErrorDto, OpenedRepo, Recent, RepoSnapshot, Settings } from "../types";
+import type { CliState, CoreErrorDto, OpenedRepo, Recent, RepoSnapshot, Settings } from "../types";
 import { setLogOpen } from "./commandLog.svelte";
 import { disposeRepoView, repoView } from "./repo.svelte";
 
@@ -57,6 +57,8 @@ export const app = $state({
   homeDir: null as string | null,
   /** The command-log entries asked for last ("Show log" on a notice): from id `from` on. */
   logRequest: null as { repoId: number; from: number } | null,
+  /** The `gg` terminal command, as last read (see state/cli.svelte.ts). */
+  cli: { installed: null, shadowedBy: null, candidates: [] } as CliState,
 });
 
 let nextToastId = 1;
@@ -414,6 +416,8 @@ export async function init(): Promise<void> {
     onSystemThemeChange(() => applyTheme(app.settings.theme));
     onEvent<{ repoId: number; error: CoreErrorDto }>("repo-error", ({ repoId, error }) => onRepoError(repoId, error));
     onEvent("paths-opened", () => void openSystemPaths());
+    // What the login shell says of `gg` arrives a moment after start.
+    onEvent<CliState>("cli-changed", (cli) => (app.cli = cli));
   }
 
   let state;
@@ -436,6 +440,7 @@ export async function init(): Promise<void> {
   app.recents = state.recents;
   app.settings = state.settings;
   app.homeDir = state.homeDir;
+  app.cli = state.cli;
   applyTheme(state.settings.theme);
 
   // Reopened together; each tab shows as soon as its repository is open, in the session's

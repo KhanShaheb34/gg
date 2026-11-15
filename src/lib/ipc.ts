@@ -5,6 +5,7 @@ import { isTauri } from "./platform";
 import type {
   AppState,
   BodyHits,
+  CliState,
   CommandRecord,
   CommitDetails,
   Confirmed,
@@ -20,7 +21,13 @@ import type {
   ViewOptions,
 } from "./types";
 
-export type EventName = "repo-changed" | "repo-error" | "paths-opened" | "op-progress";
+export type EventName =
+  | "repo-changed"
+  | "repo-error"
+  | "paths-opened"
+  | "op-progress"
+  | "cli-changed"
+  | "menu-install-cli";
 
 /** Files or folders dragged onto the window (Tauri only). `drop` carries their paths. */
 export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "drop"; paths: string[] };
@@ -341,6 +348,13 @@ export const api = {
    * the worktree folder instead of the file), else null.
    */
   openInEditor: (repoId: number, path: string | null) => call<string | null>("open_in_editor", { repoId, path }),
+  /**
+   * Writes the `gg` launcher into `dir` (one of `CliState.candidates`), replacing only a
+   * launcher the app wrote; resolves to the command's state after.
+   */
+  installCli: (dir: string) => call<CliState>("install_cli", { dir }),
+  /** Removes the launchers the app wrote on the PATH; resolves to the command's state after. */
+  uninstallCli: () => call<CliState>("uninstall_cli", {}),
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */

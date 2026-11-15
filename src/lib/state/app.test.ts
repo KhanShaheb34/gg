@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppState, CoreErrorDto, OpenedRepo } from "../types";
+import type { AppState, CliState, CoreErrorDto, OpenedRepo } from "../types";
 
 // The core is mocked; CoreError stays the real class so `instanceof` checks behave.
 vi.mock("../ipc", async (importOriginal) => {
@@ -42,6 +42,7 @@ function appState(overrides: Partial<AppState> = {}): AppState {
     homeDir: null,
     settingsProblem: null,
     gitProblem: null,
+    cli: { installed: null, shadowedBy: null, candidates: [] },
     ...overrides,
   };
 }
@@ -404,6 +405,17 @@ describe("init", () => {
     const handler = call![1] as (p: { repoId: number; error: CoreErrorDto }) => void;
     handler({ repoId: 2, error: { code: "git_failed", message: "fetch failed", detail: "boom" } });
     expect(s.app.toasts).toMatchObject([{ kind: "error", message: "b: fetch failed", detail: "boom" }]);
+  });
+
+  it("takes the gg command's state at start, and what the shell says of gg when that comes", async () => {
+    const cli: CliState = { installed: null, shadowedBy: null, candidates: ["/h/bin"] };
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ cli }));
+    await s.init();
+    expect(s.app.cli).toEqual(cli);
+    const call = vi.mocked(ipc.onEvent).mock.calls.find(([name]) => name === "cli-changed");
+    const handler = call![1] as (p: typeof cli) => void;
+    handler({ ...cli, shadowedBy: "an alias for git log" });
+    expect(s.app.cli.shadowedBy).toBe("an alias for git log");
   });
 });
 

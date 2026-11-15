@@ -142,6 +142,11 @@ pub struct FileEntry {
     /// The working tree differs from the index for it (always for untracked and unmerged
     /// files).
     pub unstaged: bool,
+    /// It can be ticked: false when its name (or a rename's other name) is not valid UTF-8,
+    /// which the app cannot hand back to git exactly (P3-R17).
+    pub committable: bool,
+    /// Why it cannot be ticked, when `committable` is false.
+    pub reason: Option<String>,
 }
 
 /// What `worktree_files` returns: the worktree's changed files sorted by path, the first
@@ -1576,6 +1581,8 @@ mod tests {
                 status: EntryStatus::R,
                 staged: true,
                 unstaged: false,
+                committable: false,
+                reason: Some("why".into()),
             }],
             truncated: true,
         };
@@ -1583,7 +1590,8 @@ mod tests {
         assert_eq!(
             v,
             json!({"files": [{"path": "new name", "origPath": "old", "status": "R",
-                              "staged": true, "unstaged": false}],
+                              "staged": true, "unstaged": false, "committable": false,
+                              "reason": "why"}],
                    "truncated": true})
         );
         assert_eq!(serde_json::from_value::<WorktreeFiles>(v).unwrap(), files);

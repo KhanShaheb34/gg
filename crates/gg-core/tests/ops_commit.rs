@@ -241,7 +241,7 @@ async fn only_the_ticked_files_are_committed_and_staged_unticked_ones_stay_stage
             "d.txt"
         ]
     );
-    assert_eq!(w[2][..2], ["commit", "--cleanup=strip"], "{w:?}");
+    assert_eq!(w[2][..2], ["commit", "--cleanup=whitespace"], "{w:?}");
     assert_eq!(w[3][..3], ["update-index", "--add", "--replace"], "{w:?}");
     assert_eq!(
         w[3].iter().filter(|a| *a == "--cacheinfo").count(),
@@ -486,20 +486,20 @@ async fn hooks_run_and_see_the_temporary_index() {
     assert!(!Path::new(index).exists(), "removed after");
 }
 
-/// The message is taken as written (a leading `-` is no option), with git's usual cleanup:
-/// comment lines and trailing blank lines go.
+/// The message is taken as written (a leading `-` is no option), trailing blank lines
+/// trimmed; a line starting with `#` ("#123 fixes …") is kept (P3-R17).
 #[tokio::test]
 async fn the_message_is_taken_as_written() {
     let repo = three_files();
     repo.write("a.txt", "edited\n");
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    let message = "-v not an option\n\nbody line\n# a comment git removes\n\n\n";
+    let message = "-v not an option\n\nbody line\n#123 is kept\n\n\n";
     let out = h.run(id, commit(&["a.txt"], message, false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         git_raw(repo.path(), &["log", "-1", "--format=%B"]),
-        "-v not an option\n\nbody line\n\n"
+        "-v not an option\n\nbody line\n#123 is kept\n\n"
     );
 }
 
@@ -621,12 +621,14 @@ async fn a_conflicted_file_cannot_be_committed() {
 
 // ---- What git is stopped in ----
 
-/// A merge with no conflicts left is concluded with all its files (git allows no partial
-/// commit then); with conflicts left, or only some files ticked, it is refused.
+/// A merge with no conflicts left is concluded with all its changed files (git allows no
+/// partial commit then); with conflicts left, or a tracked change not ticked, it is refused.
 #[tokio::test]
 async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
     let repo = TestRepo::new();
     conflicting(&repo);
+    repo.write("unrelated.txt", "tracked\n");
+    repo.commit_all("unrelated, tracked");
     assert!(!repo.git_succeeds(&["merge", "feature"]));
     repo.write("unrelated.txt", "edited during the merge\n");
     let h = harness().await;
@@ -644,7 +646,11 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
     repo.git(&["add", "clash.txt"]);
     let out = h.run(id, commit(&["clash.txt"], "merge", false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
-    assert_eq!(out.message, "A merge is concluded with all its files.");
+    assert_eq!(
+        out.message,
+        "A merge is concluded with all its changed files (new files git does not track yet \
+         may stay out)."
+    );
     assert!(h.writes_since(mark).is_empty(), "nothing ran");
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
     let out = h
@@ -915,6 +921,8 @@ fn entry(path: &str, status: EntryStatus, staged: bool, unstaged: bool) -> FileE
         status,
         staged,
         unstaged,
+        committable: true,
+        reason: None,
     }
 }
 
@@ -1371,4 +1379,103 @@ async fn a_stop_during_the_push_keeps_the_commit_and_offers_the_push() {
         "{out:#?}"
     );
     assert!(porcelain(repo.path()).is_empty());
+}
+
+/// Concluding a merge needs every tracked changed file; untracked ones may stay out
+/// (P3-R17). git's own comment lines in the message (`# Conflicts:`) are removed then.
+#[tokio::test]
+async fn a_merge_is_concluded_without_the_untracked_files_and_without_comment_lines() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    repo.write("clash.txt", "both\n");
+    repo.git(&["add", "clash.txt"]);
+    repo.write("notes.txt", "untracked, not ticked\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let message = "Merge feature\n\n# Conflicts:\n#\tclash.txt\n";
+    let out = h.run(id, commit(&["clash.txt"], message, false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(!in_git_dir(&repo, "MERGE_HEAD"));
+    assert_eq!(
+        git_raw(repo.path(), &["log", "-1", "--format=%B"]),
+        "Merge feature\n\n"
+    );
+    assert_eq!(porcelain(repo.path()), ["?? notes.txt"]);
+}
+
+/// A name that is not valid UTF-8 is listed, marked as not committable with the reason, and
+/// a commit that ticks it is refused (P3-R17).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_name_that_is_not_utf8_is_listed_but_not_committable() {
+    use std::os::unix::ffi::OsStrExt;
+    let repo = three_files();
+    let odd = std::ffi::OsStr::from_bytes(b"caf\xe9.txt");
+    if fs::write(repo.path().join(odd), "x\n").is_err() {
+        eprintln!("skipped: this file system takes only UTF-8 names");
+        return;
+    }
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let listed = files_of(&h, snap.repo_id, repo.path()).await;
+    let bad = listed
+        .files
+        .iter()
+        .find(|f| f.path.starts_with("caf"))
+        .expect("listed");
+    assert!(!bad.committable);
+    assert!(
+        bad.reason.as_deref().unwrap().contains("not valid UTF-8"),
+        "{bad:?}"
+    );
+    assert!(
+        listed
+            .files
+            .iter()
+            .find(|f| f.path == "a.txt")
+            .unwrap()
+            .committable
+    );
+    let mark = h.last_log_id();
+    let out = h
+        .run(
+            snap.repo_id,
+            commit(&[bad.path.as_str(), "a.txt"], "m", false),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message.starts_with("Nothing was committed:"),
+        "{}",
+        out.message
+    );
+    assert!(out.message.contains("not valid UTF-8"), "{}", out.message);
+    assert!(h.writes_since(mark).is_empty());
+}
+
+/// Temporary folders left by a gg that crashed are removed at the next commit, once their
+/// process is gone; those of a process still running are left alone (P3-R17).
+#[cfg(unix)]
+#[tokio::test]
+async fn temporary_folders_of_a_gone_process_are_removed_at_the_next_commit() {
+    let repo = three_files();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let gone = child.id();
+    child.wait().unwrap();
+    let git_dir = repo.path().join(".git");
+    let old = git_dir.join(format!("gg-commit-{gone}-7"));
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("index"), "left over").unwrap();
+    let alive = git_dir.join(format!("gg-commit-{}-999999", std::process::id()));
+    fs::create_dir_all(&alive).unwrap();
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, commit(&["a.txt"], "m", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(!old.exists(), "a gone process's folder is removed");
+    assert!(alive.exists(), "a running process's folder is kept");
+    fs::remove_dir_all(&alive).unwrap();
 }

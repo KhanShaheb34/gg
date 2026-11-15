@@ -33,8 +33,9 @@ use crate::ops::local::{current_branch, head_commit, short};
 use crate::ops::{OpCtx, Step, network};
 use crate::repo::{RepoManager, canonical, canonical_paths};
 
-/// Said when a merge is to be committed with only some of its files.
-const MERGE_NEEDS_ALL: &str = "A merge is concluded with all its files.";
+/// Said when a merge is to be committed with only some of its changed files.
+const MERGE_NEEDS_ALL: &str = "A merge is concluded with all its changed files (new files git \
+                               does not track yet may stay out).";
 
 /// Said when git does not know the user's name or email.
 const NO_IDENTITY: &str = "Nothing was committed: git does not know who you are. Set your \
@@ -220,6 +221,16 @@ pub(crate) async fn refused(
 ) -> Result<Option<String>> {
     let entries = changed_files(ctx).await?;
     let ticked: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+    if let Some(odd) = entries
+        .iter()
+        .find(|e| !e.committable && is_ticked(e, &ticked))
+    {
+        return Ok(Some(format!(
+            "Nothing was committed: the name of {} is not valid UTF-8, which gg cannot hand \
+             back to git exactly; commit it in a terminal.",
+            odd.path
+        )));
+    }
     if in_progress == Some(InProgressKind::Merge) {
         let left = unmerged(&entries, None);
         if !left.is_empty() {
@@ -228,7 +239,12 @@ pub(crate) async fn refused(
                 file_list(&left)
             )));
         }
-        if !entries.iter().all(|e| is_ticked(e, &ticked)) {
+        // Every tracked change: git commits the whole index then (P3-R17).
+        if !entries
+            .iter()
+            .filter(|e| e.status != EntryStatus::Untracked)
+            .all(|e| is_ticked(e, &ticked))
+        {
             return Ok(Some(MERGE_NEEDS_ALL.to_owned()));
         }
     } else {
@@ -307,6 +323,7 @@ impl Scratch {
         }
         let index = ctx.cwd.join(out.text().trim_end_matches(['\r', '\n']));
         let beside = index.parent().unwrap_or(&ctx.cwd);
+        remove_left_over(beside);
         let base = format!("gg-commit-{}-{}", std::process::id(), ctx.op_id);
         for n in 0..100 {
             let dir = if n == 0 {
@@ -337,6 +354,53 @@ impl Scratch {
         fs::write(&file, message).map_err(|e| io_error(&file, &e))?;
         Ok(file.display().to_string())
     }
+}
+
+/// Removes the temporary folders in `dir` that a gg process which is gone left (it crashed
+/// mid-commit): `gg-commit-<pid>-…` of a process no longer running (P3-R17). Where that
+/// cannot be told (not Unix), those older than a day. Failures are ignored: the folders are
+/// only clutter.
+fn remove_left_over(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("gg-commit-"))
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != std::process::id() && process_gone(pid, &entry.path()) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Whether process `pid`, which made the folder `made`, is gone.
+#[cfg(unix)]
+fn process_gone(pid: u32, _made: &Path) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // Signal 0 checks only: ESRCH, no such process. (EPERM: one runs, another user's.)
+    let alive = unsafe { libc::kill(pid, 0) } == 0
+        || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+    !alive
+}
+
+/// Whether process `pid`, which made the folder `made`, is gone: not known without Unix's
+/// signal 0, so a folder older than a day counts as left over.
+#[cfg(not(unix))]
+fn process_gone(_pid: u32, made: &Path) -> bool {
+    fs::metadata(made)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > std::time::Duration::from_secs(24 * 3600))
 }
 
 impl Drop for Scratch {
@@ -673,7 +737,14 @@ pub(crate) async fn commit(
     let parent = head_commit(ctx).await?;
     let scratch = Scratch::new(ctx).await?;
     let message_file = scratch.message(message)?;
-    let commit_args = ["commit", "--cleanup=strip", "-F", message_file.as_str()];
+    // The message as written, blank lines trimmed (a line starting with `#` is kept); git's
+    // own comment lines of a merge's message (`# Conflicts:`) go (P3-R17).
+    let cleanup = if in_merge {
+        "--cleanup=strip"
+    } else {
+        "--cleanup=whitespace"
+    };
+    let commit_args = ["commit", cleanup, "-F", message_file.as_str()];
 
     let runner = if in_merge {
         // The user's index: a merge is committed whole.
@@ -970,6 +1041,8 @@ mod tests {
             status,
             staged: true,
             unstaged: false,
+            committable: true,
+            reason: None,
         }
     }
 

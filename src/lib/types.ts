@@ -274,8 +274,10 @@ export type OpRequest =
 export type WorktreeBranch = { existing: string } | { create: string; at: string } | { detach: string };
 /**
  * One changed file of a worktree (`worktree_files`): `status` is how the working tree differs from HEAD
- * ("?" untracked, "U" conflicted); `origPath` the other side of a rename or copy; `staged`: the index
- * differs from HEAD; `unstaged`: the working tree differs from the index.
+ * ("?" untracked, "U" conflicted; "D" also for a file added to the index and deleted since); `origPath`
+ * the other side of a rename or copy; `staged`: the index differs from HEAD; `unstaged`: the working
+ * tree differs from the index. `committable` false (with `reason`): it cannot be ticked, its name not
+ * being valid UTF-8 (P3-R17); the core refuses a commit that ticks it.
  */
 export type FileEntry = {
   path: string;
@@ -283,6 +285,8 @@ export type FileEntry = {
   status: "M" | "A" | "D" | "R" | "C" | "T" | "U" | "?";
   staged: boolean;
   unstaged: boolean;
+  committable: boolean;
+  reason: string | null;
 };
 /** `worktree_files`: the changed files sorted by path, the first 5000; `truncated` when there are more. */
 export type WorktreeFiles = { files: FileEntry[]; truncated: boolean };

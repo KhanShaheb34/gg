@@ -1347,8 +1347,10 @@ async fn worktree_files_and_commit_via_dispatch() {
         files,
         json!({
             "files": [
-                {"path": "a.txt", "origPath": null, "status": "M", "staged": false, "unstaged": true},
-                {"path": "new file.txt", "origPath": null, "status": "?", "staged": false, "unstaged": true},
+                {"path": "a.txt", "origPath": null, "status": "M", "staged": false, "unstaged": true,
+                 "committable": true, "reason": null},
+                {"path": "new file.txt", "origPath": null, "status": "?", "staged": false,
+                 "unstaged": true, "committable": true, "reason": null},
             ],
             "truncated": false,
         })

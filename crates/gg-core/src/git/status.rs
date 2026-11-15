@@ -8,6 +8,10 @@ use crate::dto::{
 use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner};
 
+/// Why a file whose name is not valid UTF-8 cannot be ticked.
+pub(crate) const NOT_UTF8: &str = "Its name is not valid UTF-8, which gg cannot hand back to \
+                                   git exactly; commit it in a terminal.";
+
 /// Arguments of the status command.
 pub(crate) const STATUS_ARGS: [&str; 5] = [
     "status",
@@ -84,6 +88,15 @@ pub async fn read_files(r: &GitRunner, worktree: &Path) -> Result<WorktreeFiles>
 /// is one entry: modified, staged and unstaged).
 pub(crate) fn parse_files(out: &[u8]) -> Vec<FileEntry> {
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    // A name that is not valid UTF-8 is shown as best it can be, which is not its name: it
+    // cannot be handed back to git to commit (P3-R17).
+    let named = |mut entry: FileEntry, raw: &[&[u8]]| {
+        if raw.iter().any(|r| std::str::from_utf8(r).is_err()) {
+            entry.committable = false;
+            entry.reason = Some(NOT_UTF8.to_owned());
+        }
+        entry
+    };
     let mut files: Vec<FileEntry> = Vec::new();
     let mut fields = out.split(|&b| b == 0);
     while let Some(entry) = fields.next() {
@@ -98,13 +111,18 @@ pub(crate) fn parse_files(out: &[u8]) -> Vec<FileEntry> {
                 let (Some(&[x, y]), Some(path)) = (parts.next(), parts.nth(6)) else {
                     continue;
                 };
-                files.push(FileEntry {
-                    path: text(path),
-                    orig_path: None,
-                    status: changed(x, y),
-                    staged: x != b'.',
-                    unstaged: y != b'.',
-                });
+                files.push(named(
+                    FileEntry {
+                        path: text(path),
+                        orig_path: None,
+                        status: changed(x, y),
+                        staged: x != b'.',
+                        unstaged: y != b'.',
+                        committable: true,
+                        reason: None,
+                    },
+                    &[path],
+                ));
             }
             // `2 XY sub mH mI mW hH hI Xscore <path>`, then `<origPath>` as the next field.
             b'2' => {
@@ -112,40 +130,55 @@ pub(crate) fn parse_files(out: &[u8]) -> Vec<FileEntry> {
                 let (Some(&[x, y]), Some(path)) = (parts.next(), parts.nth(7)) else {
                     continue;
                 };
-                let orig = fields.next().filter(|o| !o.is_empty()).map(text);
+                let orig_raw = fields.next().filter(|o| !o.is_empty());
                 let status = if x == b'C' || y == b'C' {
                     EntryStatus::C
                 } else {
                     EntryStatus::R
                 };
-                files.push(FileEntry {
-                    path: text(path),
-                    orig_path: orig,
-                    status,
-                    staged: x != b'.',
-                    unstaged: y != b'.',
-                });
+                files.push(named(
+                    FileEntry {
+                        path: text(path),
+                        orig_path: orig_raw.map(text),
+                        status,
+                        staged: x != b'.',
+                        unstaged: y != b'.',
+                        committable: true,
+                        reason: None,
+                    },
+                    &[path, orig_raw.unwrap_or_default()],
+                ));
             }
             // `u XY sub m1 m2 m3 mW h1 h2 h3 <path>`
             b'u' => {
                 let Some(path) = rest.splitn(10, |&b| b == b' ').nth(9) else {
                     continue;
                 };
-                files.push(FileEntry {
-                    path: text(path),
+                files.push(named(
+                    FileEntry {
+                        path: text(path),
+                        orig_path: None,
+                        status: EntryStatus::U,
+                        staged: false,
+                        unstaged: true,
+                        committable: true,
+                        reason: None,
+                    },
+                    &[path],
+                ));
+            }
+            b'?' => files.push(named(
+                FileEntry {
+                    path: text(rest),
                     orig_path: None,
-                    status: EntryStatus::U,
+                    status: EntryStatus::Untracked,
                     staged: false,
                     unstaged: true,
-                });
-            }
-            b'?' => files.push(FileEntry {
-                path: text(rest),
-                orig_path: None,
-                status: EntryStatus::Untracked,
-                staged: false,
-                unstaged: true,
-            }),
+                    committable: true,
+                    reason: None,
+                },
+                &[rest],
+            )),
             _ => {}
         }
     }
@@ -312,7 +345,26 @@ mod tests {
             status,
             staged,
             unstaged,
+            committable: true,
+            reason: None,
         }
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_is_listed_as_not_committable() {
+        let out =
+            b"? caf\xe9.txt\x00? fine.txt\x002 R. N... 100644 100644 100644 a a R100 new\x00ol\xffd\x00";
+        let files = parse_files(out);
+        let committable: Vec<(bool, bool)> = files
+            .iter()
+            .map(|f| (f.committable, f.reason.is_some()))
+            .collect();
+        assert_eq!(
+            committable,
+            [(false, true), (true, false), (false, true)],
+            "{files:?}"
+        );
+        assert_eq!(files[0].reason.as_deref(), Some(NOT_UTF8));
     }
 
     #[test]

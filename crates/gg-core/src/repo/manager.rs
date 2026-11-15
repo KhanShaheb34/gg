@@ -154,7 +154,7 @@ pub struct RepoManager {
     pub(super) gh_hosts: Mutex<std::collections::HashMap<String, bool>>,
     /// ssh address hosts (maybe aliases of the user's ssh config) → the real host name
     /// `ssh -G` gave (or the host itself when it could not tell): asked once per run.
-    pub(super) ssh_hosts: Mutex<std::collections::HashMap<String, String>>,
+    pub(super) ssh_hosts: Mutex<std::collections::HashMap<String, Option<String>>>,
     /// How long a `gh` command may run, in milliseconds.
     pub(super) gh_timeout_ms: AtomicU64,
     /// Tests and the devserver only: the `PATH` `gh` and `ssh` are found on and run with,

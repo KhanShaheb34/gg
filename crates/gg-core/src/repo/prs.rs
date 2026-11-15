@@ -115,6 +115,10 @@ impl RepoManager {
     /// Re-reads the repository as [`RepoManager::refresh`] does, for the user: also loads
     /// the pull requests (in the background, at most once every 60 s).
     pub async fn refresh_by_user(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
+        // A "no" is asked again (Task 9 review minor 2): the user may have signed in to the
+        // host meanwhile, or fixed the ssh config.
+        lock(&self.gh_hosts).retain(|_, stored| *stored);
+        lock(&self.ssh_hosts).retain(|_, real| real.is_some());
         let snapshot = self.refresh(repo_id).await?;
         if let Ok(repo) = self.get(repo_id) {
             self.spawn_load_prs(&repo, PrTrigger::User);
@@ -253,6 +257,14 @@ impl RepoManager {
             return Err((PrUnavailable::NotGithub, None, false));
         };
         let Some(on) = self.on_github(repo, &repo.runner, &facts, remote).await else {
+            // A host that only gh could vouch for, and gh is not there to ask: gh is what is
+            // missing (Task 9 review minor 2).
+            let unknown_host = facts
+                .repo_of(remote)
+                .is_some_and(|on| is_plain_host(&on.host) && !is_known_github(&on.host));
+            if unknown_host && self.gh_program(repo).is_none() {
+                return Err((PrUnavailable::NoGh, Some(GhFailure::NoGh), true));
+            }
             return Err((PrUnavailable::NotGithub, None, true));
         };
         let Some(gh) = self.gh(repo, &repo.runner, &on) else {
@@ -305,16 +317,15 @@ impl RepoManager {
         for alias in facts.ssh_hosts() {
             let known = lock(&self.ssh_hosts).get(&alias).cloned();
             let real = match known {
-                Some(real) => real,
+                Some(answer) => answer,
                 None => {
-                    let real = self
-                        .ask_ssh(repo, runner, &alias)
-                        .await
-                        .unwrap_or_else(|| alias.clone());
-                    lock(&self.ssh_hosts).insert(alias.clone(), real.clone());
-                    real
+                    let answer = self.ask_ssh(repo, runner, &alias).await;
+                    lock(&self.ssh_hosts).insert(alias.clone(), answer.clone());
+                    answer
                 }
-            };
+            }
+            // ssh could not tell: the host as written (asked again on a user refresh).
+            .unwrap_or_else(|| alias.clone());
             if real != alias {
                 facts.set_real_host(alias, real);
             }

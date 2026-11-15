@@ -1357,6 +1357,49 @@ async fn a_host_that_only_ends_like_github_never_runs_gh_or_ssh() {
     );
 }
 
+/// Task 9 review minor 2: a "no" is not kept for the whole run: no credentials stored for a
+/// host, and an `ssh -G` that failed, are asked again when the user refreshes (after `gh
+/// auth login`, or a fixed ssh config); a "yes" is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_no_is_asked_again_when_the_user_refreshes() {
+    let s = setup_with("https://github.example.com/team/app.git").await;
+    s.h.m.set_prs_every(Duration::ZERO);
+    s.gh.reply("auth-token", 1, "", "");
+    let snap = s.load().await;
+    assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub));
+    s.gh.reply("auth-token", 0, "", "");
+    s.gh.reply("pr-list", 0, "[]", "");
+    let snap = s.load().await;
+    assert_eq!(snap.prs.status, PrStatus::Ready, "{:?}", snap.prs);
+    s.load().await;
+    assert_eq!(s.gh.calls_of(&["auth", "token"]).len(), 2, "a yes is kept");
+
+    let s = setup_with("git@gh-other:me/cat.git").await;
+    s.h.m.set_prs_every(Duration::ZERO);
+    s.gh.ssh_fails(Some(255));
+    s.gh.reply("auth-token", 1, "", "");
+    let snap = s.load().await;
+    assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub));
+    s.gh.ssh_fails(None);
+    s.gh.ssh_alias("gh-other", "github.com");
+    s.gh.reply("pr-list", 0, "[]", "");
+    let snap = s.load().await;
+    assert_eq!(snap.prs.status, PrStatus::Ready, "{:?}", snap.prs);
+    assert_eq!(s.gh.ssh_calls().len(), 2);
+}
+
+/// Task 9 review minor 2: an Enterprise host while `gh` is not installed cannot be checked
+/// for credentials: the reason is that gh is missing, not that the remote is not GitHub.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_enterprise_host_without_gh_says_gh_is_missing() {
+    let s = setup_with("https://github.example.com/team/app.git").await;
+    let empty = tempfile::tempdir().unwrap();
+    s.h.m
+        .set_tool_path(Some(empty.path().as_os_str().to_owned()));
+    let snap = s.load().await;
+    assert_eq!(snap.prs.reason, Some(PrUnavailable::NoGh), "{:?}", snap.prs);
+}
+
 /// No flicker (Task 8 review): a repository known not to be on GitHub, or without `gh`, is
 /// never shown as loading on its way to unavailable; one that can load is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

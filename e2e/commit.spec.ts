@@ -334,3 +334,23 @@ test("only the worktree shown commits, and only while it is active: elsewhere, a
   await page.waitForTimeout(500);
   expect(gg.git("commit", "rev-parse", "HEAD").trim()).toBe(before[0]);
 });
+
+test("a commit panel whose worktree is no longer listed is closed for good, not reopened when the path comes back", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("commit");
+  await open(page, repo);
+  const topic = path.join(path.dirname(repo), "commit.worktrees", "topic");
+  await worktreeRow(page, "topic").click({ button: "right" });
+  await item(page, "Commit…").click();
+  await expect(panel(page)).toBeVisible();
+  gg.git("commit", "worktree", "remove", "--force", topic);
+  await page.keyboard.press("ControlOrMeta+r");
+  await expect(panel(page)).toHaveCount(0);
+  await expect(page.getByRole("grid", { name: "Worktrees" })).toBeVisible();
+  // The same path made a worktree again: the list stays.
+  gg.git("commit", "worktree", "add", "-q", topic, "topic");
+  await page.keyboard.press("ControlOrMeta+r");
+  await expect(worktreeRow(page, "topic")).toBeVisible();
+  await expect(panel(page)).toHaveCount(0);
+});

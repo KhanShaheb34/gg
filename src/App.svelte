@@ -52,6 +52,17 @@
   const mac = isMac();
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
 
+  // A commit panel whose worktree is no longer listed is closed for good: a worktree made
+  // again at that path later is another one, and does not bring the panel back.
+  $effect(() => {
+    if (!active) return;
+    const panel = panelState(active.repoId);
+    const listed = repoView(active.repoId).snapshot.worktrees;
+    if (panel.commitFor !== null && listed.length > 0 && !listed.some((w) => w.path === panel.commitFor)) {
+      panel.commitFor = null;
+    }
+  });
+
   /** The active tab's active worktree, as its snapshot has it. */
   const activeWorktree = $derived.by(() => {
     if (!active) return null;

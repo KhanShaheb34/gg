@@ -353,11 +353,12 @@ describe("hint buttons", () => {
     return app.app.toasts[0].actions ?? [];
   }
 
-  it("a notice's follow-up runs only where its operation ran (expectWorktree)", async () => {
+  it("a notice's follow-up runs only where its operation ran: the request's expectWorktree, not the snapshot's", async () => {
+    // Another worktree was made active while the operation ran: its snapshot shows that one.
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
-      outcome({ hints: [{ kind: "pull", branch: "main" }], snapshot: snap({ seq: 5, activeWorktree: "/r/wt" }) }),
+      outcome({ hints: [{ kind: "pull", branch: "main" }], snapshot: snap({ seq: 5, activeWorktree: "/r/other" }) }),
     );
-    await ops.runOp(1, RESET);
+    await ops.runOp(1, { ...RESET, expectWorktree: "/r/wt" });
     vi.mocked(ipc.api.runOp).mockReset().mockResolvedValue(outcome({ message: "Followed up." }));
     const [pull] = app.app.toasts[0].actions ?? [];
     await pull.run();
@@ -483,11 +484,11 @@ describe("hint buttons", () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
       outcome({ status: "failed", message, hints: [{ kind: "choose_pull_mode", branch: "main" }] }),
     );
-    await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD, expectWorktree: "/r" });
+    await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD, expectWorktree: "/r/wt" });
     expect(app.app.toasts).toEqual([]);
     expect(overlays.showDialog).toHaveBeenCalledWith(
       { name: "PullDialog" },
-      { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head, worktree: "/r" },
+      { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head, worktree: "/r/wt" },
     );
   });
 

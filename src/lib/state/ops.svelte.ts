@@ -59,7 +59,7 @@ export async function runOp(
     }
     findRepoView(repoId)?.applySnapshot(outcome.snapshot);
     if (outcome.status !== "needs_confirmation") {
-      if (!(ownRefusals && isRefusal(outcome))) report(repoId, outcome);
+      if (!(ownRefusals && isRefusal(outcome))) report(repoId, outcome, request);
       return outcome;
     }
     const again = confirmed.length > 0;
@@ -109,7 +109,10 @@ function confirm(repoId: number, outcome: OpOutcome, again: boolean): Promise<bo
   });
 }
 
-function report(repoId: number, outcome: OpOutcome): void {
+function report(repoId: number, outcome: OpOutcome, request: OpRequest): void {
+  // Where the operation ran: the worktree it was asked for, not whichever is active by the
+  // time its outcome arrives (one that names none ran from the active one).
+  const ranIn = "expectWorktree" in request ? request.expectWorktree : outcome.snapshot.activeWorktree;
   if (outcome.status === "stopped") markStopped(outcome.opId);
   // What earlier notices offered may no longer hold once a later operation ran there (R30):
   // its snapshot may never have shown it running.
@@ -125,12 +128,12 @@ function report(repoId: number, outcome: OpOutcome): void {
       upstream,
       message: outcome.message,
       head: headOf(repoId),
-      worktree: outcome.snapshot.activeWorktree,
+      worktree: ranIn,
     });
     return;
   }
   // What a notice offers runs where the operation ran: switched away since, it is refused.
-  const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint, outcome.snapshot.activeWorktree));
+  const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint, ranIn));
   const detail = outcome.detail ?? undefined;
   // A notice that offers what to do next waits for the user, until the next operation there.
   const until = actions.length > 0 ? { repoId, opId: outcome.opId } : undefined;

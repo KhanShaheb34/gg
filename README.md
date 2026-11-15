@@ -174,7 +174,12 @@ again.
 If your shell already has a `gg` (an alias such as Oh My Zsh's `gg` for `git gui
 citool`, a function, or another program earlier on `PATH`), the dialog says so: that one
 wins until you remove it or rename it. Past an alias or a function, `command gg` reaches
-this command anyway.
+this command anyway. The dialog learns this by asking your login shell (zsh, bash or a
+POSIX sh); with fish it cannot tell, so no warning is shown there: run `type gg` in fish to
+check.
+
+Two `gg` commands run within the same instant while the app is not running yet can each
+start a window of their own; once the app runs, every `gg` goes to it.
 
 On macOS the command finds the app by its identifier, wherever it is. On Linux it starts the
 app from where it was when the command was installed; after moving the app, install the

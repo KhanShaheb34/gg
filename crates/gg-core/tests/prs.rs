@@ -710,6 +710,22 @@ async fn a_pull_request_is_made_after_the_push_with_the_body_on_stdin() {
         s.repo.git(&["rev-parse", "feature/x"])
     );
     assert_eq!(s.repo.git(&["config", "branch.feature/x.remote"]), "origin");
+    // The steps are said, for the dialog waiting on it.
+    let steps: Vec<String> =
+        s.h.sink
+            .events()
+            .into_iter()
+            .filter(|(n, v)| n == "op-progress" && v["opId"] == out.op_id)
+            .map(|(_, v)| v["line"].as_str().unwrap_or_default().to_owned())
+            .filter(|l| l.ends_with('…'))
+            .collect();
+    assert_eq!(
+        steps,
+        [
+            "Pushing feature/x to origin/feature/x…",
+            "Creating the pull request…"
+        ]
+    );
     let made = s.gh.calls_of(&["pr", "create"]);
     assert_eq!(made.len(), 1);
     assert_eq!(

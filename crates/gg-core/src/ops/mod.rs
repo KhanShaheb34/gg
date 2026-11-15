@@ -118,6 +118,15 @@ impl OpCtx<'_> {
             .await
     }
 
+    /// Says which step the operation is at (`op-progress`, as a line of its own): what a
+    /// dialog waiting on it shows while git's own progress has nothing to say.
+    pub fn step(&self, line: &str) {
+        self.sink.emit(
+            "op-progress",
+            serde_json::json!({ "repoId": self.repo.identity.repo_id, "opId": self.op_id, "line": line }),
+        );
+    }
+
     /// Like [`OpCtx::git`], for a command that talks to a remote: it gives up after 120 s
     /// without output or 2 h in all (git and its helpers are killed; the output then has
     /// exit code -1 and ends with a line saying so), and the latest line of its progress is

@@ -15,6 +15,9 @@ use crate::ops::network::{push, ref_commit};
 use crate::ops::{OpCtx, Step};
 use crate::repo::prs::PrTrigger;
 
+/// The step said (`op-progress`) while `gh pr create` runs.
+pub const CREATING: &str = "Creating the pull request…";
+
 /// A `pr_create` request (see [`crate::dto::OpRequest::PrCreate`]).
 pub(crate) struct Request<'a> {
     pub branch: &'a str,
@@ -154,6 +157,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
     };
     let mut pushed = String::new();
     if behind {
+        ctx.step(&format!("Pushing {branch} to {remote}/{branch}…"));
         match push(ctx, branch, remote, None, false, None, None).await? {
             Step::Done(message) => pushed = format!("{message} "),
             Step::DoneWith { message, .. } => pushed = format!("{message} "),
@@ -190,6 +194,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
     if draft {
         args.push("--draft");
     }
+    ctx.step(CREATING);
     let ran = gh
         .run(
             &args,

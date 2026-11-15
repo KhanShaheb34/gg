@@ -348,8 +348,16 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
         lines.push(format!("{f} (untracked, overwritten)"));
     }
     let detail = (!lines.is_empty()).then(|| lines.join("\n"));
+    // The files' sizes and times too: an edit after the dialog asks again.
+    let stats = stat_hash(
+        &ctx.cwd,
+        files
+            .iter()
+            .copied()
+            .chain(overwritten.iter().map(String::as_str)),
+    );
     let token = format!(
-        "{}\n{:016x}\n{:016x}",
+        "{}\n{:016x}\n{:016x}\n{stats:016x}",
         head_token(ctx).await?,
         fnv1a(&out.stdout),
         fnv1a(overwritten.join("\0").as_bytes())
@@ -526,6 +534,32 @@ async fn head_token(ctx: &OpCtx<'_>) -> Result<String> {
 }
 
 /// The 64-bit FNV-1a hash of `bytes`: a short, stable digest for a token.
+/// Most paths whose size and modification time go into a token; beyond them, only names.
+pub(crate) const MAX_STATTED: usize = 5000;
+
+/// A hash of the size and modification time (ns) of each of `paths` (relative to `dir`; the
+/// first [`MAX_STATTED`]), as `symlink_metadata` gives them, a missing one as missing: a
+/// token with it changes when a listed file is edited after the dialog, not only when the
+/// list changes.
+pub(crate) fn stat_hash<'p>(dir: &std::path::Path, paths: impl Iterator<Item = &'p str>) -> u64 {
+    let mut bytes = Vec::new();
+    for path in paths.take(MAX_STATTED) {
+        match std::fs::symlink_metadata(dir.join(path)) {
+            Ok(meta) => {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                bytes.extend_from_slice(&meta.len().to_le_bytes());
+                bytes.extend_from_slice(&mtime.to_le_bytes());
+            }
+            Err(_) => bytes.push(0xff),
+        }
+    }
+    fnv1a(&bytes)
+}
+
 pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)

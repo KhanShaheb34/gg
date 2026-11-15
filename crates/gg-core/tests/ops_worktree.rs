@@ -460,6 +460,32 @@ async fn a_confirmation_for_another_state_asks_again() {
     assert!(!wt.exists());
 }
 
+/// An edit to a file already listed, after the dialog, asks again (Task 4 review): the
+/// token has the files' sizes and times. So does an ignored entry that changes.
+#[tokio::test]
+async fn a_listed_file_edited_after_the_dialog_asks_again() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("notes.txt"), "first\n").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    fs::write(wt.join("notes.txt"), "first, and much more written later\n").unwrap();
+    let out = h
+        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
+        .await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:#?}");
+    assert!(wt.join("notes.txt").exists());
+    fs::remove_file(wt.join("notes.txt")).unwrap();
+    fs::write(wt.join("x.log"), "1").unwrap();
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeIgnoredFiles).await;
+    fs::write(wt.join("x.log"), "12345").unwrap();
+    let out = h
+        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
+        .await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:#?}");
+    let _ = repo;
+}
+
 #[tokio::test]
 async fn an_ignored_file_that_appears_after_the_dialog_asks_again() {
     let (repo, _origin, wt) = pushed_worktree();

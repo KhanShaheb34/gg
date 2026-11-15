@@ -20,7 +20,7 @@ use crate::git::names::branch_slug;
 use crate::git::progress::read_kind;
 use crate::git::runner::CmdKind;
 use crate::git::worktrees::read_worktrees;
-use crate::ops::danger::{MAX_LOST_LISTED, fnv1a, unmerged_branch};
+use crate::ops::danger::{MAX_LOST_LISTED, fnv1a, stat_hash, unmerged_branch};
 use crate::ops::local::{kind_name, short};
 use crate::ops::{OpCtx, Step, explain};
 use crate::repo::{RepoManager, canonical, canonical_paths};
@@ -528,7 +528,29 @@ async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
         )
         .with_detail(out.stderr));
     }
-    Ok(parse_status(&out.stdout))
+    let mut work = parse_status(&out.stdout);
+    // Sizes and times too, so an edit after the dialog asks again.
+    let files = work
+        .changed
+        .iter()
+        .chain(&work.untracked)
+        .map(String::as_str);
+    let ignored = work.ignored.iter().map(|p| p.trim_end_matches('/'));
+    work.status_hash = fnv1a(
+        &[
+            work.status_hash.to_le_bytes(),
+            stat_hash(dir, files).to_le_bytes(),
+        ]
+        .concat(),
+    );
+    work.ignored_hash = fnv1a(
+        &[
+            work.ignored_hash.to_le_bytes(),
+            stat_hash(dir, ignored).to_le_bytes(),
+        ]
+        .concat(),
+    );
+    Ok(work)
 }
 
 /// The status and ignored-file hashes in a `remove_worktree_*` danger's `token`, as

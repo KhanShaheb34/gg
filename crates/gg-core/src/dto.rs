@@ -962,12 +962,13 @@ pub struct Danger {
     /// The state the message was worked out from (R39): `force_push`, the remote-tracking
     /// commit (empty without one), which is the lease git checks, and the local tip pushed,
     /// on two lines; `delete_remote_branch`, the remote-tracking commit (`null` without one),
-    /// which is also the lease; `hard_reset`, HEAD and the files it would discard;
+    /// which is also the lease; `hard_reset`, HEAD and the files it would discard (names,
+    /// sizes and times);
     /// `delete_unmerged_branch`, the branch's tip; `drop_stash`, the stash's commit;
     /// `abort`, what is stopped and HEAD; `skip_discards`, HEAD and the files whose changes go;
     /// `remove_worktree_with_work` and `remove_worktree_ignored_files`, the worktree's HEAD,
     /// what is in progress there, and hashes of its status, of its lost commits and of its
-    /// ignored files; `delete_unmerged_branch_with_worktree`, the branch's tip;
+    /// ignored files (names, sizes and times); `delete_unmerged_branch_with_worktree`, the branch's tip;
     /// `prune_worktrees` and `prune_worktrees_loses_commits`, the entries and their HEADs.
     /// Confirming sends it back with its kind; if it no
     /// longer matches, the core asks again, with the state as it is then.

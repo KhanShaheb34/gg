@@ -136,6 +136,30 @@ async fn a_hard_reset_confirmed_before_more_files_changed_is_asked_again() {
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
 }
 
+/// A file already listed and edited again after the dialog asks again too (Task 4 review):
+/// the token has the files' sizes and times, not only their names.
+#[tokio::test]
+async fn a_hard_reset_asks_again_when_a_listed_file_is_edited_again() {
+    let repo = TestRepo::new();
+    repo.write("a.txt", "a\n");
+    let first = repo.commit_all("one");
+    repo.commit("two");
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let asked = h.run(id, reset_hard(&first, here())).await;
+    let yes = confirmed(&asked);
+    repo.write("a.txt", "edited again, at more length\n");
+    let mark = h.last_log_id();
+    let out = h.run_with(id, reset_hard(&first, here()), &yes).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert!(h.writes_since(mark).is_empty());
+    let out = h
+        .run_with(id, reset_hard(&first, here()), &confirmed(&out))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+}
+
 /// A reset (any mode) asked for with main at one commit does not run once main has moved
 /// (a commit made in a terminal): what it would undo is not what the user saw.
 #[tokio::test]

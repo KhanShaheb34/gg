@@ -1,0 +1,4 @@
+# The source repository. Every GitHub link on the site points at /github, so if the
+# repository moves, this is the only place to change.
+/github    https://github.com/KhanShaheb34/gg         302
+/github/*  https://github.com/KhanShaheb34/gg/:splat  302

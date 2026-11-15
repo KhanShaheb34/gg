@@ -110,7 +110,7 @@ impl RepoManager {
                     "terminal",
                 )
             }
-            External::Reveal => return self.start(reveal_plan(os, &dir), None),
+            External::Reveal => return self.start(reveal_plan(os, &dir)?, None),
             External::Url => unreachable!("handled above"),
         };
         self.start(plan, Some(setting))
@@ -162,11 +162,19 @@ impl RepoManager {
             cwd,
             note,
             console,
+            raw,
         } = plan;
+        // Recorded with explorer's raw command line as one more word.
+        let recorded = || {
+            let mut words = argv.clone();
+            words.extend(raw.clone().map(OsString::from));
+            words
+        };
         #[cfg(any(test, feature = "testutil"))]
         if let Some(launches) = crate::lock_ignoring_poison(&self.launches).as_mut() {
             launches.push(
-                argv.iter()
+                recorded()
+                    .iter()
                     .map(|a| a.to_string_lossy().into_owned())
                     .collect(),
             );
@@ -174,8 +182,15 @@ impl RepoManager {
         }
         let record = crate::lock_ignoring_poison(&self.launch_record).clone();
         match record {
-            Some(file) => record_launch(&file, &argv)?,
-            None => launch(&argv, &cwd, self.login_path(), console, setting)?,
+            Some(file) => record_launch(&file, &recorded())?,
+            None => launch(
+                &argv,
+                raw.as_deref(),
+                &cwd,
+                self.login_path(),
+                console,
+                setting,
+            )?,
         }
         Ok(note)
     }
@@ -301,6 +316,10 @@ struct Plan {
     note: Option<String>,
     /// Windows: the program gets a console window of its own (`cmd.exe`).
     console: bool,
+    /// Windows `explorer.exe` only: its command line after the program, as it is to read it
+    /// (explorer parses its own line and splits on commas outside quotes): given as it is
+    /// (`raw_arg`), after `argv`.
+    raw: Option<String>,
 }
 
 impl Plan {
@@ -316,6 +335,15 @@ impl Plan {
             cwd,
             note: None,
             console: false,
+            raw: None,
+        }
+    }
+
+    /// The platform's own program `argv` with `raw` as the rest of its command line.
+    fn system_raw(os: &str, argv: Vec<OsString>, raw: Option<String>) -> Self {
+        Self {
+            raw,
+            ..Self::system(os, argv)
         }
     }
 }
@@ -330,14 +358,32 @@ fn opener(os: &str) -> OsString {
     }
 }
 
-/// The opener's arguments that open folder `dir`. On macOS a folder whose name has an
-/// extension may be a bundle (`X.app`), which `open` would start: it is shown in its folder
-/// instead (`open -R`), which never starts anything.
-fn folder_argv(os: &str, dir: &Path) -> Vec<OsString> {
-    if os == "macos" && dir.extension().is_some() {
-        return vec![opener(os), "-R".into(), dir.into()];
+/// The opener's arguments that open folder `dir` (on Windows, explorer's raw command line
+/// beside: see [`explorer_line`]). On macOS a folder whose name has an extension may be a
+/// bundle (`X.app`), which `open` would start: it is shown in its folder instead (`open -R`),
+/// which never starts anything.
+fn folder_argv(os: &str, dir: &Path) -> Result<(Vec<OsString>, Option<String>)> {
+    if os == "windows" {
+        return Ok((vec![opener(os)], Some(explorer_line(None, dir)?)));
     }
-    vec![opener(os), dir.into()]
+    if os == "macos" && dir.extension().is_some() {
+        return Ok((vec![opener(os), "-R".into(), dir.into()], None));
+    }
+    Ok((vec![opener(os), dir.into()], None))
+}
+
+/// `explorer.exe`'s command line for `dir`: `"<dir>"`, or with `option` (`/select,`) before
+/// it. Explorer reads its command line itself and splits it at commas outside quotes, so the
+/// path is always quoted, and one with a `"` in it (no Windows file name has one) refused.
+fn explorer_line(option: Option<&str>, dir: &Path) -> Result<String> {
+    let path = dir.to_string_lossy();
+    if path.contains('"') {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!("Not opened: {path} has a \" in it."),
+        ));
+    }
+    Ok(format!("{}\"{path}\"", option.unwrap_or("")))
 }
 
 /// The program and arguments that open `file` (`None`: the worktree folder `root`) on
@@ -365,21 +411,25 @@ fn launch_plan(os: &str, command: Option<&str>, root: &Path, file: Option<Target
             cwd: root.to_owned(),
             note: None,
             console: false,
+            raw: None,
         });
     }
     // The worktree itself is the folder, not a file.
     let file = file.filter(|f| f.path != root);
-    let (argv, note) = match file {
+    let ((argv, raw), note) = match file {
         Some(file) if os == "macos" && file.regular => (
-            vec![opener(os), "-t".into(), file.path.as_os_str().to_owned()],
+            (
+                vec![opener(os), "-t".into(), file.path.as_os_str().to_owned()],
+                None,
+            ),
             None,
         ),
-        Some(_) => (folder_argv(os, root), Some(FOLDER_INSTEAD.to_owned())),
-        None => (folder_argv(os, root), None),
+        Some(_) => (folder_argv(os, root)?, Some(FOLDER_INSTEAD.to_owned())),
+        None => (folder_argv(os, root)?, None),
     };
     Ok(Plan {
         note,
-        ..Plan::system(os, argv)
+        ..Plan::system_raw(os, argv, raw)
     })
 }
 
@@ -409,6 +459,7 @@ fn terminal_plan(
         cwd: dir.to_owned(),
         note: None,
         console: false,
+        raw: None,
     };
     if !words.is_empty() {
         let placed = words.iter().any(|w| w.contains("{path}"));
@@ -476,15 +527,18 @@ fn with_path(word: &str, path: &OsStr) -> OsString {
 }
 
 /// The program and arguments that show folder `dir` in the file manager on `os`: selected
-/// in its folder (macOS `open -R`, Windows `explorer.exe /select,`), or its parent folder
-/// opened (`xdg-open`).
-fn reveal_plan(os: &str, dir: &Path) -> Plan {
-    let argv = match os {
-        "macos" => vec![opener(os), "-R".into(), dir.into()],
-        "windows" => vec![opener(os), "/select,".into(), dir.into()],
-        _ => vec![opener(os), dir.parent().unwrap_or(dir).into()],
-    };
-    Plan::system(os, argv)
+/// in its folder (macOS `open -R`, Windows `explorer.exe /select,"<dir>"`), or its parent
+/// folder opened (`xdg-open`).
+fn reveal_plan(os: &str, dir: &Path) -> Result<Plan> {
+    Ok(match os {
+        "macos" => Plan::system(os, vec![opener(os), "-R".into(), dir.into()]),
+        "windows" => Plan::system_raw(
+            os,
+            vec![opener(os)],
+            Some(explorer_line(Some("/select,"), dir)?),
+        ),
+        _ => Plan::system(os, vec![opener(os), dir.parent().unwrap_or(dir).into()]),
+    })
 }
 
 /// The program and arguments that open web address `url` (checked, see [`web_address`]) in
@@ -592,6 +646,7 @@ fn runnable(candidate: &Path) -> bool {
 /// own. `setting`: the setting that names the program, for the message when it is missing.
 fn launch(
     argv: &[OsString],
+    raw: Option<&str>,
     cwd: &Path,
     path: Option<OsString>,
     console: bool,
@@ -617,8 +672,15 @@ fn launch(
     #[cfg(not(unix))]
     let resolved = program;
     let mut cmd = Command::new(resolved);
-    cmd.args(args)
-        .current_dir(cwd)
+    cmd.args(args);
+    if let Some(raw) = raw {
+        // Explorer's own command line, as it is to read it (see `Plan::raw`).
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::raw_arg(&mut cmd, raw);
+        #[cfg(not(windows))]
+        cmd.arg(raw);
+    }
+    cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -764,7 +826,13 @@ mod tests {
             path: Path::new(f),
             regular: true,
         });
-        let Plan { argv, note, .. } = launch_plan(os, command, Path::new("/r"), target).unwrap();
+        let Plan {
+            mut argv,
+            note,
+            raw,
+            ..
+        } = launch_plan(os, command, Path::new("/r"), target).unwrap();
+        argv.extend(raw.map(OsString::from));
         (strings(&argv), note.is_some())
     }
 
@@ -788,7 +856,10 @@ mod tests {
     fn openers_run_from_outside_the_worktree() {
         let root = Path::new("/r");
         for os in ["macos", "linux", "windows"] {
-            let mut plans = vec![reveal_plan(os, root), url_plan(os, "https://example.com/")];
+            let mut plans = vec![
+                reveal_plan(os, root).unwrap(),
+                url_plan(os, "https://example.com/"),
+            ];
             for file in [
                 None,
                 Some(Target {
@@ -831,7 +902,7 @@ mod tests {
         );
         assert_eq!(
             plan_on("windows", None, file),
-            (words(&[&explorer(), "/r"]), true)
+            (words(&[&explorer(), "\"/r\""]), true)
         );
         // A blank command is no command.
         assert_eq!(
@@ -849,7 +920,7 @@ mod tests {
         );
         assert_eq!(
             plan_on("windows", None, None),
-            (words(&[&explorer(), "/r"]), false)
+            (words(&[&explorer(), "\"/r\""]), false)
         );
         // With a command, the file goes to it, on every platform.
         for os in ["macos", "linux", "windows"] {
@@ -986,14 +1057,43 @@ mod tests {
     fn reveal_shows_the_folder_in_the_file_manager() {
         let dir = Path::new("/w/a b");
         assert_eq!(
-            strings(&reveal_plan("macos", dir).argv),
+            strings(&reveal_plan("macos", dir).unwrap().argv),
             ["/usr/bin/open", "-R", "/w/a b"]
         );
         assert_eq!(
-            strings(&reveal_plan("windows", dir).argv),
-            [explorer().as_str(), "/select,", "/w/a b"]
+            strings(&reveal_plan("linux", dir).unwrap().argv),
+            ["xdg-open", "/w"]
         );
-        assert_eq!(strings(&reveal_plan("linux", dir).argv), ["xdg-open", "/w"]);
+    }
+
+    /// Explorer splits its own command line at commas outside quotes: the path goes in
+    /// quotes on the raw line (`raw_arg`), never as an argument Rust would quote its own way;
+    /// a path with a `"` is refused.
+    #[test]
+    fn explorer_gets_its_command_line_quoted_as_it_reads_it() {
+        let dir = Path::new(r"C:\Users\me\a, b c");
+        let reveal = reveal_plan("windows", dir).unwrap();
+        assert_eq!(strings(&reveal.argv), [explorer()]);
+        assert_eq!(
+            reveal.raw.as_deref(),
+            Some(r#"/select,"C:\Users\me\a, b c""#)
+        );
+        let open = launch_plan("windows", None, dir, None).unwrap();
+        assert_eq!(strings(&open.argv), [explorer()]);
+        assert_eq!(open.raw.as_deref(), Some(r#""C:\Users\me\a, b c""#));
+        assert_eq!(
+            launch_plan("windows", Some("code"), dir, None).unwrap().raw,
+            None
+        );
+        let quoted = Path::new(r#"C:\a"b"#);
+        assert_eq!(
+            reveal_plan("windows", quoted).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert!(launch_plan("windows", None, quoted, None).is_err());
+        for os in ["macos", "linux"] {
+            assert_eq!(reveal_plan(os, dir).unwrap().raw, None);
+        }
     }
 
     /// Only `https://` addresses are opened, as written out again by the parser; never

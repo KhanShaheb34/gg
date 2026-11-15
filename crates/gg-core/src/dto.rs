@@ -657,7 +657,7 @@ pub enum PullMode {
 /// (`{"op": "create_branch", "name": ..}`); field names camelCase.
 ///
 /// A request on the branch checked out (reset, merge, rebase, cherry-pick, revert, pull of
-/// it, commit, continue, abort, skip) carries `expect_head`: HEAD as the UI showed it when
+/// it, stash apply and pop, commit, continue, abort, skip) carries `expect_head`: HEAD as the UI showed it when
 /// the user asked (R39). The core refuses it, running nothing, when HEAD is on another branch
 /// (or detached, or another commit while detached) by its turn; reset, commit, continue,
 /// abort and skip also when the commit moved.
@@ -799,14 +799,17 @@ pub enum OpRequest {
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
-    /// `stash` is the stash's commit hash.
+    /// `stash` is the stash's commit hash. Its changes go into the branch checked out: the
+    /// one the UI showed (`expect_head`, its branch only).
     StashApply {
         stash: String,
+        expect_head: HeadInfo,
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
     StashPop {
         stash: String,
+        expect_head: HeadInfo,
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
@@ -1440,8 +1443,8 @@ mod tests {
             json!({"op": "fetch_into_local", "remoteBranch": "origin/b", "localName": "b"}),
             json!({"op": "delete_remote_branch", "remote": "origin", "branch": "b"}),
             json!({"op": "stash_save", "message": "m", "includeUntracked": true, "expectWorktree": "/w"}),
-            json!({"op": "stash_apply", "stash": "h", "expectWorktree": "/w"}),
-            json!({"op": "stash_pop", "stash": "h", "expectWorktree": "/w"}),
+            json!({"op": "stash_apply", "stash": "h", "expectHead": {"branch": "main", "hash": "a"}, "expectWorktree": "/w"}),
+            json!({"op": "stash_pop", "stash": "h", "expectHead": {"branch": "main", "hash": "a"}, "expectWorktree": "/w"}),
             json!({"op": "stash_drop", "stash": "h", "expectWorktree": "/w"}),
             json!({"op": "stash_branch", "stash": "h", "name": "n", "expectWorktree": "/w"}),
             json!({"op": "continue", "evenWithMarkers": true, "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),

@@ -1273,9 +1273,10 @@ fn all_confirmed(dangers: &[Danger], confirmed: &[Confirmed]) -> bool {
 
 /// HEAD as the UI showed it for `request`, if the request acts on the branch checked out,
 /// and whether its commit must be the same too (a reset, a commit, or a continue, abort or
-/// skip: what they do depends on where HEAD is; a merge, rebase, cherry-pick or revert only on which
-/// branch, so that several asked for one after another still run). `head` is the branch
-/// HEAD is on now. A pull counts when the branch it pulls is checked out, then or now.
+/// skip: what they do depends on where HEAD is; a merge, rebase, cherry-pick, revert, stash
+/// apply or pop only on which branch, so that several asked for one after another still
+/// run). `head` is the branch HEAD is on now. A pull counts when the branch it pulls is
+/// checked out, then or now.
 fn expected_head<'r>(request: &'r OpRequest, head: Option<&str>) -> Option<(&'r HeadInfo, bool)> {
     match request {
         OpRequest::Reset { expect_head, .. }
@@ -1286,7 +1287,9 @@ fn expected_head<'r>(request: &'r OpRequest, head: Option<&str>) -> Option<(&'r 
         OpRequest::Merge { expect_head, .. }
         | OpRequest::Rebase { expect_head, .. }
         | OpRequest::CherryPick { expect_head, .. }
-        | OpRequest::Revert { expect_head, .. } => Some((expect_head, false)),
+        | OpRequest::Revert { expect_head, .. }
+        | OpRequest::StashApply { expect_head, .. }
+        | OpRequest::StashPop { expect_head, .. } => Some((expect_head, false)),
         OpRequest::Pull {
             branch,
             expect_head,

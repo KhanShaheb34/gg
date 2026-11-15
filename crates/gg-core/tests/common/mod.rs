@@ -192,6 +192,8 @@ pub fn expect_head_mut(request: &mut OpRequest) -> Option<&mut HeadInfo> {
         | OpRequest::CherryPick { expect_head, .. }
         | OpRequest::Revert { expect_head, .. }
         | OpRequest::Pull { expect_head, .. }
+        | OpRequest::StashApply { expect_head, .. }
+        | OpRequest::StashPop { expect_head, .. }
         | OpRequest::Continue { expect_head, .. }
         | OpRequest::Abort { expect_head, .. }
         | OpRequest::Skip { expect_head, .. }

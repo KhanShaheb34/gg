@@ -404,6 +404,7 @@ pub(crate) async fn abort(ctx: &OpCtx<'_>) -> Result<Step> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::HeadInfo;
 
     #[test]
     fn stash_operations_that_merge_are_refused_while_stopped() {
@@ -412,6 +413,7 @@ mod tests {
         assert!(
             refused(OpRequest::StashApply {
                 stash: stash(),
+                expect_head: HeadInfo::default(),
                 expect_worktree: String::new()
             })
             .is_some()
@@ -419,6 +421,7 @@ mod tests {
         assert!(
             refused(OpRequest::StashPop {
                 stash: stash(),
+                expect_head: HeadInfo::default(),
                 expect_worktree: String::new()
             })
             .is_some()
@@ -433,6 +436,7 @@ mod tests {
         );
         let why = refused(OpRequest::StashPop {
             stash: stash(),
+            expect_head: HeadInfo::default(),
             expect_worktree: String::new(),
         })
         .unwrap();

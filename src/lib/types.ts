@@ -283,7 +283,8 @@ export type OpRequest =
   | { op: "fetch_into_local"; remoteBranch: string; localName: string }
   | { op: "delete_remote_branch"; remote: string; branch: string }
   | { op: "stash_save"; message: string | null; includeUntracked: boolean; expectWorktree: string }
-  | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string; expectWorktree: string } // stash commit hash
+  | { op: "stash_apply" | "stash_pop"; stash: string; expectHead: HeadInfo; expectWorktree: string } // stash commit hash
+  | { op: "stash_drop"; stash: string; expectWorktree: string }
   | { op: "stash_branch"; stash: string; name: string; expectWorktree: string }
   | { op: "continue"; evenWithMarkers: boolean; expectHead: HeadInfo; expectWorktree: string } // R31: true = go ahead though files still have conflict markers
   | { op: "abort"; expectHead: HeadInfo; expectWorktree: string } // always the abort danger first

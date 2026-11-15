@@ -138,11 +138,13 @@ function pickStash(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
   const { repoId, activeWorktree: worktree } = snap;
   const stash = row.hash;
   switch (id) {
+    // Into the branch checked out, as the menu showed it (R39): never another one checked
+    // out meanwhile.
     case "stash.apply":
-      run(repoId, { op: "stash_apply", stash, expectWorktree: worktree });
+      run(repoId, { op: "stash_apply", stash, expectHead: snap.head, expectWorktree: worktree });
       return true;
     case "stash.pop":
-      run(repoId, { op: "stash_pop", stash, expectWorktree: worktree });
+      run(repoId, { op: "stash_pop", stash, expectHead: snap.head, expectWorktree: worktree });
       return true;
     case "stash.drop":
       // The core asks to confirm, naming the stash: no dialog of its own.

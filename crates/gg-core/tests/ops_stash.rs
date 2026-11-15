@@ -23,6 +23,7 @@ fn save(message: Option<&str>, include_untracked: bool) -> OpRequest {
 fn apply(stash: &str) -> OpRequest {
     OpRequest::StashApply {
         stash: stash.to_owned(),
+        expect_head: here(),
         expect_worktree: here_wt(),
     }
 }
@@ -30,6 +31,7 @@ fn apply(stash: &str) -> OpRequest {
 fn pop(stash: &str) -> OpRequest {
     OpRequest::StashPop {
         stash: stash.to_owned(),
+        expect_head: here(),
         expect_worktree: here_wt(),
     }
 }
@@ -179,6 +181,78 @@ async fn apply_keeps_and_pop_removes() {
         assert_eq!(read(&repo, "notes.txt"), "in the way\n");
         assert_eq!(stashes(&repo).len(), 1);
     }
+}
+
+/// Apply and pop put the stash's changes into the branch checked out: asked for on one
+/// branch, they never land on another that was checked out meanwhile (in a terminal, say),
+/// nor in another worktree made active since; nothing runs and the stash stays (O2, R39).
+#[tokio::test]
+async fn apply_and_pop_run_only_on_the_branch_and_worktree_they_were_asked_for() {
+    let repo = repo_with_notes();
+    repo.write("notes.txt", "stashed\n");
+    let w = repo.stash(&[]);
+    repo.branch("other");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let shown = head_at(repo.path());
+    let worktree = h.m.snapshot(id).await.unwrap().active_worktree;
+    repo.checkout("other");
+    for request in [
+        OpRequest::StashApply {
+            stash: w.clone(),
+            expect_head: shown.clone(),
+            expect_worktree: worktree.clone(),
+        },
+        OpRequest::StashPop {
+            stash: w.clone(),
+            expect_head: shown.clone(),
+            expect_worktree: worktree.clone(),
+        },
+    ] {
+        let out = h.m.run_op(id, request, &[]).await.unwrap();
+        assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+        assert!(
+            out.message.contains("main") && out.message.contains("other"),
+            "{}",
+            out.message
+        );
+        assert!(write_args(&h, &out).is_empty(), "nothing ran");
+        assert_eq!(read(&repo, "notes.txt"), "base\n");
+        assert_eq!(stashes(&repo).len(), 1);
+    }
+    // Another commit on the same branch is no reason to refuse: still that branch.
+    repo.checkout("main");
+    repo.write("more.txt", "more\n");
+    repo.commit_all("more");
+    let out =
+        h.m.run_op(
+            id,
+            OpRequest::StashApply {
+                stash: w.clone(),
+                expect_head: shown.clone(),
+                expect_worktree: worktree.clone(),
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    // Another worktree active by its turn: refused.
+    let out =
+        h.m.run_op(
+            id,
+            OpRequest::StashPop {
+                stash: w.clone(),
+                expect_head: head_at(repo.path()),
+                expect_worktree: "/elsewhere".into(),
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(write_args(&h, &out).is_empty(), "nothing ran");
+    assert_eq!(stashes(&repo).len(), 1);
 }
 
 #[tokio::test]

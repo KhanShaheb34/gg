@@ -1564,10 +1564,12 @@ async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
         },
         OpRequest::StashApply {
             stash: stash.clone(),
+            expect_head: here(),
             expect_worktree: here_wt(),
         },
         OpRequest::StashPop {
             stash: stash.clone(),
+            expect_head: here(),
             expect_worktree: here_wt(),
         },
         OpRequest::StashBranch {

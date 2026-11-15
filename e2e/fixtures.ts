@@ -885,7 +885,7 @@ export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
     const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
     const id = app.activeRepoId!;
     const snap = findRepoView(id)!.snapshot;
-    const onHead = ["reset", "merge", "rebase", "cherry_pick", "revert", "pull", "continue", "abort", "skip"];
+    const onHead = ["reset", "merge", "rebase", "cherry_pick", "revert", "pull", "stash_apply", "stash_pop", "continue", "abort", "skip"];
     const elsewhere = ["push", "push_tag", "delete_tag", "delete_remote_branch", "fetch_into_local"];
     const headed = onHead.includes(req.op) && !("expectHead" in req) ? { ...req, expectHead: snap.head } : req;
     const full =

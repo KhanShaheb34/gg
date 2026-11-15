@@ -1103,3 +1103,109 @@ for (const [prefix, width, height] of SIZES)
       await page.screenshot({ path: path.join(OUT, `${prefix}commit-merge-${theme}.png`) });
     });
   }
+
+const LONG = "feature/rework-the-parser-error-recovery-for-unterminated-strings";
+
+// Pull requests (Task 9): markers beside labels with ahead/behind counts and long names, on
+// worktree rows, stale ones; the branch menu; the Create pull request dialog loading, filled,
+// waiting on the push, failed, and for a branch that has one already.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`pull requests, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.clock.install();
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      const repo = gg.repoPath("prs");
+      gg.git("prs", "branch", LONG, "fix/typo");
+      // The worktree's branch one ahead of its upstream: a count beside the marker.
+      const wt = path.join(path.dirname(repo), "prs.worktrees", "login");
+      writeFileSync(path.join(wt, "remember.txt"), "remember me\n");
+      gg.gitAt(wt, "add", "-A");
+      gg.gitAt(wt, "commit", "-q", "-m", "Remember the user");
+      const pr = (number: number, head: string, title: string, draft = false) => ({
+        number,
+        title,
+        url: `https://github.com/octo/cat/pull/${number}`,
+        isDraft: draft,
+        headRefName: head,
+        baseRefName: "main",
+        headRepositoryOwner: { login: "octo" },
+        isCrossRepository: false,
+      });
+      gg.gh.reply(
+        "pr-list",
+        0,
+        JSON.stringify([
+          pr(1284, "feature/login", "Add the login form"),
+          pr(1291, "feature/search-indexing-across-every-workspace-package", "Index the search across packages", true),
+        ]),
+      );
+      gg.gh.reply("pr-list-head", 0, "[]");
+      gg.gh.reply("repo-view", 0, JSON.stringify({ defaultBranchRef: { name: "main" } }));
+      await page.goto("/");
+      await open(page, repo);
+      const grid = page.getByRole("grid", { name: "Commits" });
+      await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      await page.getByRole("button", { name: "Refresh" }).click();
+      await expect(grid.locator(`button.pr-chip[data-pr="1284"]`).first()).toBeVisible();
+      const shot = async (name: string) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      if (width < 1000) await page.getByRole("button", { name: /Worktrees/ }).first().click();
+      await park(page);
+      await shot("prs-markers");
+
+      // A marker under the pointer, its tooltip's text in the title (not drawn by the browser).
+      await grid.locator(`button.pr-chip[data-pr="1284"]`).first().hover();
+      await shot("prs-marker-hover");
+
+      // The list is older than 10 minutes: the markers dim.
+      await page.clock.fastForward("11:00");
+      await park(page);
+      await shot("prs-stale");
+
+      // The branch menu with Create pull request…
+      await grid.locator('[data-ref="fix/typo"] .name').first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create pull request…" }).hover();
+      await shot("prs-menu");
+
+      // The dialog: waiting on gh, then filled in.
+      gg.gh.slow("pr-list-head", 3);
+      await page.getByRole("menuitem", { name: "Create pull request…" }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByTestId("pr-waiting")).toBeVisible();
+      await shot("prs-dialog-loading");
+      await page.clock.runFor(3500);
+      await expect(dialog.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+      await shot("prs-dialog");
+
+      // Waiting on the push and gh.
+      gg.gh.reply("pr-create", 1, "", "HTTP 502: Bad Gateway (https://api.github.com/graphql)\n");
+      gg.gh.slow("pr-create", 4);
+      await dialog.getByRole("button", { name: /and create pull request$/ }).click();
+      await expect(dialog.getByTestId("pr-step")).toContainText("Creating the pull request…");
+      await shot("prs-dialog-pending");
+      await page.clock.runFor(4500);
+      await expect(dialog.getByTestId("pr-error")).toBeVisible();
+      await shot("prs-dialog-failed");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+
+      // A branch that has one already.
+      gg.gh.slow("pr-list-head", 0);
+      gg.gh.reply("pr-list-head", 0, JSON.stringify([pr(1302, "docs/readme", "Explain how the parser reads a file")]));
+      await grid.locator('[data-ref="docs/readme"] .name').first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create pull request…" }).click();
+      await expect(dialog.getByTestId("pr-existing")).toBeVisible();
+      await shot("prs-dialog-existing");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+
+      // A long branch name in the push the button names.
+      gg.gh.reply("pr-list-head", 0, "[]");
+      await grid.locator(`[data-ref="${LONG}"] .name`).first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create pull request…" }).click();
+      await expect(dialog.getByTestId("pr-title")).not.toHaveValue("");
+      await shot("prs-dialog-long");
+    });
+  }

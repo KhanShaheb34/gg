@@ -203,7 +203,10 @@ export type Settings = {
   editorCommand: string | null;
   /** Opens a terminal in a folder: `{path}` stands for it, else it is added last; null = the platform's terminal. */
   terminalCommand: string | null;
+  /** Where new worktrees go by default, relative to the main worktree: {repo}, {branch}. */
   worktreePattern: string;
+  /** How dates are shown (see format.ts `DateFormat`). */
+  dateFormat: "standard" | "relative" | "iso" | "locale";
 };
 /** What `open_external` opens: a worktree (`path`; the active one when omitted) or an `https://` page. */
 export type ExternalRequest = { target: "editor" | "terminal" | "reveal"; path?: string } | { target: "url"; url: string };
@@ -221,6 +224,7 @@ export type AppState = {
   launchPath: string | null;
   homeDir: string | null; // the user's home folder, for showing paths as ~/…
   settingsProblem: string | null; // why settings are not being saved (unreadable file); null when they are
+  settingsFile: string; // the file settings are kept in (it may not exist until something is saved)
   gitProblem: string | null; // the git found is too old (before 2.29), said once; null when it is not
   cli: CliState; // the `gg` terminal command
 };

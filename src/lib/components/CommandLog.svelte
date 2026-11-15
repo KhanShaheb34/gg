@@ -20,7 +20,8 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { LOG_MIN_H, panelHeight } from "../detailsLayout";
-  import { clockTime, commandLine, formatDuration, outputLines, shortenPath, visibleText } from "../format";
+  import { clock } from "../state/prs.svelte";
+  import { commandLine, formatClock, formatDuration, outputLines, shortenPath, visibleText } from "../format";
   import { isMac } from "../platform";
   import { app, toast } from "../state/app.svelte";
   import {
@@ -332,7 +333,7 @@
       onclick={() => hasOutput(r) && (opened[r.id] = !open)}
     >
       <span class="chev" class:open class:none={!hasOutput(r)} aria-hidden="true"></span>
-      <span class="time">{clockTime(r.startedAtMs)}</span>
+      <span class="time">{formatClock(r.startedAtMs, app.settings.dateFormat, clock.now)}</span>
       <span class="line"><bdi>{visibleText(line)}</bdi></span>
       <span class="dur">{formatDuration(r.durationMs)}</span>
       <span class="exit" class:bad={failed(r) && !stopped(r.opId)}>{failed(r) ? `exit ${r.exitCode}` : "ok"}</span>
@@ -436,7 +437,7 @@
                 onclick={() => (folded[item.opId] = open)}
               >
                 <span class="chev" class:open aria-hidden="true"></span>
-                <span class="time">{clockTime(item.records[0].startedAtMs)}</span>
+                <span class="time">{formatClock(item.records[0].startedAtMs, app.settings.dateFormat, clock.now)}</span>
                 <span class="op-title"><bdi>{visibleText(item.title ?? "Operation")}</bdi></span>
                 <span class="meta">{commands(item.records.length)}</span>
                 <span class="dur">{formatDuration(opSpan(item))}</span>

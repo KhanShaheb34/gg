@@ -42,7 +42,16 @@ export const app = $state({
   tabs: [] as Tab[],
   activeRepoId: null as number | null,
   recents: [] as Recent[],
-  settings: { theme: "system", fetchIntervalSecs: 300, worktreePattern: "../{repo}.worktrees/{branch}" } as Settings,
+  settings: {
+    theme: "system",
+    fetchIntervalSecs: 300,
+    editorCommand: null,
+    terminalCommand: null,
+    worktreePattern: "../{repo}.worktrees/{branch}",
+    dateFormat: "standard",
+  } as Settings,
+  /** The file settings are kept in, as the core says. */
+  settingsFile: "",
   toasts: [] as Toast[],
   /** The stored state has been loaded (or failed to load); until then nothing is drawn. */
   ready: false,
@@ -457,6 +466,7 @@ export async function init(): Promise<void> {
   if (state.gitProblem) notify({ kind: "error", message: state.gitProblem, persistent: true });
   app.recents = state.recents;
   app.settings = state.settings;
+  app.settingsFile = state.settingsFile;
   app.homeDir = state.homeDir;
   app.cli = state.cli;
   applyTheme(state.settings.theme);

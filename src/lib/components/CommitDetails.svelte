@@ -13,8 +13,9 @@
   import { tick, untrack } from "svelte";
   import { DEFAULT_SPLIT, DETAILS_MIN_H, infoWidth, panelHeight, splitFor } from "../detailsLayout";
   import { formatDateLong, groupDigits, shortHash } from "../format";
+  import { clock } from "../state/prs.svelte";
   import { api, CoreError } from "../ipc";
-  import { toast } from "../state/app.svelte";
+  import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import ChangedFiles from "./ChangedFiles.svelte";
   import Splitter from "./Splitter.svelte";
@@ -341,7 +342,7 @@
         {/if}
 
         <dt>Date</dt>
-        <dd class="selectable date" data-testid="details-date">{time === null ? "" : formatDateLong(time)}</dd>
+        <dd class="selectable date" data-testid="details-date">{time === null ? "" : formatDateLong(time, app.settings.dateFormat, clock.now)}</dd>
       </dl>
 
       <div class="message selectable" data-testid="details-message"><bdi class="title">{title}</bdi>{rest}</div>

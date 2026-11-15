@@ -151,21 +151,86 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const pad2 = (n: number) => (n < 10 ? `0${n}` : String(n));
 
-/** A commit time (unix seconds) in local time: "12 Nov 2026 16:02". */
-export function formatDate(unixSecs: number): string {
-  const d = new Date(unixSecs * 1000);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+/**
+ * How dates are shown (Settings › Appearance): "standard" (what the app always showed, the
+ * default) "12 Nov 2026 16:02"; "relative" "3 days ago"; "iso" "2026-11-12 16:02"; "locale"
+ * the system's own format for the user's language and region.
+ */
+export type DateFormat = "standard" | "relative" | "iso" | "locale";
+
+/** The locale formatters, made on first use (starting Intl costs a little). */
+const intl = new Map<string, Intl.DateTimeFormat>();
+function localeFormat(key: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  let format = intl.get(key);
+  if (!format) intl.set(key, (format = new Intl.DateTimeFormat(undefined, options)));
+  return format;
 }
 
-/** A commit time in full, for tooltips: "Thursday, 12 Nov 2026 16:02:00 (UTC+01:00)". */
-export function formatDateLong(unixSecs: number): string {
-  const d = new Date(unixSecs * 1000);
+/** "+01:00" for the zone offset of `d` (local time). */
+function zoneOffset(d: Date): string {
   const offset = -d.getTimezoneOffset();
   const sign = offset < 0 ? "-" : "+";
-  const zone = `UTC${sign}${pad2(Math.floor(Math.abs(offset) / 60))}:${pad2(Math.abs(offset) % 60)}`;
-  return `${WEEKDAYS[d.getDay()]}, ${formatDate(unixSecs)}:${pad2(d.getSeconds())} (${zone})`;
+  return `${sign}${pad2(Math.floor(Math.abs(offset) / 60))}:${pad2(Math.abs(offset) % 60)}`;
 }
 
+/** `d` as ISO 8601 in local time, to the minute: "2026-11-12 16:02". */
+function isoMinute(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
+ * A commit time (unix seconds) in local time, in `format`: "12 Nov 2026 16:02" (standard),
+ * "3 days ago" (relative, as of `now`), "2026-11-12 16:02" (iso), or the system's (locale).
+ */
+export function formatDate(unixSecs: number, format: DateFormat = "standard", now: number = Date.now()): string {
+  const d = new Date(unixSecs * 1000);
+  switch (format) {
+    case "relative":
+      return relativeTime(unixSecs * 1000, now);
+    case "iso":
+      return isoMinute(d);
+    case "locale":
+      return localeFormat("medium", { dateStyle: "medium", timeStyle: "short" }).format(d);
+    default:
+      return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+}
+
+/**
+ * A commit time in full, for tooltips and the details: "Thursday, 12 Nov 2026 16:02:00
+ * (UTC+01:00)" (standard; relative puts how long ago before it), "2026-11-12T16:02:00+01:00"
+ * (iso), or the system's long format (locale).
+ */
+export function formatDateLong(unixSecs: number, format: DateFormat = "standard", now: number = Date.now()): string {
+  const d = new Date(unixSecs * 1000);
+  const standard = () => `${WEEKDAYS[d.getDay()]}, ${formatDate(unixSecs)}:${pad2(d.getSeconds())} (UTC${zoneOffset(d)})`;
+  switch (format) {
+    case "relative":
+      return `${relativeTime(unixSecs * 1000, now)} · ${standard()}`;
+    case "iso":
+      return `${isoMinute(d).replace(" ", "T")}:${pad2(d.getSeconds())}${zoneOffset(d)}`;
+    case "locale":
+      return localeFormat("full", { dateStyle: "full", timeStyle: "long" }).format(d);
+    default:
+      return standard();
+  }
+}
+
+/**
+ * A moment of today (epoch milliseconds; a command run, a list loaded), in `format`:
+ * "09:05:07" (standard, iso), "2 min ago" (relative, as of `now`), or the system's time of
+ * day (locale).
+ */
+export function formatClock(ms: number, format: DateFormat = "standard", now: number = Date.now()): string {
+  switch (format) {
+    case "relative":
+      return relativeTime(ms, now);
+    case "locale":
+      return localeFormat("time", { timeStyle: "medium" }).format(new Date(ms));
+    default:
+      return clockTime(ms);
+  }
+}
 
 /** A stable lane colour index for `key` (a repository path, say): FNV-1a, folded to 0..9. */
 export function colorIndex(key: string): number {

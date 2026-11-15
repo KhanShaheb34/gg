@@ -6,7 +6,7 @@
 // asks gh for anything but `pr_suggest`.
 
 import CreatePullRequestDialog from "../components/dialogs/CreatePullRequestDialog.svelte";
-import { clockTime, relativeTime } from "../format";
+import { clockTime, formatClock, relativeTime, type DateFormat } from "../format";
 import type { PrState, PullRequest, RepoSnapshot } from "../types";
 import { toast } from "./app.svelte";
 import { openExternal } from "./editor";
@@ -24,11 +24,13 @@ if (typeof window !== "undefined") setInterval(() => (clock.now = Date.now()), 6
  * the list is older than 10 minutes, or the last reload failed. Null when they are fresh, or
  * there is no list.
  */
-export function staleSince(prs: PrState, now: number): string | null {
+export function staleSince(prs: PrState, now: number, format: DateFormat = "standard"): string | null {
   if (prs.status !== "ready" || prs.loadedAtMs === null) return null;
   const age = now - prs.loadedAtMs;
   if (prs.reason !== "failed" && age <= STALE_AFTER_MS) return null;
-  const at = clockTime(prs.loadedAtMs).slice(0, 5);
+  // In the date format chosen (Settings › Appearance): "as of 12 min ago" when relative.
+  if (format === "relative") return `as of ${relativeTime(prs.loadedAtMs, now)}`;
+  const at = format === "locale" ? formatClock(prs.loadedAtMs, "locale") : clockTime(prs.loadedAtMs).slice(0, 5);
   return age >= 24 * 3_600_000 ? `as of ${at}, ${relativeTime(prs.loadedAtMs, now)}` : `as of ${at}`;
 }
 

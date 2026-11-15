@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   clockTime,
   commandLine,
+  formatClock,
   formatDate,
   formatDateLong,
   formatDuration,
@@ -30,6 +31,49 @@ describe("formatDate", () => {
 describe("formatDateLong", () => {
   it("adds the weekday, seconds and the zone offset", () => {
     expect(formatDateLong(1794477720)).toBe("Thursday, 12 Nov 2026 10:02:00 (UTC+00:00)");
+  });
+});
+
+// The date format setting (Settings › Appearance): the graph's date column, the details,
+// the command log's times, and tooltips. "standard" is what the app always showed.
+describe("date formats", () => {
+  const when = 1794477720; // Thursday 12 Nov 2026 10:02:00 UTC
+  const now = (when + 3 * 86_400 + 600) * 1000; // three days and ten minutes later
+
+  it("standard: day, short month, year and 24-hour time, as before (the default)", () => {
+    expect(formatDate(when)).toBe("12 Nov 2026 10:02");
+    expect(formatDate(when, "standard", now)).toBe("12 Nov 2026 10:02");
+    expect(formatDateLong(when, "standard")).toBe("Thursday, 12 Nov 2026 10:02:00 (UTC+00:00)");
+    expect(formatClock(when * 1000 + 7000, "standard")).toBe("10:02:07");
+  });
+
+  it("relative: how long ago, and the date itself where there is room (details, tooltips)", () => {
+    expect(formatDate(when, "relative", now)).toBe("3 days ago");
+    expect(formatDateLong(when, "relative", now)).toBe("3 days ago · Thursday, 12 Nov 2026 10:02:00 (UTC+00:00)");
+    expect(formatClock(now - 120_000, "relative", now)).toBe("2 min ago");
+    expect(formatClock(now - 5_000, "relative", now)).toBe("just now");
+  });
+
+  it("iso: ISO 8601, sortable, with the offset in full", () => {
+    expect(formatDate(when, "iso", now)).toBe("2026-11-12 10:02");
+    expect(formatDateLong(when, "iso", now)).toBe("2026-11-12T10:02:00+00:00");
+    expect(formatClock(when * 1000 + 7000, "iso")).toBe("10:02:07");
+    // Padded months, days and hours.
+    expect(formatDate(Date.UTC(2026, 0, 5, 9, 0, 0) / 1000, "iso")).toBe("2026-01-05 09:00");
+  });
+
+  it("locale: the system's own format for the user's language and region", () => {
+    const at = new Date(when * 1000);
+    expect(formatDate(when, "locale", now)).toBe(
+      new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(at),
+    );
+    expect(formatDateLong(when, "locale", now)).toBe(
+      new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "long" }).format(at),
+    );
+    expect(formatClock(when * 1000, "locale")).toBe(
+      new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(at),
+    );
+    expect(formatDate(when, "locale")).not.toBe("");
   });
 });
 

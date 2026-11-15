@@ -58,7 +58,7 @@
   let { view }: { view: RepoView } = $props();
 
   /** The pull-request markers' "as of" when they may be out of date. */
-  const prStale = $derived(staleSince(view.snapshot.prs, clock.now));
+  const prStale = $derived(staleSince(view.snapshot.prs, clock.now, app.settings.dateFormat));
 
   const NO_LABELS: RefLabel[] = [];
   const NO_PATHS: string[] = [];
@@ -382,7 +382,7 @@
     let text: string | null = null;
     if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? subjectOf(r) : null;
     else if (r.kind === "uncommitted") text = null;
-    else if (el.classList.contains("date")) text = formatDateLong(r.time);
+    else if (el.classList.contains("date")) text = formatDateLong(r.time, app.settings.dateFormat, clock.now);
     else if (el.classList.contains("author")) text = `${r.author} <${r.email}>`;
     else text = r.hash;
     if (text === null) return;
@@ -734,7 +734,7 @@
               >
             </div>
             <div class="cell date" role="gridcell">
-              {r && r.kind !== "uncommitted" ? formatDate(r.time) : ""}
+              {r && r.kind !== "uncommitted" ? formatDate(r.time, app.settings.dateFormat, clock.now) : ""}
             </div>
             <div class="cell author" role="gridcell"
               ><span>{auth ? auth[0] : (r?.author ?? "")}</span><mark>{auth ? auth[1] : ""}</mark><span

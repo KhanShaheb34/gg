@@ -41,6 +41,15 @@ describe("staleSince", () => {
     expect(staleSince(ready(at, "failed"), at + MIN)).toBe("as of 14:05");
   });
 
+  it("says when in the date format chosen", () => {
+    const later = at + STALE_AFTER_MS + 2 * MIN;
+    expect(staleSince(ready(at), later, "iso")).toBe("as of 14:05");
+    expect(staleSince(ready(at), later, "relative")).toBe("as of 12 min ago");
+    expect(staleSince(ready(at), later, "locale")).toBe(
+      `as of ${new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(new Date(at))}`,
+    );
+  });
+
   it("past a day, how long ago too", () => {
     expect(staleSince(ready(at), at + 3 * 24 * 60 * MIN)).toBe("as of 14:05, 3 days ago");
   });

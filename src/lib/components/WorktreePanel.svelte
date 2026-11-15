@@ -37,7 +37,7 @@
   const loading = $derived(snap.generation < 0 && rows.length === 0);
   const selectedIndex = $derived(rows.findIndex((w) => w.path === panel.selected));
   /** The pull-request markers' "as of" when they may be out of date. */
-  const prStale = $derived(staleSince(snap.prs, clock.now));
+  const prStale = $derived(staleSince(snap.prs, clock.now, app.settings.dateFormat));
 
   let list: HTMLElement | undefined = $state();
   const uid = Math.random().toString(36).slice(2, 8);

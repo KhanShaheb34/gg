@@ -79,6 +79,9 @@ pub(crate) struct OpCtx<'a> {
     /// The outcome the body gives stands when the user stops it: it says what was done that
     /// cannot be taken back (a commit made before the Stop).
     kept: std::sync::atomic::AtomicBool,
+    /// A read the operation's turn made that its later steps in the turn reuse (the worktree
+    /// removal's status with ignored files: the folder read, and git's output).
+    pub(crate) held_read: std::sync::Mutex<Option<(PathBuf, Vec<u8>)>>,
 }
 
 /// Fewest milliseconds between two `op-progress` events of one operation.
@@ -1000,6 +1003,7 @@ impl RepoManager {
             sink: self.sink.as_ref(),
             net_limit: self.net_limit(),
             kept: std::sync::atomic::AtomicBool::new(false),
+            held_read: std::sync::Mutex::new(None),
         };
         // A request runs only in the worktree it was asked for: switching worktrees never
         // redirects one already asked for. Checked before anything is read there.
@@ -1545,6 +1549,7 @@ mod tests {
             sink: m.sink.as_ref(),
             net_limit: m.net_limit(),
             kept: std::sync::atomic::AtomicBool::new(false),
+            held_read: std::sync::Mutex::new(None),
         };
         let mark = log.since(0).last().map_or(0, |c| c.id);
 

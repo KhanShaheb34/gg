@@ -1601,3 +1601,121 @@ async fn refusals_over_a_branch_checked_out_elsewhere_offer_to_make_it_active() 
     );
     assert_eq!(out.hints, hint);
 }
+
+// ---- Task 5 review fixes ----
+
+/// A clean worktree needs no confirmation, but what is removed must still be what was read:
+/// files that appear while the main worktree becomes active (a build's `build/`) stop it.
+#[tokio::test]
+async fn a_clean_worktree_that_gains_files_during_the_switch_is_not_removed() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_active_worktree(id, &wt).await.unwrap();
+    h.m.set_status_delay(std::time::Duration::from_millis(1500));
+    let run = tokio::spawn({
+        let (m, request) = (h.m.clone(), remove(&wt, false));
+        async move { m.run_op(id, request, &[]).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the removal runs");
+    fs::create_dir_all(wt.join("build")).unwrap();
+    fs::write(wt.join("build/out.o"), "built during the switch").unwrap();
+    let out = tokio::time::timeout(TIMEOUT, run)
+        .await
+        .expect("ends")
+        .unwrap()
+        .unwrap();
+    h.m.set_status_delay(std::time::Duration::ZERO);
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message
+            .starts_with("It changed since you confirmed; nothing was removed."),
+        "{}",
+        out.message
+    );
+    assert!(wt.join("build/out.o").exists());
+    assert!(worktree_writes(&h, &out).is_empty(), "no remove ran");
+}
+
+/// A worktree listed inside the one being removed whose own folder is gone: prune it first.
+#[tokio::test]
+async fn a_stale_worktree_listed_inside_says_to_prune() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let inner = wt.join("nested");
+    repo.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "inner",
+        &inner.to_string_lossy(),
+    ]);
+    let shown_inner = real(&inner);
+    fs::remove_dir_all(&inner).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+    let out = h.run(id, remove(&wt, false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(
+        out.message,
+        format!(
+            "{} lists the worktree at {shown_inner} inside it, whose folder is gone. Prune \
+             stale entries first.",
+            real(&wt)
+        )
+    );
+    assert!(h.writes_since(mark).is_empty(), "nothing ran");
+    assert!(wt.is_dir());
+}
+
+/// A worktree whose path only starts like another's (`wt-feature`, `wt-feature2`) is not
+/// inside it.
+#[tokio::test]
+async fn a_sibling_whose_name_starts_alike_is_not_inside() {
+    let (repo, _origin, wt) = pushed_worktree();
+    repo.branch("feature2");
+    let sibling = repo.add_worktree("feature2");
+    assert!(
+        sibling
+            .to_string_lossy()
+            .starts_with(&*wt.to_string_lossy())
+    );
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, remove(&wt, false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(!wt.exists());
+    assert!(sibling.is_dir());
+}
+
+/// The status read that sees ignored files runs once in the removal's turn (the refusal
+/// checks and the dangers share it), and once more in its body, after the switch.
+#[tokio::test]
+async fn the_files_are_read_once_in_the_turn_and_once_before_removing() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("work.txt"), "untracked\n").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let reads = |since: u64| {
+        h.log
+            .since(since)
+            .into_iter()
+            .filter(|r| r.args.iter().any(|a| a == "--ignored=matching"))
+            .count()
+    };
+    let mark = h.last_log_id();
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    assert_eq!(reads(mark), 1, "asking reads once");
+    let mark = h.last_log_id();
+    let out = h
+        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(reads(mark), 2, "the turn once, the body once");
+}

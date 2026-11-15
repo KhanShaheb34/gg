@@ -344,37 +344,52 @@ async fn remove_refused(
              is detached), so there is no branch to delete with it."
         )));
     }
-    // `git worktree remove` deletes the whole folder, whatever is inside: never another
-    // worktree or repository.
+    let raw = status_with_ignored(ctx, &wt, true).await?;
+    Ok(nested_refusal(&list, &wt, &raw))
+}
+
+/// Why removing `wt` would take another worktree or repository with it, if it would: one git
+/// lists inside it (`list`), or a repository its status read `raw` shows inside it.
+/// `git worktree remove` deletes the whole folder, whatever is inside.
+fn nested_refusal(list: &[WorktreeInfo], wt: &WorktreeInfo, raw: &[u8]) -> Option<String> {
+    let shown = &wt.path;
     if let Some(inner) = list
         .iter()
         .find(|w| w.path != wt.path && Path::new(&w.path).starts_with(shown))
     {
-        return Ok(Some(format!(
-            "{shown} contains the worktree at {}. Remove that one first.",
-            inner.path
-        )));
+        return Some(if inner.prunable {
+            format!(
+                "{shown} lists the worktree at {} inside it, whose folder is gone. Prune stale \
+                 entries first.",
+                inner.path
+            )
+        } else {
+            format!(
+                "{shown} contains the worktree at {}. Remove that one first.",
+                inner.path
+            )
+        });
     }
-    if let Some(inner) = nested_repository(ctx, &wt).await? {
-        return Ok(Some(format!(
+    nested_repository(Path::new(shown), raw).map(|inner| {
+        format!(
             "{shown} contains another repository at {}, which git would delete with it. Move \
              or remove it first.",
             inner.display()
-        )));
-    }
-    Ok(None)
+        )
+    })
 }
 
-/// Most entries of an ignored folder looked into for a repository one level down.
-const MAX_LOOKED_INTO: usize = 200;
-
-/// A repository (a folder with a `.git` file or folder) inside the worktree `wt`, if one is
-/// found: an untracked or ignored folder git lists that is one (git does not go into
-/// another repository, and lists an ignored folder as one entry), or a folder directly
-/// inside an ignored one that is ([`MAX_LOOKED_INTO`] entries at most). A repository deeper
-/// inside an ignored folder is not found.
-async fn nested_repository(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Option<PathBuf>> {
+/// The output of `status --porcelain=v2 -z --untracked-files=all --ignored=matching` in the
+/// worktree `wt`. With `reuse`, the read the operation's turn made of it, if any (the refusal
+/// checks and the dangers share one); else (the body, after the switch) a fresh one.
+async fn status_with_ignored(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Result<Vec<u8>> {
     let dir = Path::new(&wt.path);
+    if reuse
+        && let Some((at, raw)) = crate::lock_ignoring_poison(&ctx.held_read).as_ref()
+        && at == dir
+    {
+        return Ok(raw.clone());
+    }
     let out = ctx
         .runner
         .run_unchecked(dir, &STATUS_WITH_IGNORED, CmdKind::Read)
@@ -389,8 +404,21 @@ async fn nested_repository(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Option<
         )
         .with_detail(out.stderr));
     }
+    *crate::lock_ignoring_poison(&ctx.held_read) = Some((dir.to_path_buf(), out.stdout.clone()));
+    Ok(out.stdout)
+}
+
+/// Most entries of an ignored folder looked into for a repository one level down.
+const MAX_LOOKED_INTO: usize = 200;
+
+/// A repository (a folder with a `.git` file or folder) inside the worktree `wt`, if one is
+/// found: an untracked or ignored folder git lists that is one (git does not go into
+/// another repository, and lists an ignored folder as one entry), or a folder directly
+/// inside an ignored one that is ([`MAX_LOOKED_INTO`] entries at most). A repository deeper
+/// inside an ignored folder is not found.
+fn nested_repository(dir: &Path, raw: &[u8]) -> Option<PathBuf> {
     let is_repo = |p: &Path| fs::symlink_metadata(p.join(".git")).is_ok();
-    let mut fields = out.stdout.split(|&b| b == 0);
+    let mut fields = raw.split(|&b| b == 0);
     while let Some(entry) = fields.next() {
         if entry.starts_with(b"2 ") {
             fields.next();
@@ -406,18 +434,18 @@ async fn nested_repository(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Option<
         }
         let folder = dir.join(String::from_utf8_lossy(rest).trim_end_matches('/'));
         if is_repo(&folder) {
-            return Ok(Some(folder));
+            return Some(folder);
         }
         if ignored && let Ok(entries) = fs::read_dir(&folder) {
             for child in entries.flatten().take(MAX_LOOKED_INTO) {
                 let child = child.path();
                 if child.is_dir() && is_repo(&child) {
-                    return Ok(Some(child));
+                    return Some(child);
                 }
             }
         }
     }
-    Ok(None)
+    None
 }
 
 /// The status read of a worktree being removed: every untracked file, and what is ignored
@@ -454,6 +482,8 @@ struct Work {
     /// never deletes its branch), said in a line, never a danger of their own.
     unpushed: usize,
     in_progress: Option<InProgressKind>,
+    /// git's status output the files were read from.
+    raw: Vec<u8>,
 }
 
 impl Work {
@@ -508,30 +538,19 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
         commit_count,
         commits_hash,
         commits,
-        ..read_files_held(ctx, wt).await?
+        ..read_files_held(ctx, wt, true).await?
     })
 }
 
 /// The files the worktree `wt` holds, from `status --porcelain=v2 -z --untracked-files=all
 /// --ignored=matching` there (ignored folders come collapsed): changed, untracked and
-/// ignored, with the hashes of the records.
-async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
+/// ignored, with the hashes of the records. With `reuse`, from the turn's read (see
+/// [`status_with_ignored`]).
+async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Result<Work> {
     let dir = Path::new(&wt.path);
-    let out = ctx
-        .runner
-        .run_unchecked(dir, &STATUS_WITH_IGNORED, CmdKind::Read)
-        .await?;
-    if out.code != 0 {
-        return Err(CoreError::new(
-            ErrorCode::GitFailed,
-            format!(
-                "Could not read what the worktree at {} holds, so nothing was removed.",
-                wt.path
-            ),
-        )
-        .with_detail(out.stderr));
-    }
-    let mut work = parse_status(&out.stdout);
+    let raw = status_with_ignored(ctx, wt, reuse).await?;
+    let mut work = parse_status(&raw);
+    work.raw = raw;
     // Sizes and times too, so an edit after the dialog asks again.
     let files = work
         .changed
@@ -920,23 +939,41 @@ pub(crate) async fn remove(
             DangerKind::RemoveWorktreeWithWork | DangerKind::RemoveWorktreeIgnoredFiles
         )
     });
-    let now = read_files_held(ctx, &wt).await?;
-    if let Some(token) = confirmed.and_then(|d| d.token.as_deref()) {
-        let (status, ignored) = (
-            format!("{:016x}", now.status_hash),
-            format!("{:016x}", now.ignored_hash),
-        );
-        if token_hashes(token) != Some((status.as_str(), ignored.as_str())) {
-            let mut message = "It changed since you confirmed; nothing was removed.".to_owned();
-            if left {
-                message.push_str(&main_now);
-            }
-            return Ok(Step::Failed {
-                message,
-                detail: String::new(),
-                hints: Vec::new(),
-            });
+    let now = read_files_held(ctx, &wt, false).await?;
+    let refuse = |why: String| {
+        let mut message = why;
+        if left {
+            message.push_str(&main_now);
         }
+        Ok(Step::Failed {
+            message,
+            detail: String::new(),
+            hints: Vec::new(),
+        })
+    };
+    // Never another worktree or repository with it, as it is now.
+    if let Some(why) = nested_refusal(&list, &wt, &now.raw) {
+        return refuse(why);
+    }
+    let changed = match confirmed.and_then(|d| d.token.as_deref()) {
+        Some(token) => {
+            let (status, ignored) = (
+                format!("{:016x}", now.status_hash),
+                format!("{:016x}", now.ignored_hash),
+            );
+            token_hashes(token) != Some((status.as_str(), ignored.as_str()))
+        }
+        // Nothing was confirmed: it held nothing to lose, and must hold nothing now. (With
+        // submodules nothing is asked: git refuses the plain remove itself, and says why.)
+        None => {
+            (!now.changed.is_empty()
+                || !now.untracked.is_empty()
+                || !now.ignored_entries.is_empty())
+                && !has_submodules(ctx, &wt).await?
+        }
+    };
+    if changed {
+        return refuse("It changed since you confirmed; nothing was removed.".to_owned());
     }
     // `--force` only for what git would otherwise refuse: changed or untracked files the user
     // confirmed. Anything else (ignored files, commits, something in progress) goes with a

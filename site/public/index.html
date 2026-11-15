@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gg · the commit graph, without the editor</title>
+<meta name="description" content="gg is a small, fast desktop git client for macOS built around the commit graph. Check out, merge, rebase and push from a right-click, with the git you already have. Free and open source.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfbfc">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
+<link rel="canonical" href="https://gg.shakirul.com/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="gg">
+<meta property="og:url" content="https://gg.shakirul.com/">
+<meta property="og:title" content="gg · the commit graph, without the editor">
+<meta property="og:description" content="A small, fast desktop git client for macOS built around the commit graph. Free and open source.">
+<meta property="og:image" content="https://gg.shakirul.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="gg: the commit graph, without the editor. A screenshot of its commit graph.">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="gg · the commit graph, without the editor">
+<meta name="twitter:description" content="A small, fast desktop git client for macOS built around the commit graph. Free and open source.">
+<meta name="twitter:image" content="https://gg.shakirul.com/og.png">
+<meta name="twitter:image:alt" content="gg: the commit graph, without the editor. A screenshot of its commit graph.">
+<meta name="author" content="Shakirul">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"gg","description":"A small, fast desktop git client for macOS built around the commit graph. Check out, merge, rebase and push from a right-click, with the git you already have.","url":"https://gg.shakirul.com/","image":"https://gg.shakirul.com/og.png","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 12 or later","softwareVersion":"0.1.0","downloadUrl":"https://gg.shakirul.com/download/gg-macos-arm64.dmg","license":"https://opensource.org/license/mit","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Shakirul","url":"https://shakirul.com"}}</script>
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/main.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <a class="brand" href="/">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><use href="#mark"/></svg>
+    <span>gg</span>
+  </a>
+  <nav class="nav" aria-label="Sections">
+    <ul>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#terminal">Terminal</a></li>
+      <li><a href="#speed">Speed</a></li>
+      <li><a href="#next">Coming next</a></li>
+    </ul>
+  </nav>
+  <a class="top-link" href="/github">GitHub</a>
+  <button class="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
+  </button>
+</header>
+
+<div class="log">
+<main id="main">
+
+  <section class="block hero" aria-labelledby="title">
+    <span class="node node-head" aria-hidden="true"></span>
+    <p class="refs" aria-hidden="true">
+      <span class="ref ref-head">main</span>
+      <span class="ref ref-tag"><span>v<span data-latest="version">0.1.0</span></span></span>
+    </p>
+    <div class="hero-grid">
+      <p class="wordmark" aria-hidden="true">gg</p>
+      <div class="hero-body">
+        <h1 id="title" class="pitch"><span class="sr-only">gg: </span>The commit graph, without the editor.</h1>
+        <p class="lede">A small, fast desktop git client built around the commit graph. See every branch at once, then check out, merge, rebase and push from a right-click, with the git you already have. Free and open source.</p>
+        <div class="get">
+          <a class="download" id="download" href="/download/gg-macos-arm64.dmg">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Download for macOS
+          </a>
+          <p class="get-meta">
+            <span>v<span data-latest="version">0.1.0</span></span>
+            <span>macOS 12+</span>
+            <span>Apple Silicon</span>
+            <span data-latest="size" hidden></span>
+          </p>
+        </div>
+        <div class="install" role="group" aria-labelledby="install-title">
+          <p class="install-title" id="install-title">Opening gg the first time</p>
+          <p class="install-why">gg is not notarized by Apple, so macOS stops it the first time you open it. Do one of these once; after that it opens like any other app.</p>
+          <dl class="ways">
+            <div>
+              <dt>Finder</dt>
+              <dd>Right-click gg in Applications, choose <b>Open</b>, then <b>Open</b> again. On macOS 15 and later: <b>System Settings → Privacy &amp; Security</b>, then <b>Open Anyway</b> beside the message about gg.</dd>
+            </div>
+            <div>
+              <dt>Terminal</dt>
+              <dd>
+                <span class="cmd"><code id="xattr">xattr -cr /Applications/gg.app</code><button class="copy" type="button" data-copy="xattr" aria-live="polite">Copy</button></span>
+                <span class="cmd-note">Removes the quarantine flag macOS puts on downloaded apps.</span>
+              </dd>
+            </div>
+          </dl>
+          <p class="sha" data-latest="sha" hidden>SHA-256 of the download: <code data-latest="sha256"></code></p>
+        </div>
+      </div>
+    </div>
+    <figure class="shot shot-hero">
+      <picture>
+        <source data-scheme="dark" data-base="(max-width: 640px)" media="(max-width: 640px) and (prefers-color-scheme: dark)" srcset="/img/graph-narrow-dark-1x.webp 1x, /img/graph-narrow-dark-2x.webp 2x" width="600" height="640">
+        <source data-scheme="light" data-base="(max-width: 640px)" media="(max-width: 640px)" srcset="/img/graph-narrow-light-1x.webp 1x, /img/graph-narrow-light-2x.webp 2x" width="600" height="640">
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/graph-dark-1x.webp 1x, /img/graph-dark-2x.webp 2x" width="1280" height="800">
+        <img src="/img/graph-light-1x.webp" srcset="/img/graph-light-1x.webp 1x, /img/graph-light-2x.webp 2x" width="1280" height="800" fetchpriority="high" decoding="async" alt="gg showing a repository's commit graph: coloured lanes for main, develop, feature/ui and release/1.0, with branch and tag labels beside each commit's subject, date, author and short hash.">
+      </picture>
+    </figure>
+  </section>
+
+  <section class="block section-head" id="features" aria-labelledby="features-title">
+    <span class="node" aria-hidden="true"></span>
+    <h2 id="features-title">What it does today</h2>
+    <p class="section-lede">Everything here is in the current release.</p>
+  </section>
+
+  <div class="block feature">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Every branch at a glance</h3>
+      <p>Coloured lanes, with branch, tag and stash labels on the commits they point at. Search subjects, authors and hashes, filter the graph to the branches you care about, and select a commit to see its message and changed files.</p>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/search-dark-1x.webp 1x, /img/search-dark-2x.webp 2x">
+        <img src="/img/search-light-1x.webp" srcset="/img/search-light-1x.webp 1x, /img/search-light-2x.webp 2x" width="900" height="400" loading="lazy" decoding="async" alt="Searching for “plugin”: the match is highlighted in the graph, with the selected commit's details and changed files opening below it.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="block feature">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Right-click for the rest</h3>
+      <p>Right-click a commit, a branch, a tag or a stash for what you can do with it. An item that cannot run says why.</p>
+      <ul class="verbs" aria-label="Actions">
+        <li>checkout</li><li>create branch</li><li>rename</li><li>delete</li><li>merge</li><li>rebase</li><li>cherry-pick</li><li>revert</li><li>reset</li><li>tags</li><li>stashes</li><li>push</li><li>pull</li><li>force push with lease</li>
+      </ul>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/menu-dark-1x.webp 1x, /img/menu-dark-2x.webp 2x">
+        <img src="/img/menu-light-1x.webp" srcset="/img/menu-light-1x.webp 1x, /img/menu-light-2x.webp 2x" width="560" height="320" loading="lazy" decoding="async" alt="The right-click menu of the branch feature/ui: Check out, Rename, Delete, Merge feature/ui into main, Rebase main onto feature/ui, Push 2 commits, Pull and Copy name.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="block feature">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Check out, merge, push</h3>
+      <p>The everyday routine takes a few clicks: check out <code>staging</code>, merge your branch into it, and push with the button on the merge notice.</p>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/notice-dark-1x.webp 1x, /img/notice-dark-2x.webp 2x">
+        <img src="/img/notice-light-1x.webp" srcset="/img/notice-light-1x.webp 1x, /img/notice-light-2x.webp 2x" width="410" height="164" loading="lazy" decoding="async" alt="Two notices: “Checked out staging. It was fast-forwarded to origin/staging.” and “Merged feature/login into staging.” with a button, Push staging to origin/staging.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="block feature">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Nothing dangerous runs unconfirmed</h3>
+      <p>Force push, hard reset, deleting an unmerged or remote branch, dropping a stash: each one first shows exactly what would be lost, and runs only against the state you were shown. If the branch, the files or the remote changed in the meantime, gg asks again.</p>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/force-dark-1x.webp 1x, /img/force-dark-2x.webp 2x">
+        <img src="/img/force-light-1x.webp" srcset="/img/force-light-1x.webp 1x, /img/force-light-2x.webp 2x" width="490" height="214" loading="lazy" decoding="async" alt="A force push confirmation: “A force push replaces origin/main with main, discarding 1 commit there that main does not have”, listing that commit, with Cancel and a red Force push button.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="block feature feature-wide">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Conflicts, one file at a time</h3>
+      <p>When a merge, rebase or cherry-pick stops on conflicts, a banner shows each file's state. Resolve them in your editor, then Continue, Abort, or Skip a commit that has nothing left to apply.</p>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/conflict-dark-1x.webp 1x, /img/conflict-dark-2x.webp 2x">
+        <img src="/img/conflict-light-1x.webp" srcset="/img/conflict-light-1x.webp 1x, /img/conflict-light-2x.webp 2x" width="900" height="146" loading="lazy" decoding="async" alt="The conflict banner while merging feature/x into main: app.txt is resolved, style.css still has conflict markers. Buttons: Abort, Open in editor, Continue anyway and Continue.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="block feature feature-wide">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Your git, on the record</h3>
+      <p>gg runs the git you already have, so SSH keys, credential helpers and hooks behave as they do in your terminal. The command log lists every git command it ran, with its output.</p>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/log-dark-1x.webp 1x, /img/log-dark-2x.webp 2x">
+        <img src="/img/log-light-1x.webp" srcset="/img/log-light-1x.webp 1x, /img/log-light-2x.webp 2x" width="900" height="144" loading="lazy" decoding="async" alt="The command log: the operation “Merge feature/ui into main”, its git merge command with its time, duration and exit status, and git's output.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="block feature">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Light or dark, always current</h3>
+      <dl class="small-features">
+        <div><dt>Light and dark themes</dt><dd>The same graph in either, tuned so every lane stays readable.</dd></div>
+        <div><dt>Live refresh</dt><dd>Changes made in a terminal or an editor show up on their own.</dd></div>
+        <div><dt>Background fetch</dt><dd>Remote branches are fetched in the background.</dd></div>
+      </dl>
+    </div>
+    <figure class="shot">
+      <img src="/img/themes-1x.webp" srcset="/img/themes-1x.webp 1x, /img/themes-2x.webp 2x" width="600" height="440" loading="lazy" decoding="async" alt="One commit graph drawn in two themes: its top rows in the light theme, the rows below in the dark theme, the lanes running on unbroken.">
+    </figure>
+  </div>
+
+  <section class="block section-head terminal" id="terminal" aria-labelledby="terminal-title">
+    <span class="node" aria-hidden="true"></span>
+    <h2 id="terminal-title">Open it from your terminal</h2>
+    <p class="section-lede">Run <code>gg</code> inside any git repository and it opens in the app. Give it a path to open another one.</p>
+    <figure class="term">
+      <figcaption class="sr-only">Two commands in a terminal</figcaption>
+<pre><code><span class="ps">~/src/api $</span> gg
+<span class="ps">~/src/api $</span> gg path/to/repo</code></pre>
+    </figure>
+  </section>
+
+  <section class="block section-head speed" id="speed" aria-labelledby="speed-title">
+    <span class="node" aria-hidden="true"></span>
+    <h2 id="speed-title">Speed, measured</h2>
+    <p class="section-lede">Release build on an Apple M1 Pro with 16 GB, a 20,000-commit repository, median of five launches.</p>
+    <dl class="numbers">
+      <div><dt>From launch to the first rows on screen</dt><dd>0.75<small> s</small></dd></div>
+      <div><dt>CPU while idle</dt><dd>0<small> %</small></dd></div>
+      <div><dt>Memory while idle, the app and its WebKit processes</dt><dd>~160<small> MB</small></dd></div>
+      <div><dt>App size</dt><dd>6.6<small> MB</small></dd></div>
+      <div><dt>From right-click to the menu on screen</dt><dd>4<small> ms</small></dd></div>
+    </dl>
+    <p class="fine">Memory grows while you scroll through the whole history: 30 seconds after jumping through all 20,000 commits it is about 250 MB, which WebKit gives back under memory pressure. <a href="/github/blob/main/docs/perf/2026-11-plan-2.md">All the measurements</a></p>
+  </section>
+
+  <section class="block section-head next" id="next" aria-labelledby="next-title">
+    <span class="node" aria-hidden="true"></span>
+    <h2 id="next-title">Coming next</h2>
+    <p class="section-lede">Not in the app yet.</p>
+    <div class="branch">
+      <svg class="fork" viewBox="0 0 24 32" aria-hidden="true" preserveAspectRatio="none"><path d="M1 0C1 18 23 12 23 32"/></svg>
+      <ul class="next-list">
+        <li><b>Worktrees</b> See every worktree of a repository; commit, push and delete one safely.</li>
+        <li><b>Pull requests</b> Through the GitHub CLI.</li>
+        <li><b>Settings</b> A settings screen.</li>
+        <li><b>Windows and Linux</b> Builds for both. Today gg runs on macOS only.</li>
+      </ul>
+    </div>
+  </section>
+
+</main>
+
+<footer class="block foot">
+  <span class="node node-root" aria-hidden="true"></span>
+  <p>gg is free and open source, under the MIT licence.</p>
+  <p class="foot-links"><a href="/github">Source on GitHub</a><a href="https://shakirul.com">Built by Shakirul</a></p>
+</footer>
+</div>
+
+<svg width="0" height="0" class="sprite" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#17181c"/><path d="M11 7v18" stroke="#6b9bff" stroke-width="2.5" stroke-linecap="round" fill="none"/><path d="M21 10.5c0 6-10 4.5-10 11" stroke="#fb8a4e" stroke-width="2.5" stroke-linecap="round" fill="none"/><circle cx="11" cy="8" r="3.2" fill="#6b9bff"/><circle cx="21" cy="10.5" r="3.2" fill="#fb8a4e"/><circle cx="11" cy="24" r="3.2" fill="#6b9bff"/></symbol>
+</svg>
+</body>
+</html>

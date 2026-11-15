@@ -145,6 +145,13 @@ struct SetActiveWorktreeArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorktreeFilesArgs {
+    repo_id: u32,
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DefaultPathArgs {
     repo_id: u32,
     branch: String,
@@ -368,6 +375,10 @@ impl Core {
                         .set_active_worktree(a.repo_id, &a.path)
                         .await?,
                 )
+            }
+            "worktree_files" => {
+                let a: WorktreeFilesArgs = parse(cmd, args)?;
+                to_json(self.repos()?.worktree_files(a.repo_id, &a.path).await?)
             }
             "worktree_default_path" => {
                 let a: DefaultPathArgs = parse(cmd, args)?;

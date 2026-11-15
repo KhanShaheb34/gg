@@ -1,8 +1,10 @@
-//! Counts a worktree's changes from `git status --porcelain=v2`.
+//! Reads a worktree's changes from `git status --porcelain=v2`: counts, and the files.
 
 use std::path::Path;
 
-use crate::dto::{MAX_CONFLICTED_PATHS, WorktreeStatus};
+use crate::dto::{
+    EntryStatus, FileEntry, MAX_CONFLICTED_PATHS, MAX_LISTED_FILES, WorktreeFiles, WorktreeStatus,
+};
 use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner};
 
@@ -64,6 +66,115 @@ pub(crate) async fn read_conflicted(r: &GitRunner, worktree: &Path) -> Result<Ve
     ];
     let out = r.run(worktree, &args, CmdKind::Read).await?;
     Ok(parse_status(&out.stdout).1)
+}
+
+/// The changed files of the worktree at `worktree`, sorted by path: the first
+/// [`MAX_LISTED_FILES`], and whether there are more. Untracked files are listed one by one;
+/// submodules and ignored files not at all.
+pub async fn read_files(r: &GitRunner, worktree: &Path) -> Result<WorktreeFiles> {
+    let out = r.run(worktree, &STATUS_ARGS, CmdKind::Read).await?;
+    let mut files = parse_files(&out.stdout);
+    let truncated = files.len() > MAX_LISTED_FILES;
+    files.truncate(MAX_LISTED_FILES);
+    Ok(WorktreeFiles { files, truncated })
+}
+
+/// Every changed file in porcelain v2 output `out`, sorted by path, one entry per path (a
+/// path whose deletion is staged and which is back in the working tree as an untracked file
+/// is one entry: modified, staged and unstaged).
+pub(crate) fn parse_files(out: &[u8]) -> Vec<FileEntry> {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let mut files: Vec<FileEntry> = Vec::new();
+    let mut fields = out.split(|&b| b == 0);
+    while let Some(entry) = fields.next() {
+        let (kind, rest) = match entry {
+            [kind, b' ', rest @ ..] => (*kind, rest),
+            _ => continue,
+        };
+        match kind {
+            // `1 XY sub mH mI mW hH hI <path>`
+            b'1' => {
+                let mut parts = rest.splitn(8, |&b| b == b' ');
+                let (Some(&[x, y]), Some(path)) = (parts.next(), parts.nth(6)) else {
+                    continue;
+                };
+                files.push(FileEntry {
+                    path: text(path),
+                    orig_path: None,
+                    status: changed(x, y),
+                    staged: x != b'.',
+                    unstaged: y != b'.',
+                });
+            }
+            // `2 XY sub mH mI mW hH hI Xscore <path>`, then `<origPath>` as the next field.
+            b'2' => {
+                let mut parts = rest.splitn(9, |&b| b == b' ');
+                let (Some(&[x, y]), Some(path)) = (parts.next(), parts.nth(7)) else {
+                    continue;
+                };
+                let orig = fields.next().filter(|o| !o.is_empty()).map(text);
+                let status = if x == b'C' || y == b'C' {
+                    EntryStatus::C
+                } else {
+                    EntryStatus::R
+                };
+                files.push(FileEntry {
+                    path: text(path),
+                    orig_path: orig,
+                    status,
+                    staged: x != b'.',
+                    unstaged: y != b'.',
+                });
+            }
+            // `u XY sub m1 m2 m3 mW h1 h2 h3 <path>`
+            b'u' => {
+                let Some(path) = rest.splitn(10, |&b| b == b' ').nth(9) else {
+                    continue;
+                };
+                files.push(FileEntry {
+                    path: text(path),
+                    orig_path: None,
+                    status: EntryStatus::U,
+                    staged: false,
+                    unstaged: true,
+                });
+            }
+            b'?' => files.push(FileEntry {
+                path: text(rest),
+                orig_path: None,
+                status: EntryStatus::Untracked,
+                staged: false,
+                unstaged: true,
+            }),
+            _ => {}
+        }
+    }
+    files.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then((a.status == EntryStatus::Untracked).cmp(&(b.status == EntryStatus::Untracked)))
+    });
+    // A staged deletion whose file is back (untracked): one path, changed.
+    files.dedup_by(|later, first| {
+        let same = later.path == first.path && later.status == EntryStatus::Untracked;
+        if same {
+            first.status = EntryStatus::M;
+            first.unstaged = true;
+        }
+        same
+    });
+    files
+}
+
+/// The status of a changed (`1`) entry with index letter `x` and working-tree letter `y`:
+/// how the working tree differs from HEAD, which is what a commit of it records.
+fn changed(x: u8, y: u8) -> EntryStatus {
+    match (x, y) {
+        (b'A', _) | (_, b'A') => EntryStatus::A,
+        (b'D', _) | (_, b'D') => EntryStatus::D,
+        (b'T', _) | (_, b'T') => EntryStatus::T,
+        _ => EntryStatus::M,
+    }
 }
 
 /// Counts porcelain v2 entries: `1` (changed), `2` (renamed or copied; followed by an extra
@@ -189,5 +300,88 @@ mod tests {
             counts(1, 0, 0)
         );
         assert_eq!(parse_status(b"? partial").0, counts(0, 1, 0));
+    }
+
+    fn entry(path: &str, status: EntryStatus, staged: bool, unstaged: bool) -> FileEntry {
+        FileEntry {
+            path: path.into(),
+            orig_path: None,
+            status,
+            staged,
+            unstaged,
+        }
+    }
+
+    #[test]
+    fn files_are_listed_with_their_status_sorted() {
+        let out = [
+            "1 .M N... 100644 100644 100644 aaaa aaaa z modified\0",
+            "1 A. N... 000000 100644 100644 0000 aaaa added\0",
+            "1 AM N... 000000 100644 100644 0000 aaaa added then edited\0",
+            "1 .D N... 100644 100644 000000 aaaa aaaa deleted here\0",
+            "1 D. N... 100644 000000 000000 aaaa 0000 deleted staged\0",
+            "1 MM N... 100644 100644 100644 aaaa bbbb both\0",
+            "1 .T N... 100644 100644 120000 aaaa aaaa link now\0",
+            "1 .A N... 000000 000000 100644 0000 0000 intent\0",
+            RENAME,
+            "2 C. N... 100644 100644 100644 aaaa aaaa C75 copy\0copied from\0",
+            UNMERGED,
+            "? -dash \u{fc}\nline\0",
+            "! ignored\0",
+        ]
+        .concat();
+        let files = parse_files(out.as_bytes());
+        let renamed = FileEntry {
+            orig_path: Some("old name.txt".into()),
+            ..entry("new name.txt", EntryStatus::R, true, false)
+        };
+        let copied = FileEntry {
+            orig_path: Some("copied from".into()),
+            ..entry("copy", EntryStatus::C, true, false)
+        };
+        assert_eq!(
+            files,
+            [
+                entry("-dash \u{fc}\nline", EntryStatus::Untracked, false, true),
+                entry("added", EntryStatus::A, true, false),
+                entry("added then edited", EntryStatus::A, true, true),
+                entry("both", EntryStatus::M, true, true),
+                entry("c.txt", EntryStatus::U, false, true),
+                copied,
+                entry("deleted here", EntryStatus::D, false, true),
+                entry("deleted staged", EntryStatus::D, true, false),
+                entry("intent", EntryStatus::A, false, true),
+                entry("link now", EntryStatus::T, false, true),
+                renamed,
+                entry("z modified", EntryStatus::M, false, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_staged_deletion_whose_file_is_back_is_one_entry() {
+        let out = [
+            "? back\0? other\0",
+            "1 D. N... 100644 000000 000000 aaaa 0000 back\0",
+        ]
+        .concat();
+        assert_eq!(
+            parse_files(out.as_bytes()),
+            [
+                entry("back", EntryStatus::M, true, true),
+                entry("other", EntryStatus::Untracked, false, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_file_list_survives_hostile_input() {
+        assert!(parse_files(b"").is_empty());
+        assert!(parse_files(b"\0\0# branch.oid abc\0").is_empty());
+        assert!(parse_files(b"1 .M short\0u UU x\0").is_empty());
+        // A rename without its original path keeps what there is.
+        let files = parse_files(b"2 R. N... x y z a b R100 new\0");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].orig_path, None);
     }
 }

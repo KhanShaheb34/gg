@@ -19,6 +19,7 @@ import type {
   RowsPage,
   Settings,
   ViewOptions,
+  WorktreeFiles,
   WorktreePath,
 } from "./types";
 
@@ -351,6 +352,8 @@ export const api = {
     call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
   /** Makes the worktree at `path` the active one (refused while an operation runs or waits there). */
   setActiveWorktree: (repoId: number, path: string) => call<RepoSnapshot>("set_active_worktree", { repoId, path }),
+  /** The changed files of the worktree at `path` (any of the repository's, not only the active one). */
+  worktreeFiles: (repoId: number, path: string) => call<WorktreeFiles>("worktree_files", { repoId, path }),
   /** Where a new worktree for `branch` goes by default (the `worktreePattern` setting). */
   worktreeDefaultPath: (repoId: number, branch: string) =>
     call<WorktreePath>("worktree_default_path", { repoId, branch }),

@@ -194,7 +194,8 @@ pub fn expect_head_mut(request: &mut OpRequest) -> Option<&mut HeadInfo> {
         | OpRequest::Pull { expect_head, .. }
         | OpRequest::Continue { expect_head, .. }
         | OpRequest::Abort { expect_head, .. }
-        | OpRequest::Skip { expect_head, .. } => Some(expect_head),
+        | OpRequest::Skip { expect_head, .. }
+        | OpRequest::Commit { expect_head, .. } => Some(expect_head),
         _ => None,
     }
 }

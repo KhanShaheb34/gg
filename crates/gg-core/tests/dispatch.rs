@@ -1325,3 +1325,60 @@ async fn worktree_default_path_and_worktree_ops_via_dispatch() {
         .await;
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
+
+/// `worktree_files` lists a worktree's changed files by path; a commit runs through
+/// `run_op` with its paths, message and push flag, and the bindings of `expectHead` and
+/// `expectWorktree`.
+#[tokio::test]
+async fn worktree_files_and_commit_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.write("a.txt", "a\n");
+    repo.commit_all("one");
+    repo.write("a.txt", "edited\n");
+    repo.write("new file.txt", "x\n");
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let wt = first["activeWorktree"].clone();
+    let files = h
+        .call("worktree_files", json!({ "repoId": id, "path": wt }))
+        .await;
+    assert_eq!(
+        files,
+        json!({
+            "files": [
+                {"path": "a.txt", "origPath": null, "status": "M", "staged": false, "unstaged": true},
+                {"path": "new file.txt", "origPath": null, "status": "?", "staged": false, "unstaged": true},
+            ],
+            "truncated": false,
+        })
+    );
+    let err = h
+        .fail(
+            "worktree_files",
+            json!({ "repoId": id, "path": repo.dir.path() }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
+                "request": {
+                    "op": "commit", "paths": ["new file.txt"], "message": "add it", "push": false,
+                    "expectHead": first["head"], "expectWorktree": wt,
+                },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert!(
+        out["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Committed 1 file to main ("),
+        "{out:#}"
+    );
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "add it");
+}

@@ -7,6 +7,7 @@
 //! the active worktree, and ended with one refresh that also clears `snapshot.op`. Every git
 //! command it runs is logged with the repository's and the operation's id.
 
+mod commit;
 mod danger;
 mod explain;
 mod local;
@@ -635,6 +636,27 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             fixed("Prune stale worktree entries".to_owned()),
             body(move |ctx, _| Box::pin(async move { worktree::prune(ctx).await })),
         ),
+        OpRequest::Commit {
+            paths,
+            message,
+            push,
+            ..
+        } => {
+            commit::check(&paths, &message)?;
+            let files = commit::files(paths.len());
+            (
+                on_head(move |head| {
+                    if push {
+                        format!("Commit {files} on {head} and push")
+                    } else {
+                        format!("Commit {files} on {head}")
+                    }
+                }),
+                body(move |ctx, _| {
+                    Box::pin(async move { commit::commit(ctx, &paths, &message, push).await })
+                }),
+            )
+        }
     };
     Ok(Prepared { title, body })
 }
@@ -1063,6 +1085,12 @@ impl RepoManager {
         if let Some(why) = worktree::refused(&ctx, &request).await? {
             return Ok((title, Ran::Refused(why)));
         }
+        if let OpRequest::Commit { paths, push, .. } = &request
+            && let Some(why) =
+                commit::refused(&ctx, paths, *push, in_progress, head.as_deref()).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
         let dangers = dangers(&ctx, &request).await?;
         if !all_confirmed(&dangers, &confirmed) {
             return Ok((title, Ran::Unconfirmed(dangers)));
@@ -1112,13 +1140,14 @@ fn all_confirmed(dangers: &[Danger], confirmed: &[Confirmed]) -> bool {
 }
 
 /// HEAD as the UI showed it for `request`, if the request acts on the branch checked out,
-/// and whether its commit must be the same too (a reset, or a continue, abort or skip: what
-/// they do depends on where HEAD is; a merge, rebase, cherry-pick or revert only on which
+/// and whether its commit must be the same too (a reset, a commit, or a continue, abort or
+/// skip: what they do depends on where HEAD is; a merge, rebase, cherry-pick or revert only on which
 /// branch, so that several asked for one after another still run). `head` is the branch
 /// HEAD is on now. A pull counts when the branch it pulls is checked out, then or now.
 fn expected_head<'r>(request: &'r OpRequest, head: Option<&str>) -> Option<(&'r HeadInfo, bool)> {
     match request {
         OpRequest::Reset { expect_head, .. }
+        | OpRequest::Commit { expect_head, .. }
         | OpRequest::Continue { expect_head, .. }
         | OpRequest::Abort { expect_head, .. }
         | OpRequest::Skip { expect_head, .. } => Some((expect_head, true)),

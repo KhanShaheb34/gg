@@ -259,10 +259,30 @@ export type OpRequest =
   | { op: "worktree_add"; path: string; branch: WorktreeBranch }
   // path: a linked worktree git lists (re-checked in its turn); its work is confirmed first; the active one: main becomes active first
   | { op: "worktree_remove"; path: string; deleteBranch: boolean }
-  | { op: "worktree_prune" };
+  | { op: "worktree_prune" }
+  // Commits exactly `paths` (as worktree_files lists them; either side of a rename stands for both) as they
+  // are in the working tree in its turn, in a fresh temporary index: other changes, staged or not, stay as
+  // they are. push: then pushes the branch to the same-named branch on its remote (R38). While a merge with
+  // no conflicts left is in progress, it concludes the merge, and `paths` must be every changed file.
+  // Empty paths: nothing_to_do; blank message: bad_request.
+  | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string };
 
 /** What a new worktree checks out: an existing local branch, a new branch at a commit (full hash), or a commit, detached. */
 export type WorktreeBranch = { existing: string } | { create: string; at: string } | { detach: string };
+/**
+ * One changed file of a worktree (`worktree_files`): `status` is how the working tree differs from HEAD
+ * ("?" untracked, "U" conflicted); `origPath` the other side of a rename or copy; `staged`: the index
+ * differs from HEAD; `unstaged`: the working tree differs from the index.
+ */
+export type FileEntry = {
+  path: string;
+  origPath: string | null;
+  status: "M" | "A" | "D" | "R" | "C" | "T" | "U" | "?";
+  staged: boolean;
+  unstaged: boolean;
+};
+/** `worktree_files`: the changed files sorted by path, the first 5000; `truncated` when there are more. */
+export type WorktreeFiles = { files: FileEntry[]; truncated: boolean };
 /** `worktree_default_path`: the first free folder the pattern gives; `exists`: it is there, empty. */
 export type WorktreePath = { path: string; exists: boolean };
 

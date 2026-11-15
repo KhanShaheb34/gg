@@ -105,6 +105,57 @@ pub struct WorktreeStatus {
 /// Most conflicted paths a [`WorktreeStatus`] names.
 pub const MAX_CONFLICTED_PATHS: usize = 200;
 
+/// How a file in a worktree differs from HEAD, as the commit panel lists it. Serialized as
+/// its single letter (`"?"` for untracked).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryStatus {
+    /// Modified.
+    M,
+    /// Added (staged as new, or added with intent to add).
+    A,
+    /// Deleted (staged, or gone from the working tree).
+    D,
+    /// Renamed (`orig_path` is set).
+    R,
+    /// Copied (`orig_path` is set).
+    C,
+    /// Type changed (a file became a symlink, say).
+    T,
+    /// Unmerged: it has conflicts.
+    U,
+    /// Untracked.
+    #[serde(rename = "?")]
+    Untracked,
+}
+
+/// One changed file of a worktree (`worktree_files`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    /// Relative to the worktree.
+    pub path: String,
+    /// The other side of a rename or copy: the path it came from.
+    pub orig_path: Option<String>,
+    pub status: EntryStatus,
+    /// The index differs from HEAD for it.
+    pub staged: bool,
+    /// The working tree differs from the index for it (always for untracked and unmerged
+    /// files).
+    pub unstaged: bool,
+}
+
+/// What `worktree_files` returns: the worktree's changed files sorted by path, the first
+/// [`MAX_LISTED_FILES`] of them; `truncated` when there are more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeFiles {
+    pub files: Vec<FileEntry>,
+    pub truncated: bool,
+}
+
+/// Most files `worktree_files` lists.
+pub const MAX_LISTED_FILES: usize = 5000;
+
 /// How a file changed in a commit. Serialized as its single letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileStatus {
@@ -505,10 +556,10 @@ pub enum PullMode {
 /// (`{"op": "create_branch", "name": ..}`); field names camelCase.
 ///
 /// A request on the branch checked out (reset, merge, rebase, cherry-pick, revert, pull of
-/// it, continue, abort, skip) carries `expect_head`: HEAD as the UI showed it when the user
-/// asked (R39). The core refuses it, running nothing, when HEAD is on another branch (or
-/// detached, or another commit while detached) by its turn; reset, continue, abort and skip
-/// also when the commit moved.
+/// it, commit, continue, abort, skip) carries `expect_head`: HEAD as the UI showed it when
+/// the user asked (R39). The core refuses it, running nothing, when HEAD is on another branch
+/// (or detached, or another commit while detached) by its turn; reset, commit, continue,
+/// abort and skip also when the commit moved.
 ///
 /// Every request that runs in a working directory (all but push, push_tag, delete_tag,
 /// delete_remote_branch and fetch_into_local) carries `expect_worktree`: the active worktree
@@ -716,6 +767,20 @@ pub enum OpRequest {
     /// Forgets the worktrees git calls prunable (their folders are gone):
     /// `git worktree prune`. (No fields; braced, so that unknown fields are refused.)
     WorktreePrune {},
+    /// Commits exactly `paths` (relative to the worktree, as `worktree_files` lists them;
+    /// either side of a rename stands for both) as they are in the working tree in the
+    /// operation's turn, with `message`, on the branch checked out; then, with `push`, pushes
+    /// that branch to the branch of the same name on its remote (R38). Other changes,
+    /// staged or not, are left as they are. While a merge with no conflicts left is in
+    /// progress, it concludes the merge, and `paths` must then be every changed file.
+    Commit {
+        paths: Vec<String>,
+        message: String,
+        push: bool,
+        expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
+    },
 }
 
 /// What a new worktree checks out: an existing local branch, a new branch made at a commit
@@ -814,6 +879,9 @@ impl OpRequest {
             }
             | Self::Skip {
                 expect_worktree, ..
+            }
+            | Self::Commit {
+                expect_worktree, ..
             } => Some(expect_worktree),
             Self::DeleteTag { .. }
             | Self::PushTag { .. }
@@ -890,6 +958,9 @@ impl OpRequest {
                 expect_worktree, ..
             }
             | Self::Skip {
+                expect_worktree, ..
+            }
+            | Self::Commit {
                 expect_worktree, ..
             } => Some(expect_worktree),
             Self::DeleteTag { .. }
@@ -1221,6 +1292,8 @@ mod tests {
             json!({"op": "worktree_add", "path": "/w", "branch": {"detach": "h"}}),
             json!({"op": "worktree_remove", "path": "/w", "deleteBranch": true}),
             json!({"op": "worktree_prune"}),
+            json!({"op": "commit", "paths": ["a b", "-x"], "message": "m", "push": true,
+                   "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
         ];
         for case in cases {
             let request: OpRequest =
@@ -1267,6 +1340,10 @@ mod tests {
             json!({"op": "worktree_add", "path": "/w", "branch": {"existing": "b", "at": "h"}}),
             json!({"op": "worktree_add", "path": "/w", "branch": {"create": "b"}}),
             json!({"op": "worktree_add", "path": "/w", "branch": "b"}),
+            // A commit says where and on which HEAD it was asked for.
+            json!({"op": "commit", "paths": ["a"], "message": "m", "push": false, "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "commit", "paths": ["a"], "message": "m", "push": false, "expectWorktree": "/w"}),
+            json!({"op": "commit", "paths": ["a"], "message": "m", "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
         ] {
             assert_eq!(
                 serde_json::from_value::<OpRequest>(bad.clone()).ok(),
@@ -1484,6 +1561,41 @@ mod tests {
                 serde_json::from_value::<FileStatus>(json!(letter)).unwrap(),
                 status
             );
+        }
+    }
+
+    #[test]
+    fn worktree_files_shape() {
+        let files = WorktreeFiles {
+            files: vec![FileEntry {
+                path: "new name".into(),
+                orig_path: Some("old".into()),
+                status: EntryStatus::R,
+                staged: true,
+                unstaged: false,
+            }],
+            truncated: true,
+        };
+        let v = serde_json::to_value(&files).unwrap();
+        assert_eq!(
+            v,
+            json!({"files": [{"path": "new name", "origPath": "old", "status": "R",
+                              "staged": true, "unstaged": false}],
+                   "truncated": true})
+        );
+        assert_eq!(serde_json::from_value::<WorktreeFiles>(v).unwrap(), files);
+        let letters = [
+            (EntryStatus::M, "M"),
+            (EntryStatus::A, "A"),
+            (EntryStatus::D, "D"),
+            (EntryStatus::R, "R"),
+            (EntryStatus::C, "C"),
+            (EntryStatus::T, "T"),
+            (EntryStatus::U, "U"),
+            (EntryStatus::Untracked, "?"),
+        ];
+        for (status, letter) in letters {
+            assert_eq!(serde_json::to_value(status).unwrap(), letter);
         }
     }
 

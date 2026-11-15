@@ -61,6 +61,17 @@ pub(crate) fn refused_while(
     kind: InProgressKind,
     head: Option<&str>,
 ) -> Option<String> {
+    // A commit concludes a merge (see `commit`); a rebase, cherry-pick or revert makes its
+    // commit by continuing.
+    if matches!(request, OpRequest::Commit { .. }) {
+        return (kind != InProgressKind::Merge).then(|| {
+            format!(
+                "A {} is in progress: Continue commits its changes and goes on (or abort it). \
+                 A commit of its own would end up in the middle of it.",
+                kind_name(kind)
+            )
+        });
+    }
     (changes_head_or_tree(request, head) || matches!(request, OpRequest::StashSave { .. })).then(
         || {
             format!(

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -485,6 +485,10 @@ pub struct GitRunner {
     stop: Option<Arc<Stop>>,
     /// The git version found at start, when it could be read.
     version: Option<(u32, u32, u32)>,
+    /// The index file git uses instead of the worktree's own (`GIT_INDEX_FILE`), if any: a
+    /// commit of chosen files builds its tree in a temporary index (see
+    /// [`GitRunner::with_index_file`]).
+    index_file: Option<PathBuf>,
 }
 
 impl GitRunner {
@@ -519,6 +523,7 @@ impl GitRunner {
                 tags: Tags::default(),
                 stop: None,
                 version: None,
+                index_file: None,
             };
             if let Ok(version) = runner.check().await {
                 runner.version = version;
@@ -531,6 +536,7 @@ impl GitRunner {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         runner.version = runner.check().await?;
         Ok(runner)
@@ -549,6 +555,14 @@ impl GitRunner {
         let mut runner = self.clone();
         runner.tags.op_id = Some(op_id);
         runner.stop = Some(stop);
+        runner
+    }
+
+    /// This runner, with git using the index file `index` (an absolute path) instead of the
+    /// worktree's own: `GIT_INDEX_FILE` for git and the hooks it runs.
+    pub(crate) fn with_index_file(&self, index: &Path) -> Self {
+        let mut runner = self.clone();
+        runner.index_file = Some(index.to_path_buf());
         runner
     }
 
@@ -1014,6 +1028,9 @@ impl GitRunner {
         for var in INHERITED_REPO_VARS {
             cmd.env_remove(var);
         }
+        if let Some(index) = &self.index_file {
+            cmd.env("GIT_INDEX_FILE", index);
+        }
         // With PATH overridden, the program lookup for "git" also uses this PATH.
         if let Some(path) = &self.path {
             cmd.env("PATH", path);
@@ -1282,6 +1299,7 @@ mod tests {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1351,6 +1369,7 @@ mod tests {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1396,6 +1415,7 @@ mod tests {
             tags: Tags::default(),
             stop: Some(stop.clone()),
             version: None,
+            index_file: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
@@ -1442,6 +1462,7 @@ mod tests {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         let dir = tempfile::tempdir().unwrap();
         // git prints back a 300 KiB config value given on its command line.
@@ -1474,6 +1495,7 @@ mod tests {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         let cmd = runner.command(None, &["status"]);
         let removed: Vec<_> = cmd
@@ -1526,6 +1548,7 @@ mod tests {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         runner.log_timed_out(
             Path::new("/r"),
@@ -1686,6 +1709,7 @@ mod tests {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         let op = runner.for_repo(4).for_op(9, Stop::new());
         op.log_timed_out(Path::new("/r"), &["push"], CmdKind::Write, Instant::now());
@@ -1703,6 +1727,7 @@ mod tests {
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
         };
         let cmd = runner.command(None, &["rebase"]);
         let env: Vec<(String, String)> = cmd

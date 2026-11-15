@@ -100,7 +100,7 @@ pub(crate) async fn upstream(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Ups
 }
 
 /// The repository's remotes, by name.
-async fn remotes(ctx: &OpCtx<'_>) -> Result<Vec<String>> {
+pub(crate) async fn remotes(ctx: &OpCtx<'_>) -> Result<Vec<String>> {
     let out = ctx.read(&["remote"]).await?;
     Ok(out
         .text()

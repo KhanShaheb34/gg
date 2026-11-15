@@ -505,6 +505,49 @@ mod tests {
         assert!(none.contains("GG_APP=''\n"));
     }
 
+    /// The Windows launcher cannot be run here; this checks statically that a path holding
+    /// `&`, `(`, `)` or `!` can never be taken for batch syntax: every `%VAR%` of a path is
+    /// inside quotes, an `echo` names a path only as `!VAR!` (delayed expansion, which does
+    /// not parse the value), and every other `!VAR!` is a quoted argument.
+    #[test]
+    fn the_windows_launcher_never_expands_a_path_outside_quotes() {
+        const CMD: &str = include_str!("../../../src-tauri/resources/gg.cmd");
+        const NAMES: [&str; 4] = ["TARGET", "GG_APP", "GG_APP_BIN", "TOP"];
+        let quoted = |line: &str, at: usize| line[..at].matches('"').count() % 2 == 1;
+        let mut delayed = false;
+        let mut echoed = 0;
+        for (n, line) in CMD.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("rem") || code.starts_with(':') {
+                continue;
+            }
+            delayed |= code.starts_with("setlocal EnableDelayedExpansion");
+            let echo = code.starts_with("echo");
+            for name in NAMES {
+                for pattern in [format!("%{name}%"), format!("%{name}:")] {
+                    for (at, _) in line.match_indices(&pattern) {
+                        assert!(!echo, "line {}: an echo expands %{name}%: {line}", n + 1);
+                        assert!(quoted(line, at), "line {}: unquoted: {line}", n + 1);
+                    }
+                }
+                for (at, _) in line.match_indices(&format!("!{name}!")) {
+                    assert!(delayed, "line {}: !{name}! before it is enabled", n + 1);
+                    if echo {
+                        echoed += 1;
+                    } else {
+                        assert!(quoted(line, at), "line {}: unquoted: {line}", n + 1);
+                    }
+                }
+            }
+            // No block holds a value: `(` opens only a `for` set.
+            if code.ends_with('(') || code.contains(") else") {
+                panic!("line {}: a ( ) block: {line}", n + 1);
+            }
+        }
+        assert!(echoed >= 3, "the messages name the paths");
+        assert!(CMD.contains("setlocal DisableDelayedExpansion"));
+    }
+
     #[test]
     fn the_marker_is_recognised_in_the_first_lines_only() {
         let dir = tempfile::tempdir().unwrap();

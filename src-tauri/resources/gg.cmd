@@ -6,7 +6,11 @@ rem the gg app, and returns at once. Written by the app's "Install 'gg' Command"
 rem replaces or removes it only while the marker line above is there. The app is the
 rem program it was installed from (below); if it moves, install the command again.
 rem (Installing it on Windows comes with the Windows release.)
-setlocal
+rem
+rem Paths may hold & ( ) ! and spaces. So every value is set with delayed expansion off
+rem (a ! in it stays as it is), always inside quotes, and every later use is !VAR! with
+rem delayed expansion on, quoted wherever it is an argument; no ( ) block holds a value.
+setlocal DisableDelayedExpansion
 set "GG_APP=@GG_APP@"
 
 if "%~1"=="-h" goto help
@@ -16,37 +20,46 @@ if "%~1"=="--version" goto version
 
 set "TARGET=%~1"
 if "%~1"=="--" set "TARGET=%~2"
-if "%TARGET%"=="" set "TARGET=."
+if not defined TARGET set "TARGET=."
 for %%I in ("%TARGET%") do set "TARGET=%%~fI"
-if not exist "%TARGET%\" (
-  echo gg: %TARGET%: no such folder 1>&2
-  exit /b 1
-)
+if not exist "%TARGET%\" goto nofolder
 
-where git >nul 2>nul || (
-  echo gg: git was not found on PATH 1>&2
-  exit /b 1
-)
+where git >nul 2>nul || goto nogit
 set "TOP="
-for /f "delims=" %%T in ('git -C "%TARGET%" rev-parse --show-toplevel 2^>nul') do set "TOP=%%T"
-if not defined TOP (
-  echo gg: %TARGET% is not inside a git repository 1>&2
-  exit /b 1
-)
+rem The child cmd that runs git expands %TARGET% itself, inside its quotes.
+for /f "delims=" %%T in ('git -C "%%TARGET%%" rev-parse --show-toplevel 2^>nul') do set "TOP=%%T"
+if not defined TOP goto notrepo
 set "TOP=%TOP:/=\%"
 
+setlocal EnableDelayedExpansion
 rem Tests put a recording stub here.
-if defined GG_APP_BIN (
-  start "" "%GG_APP_BIN%" "%TOP%"
-  exit /b 0
-)
-if not exist "%GG_APP%" (
-  echo gg: the gg app is no longer at %GG_APP%. 1>&2
-  echo gg: open gg and choose Install 'gg' Command again to point this command at it. 1>&2
-  exit /b 1
-)
-start "" "%GG_APP%" "%TOP%"
+if defined GG_APP_BIN goto stub
+if not exist "!GG_APP!" goto moved
+start "" "!GG_APP!" "!TOP!"
 exit /b 0
+
+:stub
+start "" "!GG_APP_BIN!" "!TOP!"
+exit /b 0
+
+:moved
+echo gg: the gg app is no longer at !GG_APP!. 1>&2
+echo gg: open gg and choose Install 'gg' Command again to point this command at it. 1>&2
+exit /b 1
+
+:nofolder
+setlocal EnableDelayedExpansion
+echo gg: !TARGET!: no such folder 1>&2
+exit /b 1
+
+:nogit
+echo gg: git was not found on PATH 1>&2
+exit /b 1
+
+:notrepo
+setlocal EnableDelayedExpansion
+echo gg: !TARGET! is not inside a git repository 1>&2
+exit /b 1
 
 :version
 echo gg @GG_VERSION@

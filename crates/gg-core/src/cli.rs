@@ -148,9 +148,14 @@ fn is_writable_dir(dir: &Path) -> bool {
     }
 }
 
-/// Whether `dir` or a folder above it holds a `.git`.
+/// Whether `dir` or a folder above it holds a `.git`, where `dir` really is: a folder
+/// reached through a symbolic link (a `~/.local/bin` linked into a dotfiles repository) is
+/// judged by where the link leads.
 fn in_repository(dir: &Path) -> bool {
-    dir.ancestors().any(|d| d.join(".git").exists())
+    let real = dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    [dir, real.as_path()]
+        .iter()
+        .any(|p| p.ancestors().any(|d| d.join(".git").exists()))
 }
 
 /// The first launcher the app wrote on `search_path`, if any.
@@ -659,7 +664,31 @@ mod tests {
         // Without a home folder, only the usual folders count.
         assert!(candidates(&search, None).is_empty());
         // ~/.local/bin only when it is on PATH.
-        assert_eq!(candidates(&path_of(&[&bin]), Some(&home)), [bin]);
+        assert_eq!(candidates(&path_of(&[&bin]), Some(&home)), [bin.clone()]);
+    }
+
+    /// A folder is judged by where it really is: a `~/.local/bin` that is a link into a
+    /// dotfiles repository (inside home or out of it) is not offered.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_linked_into_a_repository_is_not_offered() {
+        let root = tempfile::tempdir().unwrap();
+        for dotfiles in ["home/dotfiles", "dotfiles"] {
+            let home = mkdir(&root.path().join("home"));
+            let repo = mkdir(&root.path().join(dotfiles));
+            mkdir(&repo.join(".git"));
+            let target = mkdir(&repo.join("bin"));
+            mkdir(&home.join(".local"));
+            let local = home.join(".local/bin");
+            let _ = fs::remove_file(&local);
+            std::os::unix::fs::symlink(&target, &local).unwrap();
+            let bin = mkdir(&home.join("bin"));
+            assert_eq!(
+                candidates(&path_of(&[&local, &bin]), Some(&home)),
+                [bin],
+                "{dotfiles}"
+            );
+        }
     }
 
     #[test]

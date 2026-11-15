@@ -645,3 +645,319 @@ async fn measure_opening_with_twenty_worktrees() {
         );
     }
 }
+
+/// A view change while a switch of worktree is underway (Task 3 review, item 1): no snapshot
+/// shows the new active worktree with the old one's HEAD, and the switch still lands with
+/// the new worktree's status.
+#[tokio::test]
+async fn a_view_change_racing_a_switch_never_mixes_the_two_worktrees() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let feature = repo.add_worktree("feature");
+    git_in(
+        &feature,
+        &["commit", "-q", "--allow-empty", "-m", "on feature"],
+    );
+    fs::write(feature.join("new.txt"), "x").unwrap();
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let id = snap.repo_id;
+    // The switch waits for the new worktree's status: long enough to change the view meanwhile.
+    h.m.set_status_delay(Duration::from_millis(700));
+    let switching = tokio::spawn({
+        let (m, feature) = (h.m.clone(), feature.clone());
+        async move { m.set_active_worktree(id, &feature).await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut view = snap.view_options.clone();
+    view.show_tags = false;
+    let changed = h.m.set_view_options(id, view).await.unwrap();
+    let switched = switching.await.unwrap().unwrap();
+    h.m.set_status_delay(Duration::ZERO);
+
+    let feature_path = real(&feature);
+    let check = |s: &serde_json::Value| {
+        let branch = s["head"]["branch"].as_str();
+        if s["activeWorktree"] == feature_path.as_str() {
+            assert_eq!(branch, Some("feature"), "mixed: {s:#}");
+        } else {
+            assert_eq!(branch, Some("main"), "mixed: {s:#}");
+        }
+    };
+    check(&serde_json::to_value(&changed).unwrap());
+    for s in h.changes(id) {
+        check(&s);
+    }
+    assert_eq!(switched.active_worktree, feature_path);
+    assert!(!switched.view_options.show_tags, "the view change is kept");
+    assert_eq!(switched.status.untracked, 1);
+    assert_eq!(
+        wt(&switched, "wt-feature").status,
+        Some(counts(0, 1, 0, &[]))
+    );
+}
+
+/// The commits on no remote of another worktree are counted again only when its HEAD or a
+/// remote-tracking branch moved, and the window gaining focus reads a worktree at most once
+/// every 30 s (Task 3 review, item 2).
+#[tokio::test]
+async fn focus_reads_other_worktrees_sparingly() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let b = repo.add_worktree("b");
+    git_in(&b, &["commit", "-q", "--allow-empty", "-m", "on b"]);
+    let b_head = git_in(&b, &["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    until(&h, id, "b read", |s| wt(s, "wt-b").unpushed == Some(2)).await;
+    let mark = h.last_log_id();
+    for _ in 0..2 {
+        h.m.set_window_focused(false);
+        h.m.set_window_focused(true);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::timeout(TIMEOUT, h.m.wait_background(id))
+            .await
+            .unwrap();
+    }
+    let counts_of_b = |since: u64| {
+        h.log
+            .since(since)
+            .into_iter()
+            .filter(|r| r.args.first().map(String::as_str) == Some("rev-list"))
+            .filter(|r| r.args.contains(&b_head))
+            .count()
+    };
+    assert_eq!(counts_of_b(0), 1, "counted once, when opened");
+    assert_eq!(status_reads(&h, mark, Some(&b)).len(), 1, "one focus read");
+    // Its HEAD moves: counted again.
+    git_in(&b, &["commit", "-q", "--allow-empty", "-m", "again"]);
+    until(&h, id, "b counted again", |s| {
+        wt(s, "wt-b").unpushed == Some(3)
+    })
+    .await;
+}
+
+/// The active worktree removed while an operation runs: at the operation's end the main
+/// worktree is active, and its files are the ones watched (Task 3 review, item 3).
+#[tokio::test]
+async fn the_fallback_at_an_operations_end_watches_main() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let feature = repo.add_worktree("feature");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_active_worktree(id, &feature).await.unwrap();
+    tokio::time::timeout(TIMEOUT, h.m.wait_background(id))
+        .await
+        .unwrap();
+    h.m.set_op_delay(Duration::from_millis(800));
+    let running = tokio::spawn({
+        let (m, wt, head) = (h.m.clone(), feature.clone(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("a", &head)), &[])
+                .await
+        }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the operation runs");
+    // Its git commands have run (the delay comes after them).
+    while !repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/a"]) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    repo.git(&["worktree", "remove", "--force", &feature.to_string_lossy()]);
+    let out = running.await.unwrap();
+    h.m.set_op_delay(Duration::ZERO);
+    let out = out.unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(out.snapshot.active_worktree, real(repo.path()));
+    tokio::time::timeout(TIMEOUT, h.m.wait_background(id))
+        .await
+        .unwrap();
+    // An edit in main shows without anything else asking for it: main is watched.
+    let started = Instant::now();
+    repo.write("main-edit.txt", "x");
+    until(&h, id, "the edit in main shows", |s| {
+        s.status.untracked == 1
+    })
+    .await;
+    assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+/// A bare main repository: it cannot be made active, and when the active worktree goes,
+/// the first linked worktree with its folder stands in for the main one; with none left,
+/// that is said once (Task 3 review, item 5).
+#[tokio::test]
+async fn a_bare_main_repository_is_never_made_active() {
+    let source = TestRepo::new();
+    source.commit("one");
+    source.branch("other");
+    let dir = tempfile::tempdir().unwrap();
+    let bare = dir.path().join("bare.git");
+    git_in(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            &source.path().to_string_lossy(),
+            "bare.git",
+        ],
+    );
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    git_in(
+        &bare,
+        &["worktree", "add", "-q", &a.to_string_lossy(), "main"],
+    );
+    git_in(
+        &bare,
+        &["worktree", "add", "-q", &b.to_string_lossy(), "other"],
+    );
+    let (a_real, b_real) = (real(&a), real(&b));
+    let h = harness().await;
+    let snap = h.open(&a).await;
+    let id = snap.repo_id;
+    assert_eq!(snap.active_worktree, a_real);
+    let err = h.m.set_active_worktree(id, &bare).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("bare"), "{}", err.message);
+
+    git_in(
+        &bare,
+        &["worktree", "remove", "--force", &a.to_string_lossy()],
+    );
+    let snap = until(&h, id, "b stands in", |s| s.active_worktree == b_real).await;
+    assert_eq!(snap.head.branch.as_deref(), Some("other"));
+    let errors = repo_errors(&h, id);
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    let message = errors[0]["error"]["message"].as_str().unwrap();
+    assert!(message.contains("works in the worktree"), "{message}");
+
+    git_in(
+        &bare,
+        &["worktree", "remove", "--force", &b.to_string_lossy()],
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let _ = h.m.refresh(id).await;
+    let _ = h.m.refresh(id).await;
+    let errors = repo_errors(&h, id);
+    let none_left: Vec<_> = errors
+        .iter()
+        .filter(|e| e["error"]["code"] == "bare_repo")
+        .collect();
+    assert_eq!(none_left.len(), 1, "said once: {errors:#?}");
+    assert_eq!(
+        h.m.snapshot(id).await.unwrap().active_worktree,
+        b_real,
+        "never the bare repository"
+    );
+}
+
+/// The active worktree's folder replaced by a plain folder, outside the app: a request
+/// asked for there is refused before anything is read there (Task 3 review, item 6).
+#[tokio::test]
+async fn a_request_for_a_folder_that_is_no_longer_a_worktree_is_refused() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let feature = repo.add_worktree("feature");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_active_worktree(id, &feature).await.unwrap();
+    tokio::time::timeout(TIMEOUT, h.m.wait_background(id))
+        .await
+        .unwrap();
+    h.m.set_op_delay(Duration::from_millis(600));
+    let first = tokio::spawn({
+        let (m, wt, head) = (h.m.clone(), feature.clone(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("a", &head)), &[])
+                .await
+        }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the operation runs");
+    while !repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/a"]) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let second = tokio::spawn({
+        let (m, wt, head) = (h.m.clone(), feature.clone(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("b", &head)), &[])
+                .await
+        }
+    });
+    fs::remove_dir_all(&feature).unwrap();
+    fs::create_dir(&feature).unwrap();
+    first.await.unwrap().unwrap();
+    h.m.set_op_delay(Duration::ZERO);
+    let out = second.await.unwrap().unwrap();
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert!(
+        out.message
+            == format!(
+                "That was asked for in {}, but {} is no longer a worktree.",
+                feature.display(),
+                real(&feature)
+            )
+            || out.message.contains("is the active worktree now"),
+        "{}",
+        out.message
+    );
+    // Nothing but the check ran for it.
+    let ran: Vec<_> = op_records(&h.log, &out)
+        .into_iter()
+        .map(|r| r.args.join(" "))
+        .collect();
+    assert!(
+        ran.iter().all(|a| a == "rev-parse --show-toplevel"),
+        "{ran:?}"
+    );
+    assert!(!repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/b"]));
+}
+
+/// Two switches in quick succession: the last one is what is remembered, however the
+/// writes are scheduled (Task 3 review, item 7).
+#[tokio::test]
+async fn the_last_of_two_quick_switches_is_remembered() {
+    use std::sync::{Arc, Mutex};
+    struct Slow {
+        slow: PathBuf,
+        stored: Mutex<Option<PathBuf>>,
+    }
+    impl gg_core::repo::WorktreeMemory for Slow {
+        fn remembered(&self, _root: &Path) -> Option<PathBuf> {
+            None
+        }
+        fn remember(&self, _root: &Path, worktree: Option<&Path>) {
+            if worktree == Some(self.slow.as_path()) {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            *self.stored.lock().unwrap() = worktree.map(Path::to_path_buf);
+        }
+    }
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let a = repo.add_worktree("a");
+    let b = repo.add_worktree("b");
+    let memory = Arc::new(Slow {
+        slow: PathBuf::from(real(&a)),
+        stored: Mutex::new(None),
+    });
+    let h = harness().await;
+    h.m.set_worktree_memory(memory.clone());
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_active_worktree(id, &a).await.unwrap();
+    h.m.set_active_worktree(id, &b).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(
+        memory.stored.lock().unwrap().as_deref(),
+        Some(Path::new(&real(&b)))
+    );
+}

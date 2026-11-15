@@ -62,6 +62,7 @@ fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
                 wt.lock_reason = (!value.is_empty()).then(|| value.to_owned());
             }
             "prunable" => wt.prunable = true,
+            "bare" => wt.bare = true,
             _ => {}
         }
     }
@@ -136,6 +137,7 @@ mod tests {
         let list = parse_worktrees(out.as_bytes());
         assert_eq!(list.len(), 2);
         assert!(list[0].is_main);
+        assert!(list[0].bare && !list[1].bare);
         assert_eq!(
             (list[0].head.as_deref(), list[0].branch.as_deref()),
             (None, None)

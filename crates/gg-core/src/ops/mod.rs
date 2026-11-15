@@ -896,6 +896,22 @@ impl RepoManager {
             sink: self.sink.as_ref(),
             net_limit: self.net_limit(),
         };
+        // A request runs only in the worktree it was asked for: switching worktrees never
+        // redirects one already asked for. Checked before anything is read there.
+        if let Some(expected) = request.expect_worktree() {
+            let why = match worktree_moved(expected, &ctx.cwd) {
+                Some(why) => Some(why),
+                None => no_longer_a_worktree(&ctx, expected).await,
+            };
+            if let Some(why) = why {
+                let title = title(&TurnFacts {
+                    head: "HEAD",
+                    in_progress: None,
+                });
+                repo.runner.log().name_op(op_id, &title);
+                return Ok((title, Ran::Refused(why)));
+            }
+        }
         let head = local::current_branch(&ctx).await?;
         let in_progress = read_kind(&ctx.runner, &ctx.cwd).await?;
         let title = title(&TurnFacts {
@@ -903,14 +919,6 @@ impl RepoManager {
             in_progress,
         });
         repo.runner.log().name_op(op_id, &title);
-        // A request runs only in the worktree it was asked for: switching worktrees never
-        // redirects one already asked for.
-        if let Some(why) = request
-            .expect_worktree()
-            .and_then(|expected| worktree_moved(expected, &ctx.cwd))
-        {
-            return Ok((title, Ran::Refused(why)));
-        }
         if matches!(
             (&request, in_progress),
             (
@@ -1106,6 +1114,25 @@ fn worktree_moved(expected: &str, active: &std::path::Path) -> Option<String> {
         format!(
             "That was asked for in {expected}, but {} is the active worktree now.",
             active.display()
+        )
+    })
+}
+
+/// Why a request asked for in the worktree `expected` must not run in `ctx.cwd`, the active
+/// worktree, if its folder is no longer the top of a worktree (removed, or replaced by a
+/// plain folder, outside the app).
+async fn no_longer_a_worktree(ctx: &OpCtx<'_>, expected: &str) -> Option<String> {
+    let top = ctx
+        .read(&["rev-parse", "--show-toplevel"])
+        .await
+        .ok()
+        .filter(|out| out.code == 0)
+        .map(|out| out.text().trim().to_owned());
+    let same = top.is_some_and(|top| dunce::canonicalize(&top).is_ok_and(|top| top == ctx.cwd));
+    (!same).then(|| {
+        format!(
+            "That was asked for in {expected}, but {} is no longer a worktree.",
+            ctx.cwd.display()
         )
     })
 }

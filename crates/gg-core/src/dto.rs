@@ -55,6 +55,9 @@ pub struct WorktreeInfo {
     pub lock_reason: Option<String>,
     /// Its branch's pull request (filled in by the pull-request tasks; `None` until then).
     pub pr: Option<PullRequest>,
+    /// A bare main repository, which has no working tree (not sent to the UI).
+    #[serde(skip)]
+    pub bare: bool,
 }
 
 /// A worktree branch's upstream: its short name, and the commits on each side only.

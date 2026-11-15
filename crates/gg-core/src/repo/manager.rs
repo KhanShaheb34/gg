@@ -123,6 +123,9 @@ pub struct RepoManager {
     pub(super) pauses: Mutex<HashMap<&'static str, PausePoint>>,
     /// Where each repository's active worktree is remembered, if anywhere.
     memory: Mutex<Option<Arc<dyn WorktreeMemory>>>,
+    /// Numbers the writes to `memory`, so that they land in the order asked for: by root,
+    /// the newest number written. A write older than the one written is dropped.
+    remember_order: Arc<(AtomicU64, Mutex<HashMap<PathBuf, u64>>)>,
     /// Background reads of worktrees other than the active one take a permit each.
     worktree_reads: Arc<tokio::sync::Semaphore>,
     /// Tests only: how long every background worktree read waits before git starts.
@@ -153,8 +156,13 @@ impl Drop for RepoManager {
 /// One open repository.
 pub(crate) struct Repo {
     pub(crate) identity: RepoIdentity,
-    /// The main worktree.
+    /// The main worktree (a bare repository's folder, when the main one is bare).
     pub(crate) root: PathBuf,
+    /// The main worktree is a bare repository: there is no working tree there, and the
+    /// first linked worktree with its folder stands in for it when the active one goes.
+    root_bare: bool,
+    /// That no worktree with a working tree is left has been said (once).
+    no_worktree_said: AtomicBool,
     /// The active worktree; every command runs here. Changed only with the operation queue
     /// held (see [`RepoManager::set_active_worktree`]), together with `Slot::active`.
     worktree: Mutex<PathBuf>,
@@ -262,7 +270,14 @@ struct WorktreeExtra {
     /// The HEAD and the remote-tracking refs (see [`remotes_key`]) `unpushed` was counted
     /// for; `None` while it has not been.
     unpushed_at: Option<(Option<String>, u64)>,
+    /// When the window's gaining focus last had it read: focus reads it again only
+    /// [`FOCUS_READ_EVERY`] later.
+    focus_read_at: Option<Instant>,
 }
+
+/// Least time between two reads of one other worktree that the window gaining focus asks
+/// for (reads its git dir or a moved HEAD asks for are not held back).
+const FOCUS_READ_EVERY: Duration = Duration::from_secs(30);
 
 /// What a background read of a worktree found: the HEAD and remote-tracking refs it counted
 /// against, the count, and (a full read) the status and what git is stopped in.
@@ -651,6 +666,7 @@ impl RepoManager {
             #[cfg(any(test, feature = "testutil"))]
             pauses: Mutex::new(HashMap::new()),
             memory: Mutex::new(None),
+            remember_order: Arc::new((AtomicU64::new(0), Mutex::new(HashMap::new()))),
             worktree_reads: Arc::new(tokio::sync::Semaphore::new(WORKTREE_READS)),
             #[cfg(any(test, feature = "testutil"))]
             worktree_read_delay_ms: AtomicU64::new(0),
@@ -672,8 +688,19 @@ impl RepoManager {
         };
         let root = repo.root.clone();
         let worktree = (worktree != root).then(|| worktree.to_path_buf());
+        let order = self.remember_order.clone();
+        let n = order.0.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn_blocking(move || memory.remember(&root, worktree.as_deref()));
+            runtime.spawn_blocking(move || {
+                // Held while writing: two writes for one repository never overlap, and one
+                // asked for earlier never lands after a later one.
+                let mut written = lock(&order.1);
+                if written.get(&root).is_some_and(|&w| w > n) {
+                    return;
+                }
+                memory.remember(&root, worktree.as_deref());
+                written.insert(root, n);
+            });
         }
     }
 
@@ -781,6 +808,8 @@ impl RepoManager {
                     .unwrap_or_else(|| path_string(&root)),
                 root_path: path_string(&root),
             },
+            root_bare: info.worktrees.iter().any(|w| w.is_main && w.bare),
+            no_worktree_said: AtomicBool::new(false),
             root,
             worktree: Mutex::new(worktree.clone()),
             common_dir: location.common_dir,
@@ -1101,7 +1130,8 @@ impl RepoManager {
         }
         info.status = tree.status;
         info.in_progress = tree.in_progress;
-        self.apply_forced(repo, info, None, None, first)
+        // Read in the active worktree, but the rest of `info` is from before any switch.
+        self.apply_with(repo, info, None, None, first, false)
             .await
             .map(|_| ())
     }
@@ -1145,6 +1175,15 @@ impl RepoManager {
                 format!("{} is not a worktree of this repository.", path.display()),
             ));
         };
+        if wt.bare {
+            return Err(CoreError::new(
+                ErrorCode::BadRequest,
+                format!(
+                    "{} is the bare repository itself, which has no working tree to make active.",
+                    path.display()
+                ),
+            ));
+        }
         if wt.prunable || !target.is_dir() {
             return Err(CoreError::new(
                 ErrorCode::PathMissing,
@@ -1240,19 +1279,41 @@ impl RepoManager {
             return Ok(repo.snapshot().await);
         };
         let gone = repo.worktree();
-        if gone == repo.root {
+        let Some(target) = self.fallback_worktree(repo).await else {
+            self.said_no_worktree(repo, &gone);
+            return Ok(repo.snapshot().await);
+        };
+        if gone == target {
             // Another refresh did it meanwhile.
             return Ok(repo.snapshot().await);
         }
-        let root = repo.root.clone();
-        let snapshot = self.switch_active(repo, &root, true).await?;
-        self.said_gone(repo, &gone);
+        let snapshot = self.switch_active(repo, &target, true).await?;
+        self.said_gone(repo, &gone, &target);
         Ok(snapshot)
     }
 
-    /// Says (`repo-error`) that the active worktree `gone` went away and the main worktree
-    /// is active now, and remembers that.
-    fn said_gone(&self, repo: &Repo, gone: &Path) {
+    /// The worktree that becomes active when the active one goes: the main one, or, when the
+    /// main one is a bare repository, the first linked worktree git lists with its folder;
+    /// `None` when there is none.
+    async fn fallback_worktree(&self, repo: &Repo) -> Option<PathBuf> {
+        if !repo.root_bare {
+            return Some(repo.root.clone());
+        }
+        let listed = read_worktrees(&repo.runner, &repo.root).await.ok()?;
+        canonical_paths(listed)
+            .into_iter()
+            .find(|w| !w.bare && !w.prunable && Path::new(&w.path).is_dir())
+            .map(|w| PathBuf::from(w.path))
+    }
+
+    /// Says (`repo-error`) that the active worktree `gone` went away and `now` is active
+    /// instead, and remembers that.
+    fn said_gone(&self, repo: &Repo, gone: &Path, now: &Path) {
+        let which = if now == repo.root {
+            "the main worktree"
+        } else {
+            "the worktree"
+        };
         repo.report_error(
             self.sink.as_ref(),
             ErrorKind::TreeWatch,
@@ -1261,14 +1322,37 @@ impl RepoManager {
                 "error": CoreError::new(
                     ErrorCode::PathMissing,
                     format!(
-                        "The active worktree {} is gone, so gg works in the main worktree {} now.",
+                        "The active worktree {} is gone, so gg works in {which} {} now.",
+                        gone.display(),
+                        now.display()
+                    ),
+                ),
+            }),
+        );
+        self.remember_active(repo, now);
+    }
+
+    /// Says (`repo-error`) that the active worktree `gone` went away and no other worktree
+    /// has a working tree (the main one is a bare repository).
+    fn said_no_worktree(&self, repo: &Repo, gone: &Path) {
+        if repo.no_worktree_said.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        repo.report_error(
+            self.sink.as_ref(),
+            ErrorKind::TreeWatch,
+            serde_json::json!({
+                "repoId": repo.identity.repo_id,
+                "error": CoreError::new(
+                    ErrorCode::BareRepo,
+                    format!(
+                        "The active worktree {} is gone, and this repository has no other working tree: {} is a bare repository.",
                         gone.display(),
                         repo.root.display()
                     ),
                 ),
             }),
         );
-        self.remember_active(repo, &repo.root);
     }
 
     /// Starts watching the active worktree's files (instead of the one watched before):
@@ -1327,6 +1411,18 @@ impl RepoManager {
     /// active worktree's status is read on its own; only its commits on no remote are read
     /// here. Forgets the worktrees no longer listed.
     async fn read_worktrees_as_needed(self: &Arc<Self>, repo: &Arc<Repo>, change: &GitDirChange) {
+        self.read_worktrees_for(repo, change, false).await;
+    }
+
+    /// [`RepoManager::read_worktrees_as_needed`]; with `focus` (the window gained focus:
+    /// `change` names all), a worktree read that way less than [`FOCUS_READ_EVERY`] ago is
+    /// not read again for it.
+    async fn read_worktrees_for(
+        self: &Arc<Self>,
+        repo: &Arc<Repo>,
+        change: &GitDirChange,
+        focus: bool,
+    ) {
         let named = self.named_worktrees(repo, change);
         let wanted: Vec<(String, ReadKind)> = {
             let mut slot = repo.slot.write().await;
@@ -1338,18 +1434,30 @@ impl RepoManager {
             let worktrees = info.worktrees.clone();
             slot.extras
                 .retain(|path, _| worktrees.iter().any(|w| w.path == *path));
+            let now = Instant::now();
+            let active_path = slot.active.clone();
             worktrees
                 .iter()
                 .filter_map(|wt| {
                     let extra = slot.extras.get(&wt.path);
-                    let active = wt.path == slot.active;
+                    let active = wt.path == active_path;
+                    let focus_due = extra
+                        .and_then(|e| e.focus_read_at)
+                        .is_none_or(|at| now.duration_since(at) >= FOCUS_READ_EVERY);
+                    let by_focus = change.all && (!focus || focus_due);
                     let full = !active
                         && !wt.prunable
-                        && (change.all
+                        && (by_focus
                             || named.contains(&wt.path)
                             || extra.is_none_or(|e| e.status_at.as_ref() != Some(&wt.head)));
                     let unpushed =
                         extra.is_none_or(|e| e.unpushed_at != Some((wt.head.clone(), remotes)));
+                    if full && focus {
+                        slot.extras
+                            .entry(wt.path.clone())
+                            .or_default()
+                            .focus_read_at = Some(now);
+                    }
                     if full {
                         Some((wt.path.clone(), ReadKind::Full))
                     } else {
@@ -1428,7 +1536,7 @@ impl RepoManager {
             Started(now)
         };
         let timeout = Duration::from_millis(self.status_timeout_ms.load(Ordering::Relaxed));
-        let head = {
+        let (head, counted) = {
             let slot = repo.slot.read().await;
             let info = slot.target().info();
             let head = info
@@ -1436,12 +1544,20 @@ impl RepoManager {
                 .iter()
                 .find(|w| w.path == path)
                 .and_then(|w| w.head.clone());
-            (head, remotes_key(info))
+            let at = (head, remotes_key(info));
+            // Counted already for this HEAD and these remote-tracking refs: the count stands.
+            let counted = slot
+                .extras
+                .get(path)
+                .filter(|e| e.unpushed_at.as_ref() == Some(&at) && e.unpushed.is_some())
+                .map(|e| e.unpushed);
+            (at, counted)
         };
-        let unpushed = match &head.0 {
+        let unpushed = match (&head.0, counted) {
+            (_, Some(known)) => known,
             // Nothing committed yet: nothing to push.
-            None => Some(0),
-            Some(hash) => {
+            (None, None) => Some(0),
+            (Some(hash), None) => {
                 let args = ["rev-list", "--count", hash, "--not", "--remotes"];
                 let count = repo.runner.run(&repo.root, &args, CmdKind::Read);
                 match tokio::time::timeout(timeout, count).await {
@@ -1532,7 +1648,7 @@ impl RepoManager {
                     all: true,
                     ..GitDirChange::default()
                 };
-                m.read_worktrees_as_needed(&repo, &all).await;
+                m.read_worktrees_for(&repo, &all, true).await;
             });
         }
     }
@@ -1731,7 +1847,10 @@ impl RepoManager {
         let repo = self.get(repo_id)?;
         let _serial = repo.refresh_lock.lock().await;
         let info = repo.slot.read().await.target().info().clone();
-        self.apply(&repo, info, Some(o), None).await
+        // `info` is what was read before any switch of worktree now underway: it must not be
+        // shown as the worktree switched to (the switch shows it, with its own read).
+        self.apply_with(&repo, info, Some(o), None, false, false)
+            .await
     }
 
     /// Re-reads HEAD, refs and worktrees and applies them (emitting at once), then asks for
@@ -1924,8 +2043,15 @@ impl RepoManager {
         // goes back to the main one (said once) before it is read. The queue is still held.
         if active_is_gone(repo, None) {
             let gone = repo.worktree();
-            self.set_active_path(repo, &repo.root.clone()).await?;
-            self.said_gone(repo, &gone);
+            match self.fallback_worktree(repo).await {
+                Some(target) => {
+                    self.set_active_path(repo, &target).await?;
+                    self.said_gone(repo, &gone, &target);
+                    // The files watched are that worktree's from now on.
+                    self.start_tree_watch(repo);
+                }
+                None => self.said_no_worktree(repo, &gone),
+            }
         }
         // Reads numbered above `floor` start after the operation's changes.
         let floor = repo.status_seq.load(Ordering::SeqCst);
@@ -2104,12 +2230,30 @@ impl RepoManager {
         op_done: Option<u64>,
         force: bool,
     ) -> Result<RepoSnapshot> {
+        self.apply_with(repo, info, view, op_done, force, true)
+            .await
+    }
+
+    /// Like [`RepoManager::apply_forced`]. With `takes_switch` (`info` was read in the
+    /// worktree commands run in now), a switch of worktree underway is shown with it;
+    /// without, it stays underway (`info` is from before it).
+    async fn apply_with(
+        &self,
+        repo: &Arc<Repo>,
+        info: RepoInfo,
+        view: Option<ViewOptions>,
+        op_done: Option<u64>,
+        force: bool,
+        takes_switch: bool,
+    ) -> Result<RepoSnapshot> {
         let (to_emit, snapshot) = {
             let mut slot = repo.slot.write().await;
             if slot.closed {
                 return Err(unknown_repo(repo.identity.repo_id));
             }
-            slot.take_switch();
+            if takes_switch {
+                slot.take_switch();
+            }
             let view = view.unwrap_or_else(|| slot.target().view().clone());
             let view = normalize_view(view, &info);
             let changed = if slot.load_incomplete(repo)

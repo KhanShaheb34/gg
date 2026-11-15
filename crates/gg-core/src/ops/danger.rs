@@ -17,7 +17,7 @@ use crate::ops::stash;
 /// The dangers `request` would run into now.
 pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<Danger>> {
     Ok(match request {
-        OpRequest::DeleteBranch { branch } => {
+        OpRequest::DeleteBranch { branch, .. } => {
             unmerged_branch(ctx, branch).await?.into_iter().collect()
         }
         OpRequest::Reset {
@@ -35,7 +35,7 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
         OpRequest::DeleteRemoteBranch { remote, branch } => {
             vec![remote_branch_deleted(ctx, remote, branch).await?]
         }
-        OpRequest::StashDrop { stash } => stash::dropped(ctx, stash).await?,
+        OpRequest::StashDrop { stash, .. } => stash::dropped(ctx, stash).await?,
         OpRequest::Abort { .. } => aborted(ctx).await?.into_iter().collect(),
         OpRequest::Skip { .. } => skip_discards(ctx).await?.into_iter().collect(),
         // The others carry none.

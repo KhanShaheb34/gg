@@ -63,6 +63,9 @@ impl Harness {
         tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
             .await
             .expect("status read");
+        tokio::time::timeout(TIMEOUT, self.m.wait_background(snap.repo_id))
+            .await
+            .expect("background reads end");
         self.m.snapshot(snap.repo_id).await.unwrap()
     }
 

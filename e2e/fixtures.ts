@@ -635,12 +635,15 @@ export async function stopDevserver(server: Devserver): Promise<void> {
 
 /** The close button of the tab named `name` (hidden from assistive technology; see TabBar). */
 type Unheaded<R> = R extends { expectHead: unknown } ? Omit<R, "expectHead"> & Partial<Pick<R, "expectHead">> : R;
+type Unplaced<R> = R extends { expectWorktree: unknown }
+  ? Omit<R, "expectWorktree"> & Partial<Pick<R, "expectWorktree">>
+  : R;
 /**
- * A request as a test writes it: one on the current branch may leave out `expectHead`, which
- * `runOp` fills in with HEAD as the active tab shows it when the request is sent, as a menu
- * would (R39).
+ * A request as a test writes it: one on the current branch may leave out `expectHead`, and one
+ * that runs in a worktree `expectWorktree`, which `runOp` fills in with HEAD and the active
+ * worktree as the active tab shows them when the request is sent, as a menu would (R39).
  */
-export type Asked = Unheaded<OpRequest>;
+export type Asked = Unplaced<Unheaded<OpRequest>>;
 
 /** Runs `request` through the app's own runOp (the module the page loaded), in the active tab. */
 export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
@@ -649,8 +652,14 @@ export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
     const { app } = await import("/src/lib/state/app.svelte.ts");
     const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
     const id = app.activeRepoId!;
+    const snap = findRepoView(id)!.snapshot;
     const onHead = ["reset", "merge", "rebase", "cherry_pick", "revert", "pull", "continue", "abort", "skip"];
-    const full = onHead.includes(req.op) && !("expectHead" in req) ? { ...req, expectHead: findRepoView(id)!.snapshot.head } : req;
+    const elsewhere = ["push", "push_tag", "delete_tag", "delete_remote_branch", "fetch_into_local"];
+    const headed = onHead.includes(req.op) && !("expectHead" in req) ? { ...req, expectHead: snap.head } : req;
+    const full =
+      !elsewhere.includes(req.op) && !("expectWorktree" in headed)
+        ? { ...headed, expectWorktree: snap.activeWorktree }
+        : headed;
     return ops.runOp(id, full as OpRequest);
   }, request);
 }

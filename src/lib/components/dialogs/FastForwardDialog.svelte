@@ -15,13 +15,15 @@
     upstream: string;
     /** How many commits it is behind the upstream, as last fetched. */
     behind: number;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, branch, upstream, behind, close }: Props = $props();
+  let { repoId, branch, upstream, behind, worktree, close }: Props = $props();
 
   function checkOut(fastForward: boolean) {
-    closeAndRun(close, repoId, { op: "checkout_branch", branch, fastForward });
+    closeAndRun(close, repoId, { op: "checkout_branch", branch, fastForward, expectWorktree: worktree });
   }
 </script>
 

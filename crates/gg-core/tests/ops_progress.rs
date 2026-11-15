@@ -46,6 +46,7 @@ fn cherry_pick(hash: &str) -> OpRequest {
         mainline: None,
         no_commit: false,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -54,6 +55,7 @@ fn revert(hash: &str) -> OpRequest {
         hash: hash.to_owned(),
         mainline: None,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -62,6 +64,7 @@ fn create_branch_and_checkout(name: &str, at: &str) -> OpRequest {
         name: name.to_owned(),
         at: at.to_owned(),
         checkout: true,
+        expect_worktree: here_wt(),
     }
 }
 
@@ -462,6 +465,7 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
         squash: false,
         no_commit: false,
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     assert_eq!(h.run(id, merge).await.status, OpStatus::Stopped);
     let any = repo.git(&["rev-parse", "feature"]);
@@ -479,6 +483,7 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
     let rebase = OpRequest::Rebase {
         onto: "feature".into(),
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     let stopped = h.run(id, rebase).await;
     assert_eq!(stopped.status, OpStatus::Stopped);
@@ -514,6 +519,7 @@ async fn a_skip_for_another_commit_is_refused() {
     let rebase = OpRequest::Rebase {
         onto: "target".into(),
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     let stopped = h.run(id, rebase).await;
     assert_eq!(stopped.status, OpStatus::Stopped, "{stopped:?}");
@@ -560,6 +566,7 @@ async fn a_rebase_skip_that_would_discard_other_changes_asks_first() {
     let rebase = OpRequest::Rebase {
         onto: "feature".into(),
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     assert_eq!(h.run(id, rebase).await.status, OpStatus::Stopped);
     let main_side = repo.git(&["rev-parse", "main"]);
@@ -624,7 +631,7 @@ async fn continue_with_nothing_in_progress_is_nothing_to_do() {
 
     for request in [continue_op(false), abort()] {
         let err =
-            h.m.run_op(id, request.clone(), &[])
+            h.m.run_op(id, in_wt(repo.path(), request.clone()), &[])
                 .await
                 .expect_err("nothing to continue or abort");
         assert_eq!(err.code, ErrorCode::NothingToDo, "{request:?}");
@@ -667,6 +674,7 @@ async fn what_comes_in_is_named_as_the_app_asked_for_it() {
             OpRequest::Rebase {
                 onto: "main-copy".into(),
                 expect_head: here(),
+                expect_worktree: here_wt(),
             },
         )
         .await;
@@ -756,6 +764,7 @@ async fn other_operations_explain_while_in_progress() {
             branch: "main".into(),
             mode: gg_core::dto::PullMode::Default,
             expect_head: here(),
+            expect_worktree: here_wt(),
         },
     ] {
         let out = h.run(id, request.clone()).await;

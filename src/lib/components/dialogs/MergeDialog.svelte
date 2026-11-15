@@ -19,10 +19,12 @@
     into: string;
     /** HEAD as the menu showed it: the merge is into that branch (R39). */
     head: HeadInfo;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, target, into, head, close }: Props = $props();
+  let { repoId, target, into, head, worktree, close }: Props = $props();
 
   let noFf = $state(true);
   let squash = $state(false);
@@ -51,7 +53,7 @@
     const save = (saved !== null || touched) && choice !== saved;
     close();
     try {
-      await runOp(repoId, { op: "merge", target, noFf: choice && !squash, squash, noCommit, expectHead: head });
+      await runOp(repoId, { op: "merge", target, noFf: choice && !squash, squash, noCommit, expectHead: head, expectWorktree: worktree });
     } catch (e) {
       // Reported by runOp.
       if (e instanceof CoreError && e.code === "bad_request") return;

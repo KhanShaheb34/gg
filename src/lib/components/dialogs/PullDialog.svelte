@@ -19,10 +19,12 @@
     message: string;
     /** HEAD as shown when the core asked. */
     head: HeadInfo;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, branch, upstream, message, head, close }: Props = $props();
+  let { repoId, branch, upstream, message, head, worktree, close }: Props = $props();
 
   type Mode = "merge" | "rebase";
   let mode: Mode = $state("merge");
@@ -44,7 +46,7 @@
 <Dialog
   title={upstream === null ? `Pull into ${into}` : `Pull ${from} into ${into}`}
   primary="Pull"
-  onSubmit={() => closeAndRun(close, repoId, { op: "pull", branch, mode, expectHead: head })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "pull", branch, mode, expectHead: head, expectWorktree: worktree })}
   onCancel={close}
 >
   <p class="dialog-text">{visibleText(message)}</p>

@@ -57,6 +57,7 @@ fn pull(branch: &str, mode: PullMode) -> OpRequest {
         branch: branch.to_owned(),
         mode,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -897,9 +898,13 @@ async fn fetch_into_local_creates_or_fast_forwards() {
 
     // A bad local name never reaches git.
     let err =
-        h.m.run_op(id, fetch_into_local("origin/feature", "-x"), &[])
-            .await
-            .unwrap_err();
+        h.m.run_op(
+            id,
+            in_wt(repo.path(), fetch_into_local("origin/feature", "-x")),
+            &[],
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.code, gg_core::error::ErrorCode::BadName);
 }
 
@@ -1083,6 +1088,7 @@ async fn checkout_with_fast_forward() {
     let checkout_ff = |branch: &str| OpRequest::CheckoutBranch {
         branch: branch.to_owned(),
         fast_forward: true,
+        expect_worktree: here_wt(),
     };
 
     let out = h.run(id, checkout_ff("topic")).await;
@@ -1146,6 +1152,7 @@ async fn checkout_with_fast_forward_and_a_change_in_the_way_loses_nothing() {
             OpRequest::CheckoutBranch {
                 branch: "topic".into(),
                 fast_forward: true,
+                expect_worktree: here_wt(),
             },
         )
         .await;
@@ -1183,8 +1190,11 @@ async fn push_to_unreachable_remote_fails_fast_and_queue_continues() {
 
     let started = Instant::now();
     let pushing = tokio::spawn({
-        let m = h.m.clone();
-        async move { m.run_op(id, push("main", "dead", false), &[]).await }
+        let (m, wt) = (h.m.clone(), repo.path().to_path_buf());
+        async move {
+            m.run_op(id, in_wt(&wt, push("main", "dead", false)), &[])
+                .await
+        }
     });
     // Asked for once the push has started: it waits for the push, then runs.
     h.sink
@@ -1433,11 +1443,13 @@ async fn network_operations_fail_plainly_on_an_empty_repository() {
         OpRequest::CheckoutBranch {
             branch: "main".into(),
             fast_forward: true,
+            expect_worktree: here_wt(),
         },
     ];
     for request in requests {
         let shown = format!("{request:?}");
-        match tokio::time::timeout(TIMEOUT, h.m.run_op(id, request, &[])).await {
+        match tokio::time::timeout(TIMEOUT, h.m.run_op(id, in_wt(repo.path(), request), &[])).await
+        {
             Err(_) => panic!("{shown}: did not end"),
             Ok(Err(e)) => assert!(!e.message.is_empty(), "{shown}: {e:?}"),
             Ok(Ok(out)) => {
@@ -1507,8 +1519,11 @@ async fn user_fetch_waits_for_the_running_operation() {
     h.m.set_op_delay(Duration::from_millis(DELAY_MS as u64));
 
     let op = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("a", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("a", &head)), &[])
+                .await
+        }
     });
     h.sink
         .wait_for(TIMEOUT, |n, v| {
@@ -1695,7 +1710,7 @@ async fn a_running_scheduled_fetch_is_cancelled_when_an_operation_takes_its_turn
         } else {
             let out = tokio::time::timeout(
                 Duration::from_secs(10),
-                h.m.run_op(id, create_branch("b", &head), &[]),
+                h.m.run_op(id, in_wt(repo.path(), create_branch("b", &head)), &[]),
             )
             .await
             .expect("the operation is not held up")
@@ -1889,6 +1904,7 @@ async fn pulling_the_branch_being_rebased_here_says_a_rebase_is_in_progress() {
                 branch: "main".into(),
                 mode: PullMode::Default,
                 expect_head: here(),
+                expect_worktree: here_wt(),
             },
         )
         .await;

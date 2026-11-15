@@ -398,30 +398,55 @@ mod tests {
     fn stash_operations_that_merge_are_refused_while_stopped() {
         let stash = || "0123456789abcdef0123456789abcdef01234567".to_owned();
         let refused = |r: OpRequest| refused_while(&r, InProgressKind::Rebase, Some("main"));
-        assert!(refused(OpRequest::StashApply { stash: stash() }).is_some());
-        assert!(refused(OpRequest::StashPop { stash: stash() }).is_some());
         assert!(
-            refused(OpRequest::StashBranch {
+            refused(OpRequest::StashApply {
                 stash: stash(),
-                name: "x".into()
+                expect_worktree: String::new()
             })
             .is_some()
         );
-        let why = refused(OpRequest::StashPop { stash: stash() }).unwrap();
+        assert!(
+            refused(OpRequest::StashPop {
+                stash: stash(),
+                expect_worktree: String::new()
+            })
+            .is_some()
+        );
+        assert!(
+            refused(OpRequest::StashBranch {
+                stash: stash(),
+                name: "x".into(),
+                expect_worktree: String::new()
+            })
+            .is_some()
+        );
+        let why = refused(OpRequest::StashPop {
+            stash: stash(),
+            expect_worktree: String::new(),
+        })
+        .unwrap();
         assert!(why.starts_with("A rebase is in progress"), "{why}");
         // Saving would take the stopped operation's state with it (R17, revised).
         assert!(
             refused(OpRequest::StashSave {
                 message: None,
-                include_untracked: false
+                include_untracked: false,
+                expect_worktree: String::new()
             })
             .is_some()
         );
-        assert!(refused(OpRequest::StashDrop { stash: stash() }).is_none());
+        assert!(
+            refused(OpRequest::StashDrop {
+                stash: stash(),
+                expect_worktree: String::new()
+            })
+            .is_none()
+        );
         let pull = |branch: &str| OpRequest::Pull {
             branch: branch.into(),
             mode: crate::dto::PullMode::Default,
             expect_head: crate::dto::HeadInfo::default(),
+            expect_worktree: String::new(),
         };
         assert!(refused(pull("main")).is_some());
         assert!(refused(pull("other")).is_none(), "only fetches into it");

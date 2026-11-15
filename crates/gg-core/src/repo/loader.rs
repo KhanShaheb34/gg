@@ -73,7 +73,8 @@ async fn load(mut guard: LoadGuard, sink: Arc<dyn EventSink>, args: Vec<String>)
     let repo = guard.repo.clone();
     let load_id = guard.load_id;
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Commit>>();
-    let read = read_log(&repo.runner, &repo.worktree, &args, move |batch| {
+    let worktree = repo.worktree();
+    let read = read_log(&repo.runner, &worktree, &args, move |batch| {
         // Fails only once the consumer below has stopped because this load was superseded.
         let _ = tx.send(batch);
     });

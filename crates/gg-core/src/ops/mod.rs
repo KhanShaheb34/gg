@@ -246,6 +246,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::CheckoutBranch {
             branch,
             fast_forward,
+            ..
         } => {
             check_arg(&branch, "branch")?;
             (
@@ -260,6 +261,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::CheckoutRemote {
             remote_branch,
             local_name,
+            ..
         } => {
             check_arg(&remote_branch, "remote branch")?;
             check_branch_name(&local_name)?;
@@ -272,7 +274,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::CheckoutCommit { hash } => {
+        OpRequest::CheckoutCommit { hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Check out {}", local::short(&hash))),
@@ -281,7 +283,9 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::CreateBranch { name, at, checkout } => {
+        OpRequest::CreateBranch {
+            name, at, checkout, ..
+        } => {
             check_branch_name(&name)?;
             check_full_hash(&at)?;
             let title = if checkout {
@@ -296,7 +300,9 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::RenameBranch { branch, new_name } => {
+        OpRequest::RenameBranch {
+            branch, new_name, ..
+        } => {
             check_arg(&branch, "branch")?;
             check_branch_name(&new_name)?;
             (
@@ -306,7 +312,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::DeleteBranch { branch } => {
+        OpRequest::DeleteBranch { branch, .. } => {
             check_arg(&branch, "branch")?;
             (
                 fixed(format!("Delete branch {branch}")),
@@ -320,7 +326,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             no_ff,
             squash,
             no_commit,
-            expect_head: _,
+            ..
         } => {
             match target.kind {
                 MergeTargetKind::Commit => check_full_hash(&target.name)?,
@@ -391,6 +397,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             name,
             hash,
             message,
+            ..
         } => {
             check_tag_name(&name)?;
             check_full_hash(&hash)?;
@@ -515,6 +522,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::StashSave {
             message,
             include_untracked,
+            ..
         } => (
             fixed(if include_untracked {
                 "Stash changes and untracked files".to_owned()
@@ -527,7 +535,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 )
             }),
         ),
-        OpRequest::StashApply { stash: hash } => {
+        OpRequest::StashApply { stash: hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Apply stash {}", local::short(&hash))),
@@ -538,7 +546,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::StashPop { stash: hash } => {
+        OpRequest::StashPop { stash: hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Pop stash {}", local::short(&hash))),
@@ -547,14 +555,16 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::StashDrop { stash: hash } => {
+        OpRequest::StashDrop { stash: hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Drop stash {}", local::short(&hash))),
                 body(move |ctx, _| Box::pin(async move { stash::drop(ctx, &hash).await })),
             )
         }
-        OpRequest::StashBranch { stash: hash, name } => {
+        OpRequest::StashBranch {
+            stash: hash, name, ..
+        } => {
             check_full_hash(&hash)?;
             check_branch_name(&name)?;
             (
@@ -881,7 +891,7 @@ impl RepoManager {
         let ctx = OpCtx {
             repo: &repo,
             runner: repo.runner.for_op(op_id, stop.clone()),
-            cwd: repo.worktree.clone(),
+            cwd: repo.worktree(),
             op_id,
             sink: self.sink.as_ref(),
             net_limit: self.net_limit(),
@@ -893,6 +903,14 @@ impl RepoManager {
             in_progress,
         });
         repo.runner.log().name_op(op_id, &title);
+        // A request runs only in the worktree it was asked for: switching worktrees never
+        // redirects one already asked for.
+        if let Some(why) = request
+            .expect_worktree()
+            .and_then(|expected| worktree_moved(expected, &ctx.cwd))
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
         if matches!(
             (&request, in_progress),
             (
@@ -1022,7 +1040,7 @@ fn expected_head<'r>(request: &'r OpRequest, head: Option<&str>) -> Option<(&'r 
     match request {
         OpRequest::Reset { expect_head, .. }
         | OpRequest::Continue { expect_head, .. }
-        | OpRequest::Abort { expect_head }
+        | OpRequest::Abort { expect_head, .. }
         | OpRequest::Skip { expect_head, .. } => Some((expect_head, true)),
         OpRequest::Merge { expect_head, .. }
         | OpRequest::Rebase { expect_head, .. }
@@ -1077,6 +1095,21 @@ fn head_moved(expected: &HeadInfo, now: &HeadInfo, strict: bool) -> Option<Strin
     ))
 }
 
+/// Why a request asked for in the worktree `expected` must not run with `active` (a path with
+/// symlinks resolved) the active worktree, if it must not.
+fn worktree_moved(expected: &str, active: &std::path::Path) -> Option<String> {
+    let same = dunce::canonicalize(expected).map_or_else(
+        |_| std::path::Path::new(expected) == active,
+        |p| p == active,
+    );
+    (!same).then(|| {
+        format!(
+            "That was asked for in {expected}, but {} is the active worktree now.",
+            active.display()
+        )
+    })
+}
+
 /// The remote a request names, if any: it must be one of the repository's remotes.
 fn remote_of(request: &OpRequest) -> Option<&str> {
     match request {
@@ -1094,9 +1127,9 @@ fn remote_of(request: &OpRequest) -> Option<&str> {
 /// The stash a request names (by commit), if any: it must still be in the list.
 fn stash_of(request: &OpRequest) -> Option<&str> {
     match request {
-        OpRequest::StashApply { stash }
-        | OpRequest::StashPop { stash }
-        | OpRequest::StashDrop { stash }
+        OpRequest::StashApply { stash, .. }
+        | OpRequest::StashPop { stash, .. }
+        | OpRequest::StashDrop { stash, .. }
         | OpRequest::StashBranch { stash, .. } => Some(stash),
         _ => None,
     }
@@ -1232,12 +1265,14 @@ mod tests {
             hash: "c".repeat(40),
             mode: ResetMode::Soft,
             expect_head: main_a.clone(),
+            expect_worktree: String::new(),
         };
         assert_eq!(expected_head(&reset, Some("main")), Some((&main_a, true)));
         let pull = |branch: &str| OpRequest::Pull {
             branch: branch.into(),
             mode: crate::dto::PullMode::Default,
             expect_head: main_a.clone(),
+            expect_worktree: String::new(),
         };
         assert!(expected_head(&pull("main"), Some("main")).is_some());
         assert!(
@@ -1252,6 +1287,7 @@ mod tests {
             name: "x".into(),
             at: "c".repeat(40),
             checkout: false,
+            expect_worktree: String::new(),
         };
         assert!(expected_head(&create, Some("main")).is_none());
     }
@@ -1261,7 +1297,8 @@ mod tests {
         let refused = |r: &OpRequest| prepare(r).err().expect("refused").code;
         assert_eq!(
             refused(&OpRequest::StashDrop {
-                stash: "stash@{0}".into()
+                stash: "stash@{0}".into(),
+                expect_worktree: String::new()
             }),
             ErrorCode::BadRequest
         );
@@ -1269,6 +1306,7 @@ mod tests {
             refused(&OpRequest::StashBranch {
                 stash: "0123456789abcdef0123456789abcdef01234567".into(),
                 name: "-x".into(),
+                expect_worktree: String::new(),
             }),
             ErrorCode::BadName
         );
@@ -1276,12 +1314,14 @@ mod tests {
             name: "x".into(),
             at: "--all".into(),
             checkout: false,
+            expect_worktree: String::new(),
         };
         assert_eq!(refused(&option_like), ErrorCode::BadRequest);
         let ok = OpRequest::CreateBranch {
             name: "x".into(),
             at: "0123456789abcdef0123456789abcdef01234567".into(),
             checkout: false,
+            expect_worktree: String::new(),
         };
         let facts = |head| TurnFacts {
             head,
@@ -1300,11 +1340,13 @@ mod tests {
             squash: false,
             no_commit: false,
             expect_head: HeadInfo::default(),
+            expect_worktree: String::new(),
         };
         let title = prepare(&merge).map(|p| p.title).expect("ok");
         assert_eq!(title(&facts("trunk")), "Merge x into trunk");
         let abort = OpRequest::Abort {
             expect_head: HeadInfo::default(),
+            expect_worktree: String::new(),
         };
         let title = prepare(&abort).map(|p| p.title).expect("ok");
         assert_eq!(
@@ -1354,7 +1396,7 @@ mod tests {
         let ctx = OpCtx {
             repo: &r,
             runner: r.runner.for_op(1, Stop::new()),
-            cwd: r.worktree.clone(),
+            cwd: r.worktree(),
             op_id: 1,
             sink: m.sink.as_ref(),
             net_limit: m.net_limit(),

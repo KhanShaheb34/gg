@@ -20,10 +20,12 @@
     /** HEAD as the menu showed it: the reset is for that branch (R39). */
     head: HeadInfo;
     mode: Mode;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, hash, subject, head, mode: initial, close }: Props = $props();
+  let { repoId, hash, subject, head, mode: initial, worktree, close }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   let mode: Mode = $state(initial);
@@ -53,7 +55,7 @@
   title="Reset {what} to {shortHash(hash)}"
   primary="Reset"
   danger={mode === "hard"}
-  onSubmit={() => closeAndRun(close, repoId, { op: "reset", hash, mode, expectHead: head })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "reset", hash, mode, expectHead: head, expectWorktree: worktree })}
   onCancel={close}
 >
   <div class="dialog-target">

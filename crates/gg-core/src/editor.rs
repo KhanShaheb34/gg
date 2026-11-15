@@ -27,7 +27,7 @@ impl RepoManager {
         path: Option<&str>,
         command: Option<&str>,
     ) -> Result<Option<String>> {
-        let worktree = self.get(repo_id)?.worktree.clone();
+        let worktree = self.get(repo_id)?.worktree();
         let root = dunce::canonicalize(&worktree).unwrap_or_else(|_| worktree.clone());
         let file = path.map(|p| inside_worktree(&root, p)).transpose()?;
         let target = file.as_deref().map(|path| Target {

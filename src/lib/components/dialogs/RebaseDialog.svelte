@@ -16,16 +16,18 @@
     branch: string;
     /** HEAD as the menu showed it: the rebase is of that branch (R39). */
     head: HeadInfo;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, onto, branch, head, close }: Props = $props();
+  let { repoId, onto, branch, head, worktree, close }: Props = $props();
 </script>
 
 <Dialog
   title="Rebase {shown(branch)} onto {shown(onto)}"
   primary="Rebase"
-  onSubmit={() => closeAndRun(close, repoId, { op: "rebase", onto, expectHead: head })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "rebase", onto, expectHead: head, expectWorktree: worktree })}
   onCancel={close}
 >
   <p class="dialog-text">Its own commits are made again on top, with new hashes.</p>

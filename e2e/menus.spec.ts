@@ -547,8 +547,10 @@ test("the busy indicator shows only once an operation has run for 150 ms (R23), 
       w.busyAt = null;
       const ops = await import("/src/lib/state/ops.svelte.ts");
       const { app } = await import("/src/lib/state/app.svelte.ts");
+      const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+      const expectWorktree = findRepoView(app.activeRepoId!)!.snapshot.activeWorktree;
       const sent = performance.now();
-      const out = await ops.runOp(app.activeRepoId!, req as never);
+      const out = await ops.runOp(app.activeRepoId!, { ...req, expectWorktree } as never);
       const ended = performance.now();
       await new Promise((r) => setTimeout(r, 300));
       return { status: out.status, sent, ended, busyAt: w.busyAt };

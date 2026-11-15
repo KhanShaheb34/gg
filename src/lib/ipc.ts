@@ -341,7 +341,10 @@ export const api = {
    */
   stopOp: (repoId: number, opId: number) => call<boolean>("stop_op", { repoId, opId }),
   getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
-  setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
+  setRepoPrefs: (repoId: number, patch: Partial<Pick<RepoPrefs, "mergeNoFf">>) =>
+    call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
+  /** Makes the worktree at `path` the active one (refused while an operation runs or waits there). */
+  setActiveWorktree: (repoId: number, path: string) => call<RepoSnapshot>("set_active_worktree", { repoId, path }),
   /**
    * Opens `path` (relative to the worktree), or the worktree folder when null, in the editor.
    * Resolves to a note to show when something else was opened (no editor command is set:

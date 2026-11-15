@@ -65,7 +65,7 @@ function danger(overrides: Partial<Danger> = {}): Danger {
 }
 
 const HEAD = { branch: "main", hash: "c".repeat(40) };
-const RESET: OpRequest = { op: "reset", hash: "a".repeat(40), mode: "hard", expectHead: HEAD };
+const RESET: OpRequest = { op: "reset", hash: "a".repeat(40), mode: "hard", expectHead: HEAD, expectWorktree: "/r" };
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /** The props of the dialog opened last (the confirmation). */
@@ -198,7 +198,7 @@ describe("runOp", () => {
   });
 
   it("confirms every danger with the token it was shown with, the request unchanged (R39)", async () => {
-    const drop: OpRequest = { op: "stash_drop", stash: "d".repeat(40) };
+    const drop: OpRequest = { op: "stash_drop", stash: "d".repeat(40), expectWorktree: "/r" };
     vi.mocked(ipc.api.runOp)
       .mockResolvedValueOnce(outcome({ status: "needs_confirmation", dangers: [danger({ kind: "drop_stash", token: "d".repeat(40) })] }))
       .mockResolvedValueOnce(outcome());
@@ -273,7 +273,7 @@ describe("runOp", () => {
   it("leaves the errors its caller shows itself unreported (a dialog shows a bad name beside its field)", async () => {
     const bad = new ipc.CoreError({ code: "bad_name", message: "A branch named “x” already exists.", detail: null });
     vi.mocked(ipc.api.runOp).mockRejectedValueOnce(bad);
-    const create: OpRequest = { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false };
+    const create: OpRequest = { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false, expectWorktree: "/r" };
     await expect(ops.runOp(1, create, { ownErrors: ["bad_name"] })).rejects.toBe(bad);
     expect(app.app.toasts).toEqual([]);
 
@@ -325,6 +325,18 @@ describe("hint buttons", () => {
     return app.app.toasts[0].actions ?? [];
   }
 
+  it("a notice's follow-up runs only where its operation ran (expectWorktree)", async () => {
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
+      outcome({ hints: [{ kind: "pull", branch: "main" }], snapshot: snap({ seq: 5, activeWorktree: "/r/wt" }) }),
+    );
+    await ops.runOp(1, RESET);
+    vi.mocked(ipc.api.runOp).mockReset().mockResolvedValue(outcome({ message: "Followed up." }));
+    const [pull] = app.app.toasts[0].actions ?? [];
+    await pull.run();
+    const sent = vi.mocked(ipc.api.runOp).mock.calls[0][1];
+    expect(sent).toMatchObject({ op: "pull", expectWorktree: "/r/wt" });
+  });
+
   it("push: pushes the branch the core named", async () => {
     const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin" }]);
     expect(push.label).toBe("Push main to origin/main");
@@ -349,7 +361,11 @@ describe("hint buttons", () => {
     await buttons[0].run();
     expect(view.fetch).toHaveBeenCalled();
     await buttons[1].run();
-    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "pull", branch: "main", mode: "default", expectHead: (view.snapshot as RepoSnapshot).head }, []);
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(
+      1,
+      { op: "pull", branch: "main", mode: "default", expectHead: (view.snapshot as RepoSnapshot).head, expectWorktree: "/r" },
+      [],
+    );
     await buttons[2].run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,
@@ -376,7 +392,7 @@ describe("hint buttons", () => {
     await skip.run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,
-      { op: "skip", expectHead: (view.snapshot as RepoSnapshot).head, commit },
+      { op: "skip", expectHead: (view.snapshot as RepoSnapshot).head, commit, expectWorktree: "/r" },
       [],
     );
   });
@@ -418,11 +434,11 @@ describe("hint buttons", () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
       outcome({ status: "failed", message, hints: [{ kind: "choose_pull_mode", branch: "main" }] }),
     );
-    await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD });
+    await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD, expectWorktree: "/r" });
     expect(app.app.toasts).toEqual([]);
     expect(overlays.showDialog).toHaveBeenCalledWith(
       { name: "PullDialog" },
-      { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head },
+      { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head, worktree: "/r" },
     );
   });
 

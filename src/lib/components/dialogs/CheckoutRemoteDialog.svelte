@@ -18,10 +18,12 @@
     remotes: string[];
     /** Local branches. */
     branches: string[];
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, remoteBranch, remotes, branches, close }: Props = $props();
+  let { repoId, remoteBranch, remotes, branches, worktree, close }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   const remote = remoteOf(remoteBranch, remotes);
@@ -35,10 +37,10 @@
   function submit() {
     if (exists) {
       close();
-      checkOutBranch(repoId, name);
+      checkOutBranch(repoId, name, worktree);
       return;
     }
-    void named.submit(name, { op: "checkout_remote", remoteBranch, localName: name });
+    void named.submit(name, { op: "checkout_remote", remoteBranch, localName: name, expectWorktree: worktree });
   }
 </script>
 

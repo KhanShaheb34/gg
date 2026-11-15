@@ -24,6 +24,7 @@ fn reset_hard(hash: &str, expect_head: HeadInfo) -> OpRequest {
         hash: hash.to_owned(),
         mode: ResetMode::Hard,
         expect_head,
+        expect_worktree: here_wt(),
     }
 }
 
@@ -154,6 +155,7 @@ async fn a_reset_does_not_run_once_the_branch_has_moved() {
                 hash: first.clone(),
                 mode: ResetMode::Soft,
                 expect_head: seen,
+                expect_worktree: here_wt(),
             },
         )
         .await;
@@ -190,6 +192,7 @@ async fn a_cherry_pick_runs_on_the_branch_it_was_asked_for() {
         mainline: None,
         no_commit: false,
         expect_head: on_main.clone(),
+        expect_worktree: here_wt(),
     };
     // Both asked for while main was at the same commit: the second runs after the first.
     assert_eq!(h.run(id, pick(&one)).await.status, OpStatus::Done);
@@ -326,12 +329,20 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
                     id,
                     OpRequest::Abort {
                         expect_head: head.clone(),
+                        expect_worktree: here_wt(),
                     },
                 )
                 .await;
             let yes = confirmed(&asked);
-            h.run_with(id, OpRequest::Abort { expect_head: head }, &yes)
-                .await
+            h.run_with(
+                id,
+                OpRequest::Abort {
+                    expect_head: head,
+                    expect_worktree: here_wt(),
+                },
+                &yes,
+            )
+            .await
         } else {
             repo.write("clash.txt", "resolved\n");
             h.run(
@@ -339,6 +350,7 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
                 OpRequest::Continue {
                     even_with_markers: false,
                     expect_head: head,
+                    expect_worktree: here_wt(),
                 },
             )
             .await

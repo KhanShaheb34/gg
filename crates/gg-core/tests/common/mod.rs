@@ -55,6 +55,9 @@ impl Harness {
         tokio::time::timeout(TIMEOUT, self.m.wait_status(id))
             .await
             .expect("status read");
+        tokio::time::timeout(TIMEOUT, self.m.wait_background(id))
+            .await
+            .expect("background reads end");
         self.m.snapshot(id).await.unwrap()
     }
 
@@ -112,13 +115,19 @@ impl Harness {
     }
 
     /// `request`, expecting HEAD as it is now in repository `id`'s worktree where it
-    /// expects [`here`].
+    /// expects [`here`], and the active worktree as it is now where it expects
+    /// [`here_wt`].
     pub async fn at_head(&self, id: u32, mut request: OpRequest) -> OpRequest {
+        let worktree = self.m.snapshot(id).await.expect("open").active_worktree;
         if let Some(expect) = expect_head_mut(&mut request)
             && *expect == here()
         {
-            let worktree = self.m.snapshot(id).await.expect("open").active_worktree;
             *expect = head_at(Path::new(&worktree));
+        }
+        if let Some(expect) = request.expect_worktree_mut()
+            && *expect == here_wt()
+        {
+            *expect = worktree;
         }
         request
     }
@@ -145,6 +154,12 @@ pub fn here() -> HeadInfo {
         branch: Some("\u{0}here".to_owned()),
         hash: None,
     }
+}
+
+/// Stands for "the active worktree as it is when the request is sent" (see
+/// [`Harness::at_head`]).
+pub fn here_wt() -> String {
+    "\u{0}here".to_owned()
 }
 
 /// HEAD of the worktree at `path`, as the UI is shown it.
@@ -178,7 +193,7 @@ pub fn expect_head_mut(request: &mut OpRequest) -> Option<&mut HeadInfo> {
         | OpRequest::Revert { expect_head, .. }
         | OpRequest::Pull { expect_head, .. }
         | OpRequest::Continue { expect_head, .. }
-        | OpRequest::Abort { expect_head }
+        | OpRequest::Abort { expect_head, .. }
         | OpRequest::Skip { expect_head, .. } => Some(expect_head),
         _ => None,
     }
@@ -188,12 +203,14 @@ pub fn continue_op(even_with_markers: bool) -> OpRequest {
     OpRequest::Continue {
         even_with_markers,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
 pub fn abort() -> OpRequest {
     OpRequest::Abort {
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -202,6 +219,7 @@ pub fn skip(commit: &str) -> OpRequest {
     OpRequest::Skip {
         expect_head: here(),
         commit: commit.to_owned(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -210,6 +228,7 @@ pub fn create_branch(name: &str, at: &str) -> OpRequest {
         name: name.to_owned(),
         at: at.to_owned(),
         checkout: false,
+        expect_worktree: here_wt(),
     }
 }
 
@@ -225,12 +244,14 @@ pub fn checkout_branch(branch: &str) -> OpRequest {
     OpRequest::CheckoutBranch {
         branch: branch.to_owned(),
         fast_forward: false,
+        expect_worktree: here_wt(),
     }
 }
 
 pub fn delete_branch(branch: &str) -> OpRequest {
     OpRequest::DeleteBranch {
         branch: branch.to_owned(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -258,6 +279,7 @@ pub fn merge(
         squash,
         no_commit,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -269,6 +291,7 @@ pub fn rebase(onto: &str) -> OpRequest {
     OpRequest::Rebase {
         onto: onto.to_owned(),
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -289,6 +312,7 @@ pub fn reset(hash: &str, mode: ResetMode) -> OpRequest {
         hash: hash.to_owned(),
         mode,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -308,4 +332,15 @@ pub fn conflicting(repo: &TestRepo) {
 /// Whether `name` (`MERGE_HEAD`, `rebase-merge`, …) exists in the repository's git dir.
 pub fn in_git_dir(repo: &TestRepo, name: &str) -> bool {
     repo.path().join(".git").join(name).exists()
+}
+
+/// `request` asked for in the worktree at `path` where it expects [`here_wt`] (for requests
+/// sent straight to the manager rather than through the harness).
+pub fn in_wt(path: &Path, mut request: OpRequest) -> OpRequest {
+    if let Some(expect) = request.expect_worktree_mut()
+        && *expect == here_wt()
+    {
+        *expect = path.to_string_lossy().into_owned();
+    }
+    request
 }

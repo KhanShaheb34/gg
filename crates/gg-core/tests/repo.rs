@@ -56,6 +56,9 @@ impl Harness {
         tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
             .await
             .expect("status read");
+        tokio::time::timeout(TIMEOUT, self.m.wait_background(snap.repo_id))
+            .await
+            .expect("background reads end");
         self.m.snapshot(snap.repo_id).await.unwrap()
     }
 
@@ -1372,10 +1375,12 @@ async fn events_emitted() {
         .expect("a final repo-changed event");
     let changed = h.repo_changed(id);
     assert!(changed.len() >= 2, "{} events", changed.len());
-    let last = changed.last().unwrap();
-    assert!(!last.loading);
-    assert_eq!(last.total_rows, 1200);
-    assert!(changed[..changed.len() - 1].iter().all(|s| s.loading));
+    // Loading until the log is read; then loaded (a status read or a worktree's state may
+    // follow, loaded too).
+    let loaded = changed.iter().position(|s| !s.loading).unwrap();
+    assert!(loaded >= 1);
+    assert_eq!(changed[loaded].total_rows, 1200);
+    assert!(changed[loaded..].iter().all(|s| !s.loading));
     assert!(changed[0].total_rows >= 500);
 }
 

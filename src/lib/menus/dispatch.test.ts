@@ -23,9 +23,9 @@ describe("pick", () => {
     pick("stash.pop", { row, label: null }, snap());
     pick("stash.apply", { row, label: null }, snap());
     expect(vi.mocked(runOp).mock.calls.map((c) => c[1])).toEqual([
-      { op: "stash_drop", stash: "a".repeat(40) },
-      { op: "stash_pop", stash: "a".repeat(40) },
-      { op: "stash_apply", stash: "a".repeat(40) },
+      { op: "stash_drop", stash: "a".repeat(40), expectWorktree: "/r" },
+      { op: "stash_pop", stash: "a".repeat(40), expectWorktree: "/r" },
+      { op: "stash_apply", stash: "a".repeat(40), expectWorktree: "/r" },
     ]);
   });
 });

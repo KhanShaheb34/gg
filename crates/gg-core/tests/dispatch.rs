@@ -112,28 +112,100 @@ async fn malformed_args_is_bad_request() {
     }
 }
 
-/// I7 / R42: opening a folder of another worktree of a repository already open answers with
-/// that repository, whose tab acts on its own worktree, and says which worktree the folder
-/// was in, so the UI can say which folder the tab acts on. Its own folders say nothing.
+/// Opening a folder of a linked worktree opens the repository (or the tab it has) with that
+/// worktree active, and the choice is remembered for the next start; the main worktree's
+/// folder means the repository, whichever worktree is active (replaces R42's notice).
 #[tokio::test]
-async fn opening_another_worktree_of_an_open_repository_says_so() {
+async fn opening_a_linked_worktree_makes_it_active_and_it_is_remembered() {
     let repo = TestRepo::new();
     repo.commit("one");
     let hotfix = repo.add_worktree("hotfix");
     let h = harness().await;
     let first = h.call("open_repo", json!({ "path": repo.path() })).await;
     assert_eq!(first["openedWorktree"], Value::Null);
-    let main = first["activeWorktree"].clone();
+    assert_eq!(first["activeWorktree"], json!(path_string(repo.path())));
 
-    let again = h.call("open_repo", json!({ "path": hotfix })).await;
+    let again = h
+        .call("open_repo", json!({ "path": hotfix.join(".") }))
+        .await;
     assert_eq!(again["repoId"], first["repoId"]);
-    assert_eq!(
-        again["activeWorktree"], main,
-        "the tab still acts on its own"
-    );
-    assert_eq!(again["openedWorktree"], json!(path_string(&hotfix)));
+    assert_eq!(again["activeWorktree"], json!(path_string(&hotfix)));
+    assert_eq!(again["head"]["branch"], "hotfix");
+    assert_eq!(again["openedWorktree"], Value::Null);
+    assert!(again["seq"].as_u64() > first["seq"].as_u64());
     let same = h.call("open_repo", json!({ "path": repo.path() })).await;
-    assert_eq!(same["openedWorktree"], Value::Null);
+    assert_eq!(same["activeWorktree"], json!(path_string(&hotfix)));
+
+    // Remembered (in the background) by the main worktree's path.
+    let remembered = || async {
+        let prefs = h
+            .call("get_repo_prefs", json!({ "repoId": first["repoId"] }))
+            .await;
+        prefs["activeWorktree"].clone()
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while remembered().await != json!(path_string(&hotfix)) {
+        assert!(std::time::Instant::now() < deadline, "not remembered");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // A new start opening the main worktree's folder starts in it.
+    let config = h.config.path().to_path_buf();
+    let next = Core::new(config.clone(), None, Arc::new(RecordingSink::default()))
+        .await
+        .unwrap();
+    let snap = next
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["activeWorktree"], json!(path_string(&hotfix)));
+    assert_eq!(snap["head"]["branch"], "hotfix");
+
+    // Gone since: the main worktree, quietly.
+    repo.git(&["worktree", "remove", "--force", &path_string(&hotfix)]);
+    let last = Core::new(config, None, Arc::new(RecordingSink::default()))
+        .await
+        .unwrap();
+    let snap = last
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["activeWorktree"], json!(path_string(repo.path())));
+}
+
+/// `set_active_worktree` through dispatch: the snapshot of the worktree made active, and
+/// plain refusals for a folder that is no worktree of the repository.
+#[tokio::test]
+async fn set_active_worktree_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let feature = repo.add_worktree("feature");
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let snap = h
+        .call(
+            "set_active_worktree",
+            json!({ "repoId": id, "path": feature }),
+        )
+        .await;
+    assert_eq!(snap["activeWorktree"], json!(path_string(&feature)));
+    let actives: Vec<bool> = snap["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["active"].as_bool().unwrap())
+        .collect();
+    assert_eq!(actives, [false, true]);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let err = h
+        .fail(
+            "set_active_worktree",
+            json!({ "repoId": id, "path": elsewhere.path() }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let err = h.fail("set_active_worktree", json!({ "repoId": id })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
 #[tokio::test]
@@ -400,17 +472,21 @@ fn hide_object(repo: &TestRepo, hash: &str) -> impl FnOnce() {
     move || std::fs::rename(&to, &from).unwrap()
 }
 
-/// Waits until `n` snapshots of repository `id` with `loading: false` have been emitted.
+/// Waits until snapshots of `n` generations of repository `id` with `loading: false` have been
+/// emitted.
 async fn wait_loaded_events(sink: &RecordingSink, id: u64, n: usize) {
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
+        // Other changes (a status read, say) are emitted loaded too: one per generation.
         let loaded = sink
             .events()
             .iter()
             .filter(|(name, v)| {
                 name == "repo-changed" && v["repoId"] == id && v["loading"] == false
             })
-            .count();
+            .map(|(_, v)| v["generation"].as_u64())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
         if loaded >= n {
             return;
         }

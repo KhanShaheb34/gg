@@ -48,7 +48,7 @@ pub struct Core {
     /// The repository manager, or why there is none (git was not found).
     repos: std::result::Result<Arc<RepoManager>, CoreError>,
     log: Arc<CommandLog>,
-    store: Store,
+    store: Arc<Store>,
     launch_path: Option<String>,
     perf: Mutex<Perf>,
     /// Store and perf-log writes take turns here, first come first served, so they land in
@@ -97,12 +97,13 @@ impl Core {
         log: Arc<CommandLog>,
         runner: Result<GitRunner>,
     ) -> Arc<Self> {
-        let store = Store::load(&config_dir);
+        let store = Arc::new(Store::load(&config_dir));
         // Every event leaves the core with credentials in URLs masked (R36).
         let sink: Arc<dyn EventSink> = Arc::new(mask::MaskingSink(sink));
         let repos = runner.map(|runner| {
             let repos = RepoManager::new(runner, sink.clone());
             repos.set_fetch_interval(store.settings().fetch_interval_secs);
+            repos.set_worktree_memory(Arc::new(StoreMemory(store.clone())));
             repos
         });
         let login_path = repos.as_ref().ok().and_then(|r| r.login_path());
@@ -221,6 +222,20 @@ impl Core {
 
     fn perf(&self) -> MutexGuard<'_, Perf> {
         lock_ignoring_poison(&self.perf)
+    }
+}
+
+/// Each repository's active worktree, kept in the store's repository preferences.
+struct StoreMemory(Arc<Store>);
+
+impl repo::WorktreeMemory for StoreMemory {
+    fn remembered(&self, root: &std::path::Path) -> Option<PathBuf> {
+        self.0.active_worktree(root)
+    }
+
+    fn remember(&self, root: &std::path::Path, worktree: Option<&std::path::Path>) {
+        // Only the next start would miss it.
+        let _ = self.0.set_active_worktree(root, worktree);
     }
 }
 

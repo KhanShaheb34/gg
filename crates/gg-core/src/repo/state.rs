@@ -40,8 +40,11 @@ pub struct RepoInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Update {
     Nothing,
-    /// Only what git is stopped in: the rows are as they were.
-    InProgressOnly,
+    /// Only what git is stopped in, or the working tree's change counts with the uncommitted
+    /// row where it was: no row moves, so no new generation. (The uncommitted row's subject
+    /// names the count: rows read later carry the new one, and the UI shows the count from the
+    /// snapshot's `status`.)
+    StateOnly,
     /// Something the rows show (labels, the uncommitted row) may have changed.
     Rows,
 }
@@ -52,7 +55,6 @@ pub struct RepoIdentity {
     pub repo_id: u32,
     pub name: String,
     pub root_path: String,
-    pub active_worktree: String,
 }
 
 /// Commits, layout and labels of one repository for one set of refs and view options.
@@ -170,13 +172,12 @@ impl RepoState {
             && info.head == self.info.head
             && info.refs == self.info.refs
             && info.remotes == self.info.remotes
-            && info.worktrees == self.info.worktrees
-            && info.status == self.info.status
+            && same_worktree_labels(&info.worktrees, &self.info.worktrees)
             && self.stashes_shown(&info, &view) == self.stashes_shown(&self.info, &self.view);
         self.info = info;
         self.view = view;
-        if rows_same {
-            return Update::InProgressOnly;
+        if rows_same && self.wanted_uncommitted() == self.uncommitted {
+            return Update::StateOnly;
         }
         let old_bases = std::mem::take(&mut self.stash_bases);
         self.rebuild_stashes();
@@ -425,7 +426,8 @@ impl RepoState {
             repo_id: id.repo_id,
             name: id.name.clone(),
             root_path: id.root_path.clone(),
-            active_worktree: id.active_worktree.clone(),
+            // The repository's own to fill in: which worktree is active is not the rows'.
+            active_worktree: String::new(),
             generation: self.generation,
             total_rows: self.total_rows(),
             loading,
@@ -598,6 +600,15 @@ impl RepoState {
             }
         }
     }
+}
+
+/// Whether the worktrees `a` and `b` give the same labels: the same paths with the same
+/// branches and commits (whether one is locked or prunable shows nowhere in the rows).
+fn same_worktree_labels(a: &[WorktreeInfo], b: &[WorktreeInfo]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(a, b)| a.path == b.path && a.head == b.head && a.branch == b.branch)
 }
 
 /// Drops selected branch names that no longer exist; an empty selection becomes `None`
@@ -858,8 +869,7 @@ mod tests {
             head: Some(h(head)),
             branch: branch.map(str::to_owned),
             is_main,
-            locked: false,
-            prunable: false,
+            ..WorktreeInfo::default()
         }
     }
 
@@ -946,7 +956,6 @@ mod tests {
             repo_id: 3,
             name: "repo".into(),
             root_path: "/repo".into(),
-            active_worktree: "/repo".into(),
         }
     }
 
@@ -1019,7 +1028,7 @@ mod tests {
             commit: None,
             empty: false,
         });
-        assert_eq!(s.update(stopped.clone(), all()), Update::InProgressOnly);
+        assert_eq!(s.update(stopped.clone(), all()), Update::StateOnly);
         assert_eq!(s.info().in_progress, stopped.in_progress);
         assert_eq!(s.update(stopped, all()), Update::Nothing);
         assert_eq!(s.update(dirty(info(), 1, 0), all()), Update::Rows);
@@ -1033,9 +1042,9 @@ mod tests {
         assert_eq!(s.total_rows(), 5);
         assert_eq!(s.rows(0, 1)[0].kind, RowKind::Uncommitted);
         assert_eq!(s.rows(0, 10)[1..].len(), 4);
-        // Only the subject changes when the count does.
+        // Only the subject changes when the count does: no row moves.
         let before = s.rows(0, 10);
-        assert_eq!(s.update(dirty(info(), 4, 0), all()), Update::Rows);
+        assert_eq!(s.update(dirty(info(), 4, 0), all()), Update::StateOnly);
         let after = s.rows(0, 10);
         assert_eq!(after[0].subject, "Uncommitted changes (4)");
         assert_eq!(after[1..], before[1..]);
@@ -1362,8 +1371,11 @@ mod tests {
         let fetch = FetchState::default();
         assert_eq!(s.snapshot(&identity(), false, &fetch).max_lane, 0);
         // Going clean and dirty again changes nothing either.
-        assert_eq!(s.update(info(), feature_view()), Update::Rows);
-        assert_eq!(s.update(dirty(info(), 2, 0), feature_view()), Update::Rows);
+        assert_eq!(s.update(info(), feature_view()), Update::StateOnly);
+        assert_eq!(
+            s.update(dirty(info(), 2, 0), feature_view()),
+            Update::StateOnly
+        );
         assert_eq!(s.rows(0, 10), clean.rows(0, 10));
     }
 

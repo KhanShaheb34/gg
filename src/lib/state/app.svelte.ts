@@ -6,7 +6,7 @@ import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
 import type { CliState, CoreErrorDto, OpenedRepo, Recent, RepoSnapshot, Settings } from "../types";
 import { setLogOpen } from "./commandLog.svelte";
-import { disposeRepoView, repoView } from "./repo.svelte";
+import { disposeRepoView, findRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
 export type ToastKind = "info" | "error";
@@ -178,23 +178,26 @@ async function openTab(path: string): Promise<boolean> {
     reportError(e);
     return false;
   }
+  const existed = app.tabs.some((t) => t.repoId === snapshot.repoId);
   addTab(snapshot);
+  // A folder of a linked worktree made that worktree active (the event brings it too).
+  if (existed) void findRepoView(snapshot.repoId)?.applySnapshot(snapshot);
   show(snapshot.repoId);
-  noteOtherWorktree(snapshot);
+  noteWorktreeNotMadeActive(snapshot);
   return true;
 }
 
 /**
- * Says so when a folder opened is in another worktree of a repository already open: its tab
- * acts on its own worktree, which the notice names (R42; switching worktrees is Plan 3).
+ * A folder opened in a linked worktree makes that worktree active; when it could not be (an
+ * operation runs or waits in the repository), the notice says so and where the tab works.
  */
-function noteOtherWorktree(opened: OpenedRepo): void {
+function noteWorktreeNotMadeActive(opened: OpenedRepo): void {
   if (opened.openedWorktree === null) return;
   const there = shortenPath(opened.openedWorktree, app.homeDir);
   const here = shortenPath(opened.activeWorktree, app.homeDir);
   notify({
     kind: "info",
-    message: `${there} is another worktree of ${opened.name}, which is open already: its tab works in ${here}.`,
+    message: `${there} could not be made the active worktree of ${opened.name} while an operation runs there: the tab still works in ${here}.`,
     persistent: true,
   });
 }
@@ -475,7 +478,7 @@ export async function init(): Promise<void> {
     try {
       const snapshot = await api.openRepo(path);
       opened(path, snapshot, launchRank >= 0 ? launchRank : undefined);
-      noteOtherWorktree(snapshot);
+      noteWorktreeNotMadeActive(snapshot);
     } catch (e) {
       reportError(e);
     }

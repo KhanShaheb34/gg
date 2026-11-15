@@ -27,7 +27,15 @@ export type WorktreeInfo = {
   isMain: boolean;
   locked: boolean;
   prunable: boolean;
+  active: boolean; // every action runs in the active worktree
+  status: WorktreeStatus | null; // null until read; the active one's is the snapshot's `status`
+  upstream: { name: string; ahead: number; behind: number } | null; // null = no upstream (or detached)
+  unpushed: number | null; // commits of its HEAD on no remote-tracking branch; null = unknown
+  inProgress: InProgress["kind"] | null;
+  lockReason: string | null; // when locked with a reason
+  pr: PullRequest | null; // filled in by the pull-request tasks
 };
+export type PullRequest = { number: number; title: string; url: string; state: "open" | "draft"; head: string; base: string };
 /** `conflictedPaths`: the conflicted paths, sorted, the first 200 of them. */
 export type WorktreeStatus = { changed: number; untracked: number; conflicted: number; conflictedPaths: string[] };
 /** `lastError`: why the last fetch failed, in one line; `lastErrorDetail`: git's whole stderr of it. */
@@ -63,9 +71,9 @@ export type RepoSnapshot = {
 };
 
 /**
- * What `open_repo` answers: the repository's snapshot and, when the folder asked for is in
- * another worktree of a repository already open, that worktree (its tab acts on its own,
- * `activeWorktree`; R42).
+ * What `open_repo` answers: the repository's snapshot. A folder in a linked worktree makes
+ * that worktree active; `openedWorktree` is that worktree when it could not be made active
+ * (an operation runs or waits in the repository): the tab goes on in `activeWorktree`.
  */
 export type OpenedRepo = RepoSnapshot & { openedWorktree: string | null };
 
@@ -151,7 +159,8 @@ export type CommitDetails = {
 /** Defaults: system, 300 (0 = off), null (the system's default opener). */
 export type Settings = { theme: "system" | "light" | "dark"; fetchIntervalSecs: number; editorCommand: string | null };
 /** Kept per repository. Default: mergeNoFf true. */
-export type RepoPrefs = { mergeNoFf: boolean };
+/** `activeWorktree`: the worktree remembered as active (null = the main one); set by the core. */
+export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null };
 export type Recent = { path: string; name: string; lastOpenedMs: number };
 export type AppState = {
   recents: Recent[];
@@ -200,37 +209,40 @@ export type HeadInfo = RepoSnapshot["head"];
  * One operation for `run_op`. A request on the branch checked out carries `expectHead`: HEAD as
  * the UI showed it when the user asked (R39); the core refuses it, running nothing, if another
  * branch is checked out by its turn (reset, continue, abort and skip: also if the commit moved).
+ * Every request that runs in a working directory (all but push, push_tag, delete_tag,
+ * delete_remote_branch and fetch_into_local) carries `expectWorktree`: the `activeWorktree` of
+ * the snapshot it was asked from; the core refuses it if another worktree is active by its turn.
  */
 export type OpRequest =
-  | { op: "checkout_branch"; branch: string; fastForward: boolean }
-  | { op: "checkout_remote"; remoteBranch: string; localName: string }
-  | { op: "checkout_commit"; hash: string }
-  | { op: "create_branch"; name: string; at: string; checkout: boolean }
-  | { op: "rename_branch"; branch: string; newName: string }
-  | { op: "delete_branch"; branch: string }
-  | { op: "merge"; target: MergeTarget; noFf: boolean; squash: boolean; noCommit: boolean; expectHead: HeadInfo }
-  | { op: "rebase"; onto: string; expectHead: HeadInfo } // onto: local or remote branch name
-  | { op: "cherry_pick"; hash: string; mainline: number | null; noCommit: boolean; expectHead: HeadInfo }
-  | { op: "revert"; hash: string; mainline: number | null; expectHead: HeadInfo }
-  | { op: "reset"; hash: string; mode: "soft" | "mixed" | "hard"; expectHead: HeadInfo }
-  | { op: "create_tag"; name: string; hash: string; message: string | null }
+  | { op: "checkout_branch"; branch: string; fastForward: boolean; expectWorktree: string }
+  | { op: "checkout_remote"; remoteBranch: string; localName: string; expectWorktree: string }
+  | { op: "checkout_commit"; hash: string; expectWorktree: string }
+  | { op: "create_branch"; name: string; at: string; checkout: boolean; expectWorktree: string }
+  | { op: "rename_branch"; branch: string; newName: string; expectWorktree: string }
+  | { op: "delete_branch"; branch: string; expectWorktree: string }
+  | { op: "merge"; target: MergeTarget; noFf: boolean; squash: boolean; noCommit: boolean; expectHead: HeadInfo; expectWorktree: string }
+  | { op: "rebase"; onto: string; expectHead: HeadInfo; expectWorktree: string } // onto: local or remote branch name
+  | { op: "cherry_pick"; hash: string; mainline: number | null; noCommit: boolean; expectHead: HeadInfo; expectWorktree: string }
+  | { op: "revert"; hash: string; mainline: number | null; expectHead: HeadInfo; expectWorktree: string }
+  | { op: "reset"; hash: string; mode: "soft" | "mixed" | "hard"; expectHead: HeadInfo; expectWorktree: string }
+  | { op: "create_tag"; name: string; hash: string; message: string | null; expectWorktree: string }
   | { op: "delete_tag"; name: string; remote: string | null } // remote set = also delete there
   | { op: "push_tag"; name: string; remote: string }
   // to: null = the branch of the same name on the remote (R38); else the branch's upstream there,
   // picked in the Push dialog. An existing upstream is never changed; one is set if there is none.
   // force: with lease, the force_push danger's token once confirmed (R11)
   | { op: "push"; branch: string; remote: string; to: string | null; force: boolean }
-  | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase"; expectHead: HeadInfo }
+  | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase"; expectHead: HeadInfo; expectWorktree: string }
   | { op: "fetch_into_local"; remoteBranch: string; localName: string }
   | { op: "delete_remote_branch"; remote: string; branch: string }
-  | { op: "stash_save"; message: string | null; includeUntracked: boolean }
-  | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string } // stash commit hash
-  | { op: "stash_branch"; stash: string; name: string }
-  | { op: "continue"; evenWithMarkers: boolean; expectHead: HeadInfo } // R31: true = go ahead though files still have conflict markers
-  | { op: "abort"; expectHead: HeadInfo } // always the abort danger first
+  | { op: "stash_save"; message: string | null; includeUntracked: boolean; expectWorktree: string }
+  | { op: "stash_apply" | "stash_pop" | "stash_drop"; stash: string; expectWorktree: string } // stash commit hash
+  | { op: "stash_branch"; stash: string; name: string; expectWorktree: string }
+  | { op: "continue"; evenWithMarkers: boolean; expectHead: HeadInfo; expectWorktree: string } // R31: true = go ahead though files still have conflict markers
+  | { op: "abort"; expectHead: HeadInfo; expectWorktree: string } // always the abort danger first
   // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge): `commit`, else
   // refused (R40); a rebase's skip with other uncommitted changes asks first (skip_discards)
-  | { op: "skip"; expectHead: HeadInfo; commit: string };
+  | { op: "skip"; expectHead: HeadInfo; commit: string; expectWorktree: string };
 
 export type DangerKind =
   | "force_push"

@@ -358,7 +358,7 @@ impl RepoManager {
         } else {
             Some(
                 repo.runner
-                    .run_cancellable(&repo.worktree, &args, CmdKind::Write, limit, &cancel)
+                    .run_cancellable(&repo.worktree(), &args, CmdKind::Write, limit, &cancel)
                     .await,
             )
         };
@@ -451,6 +451,9 @@ impl RepoManager {
             since: Instant::now(),
         };
         self.schedule_changed.notify_one();
+        if focused && tokio::runtime::Handle::try_current().is_ok() {
+            self.read_worktrees_on_focus();
+        }
     }
 
     /// Starts the schedule task if it is not running, and has it recompute.

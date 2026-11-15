@@ -112,6 +112,14 @@
   /** Height of the rendered rows' container: the rows needed, and room to stay put a step. */
   const poolRows = $derived(neededRows + POOL_STEP + alignSlack);
   const detachedHead = $derived(view.snapshot.head.branch === null);
+  /**
+   * The uncommitted row's subject, from the snapshot's change counts: a count that changes
+   * moves no row, so it comes without a new generation (rows already loaded keep the old one).
+   */
+  const uncommittedSubject = $derived(
+    `Uncommitted changes (${view.snapshot.status.changed + view.snapshot.status.untracked})`,
+  );
+  const subjectOf = (r: CommitRow) => (r.kind === "uncommitted" ? uncommittedSubject : r.subject);
   /** Rows matching the search, and how to find the match in their subjects. */
   // The set stays the same object while only load progress changes, so rows do not re-render.
   const hits = $derived(view.search.liveHitSet);
@@ -360,7 +368,7 @@
     const r = rowAt(e)?.row;
     if (!r) return;
     let text: string | null = null;
-    if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? r.subject : null;
+    if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? subjectOf(r) : null;
     else if (r.kind === "uncommitted") text = null;
     else if (el.classList.contains("date")) text = formatDateLong(r.time);
     else if (el.classList.contains("author")) text = `${r.author} <${r.email}>`;
@@ -674,7 +682,7 @@
           <!-- A hit's match is marked in fixed elements (before, mark, after) whose text alone
                changes as rows scroll by: nothing is created or destroyed. -->
           {@const hit = r !== undefined && needle !== null && hits.has(slot.index)}
-          {@const subj = hit ? splitMatch(r!.subject, needle!) : null}
+          {@const subj = hit ? splitMatch(subjectOf(r!), needle!) : null}
           {@const auth = hit ? splitMatch(r!.author, needle!) : null}
           {@const short = r && r.kind !== "uncommitted" ? shortHash(r.hash) : ""}
           {@const hashMarked = hit && r!.kind !== "uncommitted" ? hashMatch(r!.hash, needle) : 0}
@@ -705,7 +713,7 @@
                 homeDir={app.homeDir}
               />
               <span class="subject"
-                ><span>{subj ? subj[0] : (r?.subject ?? "")}</span><mark>{subj ? subj[1] : ""}</mark><span
+                ><span>{subj ? subj[0] : r ? subjectOf(r) : ""}</span><mark>{subj ? subj[1] : ""}</mark><span
                   >{subj ? subj[2] : ""}</span
                 ></span
               >

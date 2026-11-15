@@ -96,18 +96,26 @@ describe("openPath", () => {
     expect(s.app.activeRepoId).toBe(1);
   });
 
-  it("says which folder the tab works in when the folder opened is another worktree of it (R42)", async () => {
+  it("a folder of a linked worktree makes it active in the repository's tab, saying nothing", async () => {
     await s.openPath("/r/a");
-    expect(s.app.toasts).toEqual([]);
-    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), openedWorktree: "/r/a-hotfix" });
+    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), activeWorktree: "/r/a-hotfix" });
     await s.openPath("/r/a-hotfix");
     expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
     expect(s.app.activeRepoId).toBe(1);
+    expect(s.app.toasts).toEqual([]);
+  });
+
+  it("says so when the worktree could not be made active (an operation runs there)", async () => {
+    await s.openPath("/r/a");
+    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), openedWorktree: "/r/a-hotfix" });
+    await s.openPath("/r/a-hotfix");
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
     expect(s.app.toasts).toEqual([
       expect.objectContaining({
         kind: "info",
         persistent: true,
-        message: "/r/a-hotfix is another worktree of a, which is open already: its tab works in /r/a.",
+        message:
+          "/r/a-hotfix could not be made the active worktree of a while an operation runs there: the tab still works in /r/a.",
       }),
     ]);
   });

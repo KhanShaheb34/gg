@@ -22,8 +22,10 @@ fn yes() -> bool {
     true
 }
 
-/// One worktree of the repository, as `git worktree list` reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One worktree of the repository, as `git worktree list` reports it, with what the core
+/// knows of its state. The state fields are filled in for the snapshot; the reader leaves
+/// them empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeInfo {
     /// Absolute path as git reports it (symlinks resolved).
@@ -37,6 +39,51 @@ pub struct WorktreeInfo {
     pub locked: bool,
     /// Git considers it prunable, typically because its directory is gone.
     pub prunable: bool,
+    /// The worktree every action runs in.
+    pub active: bool,
+    /// Its change counts; `None` until read. The active worktree's are the snapshot's
+    /// `status`; the others' are read in the background.
+    pub status: Option<WorktreeStatus>,
+    /// Its branch's upstream and how far apart they are; `None` without one (or detached).
+    pub upstream: Option<WorktreeUpstream>,
+    /// Commits of its HEAD on no remote-tracking branch (`rev-list --count HEAD --not
+    /// --remotes`); `None` while unknown.
+    pub unpushed: Option<u32>,
+    /// What git is stopped in there, if anything (`None` also while unknown).
+    pub in_progress: Option<InProgressKind>,
+    /// Why it is locked, when it is and a reason was given.
+    pub lock_reason: Option<String>,
+    /// Its branch's pull request (filled in by the pull-request tasks; `None` until then).
+    pub pr: Option<PullRequest>,
+}
+
+/// A worktree branch's upstream: its short name, and the commits on each side only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeUpstream {
+    pub name: String,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+/// An open pull request of a branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequest {
+    pub number: u32,
+    pub title: String,
+    pub url: String,
+    pub state: PullRequestState,
+    pub head: String,
+    pub base: String,
+}
+
+/// Whether a pull request is ready for review or a draft. Serialized lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PullRequestState {
+    Open,
+    Draft,
 }
 
 /// Change counts for one worktree.
@@ -378,16 +425,22 @@ impl Default for Settings {
 }
 
 /// Preferences kept per repository (by its main worktree's path).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoPrefs {
     /// Merges create a merge commit even when a fast-forward is possible.
     pub merge_no_ff: bool,
+    /// The worktree the repository acts in (symlinks resolved); `None` is the main one. Set
+    /// by the core when the active worktree changes; one that is gone counts as the main.
+    pub active_worktree: Option<String>,
 }
 
 impl Default for RepoPrefs {
     fn default() -> Self {
-        Self { merge_no_ff: true }
+        Self {
+            merge_no_ff: true,
+            active_worktree: None,
+        }
     }
 }
 
@@ -434,6 +487,11 @@ pub enum PullMode {
 /// asked (R39). The core refuses it, running nothing, when HEAD is on another branch (or
 /// detached, or another commit while detached) by its turn; reset, continue, abort and skip
 /// also when the commit moved.
+///
+/// Every request that runs in a working directory (all but push, push_tag, delete_tag,
+/// delete_remote_branch and fetch_into_local) carries `expect_worktree`: the active worktree
+/// the UI showed. The core refuses it, running nothing, when another worktree is active by
+/// its turn, so switching worktrees never redirects a request already asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "op",
@@ -445,26 +503,38 @@ pub enum OpRequest {
     CheckoutBranch {
         branch: String,
         fast_forward: bool,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     CheckoutRemote {
         remote_branch: String,
         local_name: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     CheckoutCommit {
         hash: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     CreateBranch {
         name: String,
         /// The commit the branch starts at (a full hash, like every commit field here).
         at: String,
         checkout: bool,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     RenameBranch {
         branch: String,
         new_name: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     DeleteBranch {
         branch: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     Merge {
         target: MergeTarget,
@@ -472,33 +542,45 @@ pub enum OpRequest {
         squash: bool,
         no_commit: bool,
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     Rebase {
         /// A local or remote branch name.
         onto: String,
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     CherryPick {
         hash: String,
         mainline: Option<u32>,
         no_commit: bool,
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     Revert {
         hash: String,
         mainline: Option<u32>,
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     Reset {
         hash: String,
         mode: ResetMode,
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     CreateTag {
         name: String,
         hash: String,
         /// Set: an annotated tag with this message.
         message: Option<String>,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     DeleteTag {
         name: String,
@@ -526,6 +608,8 @@ pub enum OpRequest {
         mode: PullMode,
         /// Checked when the branch pulled is the one checked out, then or now.
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     FetchIntoLocal {
         remote_branch: String,
@@ -538,20 +622,30 @@ pub enum OpRequest {
     StashSave {
         message: Option<String>,
         include_untracked: bool,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     /// `stash` is the stash's commit hash.
     StashApply {
         stash: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     StashPop {
         stash: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     StashDrop {
         stash: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     StashBranch {
         stash: String,
         name: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     /// Stages the conflicted files as they are and continues. Refused while a file still
     /// has conflict markers, unless `even_with_markers` (the user saw those files and went
@@ -559,10 +653,14 @@ pub enum OpRequest {
     Continue {
         even_with_markers: bool,
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     /// Aborts what git is stopped in: always the `abort` danger first.
     Abort {
         expect_head: HeadInfo,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
     /// Leaves out the commit a rebase, cherry-pick or revert is stopped on and goes on with
     /// the next (`<kind> --skip`): the way past a commit that came out empty. A merge has
@@ -572,7 +670,159 @@ pub enum OpRequest {
     Skip {
         expect_head: HeadInfo,
         commit: String,
+        /// The active worktree the UI showed (`activeWorktree`): it runs only there.
+        expect_worktree: String,
     },
+}
+
+impl OpRequest {
+    /// The active worktree the request was asked for in, for a request that runs in one.
+    pub fn expect_worktree(&self) -> Option<&str> {
+        match self {
+            Self::CheckoutBranch {
+                expect_worktree, ..
+            }
+            | Self::CheckoutRemote {
+                expect_worktree, ..
+            }
+            | Self::CheckoutCommit {
+                expect_worktree, ..
+            }
+            | Self::CreateBranch {
+                expect_worktree, ..
+            }
+            | Self::RenameBranch {
+                expect_worktree, ..
+            }
+            | Self::DeleteBranch {
+                expect_worktree, ..
+            }
+            | Self::Merge {
+                expect_worktree, ..
+            }
+            | Self::Rebase {
+                expect_worktree, ..
+            }
+            | Self::CherryPick {
+                expect_worktree, ..
+            }
+            | Self::Revert {
+                expect_worktree, ..
+            }
+            | Self::Reset {
+                expect_worktree, ..
+            }
+            | Self::CreateTag {
+                expect_worktree, ..
+            }
+            | Self::Pull {
+                expect_worktree, ..
+            }
+            | Self::StashSave {
+                expect_worktree, ..
+            }
+            | Self::StashApply {
+                expect_worktree, ..
+            }
+            | Self::StashPop {
+                expect_worktree, ..
+            }
+            | Self::StashDrop {
+                expect_worktree, ..
+            }
+            | Self::StashBranch {
+                expect_worktree, ..
+            }
+            | Self::Continue {
+                expect_worktree, ..
+            }
+            | Self::Abort {
+                expect_worktree, ..
+            }
+            | Self::Skip {
+                expect_worktree, ..
+            } => Some(expect_worktree),
+            Self::DeleteTag { .. }
+            | Self::PushTag { .. }
+            | Self::Push { .. }
+            | Self::FetchIntoLocal { .. }
+            | Self::DeleteRemoteBranch { .. } => None,
+        }
+    }
+
+    /// Mutable [`OpRequest::expect_worktree`] (tests fill it in as the UI would).
+    pub fn expect_worktree_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::CheckoutBranch {
+                expect_worktree, ..
+            }
+            | Self::CheckoutRemote {
+                expect_worktree, ..
+            }
+            | Self::CheckoutCommit {
+                expect_worktree, ..
+            }
+            | Self::CreateBranch {
+                expect_worktree, ..
+            }
+            | Self::RenameBranch {
+                expect_worktree, ..
+            }
+            | Self::DeleteBranch {
+                expect_worktree, ..
+            }
+            | Self::Merge {
+                expect_worktree, ..
+            }
+            | Self::Rebase {
+                expect_worktree, ..
+            }
+            | Self::CherryPick {
+                expect_worktree, ..
+            }
+            | Self::Revert {
+                expect_worktree, ..
+            }
+            | Self::Reset {
+                expect_worktree, ..
+            }
+            | Self::CreateTag {
+                expect_worktree, ..
+            }
+            | Self::Pull {
+                expect_worktree, ..
+            }
+            | Self::StashSave {
+                expect_worktree, ..
+            }
+            | Self::StashApply {
+                expect_worktree, ..
+            }
+            | Self::StashPop {
+                expect_worktree, ..
+            }
+            | Self::StashDrop {
+                expect_worktree, ..
+            }
+            | Self::StashBranch {
+                expect_worktree, ..
+            }
+            | Self::Continue {
+                expect_worktree, ..
+            }
+            | Self::Abort {
+                expect_worktree, ..
+            }
+            | Self::Skip {
+                expect_worktree, ..
+            } => Some(expect_worktree),
+            Self::DeleteTag { .. }
+            | Self::PushTag { .. }
+            | Self::Push { .. }
+            | Self::FetchIntoLocal { .. }
+            | Self::DeleteRemoteBranch { .. } => None,
+        }
+    }
 }
 
 /// A danger the user confirmed: its kind and the token it came with (see [`Danger`]).
@@ -832,35 +1082,35 @@ mod tests {
     #[test]
     fn op_requests_parse_from_the_boundary_shapes() {
         let cases = [
-            json!({"op": "checkout_branch", "branch": "b", "fastForward": true}),
-            json!({"op": "checkout_remote", "remoteBranch": "origin/b", "localName": "b"}),
-            json!({"op": "checkout_commit", "hash": "h"}),
-            json!({"op": "create_branch", "name": "n", "at": "h", "checkout": false}),
-            json!({"op": "rename_branch", "branch": "b", "newName": "c"}),
-            json!({"op": "delete_branch", "branch": "b"}),
+            json!({"op": "checkout_branch", "branch": "b", "fastForward": true, "expectWorktree": "/w"}),
+            json!({"op": "checkout_remote", "remoteBranch": "origin/b", "localName": "b", "expectWorktree": "/w"}),
+            json!({"op": "checkout_commit", "hash": "h", "expectWorktree": "/w"}),
+            json!({"op": "create_branch", "name": "n", "at": "h", "checkout": false, "expectWorktree": "/w"}),
+            json!({"op": "rename_branch", "branch": "b", "newName": "c", "expectWorktree": "/w"}),
+            json!({"op": "delete_branch", "branch": "b", "expectWorktree": "/w"}),
             json!({"op": "merge", "target": {"kind": "remote", "name": "origin/x"},
-                   "noFf": true, "squash": false, "noCommit": false, "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "rebase", "onto": "main", "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "cherry_pick", "hash": "h", "mainline": 1, "noCommit": true, "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "revert", "hash": "h", "mainline": null, "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "reset", "hash": "h", "mode": "hard", "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "create_tag", "name": "v1", "hash": "h", "message": null}),
+                   "noFf": true, "squash": false, "noCommit": false, "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "rebase", "onto": "main", "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "cherry_pick", "hash": "h", "mainline": 1, "noCommit": true, "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "revert", "hash": "h", "mainline": null, "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "reset", "hash": "h", "mode": "hard", "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "create_tag", "name": "v1", "hash": "h", "message": null, "expectWorktree": "/w"}),
             json!({"op": "delete_tag", "name": "v1", "remote": "origin"}),
             json!({"op": "push_tag", "name": "v1", "remote": "origin"}),
             json!({"op": "push", "branch": "b", "remote": "origin", "to": "main",
                    "force": true}),
             json!({"op": "pull", "branch": "b", "mode": "default",
-                   "expectHead": {"branch": null, "hash": "h"}}),
+                   "expectHead": {"branch": null, "hash": "h"}, "expectWorktree": "/w"}),
             json!({"op": "fetch_into_local", "remoteBranch": "origin/b", "localName": "b"}),
             json!({"op": "delete_remote_branch", "remote": "origin", "branch": "b"}),
-            json!({"op": "stash_save", "message": "m", "includeUntracked": true}),
-            json!({"op": "stash_apply", "stash": "h"}),
-            json!({"op": "stash_pop", "stash": "h"}),
-            json!({"op": "stash_drop", "stash": "h"}),
-            json!({"op": "stash_branch", "stash": "h", "name": "n"}),
-            json!({"op": "continue", "evenWithMarkers": true, "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "abort", "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "skip", "expectHead": {"branch": "main", "hash": null}, "commit": "h"}),
+            json!({"op": "stash_save", "message": "m", "includeUntracked": true, "expectWorktree": "/w"}),
+            json!({"op": "stash_apply", "stash": "h", "expectWorktree": "/w"}),
+            json!({"op": "stash_pop", "stash": "h", "expectWorktree": "/w"}),
+            json!({"op": "stash_drop", "stash": "h", "expectWorktree": "/w"}),
+            json!({"op": "stash_branch", "stash": "h", "name": "n", "expectWorktree": "/w"}),
+            json!({"op": "continue", "evenWithMarkers": true, "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "abort", "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "skip", "expectHead": {"branch": "main", "hash": null}, "commit": "h", "expectWorktree": "/w"}),
         ];
         for case in cases {
             let request: OpRequest =
@@ -869,14 +1119,14 @@ mod tests {
         }
         assert_eq!(
             serde_json::from_value::<OpRequest>(
-                json!({"op": "reset", "hash": "h", "mode": "keep", "expectHead": {"branch": "main", "hash": null}})
+                json!({"op": "reset", "hash": "h", "mode": "keep", "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"})
             )
             .ok(),
             None
         );
         assert_eq!(
             serde_json::from_value::<OpRequest>(
-                json!({"op": "delete_branch", "branch": "b", "force": true})
+                json!({"op": "delete_branch", "branch": "b", "force": true, "expectWorktree": "/w"})
             )
             .ok(),
             None,
@@ -886,10 +1136,23 @@ mod tests {
             serde_json::from_value::<OpRequest>(json!({"op": "gc"})).ok(),
             None
         );
+        // A request that runs in a working directory says which worktree it was asked for.
+        assert_eq!(
+            serde_json::from_value::<OpRequest>(json!({"op": "delete_branch", "branch": "b"})).ok(),
+            None
+        );
+        assert_eq!(
+            serde_json::from_value::<OpRequest>(
+                json!({"op": "push_tag", "name": "v1", "remote": "o", "expectWorktree": "/w"})
+            )
+            .ok(),
+            None,
+            "only those that run in one"
+        );
         // A request on the current branch says which HEAD it was asked for (R39).
         assert_eq!(
             serde_json::from_value::<OpRequest>(
-                json!({"op": "reset", "hash": "h", "mode": "hard"})
+                json!({"op": "reset", "hash": "h", "mode": "hard", "expectWorktree": "/w"})
             )
             .ok(),
             None
@@ -1010,7 +1273,7 @@ mod tests {
         assert_eq!(serde_json::to_value(RowKind::Stash).unwrap(), "stash");
         assert_eq!(
             serde_json::to_value(RepoPrefs::default()).unwrap(),
-            json!({"mergeNoFf": true})
+            json!({"mergeNoFf": true, "activeWorktree": null})
         );
     }
 
@@ -1023,14 +1286,47 @@ mod tests {
             is_main: true,
             locked: false,
             prunable: true,
+            ..Default::default()
         };
         let v = serde_json::to_value(&wt).unwrap();
         assert_eq!(
             v,
             json!({"path": "/r", "head": null, "branch": "main", "isMain": true,
-                   "locked": false, "prunable": true})
+                   "locked": false, "prunable": true, "active": false, "status": null,
+                   "upstream": null, "unpushed": null, "inProgress": null,
+                   "lockReason": null, "pr": null})
         );
         assert_eq!(serde_json::from_value::<WorktreeInfo>(v).unwrap(), wt);
+        let full = WorktreeInfo {
+            active: true,
+            status: Some(WorktreeStatus::default()),
+            upstream: Some(WorktreeUpstream {
+                name: "origin/main".into(),
+                ahead: 2,
+                behind: 1,
+            }),
+            unpushed: Some(3),
+            in_progress: Some(InProgressKind::CherryPick),
+            lock_reason: Some("on a usb disk".into()),
+            pr: Some(PullRequest {
+                number: 7,
+                title: "t".into(),
+                url: "https://example.invalid/7".into(),
+                state: PullRequestState::Draft,
+                head: "feature".into(),
+                base: "main".into(),
+            }),
+            ..wt
+        };
+        let v = serde_json::to_value(&full).unwrap();
+        assert_eq!(
+            v["upstream"],
+            json!({"name": "origin/main", "ahead": 2, "behind": 1})
+        );
+        assert_eq!(v["inProgress"], "cherry-pick");
+        assert_eq!(v["lockReason"], "on a usb disk");
+        assert_eq!(v["pr"]["state"], "draft");
+        assert_eq!(serde_json::from_value::<WorktreeInfo>(v).unwrap(), full);
 
         let st = WorktreeStatus {
             changed: 1,

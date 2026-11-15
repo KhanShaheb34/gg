@@ -19,7 +19,8 @@ pub async fn read_worktrees(r: &GitRunner, cwd: &Path) -> Result<Vec<WorktreeInf
 }
 
 /// Parses `worktree list --porcelain -z`: NUL-terminated `key[ value]` attributes, each
-/// worktree ended by an empty attribute. The first worktree is the main one.
+/// worktree ended by an empty attribute. The first worktree is the main one. Only what git
+/// lists is filled in (the state fields stay empty).
 fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
     let mut list = Vec::new();
     let mut current: Option<WorktreeInfo> = None;
@@ -36,11 +37,8 @@ fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
             if !value.is_empty() {
                 current = Some(WorktreeInfo {
                     path: value.to_owned(),
-                    head: None,
-                    branch: None,
                     is_main: list.is_empty(),
-                    locked: false,
-                    prunable: false,
+                    ..WorktreeInfo::default()
                 });
             }
             continue;
@@ -58,7 +56,11 @@ fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
                 wt.branch = (!name.is_empty()).then(|| name.to_owned());
             }
             "detached" => wt.branch = None,
-            "locked" => wt.locked = true,
+            // `locked`, or `locked <reason>` when one was given.
+            "locked" => {
+                wt.locked = true;
+                wt.lock_reason = (!value.is_empty()).then(|| value.to_owned());
+            }
             "prunable" => wt.prunable = true,
             _ => {}
         }
@@ -95,8 +97,7 @@ mod tests {
                     head: Some(C.into()),
                     branch: Some("main".into()),
                     is_main: true,
-                    locked: false,
-                    prunable: false,
+                    ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
                     path: "/wt/ünï ✨".into(),
@@ -104,7 +105,7 @@ mod tests {
                     branch: Some("feature/x".into()),
                     is_main: false,
                     locked: true,
-                    prunable: false,
+                    ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
                     path: "/wt/detached".into(),
@@ -112,15 +113,16 @@ mod tests {
                     branch: None,
                     is_main: false,
                     locked: true,
-                    prunable: false,
+                    lock_reason: Some("on usb".into()),
+                    ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
                     path: "/wt/gone".into(),
                     head: Some(C.into()),
                     branch: Some("gone".into()),
                     is_main: false,
-                    locked: false,
                     prunable: true,
+                    ..WorktreeInfo::default()
                 },
             ]
         );

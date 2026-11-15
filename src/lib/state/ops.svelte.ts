@@ -96,10 +96,18 @@ function report(repoId: number, outcome: OpOutcome): void {
   const choose = outcome.hints.find((h) => h.kind === "choose_pull_mode");
   if (outcome.status === "failed" && choose) {
     const upstream = findRepoView(repoId)?.loadedLabel(choose.branch)?.upstream ?? null;
-    showDialog(PullDialog, { repoId, branch: choose.branch, upstream, message: outcome.message, head: headOf(repoId) });
+    showDialog(PullDialog, {
+      repoId,
+      branch: choose.branch,
+      upstream,
+      message: outcome.message,
+      head: headOf(repoId),
+      worktree: outcome.snapshot.activeWorktree,
+    });
     return;
   }
-  const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint));
+  // What a notice offers runs where the operation ran: switched away since, it is refused.
+  const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint, outcome.snapshot.activeWorktree));
   const detail = outcome.detail ?? undefined;
   // A notice that offers what to do next waits for the user, until the next operation there.
   const until = actions.length > 0 ? { repoId, opId: outcome.opId } : undefined;
@@ -136,8 +144,8 @@ async function followUp(repoId: number, request: OpRequest): Promise<void> {
   }
 }
 
-/** The buttons a hint puts on a notice. */
-function hintActions(repoId: number, hint: OpHint): ToastAction[] {
+/** The buttons a hint puts on a notice; `worktree`: where the operation that gave it ran. */
+function hintActions(repoId: number, hint: OpHint, worktree: string): ToastAction[] {
   switch (hint.kind) {
     case "push": {
       const { branch, remote } = hint;
@@ -149,7 +157,13 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
     case "pull": {
       const { branch } = hint;
       // HEAD as shown when the button is pressed: the pull names its branch.
-      const pull = (): OpRequest => ({ op: "pull", branch, mode: "default", expectHead: headOf(repoId) });
+      const pull = (): OpRequest => ({
+        op: "pull",
+        branch,
+        mode: "default",
+        expectHead: headOf(repoId),
+        expectWorktree: worktree,
+      });
       return [{ label: `Pull ${shown(branch)}`, run: () => followUp(repoId, pull()) }];
     }
     case "force_push": {
@@ -164,7 +178,8 @@ function hintActions(repoId: number, hint: OpHint): ToastAction[] {
       return [
         {
           label: "Skip this commit",
-          run: () => followUp(repoId, { op: "skip", expectHead: headOf(repoId), commit: hint.commit }),
+          run: () =>
+            followUp(repoId, { op: "skip", expectHead: headOf(repoId), commit: hint.commit, expectWorktree: worktree }),
         },
       ];
   }

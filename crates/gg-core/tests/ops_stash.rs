@@ -16,24 +16,28 @@ fn save(message: Option<&str>, include_untracked: bool) -> OpRequest {
     OpRequest::StashSave {
         message: message.map(str::to_owned),
         include_untracked,
+        expect_worktree: here_wt(),
     }
 }
 
 fn apply(stash: &str) -> OpRequest {
     OpRequest::StashApply {
         stash: stash.to_owned(),
+        expect_worktree: here_wt(),
     }
 }
 
 fn pop(stash: &str) -> OpRequest {
     OpRequest::StashPop {
         stash: stash.to_owned(),
+        expect_worktree: here_wt(),
     }
 }
 
 fn drop_stash(stash: &str) -> OpRequest {
     OpRequest::StashDrop {
         stash: stash.to_owned(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -41,6 +45,7 @@ fn branch(stash: &str, name: &str) -> OpRequest {
     OpRequest::StashBranch {
         stash: stash.to_owned(),
         name: name.to_owned(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -124,7 +129,10 @@ async fn save_with_message_and_untracked() {
     assert!(repo.path().join("loose.txt").exists());
 
     // Nothing to stash: only an untracked file, left out.
-    let err = h.m.run_op(id, save(None, false), &[]).await.unwrap_err();
+    let err =
+        h.m.run_op(id, in_wt(repo.path(), save(None, false)), &[])
+            .await
+            .unwrap_err();
     assert_eq!(err.code, ErrorCode::NothingToDo);
     assert!(err.message.contains("untracked"), "{}", err.message);
     assert_eq!(stashes(&repo).len(), 2);
@@ -271,7 +279,10 @@ async fn stash_gone_fails_plainly() {
 
     // Something that is not a commit hash never reaches git.
     for bad in ["stash@{0}", "-x", "abc"] {
-        let err = h.m.run_op(id, apply(bad), &[]).await.unwrap_err();
+        let err =
+            h.m.run_op(id, in_wt(repo.path(), apply(bad)), &[])
+                .await
+                .unwrap_err();
         assert_eq!(err.code, ErrorCode::BadRequest, "{bad}");
     }
 }
@@ -288,10 +299,16 @@ async fn branch_from_stash() {
     let id = h.open(repo.path()).await.repo_id;
 
     for bad in ["-x", "a..b", ""] {
-        let err = h.m.run_op(id, branch(&w, bad), &[]).await.unwrap_err();
+        let err =
+            h.m.run_op(id, in_wt(repo.path(), branch(&w, bad)), &[])
+                .await
+                .unwrap_err();
         assert_eq!(err.code, ErrorCode::BadName, "{bad:?}");
     }
-    let err = h.m.run_op(id, branch(&w, "main"), &[]).await.unwrap_err();
+    let err =
+        h.m.run_op(id, in_wt(repo.path(), branch(&w, "main")), &[])
+            .await
+            .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadName);
     assert!(err.message.contains("already exists"), "{}", err.message);
 

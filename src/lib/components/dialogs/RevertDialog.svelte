@@ -19,10 +19,12 @@
     parents: string[];
     /** HEAD as the menu showed it: the new commit goes there (R39). */
     head: HeadInfo;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, hash, subject, parents, head, close }: Props = $props();
+  let { repoId, hash, subject, parents, head, worktree, close }: Props = $props();
 
   const branch = $derived(head.branch);
 
@@ -30,7 +32,7 @@
   const merge = $derived(parents.length > 1);
 
   function submit() {
-    closeAndRun(close, repoId, { op: "revert", hash, mainline: merge ? mainline : null, expectHead: head });
+    closeAndRun(close, repoId, { op: "revert", hash, mainline: merge ? mainline : null, expectHead: head, expectWorktree: worktree });
   }
 </script>
 

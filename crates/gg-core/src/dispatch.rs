@@ -111,8 +111,9 @@ struct RunOpArgs {
 }
 
 /// What `open_repo` returns: the repository's snapshot, and the worktree the path asked for
-/// is in when that is another worktree of a repository already open (its tab acts on its
-/// own, `activeWorktree`; R42).
+/// is in when it could not be made active (an operation runs or waits in the repository):
+/// the tab goes on in `activeWorktree`. A path in a linked worktree otherwise makes that
+/// worktree active.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Opened {
@@ -129,6 +130,13 @@ struct Uninstalled {
     #[serde(flatten)]
     state: crate::dto::CliState,
     removed: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetActiveWorktreeArgs {
+    repo_id: u32,
+    path: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -337,6 +345,14 @@ impl Core {
                             a.request,
                             &a.confirmed,
                         )
+                        .await?,
+                )
+            }
+            "set_active_worktree" => {
+                let a: SetActiveWorktreeArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .set_active_worktree(a.repo_id, &a.path)
                         .await?,
                 )
             }

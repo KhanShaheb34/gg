@@ -258,7 +258,7 @@ impl Store {
         self.lock()
             .repo_prefs
             .get(&key)
-            .copied()
+            .cloned()
             .unwrap_or_default()
     }
 
@@ -270,8 +270,34 @@ impl Store {
             if let Some(no_ff) = patch.merge_no_ff {
                 prefs.merge_no_ff = no_ff;
             }
-            Ok(*prefs)
+            Ok(prefs.clone())
         })
+    }
+
+    /// Remembers `worktree` (`None`: the main one) as the active worktree of the repository
+    /// at `root`, with symlinks resolved. Nothing is written when it is remembered already.
+    pub fn set_active_worktree(&self, root: &Path, worktree: Option<&Path>) -> Result<()> {
+        let key = canonical(root).to_string_lossy().into_owned();
+        let value = worktree.map(|w| canonical(w).to_string_lossy().into_owned());
+        let now = self
+            .lock()
+            .repo_prefs
+            .get(&key)
+            .and_then(|p| p.active_worktree.clone());
+        if now == value {
+            return Ok(());
+        }
+        self.change(|data| {
+            data.repo_prefs.entry(key).or_default().active_worktree = value;
+            Ok(())
+        })
+    }
+
+    /// The active worktree remembered for the repository at `root`, if it is still a folder
+    /// (else the main one counts: `None`).
+    pub fn active_worktree(&self, root: &Path) -> Option<PathBuf> {
+        let path = PathBuf::from(self.repo_prefs(root).active_worktree?);
+        path.is_dir().then_some(path)
     }
 
     /// Applies `patch` and returns the new settings. `BadRequest` (and nothing changes) if
@@ -401,7 +427,14 @@ impl StoreData {
                 };
                 let merge_no_ff =
                     field(prefs, "mergeNoFf").unwrap_or(RepoPrefs::default().merge_no_ff);
-                Some((root.clone(), RepoPrefs { merge_no_ff }))
+                let active_worktree = field(prefs, "activeWorktree").unwrap_or_default();
+                Some((
+                    root.clone(),
+                    RepoPrefs {
+                        merge_no_ff,
+                        active_worktree,
+                    },
+                ))
             })
             .collect();
         Ok(Self {
@@ -443,7 +476,7 @@ impl StoreData {
                 was.iter()
                     .any(|(root, entry)| match (entry, now.get(root)) {
                         (Value::Object(was), Some(Value::Object(now))) => {
-                            differs(was, now, "mergeNoFf")
+                            differs(was, now, "mergeNoFf") || differs(was, now, "activeWorktree")
                         }
                         _ => true,
                     })
@@ -1219,11 +1252,11 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             saved["repoPrefs"]["/a"],
-            serde_json::json!({"mergeNoFf": false, "future": 1})
+            serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null})
         );
         assert_eq!(
             saved["repoPrefs"]["/c"],
-            serde_json::json!({"mergeNoFf": false})
+            serde_json::json!({"mergeNoFf": false, "activeWorktree": null})
         );
         let aside = fs::read_dir(dir.path())
             .unwrap()
@@ -1236,6 +1269,36 @@ mod tests {
             })
             .count();
         assert_eq!(aside, 1, "the unreadable entry for /b was kept aside");
+    }
+
+    /// The active worktree is remembered by the main worktree's path, symlinks resolved, and
+    /// one whose folder is gone counts as the main one.
+    #[test]
+    fn the_active_worktree_is_remembered_and_a_gone_one_is_the_main_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        let wt = dir.path().join("wt");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+        let store = Store::load(&dir.path().join("config"));
+        assert_eq!(store.active_worktree(&root), None);
+        store.set_active_worktree(&root, Some(&wt)).unwrap();
+        let real = canonical(&wt);
+        assert_eq!(store.active_worktree(&root), Some(real.clone()));
+        let reloaded = Store::load(&dir.path().join("config"));
+        assert_eq!(
+            reloaded.active_worktree(&root.join(".")),
+            Some(real.clone())
+        );
+        assert_eq!(
+            reloaded.repo_prefs(&root).active_worktree.as_deref(),
+            Some(real.to_string_lossy().as_ref())
+        );
+        fs::remove_dir(&wt).unwrap();
+        assert_eq!(reloaded.active_worktree(&root), None, "gone: the main one");
+        reloaded.set_active_worktree(&root, None).unwrap();
+        assert_eq!(reloaded.repo_prefs(&root).active_worktree, None);
+        assert!(reloaded.repo_prefs(&root).merge_no_ff, "the rest kept");
     }
 
     #[test]

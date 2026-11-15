@@ -360,10 +360,12 @@ test("actions_queue_while_one_runs", async ({ gg }) => {
   const outcomes = page.evaluate(async () => {
     const ops = await import("/src/lib/state/ops.svelte.ts");
     const { app } = await import("/src/lib/state/app.svelte.ts");
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
     const repoId = app.activeRepoId!;
+    const expectWorktree = findRepoView(repoId)!.snapshot.activeWorktree;
     return Promise.all([
-      ops.runOp(repoId, { op: "checkout_branch", branch: "feature/login", fastForward: false }),
-      ops.runOp(repoId, { op: "checkout_branch", branch: "staging", fastForward: true }),
+      ops.runOp(repoId, { op: "checkout_branch", branch: "feature/login", fastForward: false, expectWorktree }),
+      ops.runOp(repoId, { op: "checkout_branch", branch: "staging", fastForward: true, expectWorktree }),
     ]);
   });
   const busy = page.getByTestId("busy");

@@ -765,7 +765,7 @@ async fn launch_path_is_reported() {
         json!({
             "recents": [],
             "session": {"tabs": [], "active": null},
-            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
+            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null, "terminalCommand": null,
                          "worktreePattern": "../{repo}.worktrees/{branch}"},
             "launchPath": null,
             "homeDir": home,
@@ -794,7 +794,7 @@ async fn session_and_settings_persist() {
         .await;
     assert_eq!(
         settings,
-        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null,
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
                "worktreePattern": "../{repo}.worktrees/{branch}"})
     );
     let err = h
@@ -820,7 +820,7 @@ async fn session_and_settings_persist() {
     );
     assert_eq!(
         state["settings"],
-        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null,
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
                "worktreePattern": "../{repo}.worktrees/{branch}"})
     );
 }

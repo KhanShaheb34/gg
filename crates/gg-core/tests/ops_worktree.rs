@@ -261,6 +261,28 @@ async fn ignored_files_alone_need_the_ordinary_confirmation_that_names_them() {
     );
 }
 
+/// Ignored files inside a folder git does not ignore whole are listed by that folder, with
+/// a count, not one by one (Task 4 review).
+#[tokio::test]
+async fn ignored_files_are_listed_by_their_top_level_folder() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::create_dir_all(wt.join("newdir/sub")).unwrap();
+    fs::write(wt.join("newdir/i.log"), "x").unwrap();
+    fs::write(wt.join("newdir/sub/j.log"), "x").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeIgnoredFiles).await;
+    assert!(
+        danger.message.contains("it holds 1 ignored folder,"),
+        "{}",
+        danger.message
+    );
+    assert_eq!(
+        danger.detail.as_deref(),
+        Some("Ignored, deleted with it (1):\n  newdir/ (2 ignored inside)")
+    );
+}
+
 #[tokio::test]
 async fn ignored_files_beside_other_work_are_a_line_of_the_red_danger() {
     let (repo, _origin, wt) = pushed_worktree();

@@ -437,8 +437,11 @@ struct Work {
     changed: Vec<String>,
     /// Untracked files, one by one.
     untracked: Vec<String>,
-    /// What git ignores there, folders collapsed (`build/`).
+    /// What git ignores there, as shown: top-level entries only (`build/`, `x.log`, or
+    /// `newdir/ (2 ignored inside)` for ignored entries inside a folder that is not).
     ignored: Vec<String>,
+    /// What git ignores there, as git lists it (folders it ignores whole collapsed).
+    ignored_entries: Vec<String>,
     /// Hashes of the status records (all but the ignored) and of the ignored ones.
     status_hash: u64,
     ignored_hash: u64,
@@ -535,7 +538,7 @@ async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
         .iter()
         .chain(&work.untracked)
         .map(String::as_str);
-    let ignored = work.ignored.iter().map(|p| p.trim_end_matches('/'));
+    let ignored = work.ignored_entries.iter().map(|p| p.trim_end_matches('/'));
     work.status_hash = fnv1a(
         &[
             work.status_hash.to_le_bytes(),
@@ -585,7 +588,7 @@ fn parse_status(out: &[u8]) -> Work {
             Some(b'u') => work.changed.extend(path(10)),
             Some(b'?') => work.untracked.extend(path(1)),
             Some(b'!') => {
-                work.ignored.extend(path(1));
+                work.ignored_entries.extend(path(1));
                 ignored.extend_from_slice(entry);
                 ignored.push(0);
                 continue;
@@ -597,7 +600,30 @@ fn parse_status(out: &[u8]) -> Work {
     }
     work.status_hash = fnv1a(&kept);
     work.ignored_hash = fnv1a(&ignored);
+    work.ignored = top_level(&work.ignored_entries);
     work
+}
+
+/// Ignored entries `entries` (as git lists them) by their top-level folder: an entry inside
+/// a folder git does not ignore whole is counted under it (`newdir/ (2 ignored inside)`).
+fn top_level(entries: &[String]) -> Vec<String> {
+    let mut tops: Vec<(String, usize)> = Vec::new();
+    for entry in entries {
+        let (top, inside) = match entry.split_once('/') {
+            Some((top, rest)) if !rest.is_empty() => (format!("{top}/"), 1),
+            _ => (entry.clone(), 0),
+        };
+        match tops.iter_mut().find(|(t, _)| *t == top) {
+            Some((_, n)) => *n += inside,
+            None => tops.push((top, inside)),
+        }
+    }
+    tops.into_iter()
+        .map(|(top, n)| match n {
+            0 => top,
+            n => format!("{top} ({n} ignored inside)"),
+        })
+        .collect()
 }
 
 /// The dangers of removing the worktree at `path` (and with `delete_branch`, its branch),
@@ -693,7 +719,8 @@ fn count(n: usize, one: &str, many: &str) -> String {
 
 /// The ignored entries, counted as files, folders or both.
 fn ignored_count(ignored: &[String]) -> String {
-    let folders = ignored.iter().filter(|p| p.ends_with('/')).count();
+    // A top-level file has no `/`; a folder ends with one, or has its count after it.
+    let folders = ignored.iter().filter(|p| p.contains('/')).count();
     let files = ignored.len() - folders;
     match (files, folders) {
         (_, 0) => count(files, "ignored file", "ignored files"),
@@ -1229,6 +1256,10 @@ mod tests {
         assert_eq!(work.changed, ["a file.txt", "new.txt", "both.txt"]);
         assert_eq!(work.untracked, ["new dir/u.txt"]);
         assert_eq!(work.ignored, ["build/", "x.log"]);
+        // Ignored entries inside a folder git does not ignore whole: that folder, counted.
+        let nested = parse_status(b"! newdir/i.log\0! newdir/sub/j.log\0! newdir/out/\0! z.log\0");
+        assert_eq!(nested.ignored, ["newdir/ (3 ignored inside)", "z.log"]);
+        assert_eq!(nested.ignored_entries.len(), 4);
         // Only the ignored part changes the ignored hash, and the rest the status hash.
         let more = [&out[..], b"! more.log\0"].concat();
         let again = parse_status(&more);

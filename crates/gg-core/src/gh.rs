@@ -562,9 +562,9 @@ pub(crate) struct PrData {
 
 impl PrData {
     /// The open pull request whose head is branch `name` on `remote`: a pull request's head
-    /// is matched only by the same name AND, when the remote's owner is known, the same
-    /// owner (a fork's branch of the same name is another branch); with the owner not known,
-    /// only a pull request from the repository itself. The newest when there are several.
+    /// is matched only by the same name AND the same owner as the remote's (a fork's branch
+    /// of the same name is another branch); with the remote's owner not known, none. The
+    /// newest when there are several.
     fn on(&self, remote: Option<&str>, name: &str) -> Option<&PullRequest> {
         let owner = remote.and_then(|r| self.facts.repo_of(r)).map(|r| r.owner);
         pick(
@@ -628,15 +628,18 @@ impl PrData {
 }
 
 /// Of `candidates` (pull requests whose head has the branch's name), the newest whose head
-/// is in `owner`'s repository; with `owner` not known, the newest from the repository itself.
+/// is in `owner`'s repository (one that does not say its head's owner: only from the
+/// repository itself); with `owner` not known, none: the head may be anyone's branch of
+/// that name.
 fn pick<'a>(
     candidates: impl Iterator<Item = &'a ListedPr>,
     owner: Option<&str>,
 ) -> Option<&'a PullRequest> {
+    let owner = owner?;
     candidates
-        .filter(|l| match (owner, &l.head_owner) {
-            (Some(owner), Some(head)) => owner.eq_ignore_ascii_case(head),
-            (Some(_), None) | (None, _) => !l.cross,
+        .filter(|l| match &l.head_owner {
+            Some(head) => owner.eq_ignore_ascii_case(head),
+            None => !l.cross,
         })
         .max_by_key(|l| l.pr.number)
         .map(|l| &l.pr)
@@ -934,13 +937,22 @@ mod tests {
                 (RefKind::Remote, "origin/feature"),
             ]
         );
-        // A remote whose owner is unknown (not a hosting URL): only a pull request from the
-        // repository itself.
+        // A remote whose owner is unknown (not a hosting URL): no pull request is marked,
+        // not even one from the repository itself (its head may be anyone's same-named
+        // branch).
         let local = PrData {
             listed: vec![listed(4, "x", "o", false), listed(5, "y", "ada", true)],
             facts: facts(&[("origin", "/srv/git/r.git")], &[]),
         };
-        assert_eq!(local.of_branch("x").map(|p| p.number), Some(4));
+        assert_eq!(local.of_branch("x"), None);
         assert_eq!(local.of_branch("y"), None);
+        assert!(
+            local
+                .marks(&[
+                    reference(RefKind::Branch, "x"),
+                    reference(RefKind::Remote, "origin/x")
+                ])
+                .is_empty()
+        );
     }
 }

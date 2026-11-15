@@ -1153,8 +1153,8 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     assert_eq!(danger.kind, DangerKind::PruneWorktrees);
     assert_eq!(
         danger.message,
-        "Pruning makes git forget 1 worktree entry whose folders are gone (listed below). If \
-         one of these is on a disconnected drive, reconnect it or lock the worktree instead."
+        "Pruning makes git forget 1 worktree entry whose folder is gone (listed below). If it \
+         is on a disconnected drive, reconnect it or lock the worktree instead."
     );
     assert_eq!(
         danger.detail.as_deref(),
@@ -1172,7 +1172,7 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     assert_eq!(
         out.message,
         format!(
-            "Pruned 1 stale worktree entry, whose folders were gone: {gone_listed}. 1 missing \
+            "Pruned 1 stale worktree entry, whose folder was gone: {gone_listed}. 1 missing \
              worktree is locked, so git keeps it."
         )
     );
@@ -1213,7 +1213,7 @@ async fn pruning_a_detached_entry_with_commits_of_its_own_is_red_and_lists_them(
     assert!(
         danger
             .message
-            .contains("and with them 1 commit on no branch, tag or remote, which are lost."),
+            .contains("and with it 1 commit on no branch, tag or remote, which is lost."),
         "{}",
         danger.message
     );

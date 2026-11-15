@@ -16,7 +16,7 @@
 
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { shortHash, shortenPath, visibleText } from "../../format";
+  import { homeInText, shortHash, shortenPath, visibleText } from "../../format";
   import { CoreError, api } from "../../ipc";
   import { shown } from "../../menus/common";
   import { refNameProblem } from "../../nameCheck";
@@ -66,6 +66,16 @@
   let pending = $state(false);
   /** What the core said of the request last sent, and of which field. */
   let refused: { field: "name" | "location"; message: string; sent: string } | null = $state(null);
+  /** A refusal about neither field (an operation running, say): said above the buttons. */
+  let general: string | null = $state(null);
+
+  /** Which field a refusal of the core is about, if one: a branch name, or the folder. */
+  function fieldOf(message: string): "name" | "location" | null {
+    if (/a branch named .* already exists/.test(message)) return "name";
+    if (/worktree at|is inside|is a link|not a folder|not empty|git folder|Prune stale entries|Could not look at/.test(message))
+      return "location";
+    return null;
+  }
   let open = true;
   onDestroy(() => (open = false));
 
@@ -149,12 +159,14 @@
     if (!valid) return;
     const request: OpRequest = { op: "worktree_add", path: expand(location), branch: branchOf() };
     const sent = { name, location };
+    general = null;
     pending = true;
     try {
       const outcome = await runOp(repoId, request, { ownErrors: ["bad_name", "bad_request"], ownRefusals: true });
       if (isRefusal(outcome) && open) {
-        const field = /branch named/.test(outcome.message) ? "name" : "location";
-        refused = { field, message: outcome.message, sent: field === "name" ? sent.name : sent.location };
+        const field = fieldOf(outcome.message);
+        if (field === null) general = outcome.message;
+        else refused = { field, message: outcome.message, sent: field === "name" ? sent.name : sent.location };
         pending = false;
         return;
       }
@@ -165,8 +177,9 @@
       }
     } catch (e) {
       if (e instanceof CoreError && (e.code === "bad_name" || e.code === "bad_request") && open) {
-        const field = e.code === "bad_name" ? "name" : "location";
-        refused = { field, message: e.message, sent: field === "name" ? sent.name : sent.location };
+        const field = e.code === "bad_name" ? "name" : fieldOf(e.message);
+        if (field === null) general = e.message;
+        else refused = { field, message: e.message, sent: field === "name" ? sent.name : sent.location };
         pending = false;
         return;
       }
@@ -280,6 +293,10 @@
     </p>
   </div>
 
+  {#if general}
+    <p class="general" role="alert" data-testid="create-error">{visibleText(homeInText(general, homeDir))}</p>
+  {/if}
+
   <label class="check-row">
     <input class="checkbox" type="checkbox" bind:checked={makeActiveAfter} disabled={pending} />
     <span>
@@ -314,5 +331,13 @@
   .path {
     font-family: var(--font-mono);
     font-size: var(--fs-sm);
+  }
+
+  .general {
+    margin: 2px 0 12px;
+    color: var(--danger);
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
   }
 </style>

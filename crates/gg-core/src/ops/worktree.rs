@@ -1070,8 +1070,14 @@ pub(crate) async fn remove(
 }
 
 /// Said with every prune confirmation.
-const DISCONNECTED: &str = "If one of these is on a disconnected drive, reconnect it or lock \
-                            the worktree instead.";
+/// Said with a prune: a folder that is only out of reach for now.
+fn disconnected(n: usize) -> &'static str {
+    if n == 1 {
+        "If it is on a disconnected drive, reconnect it or lock the worktree instead."
+    } else {
+        "If one of these is on a disconnected drive, reconnect it or lock the worktree instead."
+    }
+}
 
 /// The danger of pruning: none when no entry is prunable; else `prune_worktrees` listing
 /// each entry git would forget (its path, and its branch or detached commit), or the red
@@ -1133,22 +1139,26 @@ pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
         &lost,
         lost_count,
     );
-    let them = count(stale.len(), "worktree entry", "worktree entries");
+    let them = if stale.len() == 1 {
+        "1 worktree entry whose folder is gone".to_owned()
+    } else {
+        format!("{} worktree entries whose folders are gone", stale.len())
+    };
+    let disconnected = disconnected(stale.len());
     let (kind, message) = if lost_count == 0 {
         (
             DangerKind::PruneWorktrees,
-            format!(
-                "Pruning makes git forget {them} whose folders are gone (listed below). \
-                 {DISCONNECTED}"
-            ),
+            format!("Pruning makes git forget {them} (listed below). {disconnected}"),
         )
     } else {
         (
             DangerKind::PruneWorktreesLosesCommits,
             format!(
-                "Pruning makes git forget {them} whose folders are gone (listed below), and \
-                 with them {} on no branch, tag or remote, which are lost. {DISCONNECTED}",
-                count(lost_count, "commit", "commits")
+                "Pruning makes git forget {them} (listed below), and with {} {} on no branch, \
+                 tag or remote, which {} lost. {disconnected}",
+                if stale.len() == 1 { "it" } else { "them" },
+                count(lost_count, "commit", "commits"),
+                if lost_count == 1 { "is" } else { "are" }
             ),
         )
     };
@@ -1179,12 +1189,15 @@ pub(crate) async fn prune(ctx: &OpCtx<'_>) -> Result<Step> {
         "Nothing to prune: every worktree git lists has its folder.".to_owned()
     } else {
         format!(
-            "Pruned {}, whose folders were gone: {}.",
-            count(
-                pruned.len(),
-                "stale worktree entry",
-                "stale worktree entries"
-            ),
+            "Pruned {}: {}.",
+            if pruned.len() == 1 {
+                "1 stale worktree entry, whose folder was gone".to_owned()
+            } else {
+                format!(
+                    "{} stale worktree entries, whose folders were gone",
+                    pruned.len()
+                )
+            },
             explain::file_list(&pruned)
         )
     };

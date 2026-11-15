@@ -25,14 +25,27 @@ import { findRepoView } from "./repo.svelte";
  * conflict banner shows it. A pull that needs to be told whether to merge or rebase (hint
  * `choose_pull_mode`) shows that choice instead of a notice, and is sent again as chosen. An error from the core is reported, and the promise rejects
  * with it; errors with a code in `ownErrors` are not reported: the caller shows them (a
- * dialog shows a refused name beside its field). With `ownRefusals`, a request the core refused in its turn
+ * dialog shows a refused name beside its field). `confirmWith` lets the dialog that sent the
+ * request ask in place of the confirmation (see its type). With `ownRefusals`, a request the core refused in its turn
  * before writing anything (`failed`, no command written, no detail: "there is a worktree there
  * already") is not reported either: the dialog that sent it shows the reason beside its fields.
  */
 export async function runOp(
   repoId: number,
   request: OpRequest,
-  { ownErrors = [], ownRefusals = false }: { ownErrors?: CoreErrorDto["code"][]; ownRefusals?: boolean } = {},
+  {
+    ownErrors = [],
+    ownRefusals = false,
+    confirmWith,
+  }: {
+    ownErrors?: CoreErrorDto["code"][];
+    ownRefusals?: boolean;
+    /**
+     * Asks the user itself (the dialog that sent the request, inside it) when it returns a
+     * promise of the answer; null: the usual confirmation.
+     */
+    confirmWith?: (outcome: OpOutcome, again: boolean) => Promise<boolean> | null;
+  } = {},
 ): Promise<OpOutcome> {
   let confirmed: Confirmed[] = [];
   for (;;) {
@@ -49,7 +62,8 @@ export async function runOp(
       return outcome;
     }
     const again = confirmed.length > 0;
-    if (!(await confirm(repoId, outcome, again))) return outcome;
+    const asked = confirmWith?.(outcome, again) ?? confirm(repoId, outcome, again);
+    if (!(await asked)) return outcome;
     confirmed = outcome.dangers.map((d) => ({ kind: d.kind, token: d.token }));
   }
 }

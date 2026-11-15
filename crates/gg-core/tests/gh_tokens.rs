@@ -86,10 +86,15 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
     load(&h, net_id).await;
     let calls = gh.calls();
     let argv: Vec<&[String]> = calls.iter().map(|c| c.argv.as_slice()).collect();
+    // A "no" is asked again on each refresh the user makes (Task 9 review minor 2); the
+    // suggestion between them used the answer kept. Nothing else ran.
     assert_eq!(
         argv,
-        [["auth", "token", "--hostname", "github.example.net"]],
-        "asked once per host per run; nothing else ran"
+        [
+            ["auth", "token", "--hostname", "github.example.net"],
+            ["auth", "token", "--hostname", "github.example.net"]
+        ],
+        "asked once per user refresh; nothing else ran"
     );
     for var in TOKENS {
         assert!(!has(&calls[0].env, var), "{var} reached the check");
@@ -118,10 +123,10 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
             .is_some_and(|u| u.starts_with("https://github.example.org/team/app/compare/"))
     );
     let checks = gh.calls_of(&["auth", "token"]);
-    assert_eq!(checks.len(), 2, "one per host");
-    assert_eq!(checks[1].argv[3], "github.example.org");
+    assert_eq!(checks.len(), 3, "the two noes and one yes");
+    assert_eq!(checks[2].argv[3], "github.example.org");
     for var in TOKENS {
-        assert!(!has(&checks[1].env, var), "{var} reached the check");
+        assert!(!has(&checks[2].env, var), "{var} reached the check");
     }
     let org_calls: Vec<_> = gh
         .calls()
@@ -179,7 +184,7 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
         .iter()
         .filter(|r| r.program == "gh" && r.args.first().is_some_and(|a| a == "auth"))
         .collect();
-    assert_eq!(check_records.len(), 2, "the checks are logged");
+    assert_eq!(check_records.len(), 3, "the checks are logged");
     for r in &check_records {
         assert_eq!(r.args, ["auth", "token", "--hostname", &r.args[3]]);
         assert!(r.stdout.is_empty() && r.stderr.is_empty(), "{r:?}");

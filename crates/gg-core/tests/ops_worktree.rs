@@ -669,11 +669,14 @@ async fn an_active_worktree_that_git_will_not_remove_says_main_is_active_now() {
     );
     git_in(&wt, &["commit", "-q", "-m", "add the submodule"]);
     git_in(&wt, &["push", "-q", "origin", "feature"]);
+    // Work that would otherwise need --force: still never offered, never forced.
+    fs::write(wt.join("untracked.txt"), "x").unwrap();
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
     h.m.set_active_worktree(id, &wt).await.unwrap();
     let out = h.run(id, remove(&wt, false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(out.dangers.is_empty(), "no confirmation offered");
     assert!(
         out.message
             .starts_with("git does not remove a worktree that contains submodules"),
@@ -696,6 +699,17 @@ async fn an_active_worktree_that_git_will_not_remove_says_main_is_active_now() {
     );
     assert_eq!(out.snapshot.active_worktree, real(repo.path()));
     assert!(wt.join("lib/.git").exists(), "nothing removed");
+    assert!(wt.join("untracked.txt").exists());
+    assert_eq!(
+        worktree_writes(&h, &out),
+        [vec![
+            "worktree".to_owned(),
+            "remove".into(),
+            "--".into(),
+            real(&wt)
+        ]],
+        "a plain remove ran (git refused it)"
+    );
     assert!(
         worktree_writes(&h, &out)
             .iter()

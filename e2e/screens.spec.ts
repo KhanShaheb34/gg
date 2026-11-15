@@ -1118,6 +1118,8 @@ for (const [prefix, width, height] of SIZES)
       await page.emulateMedia({ colorScheme: theme });
       const repo = gg.repoPath("prs");
       gg.git("prs", "branch", LONG, "fix/typo");
+      // A row of several branches, each with a pull request: two shown, the rest in "+k".
+      for (const name of ["hotfix/parser", "release/2026-11", "spike/lexer"]) gg.git("prs", "branch", name, "docs/readme");
       // The worktree's branch one ahead of its upstream: a count beside the marker.
       const wt = path.join(path.dirname(repo), "prs.worktrees", "login");
       writeFileSync(path.join(wt, "remember.txt"), "remember me\n");
@@ -1139,6 +1141,10 @@ for (const [prefix, width, height] of SIZES)
         JSON.stringify([
           pr(1284, "feature/login", "Add the login form"),
           pr(1291, "feature/search-indexing-across-every-workspace-package", "Index the search across packages", true),
+          pr(1295, "docs/readme", "Explain the parser"),
+          pr(1296, "hotfix/parser", "Fix the parser crash", true),
+          pr(1297, "release/2026-11", "Release November"),
+          pr(1298, "spike/lexer", "Try a new lexer", true),
         ]),
       );
       gg.gh.reply("pr-list-head", 0, "[]");
@@ -1189,13 +1195,19 @@ for (const [prefix, width, height] of SIZES)
       await shot("prs-dialog-pending");
       await page.clock.runFor(4500);
       await expect(dialog.getByTestId("pr-error")).toBeVisible();
+      // The failure, in sight (the dialog scrolls in a small window).
+      // The push was made before gh failed: once the repository is read again, the button
+      // only creates.
+      await page.clock.runFor(1000);
+      await expect(dialog.getByRole("button", { name: "Create pull request", exact: true })).toBeVisible();
+      await dialog.getByTestId("pr-error").scrollIntoViewIfNeeded();
       await shot("prs-dialog-failed");
       await dialog.getByRole("button", { name: "Cancel" }).click();
 
       // A branch that has one already.
       gg.gh.slow("pr-list-head", 0);
-      gg.gh.reply("pr-list-head", 0, JSON.stringify([pr(1302, "docs/readme", "Explain how the parser reads a file")]));
-      await grid.locator('[data-ref="docs/readme"] .name').first().click({ button: "right" });
+      gg.gh.reply("pr-list-head", 0, JSON.stringify([pr(1302, "fix/typo", "Fix the typo in how the parser reads a file")]));
+      await grid.locator('[data-ref="fix/typo"] .name').first().click({ button: "right" });
       await page.getByRole("menuitem", { name: "Create pull request…" }).click();
       await expect(dialog.getByTestId("pr-existing")).toBeVisible();
       await shot("prs-dialog-existing");

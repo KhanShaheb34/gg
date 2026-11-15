@@ -125,8 +125,16 @@
 
   /** Where the branch is pushed ("fork/x"), as `pr_create` will push it; null until known. */
   const pushTo = $derived(suggestion?.pushTo ?? null);
-  /** It is pushed first: its namesake there is missing or behind it. */
-  const needsPush = $derived(suggestion?.needsPush ?? false);
+  /**
+   * It is pushed first: its namesake there is missing or behind it, as the core said; unless
+   * the repository now shows it level with it there (pushed since: by a try that then failed).
+   */
+  const needsPush = $derived.by(() => {
+    if (!(suggestion?.needsPush ?? false)) return false;
+    const label = view?.loadedLabel(branch);
+    const level = pushTo !== null && label?.upstream === pushTo && label.ahead === 0 && (snap?.remoteBranches ?? []).includes(pushTo);
+    return !level;
+  });
   /** Branch names in button labels: cut in the middle so the button stays a button. */
   const short = (name: string) => shown(name, 22);
   const pushLabel = $derived(`Push ${short(branch)} to ${short(pushTo ?? "")}`);
@@ -245,6 +253,8 @@
       if (!open) return;
       if (outcome.status === "failed") {
         failure = outcome;
+        // The push may have been made before gh failed: the button says what is left to do.
+        void refreshPushPlan();
         return;
       }
       close();
@@ -257,6 +267,18 @@
       stopListening?.();
       stopListening = null;
       pending = false;
+    }
+  }
+
+  /** Asks the core again where the branch goes and whether it must be pushed. */
+  async function refreshPushPlan() {
+    try {
+      const s = await api.prSuggest(repoId, branch);
+      if (open && suggestion !== null) {
+        suggestion = { ...suggestion, pushRemote: s.pushRemote, pushTo: s.pushTo, needsPush: s.needsPush };
+      }
+    } catch {
+      // The button keeps what it said; the core decides again when it is pressed.
     }
   }
 

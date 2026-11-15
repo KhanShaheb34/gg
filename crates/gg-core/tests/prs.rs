@@ -1451,15 +1451,20 @@ async fn a_suggestion_asks_gh_both_questions_at_once() {
         &list(&[pr(3, "feature", "octo", false, false)]),
         "",
     );
-    s.gh.slow("repo-view", 2);
-    s.gh.slow("pr-list-head", 2);
-    let started = std::time::Instant::now();
+    s.gh.slow("repo-view", 1);
+    s.gh.slow("pr-list-head", 1);
     let suggested = s.h.m.pr_suggest(s.id, "feature").await.unwrap();
-    let took = started.elapsed();
     assert_eq!(suggested.base, "main");
     assert_eq!(suggested.existing.map(|p| p.number), Some(3));
+    // Each started before the other had answered (Task 9 review minor 7: by the fake's own
+    // record, not the wall clock of a loaded machine).
+    let view = &s.gh.calls_of(&["repo", "view"])[0];
+    let list = &s
+        .gh
+        .calls_of(&["pr", "list", "--repo", "octo/cat", "--head"])[0];
+    let (a, b) = (view, list);
     assert!(
-        took < Duration::from_millis(3500),
-        "{took:?}: one after the other"
+        a.started.unwrap() < b.done.unwrap() && b.started.unwrap() < a.done.unwrap(),
+        "one after the other: {a:?} {b:?}"
     );
 }

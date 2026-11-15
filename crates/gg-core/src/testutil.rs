@@ -464,6 +464,9 @@ pub struct FakeGhCall {
     pub tty: bool,
     /// What the script set with [`FakeGh::run_on`] printed (stdout and stderr).
     pub ran: String,
+    /// When it started, and when it had answered (`None` while it runs).
+    pub started: Option<std::time::SystemTime>,
+    pub done: Option<std::time::SystemTime>,
 }
 
 #[cfg(unix)]
@@ -482,6 +485,7 @@ d="$(cd "$(dirname "$0")/.." && pwd)"
 i=1
 while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
 c="$d/calls/$i"
+touch "$c/started"
 for a in "$@"; do printf '%s\0' "$a"; done > "$c/argv"
 env > "$c/env"
 pwd > "$c/cwd"
@@ -634,6 +638,10 @@ printf 'user git\nhostname %s\nport 22\n' "$host"
                 stdin: read("stdin"),
                 tty: c.join("tty").exists(),
                 ran: text("ran"),
+                started: fs::metadata(c.join("started"))
+                    .and_then(|m| m.modified())
+                    .ok(),
+                done: fs::metadata(c.join("done")).and_then(|m| m.modified()).ok(),
             });
         }
         out

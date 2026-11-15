@@ -427,3 +427,75 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   expect(at("log", "-1", "--format=%s").trim()).toBe("Merge branch 'other' into topic");
   expect(at("status", "--porcelain").trim()).toBe("?? topic.txt");
 });
+
+test("Commit & Push is not offered on a detached HEAD; a stopped rebase is said under the buttons", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("commit");
+  gg.git("commit", "switch", "-q", "--detach");
+  await open(page, repo);
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(files(page).getByRole("option")).toHaveCount(6);
+  await expect(commitButton(page)).toBeVisible();
+  await expect(pushButton(page)).toHaveCount(0);
+
+  // A rebase stopped in the topic worktree, made active.
+  const topic = path.join(path.dirname(repo), "commit.worktrees", "topic");
+  const at = (...args: string[]) => gg.gitAt(topic, ...args);
+  at("switch", "-q", "-c", "base");
+  writeFileSync(path.join(topic, "clash.txt"), "base\n");
+  at("add", "clash.txt");
+  at("commit", "-q", "-m", "Base clash");
+  at("switch", "-q", "topic");
+  writeFileSync(path.join(topic, "clash.txt"), "topic\n");
+  at("add", "clash.txt");
+  at("commit", "-q", "-m", "Topic clash");
+  expect(() => at("rebase", "-q", "base")).toThrow();
+  await page.keyboard.press("Escape");
+  await page.evaluate(async (wt) => {
+    const { api } = await import("/src/lib/ipc.ts");
+    const { app } = await import("/src/lib/state/app.svelte.ts");
+    await api.setActiveWorktree(app.activeRepoId!, wt);
+  }, topic);
+  // Detached mid-rebase: the active worktree is named by its folder.
+  await expect(page.getByRole("button", { name: /^Active worktree: .*commit\.worktrees\/topic/ })).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await message(page).fill("Not now");
+  await expect(reason(page)).toHaveText("A rebase is stopped here: Continue, in the banner, commits its changes (or abort it).");
+  await expect(commitButton(page)).toBeDisabled();
+});
+
+test("looks: a disabled Commit & Push looks disabled; the old side of a rename keeps its file name", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("commit");
+  // A file deep in long folder names, committed, then renamed in its folder.
+  const dir = path.posix.dirname(DEEP);
+  writeFileSync(path.join(repo, dir, "Totals.tsx"), "export {};\n");
+  gg.git("commit", "add", `${dir}/Totals.tsx`);
+  gg.git("commit", "commit", "-q", "-m", "Add totals", "--", `${dir}/Totals.tsx`);
+  const renamed = `${dir}/Summary.tsx`;
+  gg.git("commit", "mv", `${dir}/Totals.tsx`, renamed);
+  await open(page, repo);
+  await page.keyboard.press("ControlOrMeta+k");
+  // No message: both buttons disabled, the push's label painted as faint as Commit's.
+  await expect(pushButton(page)).toBeDisabled();
+  const colours = await page.evaluate(() => {
+    const colour = (sel: string) => getComputedStyle(document.querySelector(sel)!).color;
+    const label = document.querySelector('[data-testid="commit-push-button"] .mid');
+    return {
+      commit: colour('[data-testid="commit-button"]'),
+      push: colour('[data-testid="commit-push-button"]'),
+      label: label ? getComputedStyle(label).color : null,
+      enabled: getComputedStyle(document.querySelector('[data-testid="commit-message"]')!).color,
+    };
+  });
+  expect(colours.push).toBe(colours.commit);
+  expect(colours.label).toBe(colours.commit);
+  expect(colours.push).not.toBe(colours.enabled);
+
+  // The rename's old side is cut in the middle like any path: its file name stays.
+  const row = file(page, renamed);
+  await expect(row.locator(".mid").last()).toHaveAttribute("data-shown", "Summary.tsx");
+  await expect(row.locator(".old")).toHaveAttribute("data-shown", "Totals.tsx");
+});

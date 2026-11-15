@@ -483,7 +483,7 @@
               <span class="status s-{f.status === '?' ? 'N' : f.status}" aria-hidden="true">{f.status === "?" ? "?" : f.status}</span>
               <span class="path" class:deleted={f.status === "D"}>
                 {#if f.origPath !== null}
-                  <MiddleText class="old" text={f.origPath} keep={keepOf(f.origPath)} title={null} /><span class="arrow">→</span>
+                  <MiddleText class="old" text={f.origPath} keep={keepOf(f.origPath)} title={null} dimThrough="/" /><span class="arrow">→</span>
                 {/if}
                 <MiddleText text={f.path} keep={keepOf(f.path)} title={null} dimThrough="/" />
               </span>
@@ -758,8 +758,9 @@
     color: var(--text-muted);
   }
 
+  /* Both sides of a rename give way alike, each keeping its file name. */
   .path :global(.old) {
-    flex: 0 1000 auto;
+    flex: 0 1 auto;
   }
 
   .arrow {

@@ -104,7 +104,7 @@ fn parse(url: &str) -> Option<(RemoteRepo, Option<String>)> {
         return None;
     };
     let name = name.strip_suffix(".git").unwrap_or(name);
-    if owner.is_empty() || name.is_empty() || owner.starts_with('~') {
+    if !is_plain_word(owner) || !is_plain_word(name) {
         return None;
     }
     let web = match web_port {
@@ -120,9 +120,21 @@ fn parse(url: &str) -> Option<(RemoteRepo, Option<String>)> {
     Some((repo, ssh.then_some(written)))
 }
 
-/// Whether `host` is a plain host name: `^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`
-/// (letters, digits, `.`, `_`, `-`; neither starting nor ending with a dot or hyphen; at most
-/// 253 characters). Only such a name is handed to `ssh -G`, and only such a name is taken
+/// Whether `word` is a plain owner or repository name: letters, digits, `.`, `_`, `-`; not
+/// `.` or `..`, not starting with `-` (it is put into `gh` arguments and web addresses).
+fn is_plain_word(word: &str) -> bool {
+    !word.is_empty()
+        && word != "."
+        && word != ".."
+        && !word.starts_with('-')
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Whether `host` is a plain host name: dot-separated labels of letters, digits, `_` and
+/// `-`, each starting and ending with a letter or digit (so no empty label, none starting or
+/// ending with a hyphen); at most 253 characters. Only such a name is handed to `ssh -G`, and only such a name is taken
 /// from its answer: ssh puts the host into `Match exec` and `ProxyCommand` strings of the
 /// user's ssh config (`%h`, `%n`), which a shell runs, so `$(…)`, a backtick, `;`, `|`,
 /// quotes, `%` or a space in a remote's address must never reach it.
@@ -134,9 +146,13 @@ pub fn is_plain_host(host: &str) -> bool {
     bytes.len() <= 253
         && first.is_ascii_alphanumeric()
         && last.is_ascii_alphanumeric()
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && host.split('.').all(|label| {
+            let b = label.as_bytes();
+            b.first().is_some_and(u8::is_ascii_alphanumeric)
+                && b.last().is_some_and(u8::is_ascii_alphanumeric)
+                && b.iter()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+        })
 }
 
 /// Whether `host` is GitHub by its name alone: `github.com`, or an Enterprise Cloud host
@@ -254,6 +270,34 @@ mod tests {
     }
 
     #[test]
+    fn owners_and_names_are_plain_words() {
+        for (url, owner, name) in [
+            ("https://github.com/octo-org/cat.js", "octo-org", "cat.js"),
+            ("git@github.com:o_o/a.b-c_d.git", "o_o", "a.b-c_d"),
+        ] {
+            let parsed = parse_remote(url).unwrap();
+            assert_eq!(
+                (parsed.owner.as_str(), parsed.name.as_str()),
+                (owner, name),
+                "{url}"
+            );
+        }
+        for url in [
+            "https://github.com/../cat",
+            "https://github.com/octo/..",
+            "https://github.com/./cat",
+            "https://github.com/-octo/cat",
+            "https://github.com/octo/-cat",
+            "https://github.com/oc%20to/cat",
+            "https://github.com/octo/c$at",
+            "https://github.com/octo/c@t",
+            "git@github.com:octo/ca t.git",
+        ] {
+            assert_eq!(parse_remote(url), None, "{url}");
+        }
+    }
+
+    #[test]
     fn only_plain_host_names_are_plain() {
         for host in [
             "github.com",
@@ -285,6 +329,10 @@ mod tests {
             "a\nb",
             "[::1]",
             "a:22",
+            "x..ghe.com",
+            "a.-b.ghe.com",
+            "a-.b.ghe.com",
+            "a._b",
             long.as_str(),
         ] {
             assert!(!is_plain_host(host), "{host:?}");

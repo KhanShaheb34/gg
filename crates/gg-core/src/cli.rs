@@ -686,7 +686,7 @@ mod tests {
         // Without a home folder, only the usual folders count.
         assert!(candidates(&search, None).is_empty());
         // ~/.local/bin only when it is on PATH.
-        assert_eq!(candidates(&path_of(&[&bin]), Some(&home)), [bin.clone()]);
+        assert_eq!(candidates(&path_of(&[&bin]), Some(&home)), [bin]);
     }
 
     /// A folder is judged by where it really is: a `~/.local/bin` that is a link into a

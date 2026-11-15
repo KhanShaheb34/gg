@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- The social preview image (public/og.png), 1200×630. Rendered by scripts/images.mjs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; }
+  body {
+    width: 1200px; height: 630px; overflow: hidden; position: relative;
+    background: #17181c; color: #e7e8ec;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .lane { position: absolute; left: 72px; top: 92px; bottom: 0; width: 3px; background: #6b9bff; }
+  .head { position: absolute; left: 63px; top: 83px; width: 15px; height: 15px; border: 3px solid #6b9bff; border-radius: 50%; background: #17181c; }
+  .text { position: absolute; left: 118px; top: 76px; width: 500px; }
+  .refs { display: flex; gap: 8px; height: 28px; margin-bottom: 40px; }
+  .ref { display: inline-flex; align-items: center; padding: 0 9px; border-radius: 6px; font: 700 16px ui-monospace, "SF Mono", Menlo, monospace; }
+  .r1 { color: #6b9bff; border: 1px solid rgba(107,155,255,.55); background: rgba(107,155,255,.12); }
+  .r2 { color: #fb8a4e; border: 1px solid rgba(251,138,78,.55); background: rgba(251,138,78,.12); }
+  .gg { font: 800 210px/0.74 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: -0.07em; margin: 0 0 56px -8px; }
+  .pitch { font-size: 50px; font-weight: 650; line-height: 1.06; letter-spacing: -0.028em; margin: 0; }
+  .sub { margin: 22px 0 0; font-size: 22px; color: #a3a7b4; }
+  .shot { position: absolute; left: 660px; top: 70px; width: 900px; border: 1px solid #3a3d47; border-radius: 14px;
+          box-shadow: 0 30px 80px rgba(0,0,0,.6); overflow: hidden; }
+  .shot img { display: block; width: 900px; }
+</style>
+</head>
+<body>
+  <div class="lane"></div><div class="head"></div>
+  <div class="text">
+    <div class="refs"><span class="ref r1">main</span></div>
+    <p class="gg">gg</p>
+    <p class="pitch">The commit graph, without the editor.</p>
+    <p class="sub">A fast, free desktop git client for macOS.</p>
+  </div>
+  <div class="shot"><img src="../../docs/perf/screens/graph-branchy-light.png" alt=""></div>
+</body>
+</html>

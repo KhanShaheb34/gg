@@ -158,8 +158,16 @@ export type CommitDetails = {
   shallowBoundary: boolean;
 };
 
-/** Defaults: system, 300 (0 = off), null (the system's default opener). */
-export type Settings = { theme: "system" | "light" | "dark"; fetchIntervalSecs: number; editorCommand: string | null };
+/**
+ * Defaults: system, 300 (0 = off), null (the system's default opener), "../{repo}.worktrees/{branch}".
+ * `worktreePattern`: where new worktrees go, relative to the main worktree; {repo} {branch} filled in, must contain {branch}.
+ */
+export type Settings = {
+  theme: "system" | "light" | "dark";
+  fetchIntervalSecs: number;
+  editorCommand: string | null;
+  worktreePattern: string;
+};
 /** Kept per repository. Default: mergeNoFf true. */
 /** `activeWorktree`: the worktree remembered as active (null = the main one); set by the core. */
 export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null };
@@ -244,7 +252,18 @@ export type OpRequest =
   | { op: "abort"; expectHead: HeadInfo; expectWorktree: string } // always the abort danger first
   // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge): `commit`, else
   // refused (R40); a rebase's skip with other uncommitted changes asks first (skip_discards)
-  | { op: "skip"; expectHead: HeadInfo; commit: string; expectWorktree: string };
+  | { op: "skip"; expectHead: HeadInfo; commit: string; expectWorktree: string }
+  // The worktree operations run from the main worktree and name their target (no expectWorktree, P3-R5).
+  // path: absolute or relative to the main worktree; a new or empty folder; the new worktree is not made active
+  | { op: "worktree_add"; path: string; branch: WorktreeBranch }
+  // path: a linked worktree git lists (re-checked in its turn); its work is confirmed first; the active one: main becomes active first
+  | { op: "worktree_remove"; path: string; deleteBranch: boolean }
+  | { op: "worktree_prune" };
+
+/** What a new worktree checks out: an existing local branch, a new branch at a commit (full hash), or a commit, detached. */
+export type WorktreeBranch = { existing: string } | { create: string; at: string } | { detach: string };
+/** `worktree_default_path`: the first free folder the pattern gives; `exists`: it is there, empty. */
+export type WorktreePath = { path: string; exists: boolean };
 
 export type DangerKind =
   | "force_push"
@@ -253,7 +272,10 @@ export type DangerKind =
   | "delete_remote_branch"
   | "drop_stash"
   | "abort"
-  | "skip_discards";
+  | "skip_discards"
+  | "remove_worktree_with_work" // red: removed with --force
+  | "remove_worktree_ignored_files" // an ordinary confirmation, not red: only ignored files, which git deletes
+  | "delete_unmerged_branch_with_worktree"; // red: the branch deleted after its worktree (R9)
 /**
  * token: the state the message was worked out from (R39); confirming sends it back with the
  * kind (`Confirmed`), and the core asks again if the state has changed since.
@@ -267,7 +289,8 @@ export type OpHint =
   | { kind: "pull"; branch: string }
   | { kind: "force_push"; branch: string; remote: string; to: string | null } // where the rejected push went
   | { kind: "choose_pull_mode"; branch: string }
-  | { kind: "skip"; commit: string }; // continuing came out empty: skip that commit
+  | { kind: "skip"; commit: string } // continuing came out empty: skip that commit
+  | { kind: "make_active"; worktree: string }; // the branch needed is checked out in that worktree
 
 /** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
 export type OpOutcome = {

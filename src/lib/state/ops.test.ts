@@ -7,7 +7,7 @@ vi.mock("../ipc", async (importOriginal) => {
   return {
     CoreError: actual.CoreError,
     onEvent: vi.fn(() => () => {}),
-    api: { runOp: vi.fn(), saveSession: vi.fn(async () => {}) },
+    api: { runOp: vi.fn(), saveSession: vi.fn(async () => {}), setActiveWorktree: vi.fn() },
   };
 });
 
@@ -335,6 +335,18 @@ describe("hint buttons", () => {
     await pull.run();
     const sent = vi.mocked(ipc.api.runOp).mock.calls[0][1];
     expect(sent).toMatchObject({ op: "pull", expectWorktree: "/r/wt" });
+  });
+
+  it("make_active: makes the worktree holding the branch active, and shows it", async () => {
+    const after = snap({ seq: 9, activeWorktree: "/r/feature" });
+    vi.mocked(ipc.api.setActiveWorktree).mockResolvedValueOnce(after);
+    const [make] = await buttonsFor([{ kind: "make_active", worktree: "/r/feature" }], "failed");
+    expect(make.label).toBe("Make /r/feature active");
+    await make.run();
+    await Promise.resolve();
+    expect(ipc.api.setActiveWorktree).toHaveBeenCalledWith(1, "/r/feature");
+    expect(ipc.api.runOp).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(view.applySnapshot).toHaveBeenCalledWith(after));
   });
 
   it("push: pushes the branch the core named", async () => {

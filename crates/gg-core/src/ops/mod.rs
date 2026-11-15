@@ -14,6 +14,7 @@ mod network;
 pub(crate) mod order;
 mod progress;
 mod stash;
+mod worktree;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -29,7 +30,7 @@ pub use explain::explain;
 use crate::EventSink;
 use crate::dto::{
     Confirmed, Danger, DangerKind, HeadInfo, InProgressKind, MergeTargetKind, OpHint, OpOutcome,
-    OpRequest, OpStatus, ResetMode,
+    OpRequest, OpStatus, ResetMode, WorktreeBranch,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
@@ -62,9 +63,13 @@ pub enum Step {
 }
 
 /// What an operation's body works with: the repository, a runner that logs as this
-/// operation, the worktree to run in and the operation's id.
+/// operation, the worktree to run in (the active one; the main one for the worktree
+/// operations) and the operation's id.
 pub(crate) struct OpCtx<'a> {
     pub repo: &'a Arc<Repo>,
+    /// The manager, for what an operation does to the repository's state beside git
+    /// (making the main worktree active before the active one is removed).
+    pub manager: &'a Arc<RepoManager>,
     pub runner: GitRunner,
     pub cwd: PathBuf,
     pub op_id: u64,
@@ -590,6 +595,46 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 body(move |ctx, _| Box::pin(async move { progress::skip(ctx).await })),
             )
         }
+        OpRequest::WorktreeAdd { path, branch } => {
+            check_path(&path)?;
+            match &branch {
+                WorktreeBranch::Existing { existing } => check_arg(existing, "branch")?,
+                WorktreeBranch::Create { create, at } => {
+                    check_branch_name(create)?;
+                    check_full_hash(at)?;
+                }
+                WorktreeBranch::Detach { detach } => check_full_hash(detach)?,
+            }
+            (
+                fixed(format!("Create worktree {path}")),
+                body(move |ctx, _| {
+                    Box::pin(async move { worktree::add(ctx, &path, &branch).await })
+                }),
+            )
+        }
+        OpRequest::WorktreeRemove {
+            path,
+            delete_branch,
+        } => {
+            check_path(&path)?;
+            let title = if delete_branch {
+                format!("Remove worktree {path} and its branch")
+            } else {
+                format!("Remove worktree {path}")
+            };
+            (
+                fixed(title),
+                body(move |ctx, dangers| {
+                    Box::pin(
+                        async move { worktree::remove(ctx, dangers, &path, delete_branch).await },
+                    )
+                }),
+            )
+        }
+        OpRequest::WorktreePrune {} => (
+            fixed("Prune stale worktree entries".to_owned()),
+            body(move |ctx, _| Box::pin(async move { worktree::prune(ctx).await })),
+        ),
     };
     Ok(Prepared { title, body })
 }
@@ -626,6 +671,17 @@ fn check_full_hash(hash: &str) -> Result<()> {
         ErrorCode::BadRequest,
         format!("\u{201c}{hash}\u{201d} is not a full commit hash."),
     ))
+}
+
+/// `Ok` if `path` can name a folder: not empty, no NUL.
+fn check_path(path: &str) -> Result<()> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!("\u{201c}{path}\u{201d} is not a folder path."),
+        ));
+    }
+    Ok(())
 }
 
 /// `Ok` if `value`, naming an existing `what` (a branch, a commit), can be given to git:
@@ -865,6 +921,12 @@ impl RepoManager {
                 outcome.dangers = dangers;
             }
         }
+        // Making the active worktree active is no follow-up.
+        let active = std::path::Path::new(&outcome.snapshot.active_worktree).to_path_buf();
+        outcome.hints.retain(|hint| {
+            !matches!(hint, OpHint::MakeActive { worktree }
+                if crate::repo::canonical(std::path::Path::new(worktree)) == active)
+        });
         Ok(outcome)
     }
 
@@ -874,7 +936,7 @@ impl RepoManager {
     /// confirmed, publishes it as running (setting `started`) and runs its body in the
     /// active worktree. Returns the title and how it ended.
     async fn run_body(
-        &self,
+        self: &Arc<Self>,
         turn: Turn,
         op_id: u64,
         started: &AtomicBool,
@@ -890,8 +952,15 @@ impl RepoManager {
         let stop = Stop::new();
         let ctx = OpCtx {
             repo: &repo,
+            manager: self,
             runner: repo.runner.for_op(op_id, stop.clone()),
-            cwd: repo.worktree(),
+            // The worktree operations name the worktree they are about, and run from the
+            // main one whichever is active.
+            cwd: if request.runs_in_main() {
+                repo.root.clone()
+            } else {
+                repo.worktree()
+            },
             op_id,
             sink: self.sink.as_ref(),
             net_limit: self.net_limit(),
@@ -989,6 +1058,9 @@ impl RepoManager {
         if let Some(hash) = stash_of(&request)
             && let Some(why) = stash::gone(&ctx, hash).await?
         {
+            return Ok((title, Ran::Refused(why)));
+        }
+        if let Some(why) = worktree::refused(&ctx, &request).await? {
             return Ok((title, Ran::Refused(why)));
         }
         let dangers = dangers(&ctx, &request).await?;
@@ -1422,6 +1494,7 @@ mod tests {
         let r = m.get(id).expect("open");
         let ctx = OpCtx {
             repo: &r,
+            manager: &m,
             runner: r.runner.for_op(1, Stop::new()),
             cwd: r.worktree(),
             op_id: 1,

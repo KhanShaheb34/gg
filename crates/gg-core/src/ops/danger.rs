@@ -1,6 +1,7 @@
 //! Which dangers a request carries, given the repository's state: the paths that cannot
 //! run unconfirmed (force push, hard reset, deleting an unmerged branch, deleting a remote
-//! branch, dropping a stash, aborting what git is stopped in). Checked by the core, in the
+//! branch, dropping a stash, aborting what git is stopped in, removing a worktree with work
+//! in it; see `worktree` for that one). Checked by the core, in the
 //! operation's turn, so the state looked at is the state the operation runs on. Each danger
 //! carries a token of that state (R39): a confirmation counts only with the same token.
 
@@ -38,6 +39,10 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
         OpRequest::StashDrop { stash, .. } => stash::dropped(ctx, stash).await?,
         OpRequest::Abort { .. } => aborted(ctx).await?.into_iter().collect(),
         OpRequest::Skip { .. } => skip_discards(ctx).await?.into_iter().collect(),
+        OpRequest::WorktreeRemove {
+            path,
+            delete_branch,
+        } => crate::ops::worktree::removal_dangers(ctx, path, *delete_branch).await?,
         // The others carry none.
         _ => Vec::new(),
     })
@@ -49,7 +54,7 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
 /// confirmation even if HEAD lacks it, and one merged into HEAD but not into its upstream
 /// needs confirmation (then `-D`). The message counts the commits only the branch has,
 /// relative to that reference, and says when the current branch has them nevertheless.
-async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>> {
+pub(crate) async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>> {
     let full = format!("refs/heads/{branch}");
     if !verifies(ctx, &full).await? {
         // git says it does not exist.
@@ -271,7 +276,7 @@ fn short_ref(full: &str) -> &str {
 }
 
 /// Most files a hard reset's confirmation lists; the rest are counted.
-const MAX_LOST_LISTED: usize = 20;
+pub(crate) const MAX_LOST_LISTED: usize = 20;
 
 /// `hard_reset`, always: it discards the uncommitted changes, which the message counts and
 /// the detail lists (MAX_LOST_LISTED files, then how many more). Untracked files are kept,
@@ -517,7 +522,7 @@ async fn head_token(ctx: &OpCtx<'_>) -> Result<String> {
 }
 
 /// The 64-bit FNV-1a hash of `bytes`: a short, stable digest for a token.
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })

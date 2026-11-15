@@ -30,6 +30,9 @@
     drop_stash: "Drop stash",
     abort: "Abort",
     skip_discards: "Skip and discard",
+    remove_worktree_with_work: "Remove worktree",
+    remove_worktree_ignored_files: "Remove worktree",
+    delete_unmerged_branch_with_worktree: "Delete branch",
   };
 
   const primary = $derived(dangers.length === 1 ? VERB[dangers[0].kind] : "Go ahead");

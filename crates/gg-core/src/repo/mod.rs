@@ -6,5 +6,5 @@ mod loader;
 mod manager;
 pub mod state;
 
-pub(crate) use manager::{Repo, unknown_repo};
+pub(crate) use manager::{Repo, canonical, canonical_paths, unknown_repo};
 pub use manager::{RepoManager, WorktreeMemory};

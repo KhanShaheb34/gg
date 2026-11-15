@@ -166,7 +166,7 @@ pub(crate) struct Repo {
     /// The active worktree; every command runs here. Changed only with the operation queue
     /// held (see [`RepoManager::set_active_worktree`]), together with `Slot::active`.
     worktree: Mutex<PathBuf>,
-    common_dir: PathBuf,
+    pub(crate) common_dir: PathBuf,
     /// Runs this repository's commands (logged as this repository's).
     pub(crate) runner: GitRunner,
     pub(super) slot: RwLock<Slot>,
@@ -1312,6 +1312,16 @@ impl RepoManager {
             .into_iter()
             .find(|w| !w.bare && !w.prunable && Path::new(&w.path).is_dir())
             .map(|w| PathBuf::from(w.path))
+    }
+
+    /// Makes the main worktree active from within an operation's turn (the operation holds
+    /// the queue): as [`RepoManager::set_active_worktree`] does, and remembered. Used before
+    /// the active worktree is removed.
+    pub(crate) async fn make_main_active(self: &Arc<Self>, repo: &Arc<Repo>) -> Result<()> {
+        let root = repo.root.clone();
+        self.switch_active(repo, &root, true).await?;
+        self.remember_active(repo, &root);
+        Ok(())
     }
 
     /// Says (`repo-error`) that the active worktree `gone` went away and `now` is active
@@ -2466,7 +2476,9 @@ fn active_is_gone(repo: &Repo, listed: Option<&[crate::dto::WorktreeInfo]>) -> b
 }
 
 /// `worktrees` with their paths canonical, as the snapshot lists them.
-fn canonical_paths(mut worktrees: Vec<crate::dto::WorktreeInfo>) -> Vec<crate::dto::WorktreeInfo> {
+pub(crate) fn canonical_paths(
+    mut worktrees: Vec<crate::dto::WorktreeInfo>,
+) -> Vec<crate::dto::WorktreeInfo> {
     for wt in &mut worktrees {
         wt.path = path_string(&canonical(Path::new(&wt.path)));
     }
@@ -2553,7 +2565,7 @@ fn status_unavailable(repo_id: u32, reason: CoreError) -> serde_json::Value {
 /// temp dirs are reached through `/var` → `/private/var`); on Windows without the `\\?\`
 /// prefix. Unchanged if it cannot be resolved, for example a worktree whose directory is
 /// gone.
-fn canonical(path: &Path) -> PathBuf {
+pub(crate) fn canonical(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| {
         // Gone: its folder's path, resolved, with its name, so it compares equal to the one
         // git lists (which resolved it when the worktree was made).

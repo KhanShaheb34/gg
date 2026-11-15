@@ -4,6 +4,7 @@
 
 import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
 import PullDialog from "../components/dialogs/PullDialog.svelte";
+import { shortenPath } from "../format";
 import { api, CoreError } from "../ipc";
 import { shown } from "../menus/common";
 import type { Confirmed, CoreErrorDto, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
@@ -182,6 +183,20 @@ function hintActions(repoId: number, hint: OpHint, worktree: string): ToastActio
             followUp(repoId, { op: "skip", expectHead: headOf(repoId), commit: hint.commit, expectWorktree: worktree }),
         },
       ];
+    case "make_active": {
+      const target = hint.worktree;
+      return [
+        {
+          label: `Make ${shown(shortenPath(target, app.homeDir))} active`,
+          run: () => {
+            api
+              .setActiveWorktree(repoId, target)
+              .then((snapshot) => findRepoView(repoId)?.applySnapshot(snapshot))
+              .catch((e: unknown) => reportError(e, "Could not make that worktree active"));
+          },
+        },
+      ];
+    }
   }
 }
 

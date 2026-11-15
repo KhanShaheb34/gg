@@ -42,7 +42,7 @@ export const app = $state({
   tabs: [] as Tab[],
   activeRepoId: null as number | null,
   recents: [] as Recent[],
-  settings: { theme: "system", fetchIntervalSecs: 300 } as Settings,
+  settings: { theme: "system", fetchIntervalSecs: 300, worktreePattern: "../{repo}.worktrees/{branch}" } as Settings,
   toasts: [] as Toast[],
   /** The stored state has been loaded (or failed to load); until then nothing is drawn. */
   ready: false,

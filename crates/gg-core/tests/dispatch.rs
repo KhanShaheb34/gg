@@ -765,7 +765,8 @@ async fn launch_path_is_reported() {
         json!({
             "recents": [],
             "session": {"tabs": [], "active": null},
-            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null},
+            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
+                         "worktreePattern": "../{repo}.worktrees/{branch}"},
             "launchPath": null,
             "homeDir": home,
             "settingsProblem": null,
@@ -793,7 +794,8 @@ async fn session_and_settings_persist() {
         .await;
     assert_eq!(
         settings,
-        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null,
+               "worktreePattern": "../{repo}.worktrees/{branch}"})
     );
     let err = h
         .fail(
@@ -818,7 +820,8 @@ async fn session_and_settings_persist() {
     );
     assert_eq!(
         state["settings"],
-        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null,
+               "worktreePattern": "../{repo}.worktrees/{branch}"})
     );
 }
 
@@ -1254,4 +1257,71 @@ async fn the_gg_command_without_a_shell_check() {
         cli,
         json!({ "installed": null, "shadowedBy": null, "candidates": [] })
     );
+}
+
+/// `worktree_default_path` follows the `worktreePattern` setting; the worktree operations
+/// take no `expectWorktree` and run through `run_op` like the others.
+#[tokio::test]
+async fn worktree_default_path_and_worktree_ops_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("feature/a");
+    // Pushed: a worktree with commits on no remote would need a confirmation.
+    let _origin = repo.clone_as_remote();
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let base = dunce::canonicalize(repo.dir.path()).unwrap();
+    let path = h
+        .call(
+            "worktree_default_path",
+            json!({ "repoId": id, "branch": "feature/a" }),
+        )
+        .await;
+    assert_eq!(
+        path,
+        json!({ "path": base.join("repo.worktrees/feature-a").to_string_lossy(), "exists": false })
+    );
+    h.call(
+        "update_settings",
+        json!({ "patch": { "worktreePattern": "../trees/{branch}@{repo}" } }),
+    )
+    .await;
+    let path = h
+        .call(
+            "worktree_default_path",
+            json!({ "repoId": id, "branch": "feature/a" }),
+        )
+        .await;
+    let at = path["path"].as_str().unwrap().to_owned();
+    assert_eq!(at, base.join("trees/feature-a@repo").to_string_lossy());
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
+                "request": { "op": "worktree_add", "path": at, "branch": { "existing": "feature/a" } },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert!(Path::new(&at).join(".git").exists());
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 2, "confirmed": [],
+                "request": { "op": "worktree_remove", "path": at, "deleteBranch": false },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert!(!Path::new(&at).exists());
+    let err = h
+        .fail(
+            "worktree_default_path",
+            json!({ "repoId": id, "branch": "x", "pattern": "y" }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
 }

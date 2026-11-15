@@ -427,7 +427,13 @@ pub struct Settings {
     pub fetch_interval_secs: u32,
     /// Program (and arguments) that opens files; `None` uses the system's default opener.
     pub editor_command: Option<String>,
+    /// Where new worktrees go by default, relative to the main worktree: `{repo}` is the
+    /// main worktree's folder name, `{branch}` the branch made safe for a folder name.
+    pub worktree_pattern: String,
 }
+
+/// The default [`Settings::worktree_pattern`].
+pub const DEFAULT_WORKTREE_PATTERN: &str = "../{repo}.worktrees/{branch}";
 
 impl Default for Settings {
     fn default() -> Self {
@@ -435,6 +441,7 @@ impl Default for Settings {
             theme: Theme::System,
             fetch_interval_secs: 300,
             editor_command: None,
+            worktree_pattern: DEFAULT_WORKTREE_PATTERN.to_owned(),
         }
     }
 }
@@ -688,9 +695,60 @@ pub enum OpRequest {
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
+    /// A new linked worktree at `path` (absolute, or relative to the main worktree): a folder
+    /// that does not exist yet (its parents are made) or is empty, outside every worktree
+    /// and the git dir. Runs from the main worktree; the new one is not made active.
+    WorktreeAdd {
+        path: String,
+        branch: WorktreeBranch,
+    },
+    /// Removes the linked worktree registered at `path` (`git worktree remove`; never the
+    /// main one, never a locked one, never a path git does not list), with
+    /// `delete_branch` its branch after it. Work it holds is confirmed first
+    /// (`remove_worktree_with_work`, or `remove_worktree_ignored_files` when ignored files
+    /// are all there is), and so is a branch that is not merged
+    /// (`delete_unmerged_branch_with_worktree`), in one confirmation. Runs from the main
+    /// worktree; if `path` is the active worktree, the main one becomes active first.
+    WorktreeRemove {
+        path: String,
+        delete_branch: bool,
+    },
+    /// Forgets the worktrees git calls prunable (their folders are gone):
+    /// `git worktree prune`. (No fields; braced, so that unknown fields are refused.)
+    WorktreePrune {},
+}
+
+/// What a new worktree checks out: an existing local branch, a new branch made at a commit
+/// (full hash), or a commit, detached (full hash). Serialized as `{existing}`,
+/// `{create, at}` or `{detach}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum WorktreeBranch {
+    Existing { existing: String },
+    Create { create: String, at: String },
+    Detach { detach: String },
+}
+
+/// What `worktree_default_path` suggests for a new worktree: the first free path the
+/// worktree pattern gives (`-2`, `-3`… added on collisions), and whether that folder exists
+/// (empty, so usable).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePath {
+    pub path: String,
+    pub exists: bool,
 }
 
 impl OpRequest {
+    /// Whether the request runs from the main worktree whichever is active: the worktree
+    /// operations, which name the worktree they are about.
+    pub fn runs_in_main(&self) -> bool {
+        matches!(
+            self,
+            Self::WorktreeAdd { .. } | Self::WorktreeRemove { .. } | Self::WorktreePrune {}
+        )
+    }
+
     /// The active worktree the request was asked for in, for a request that runs in one.
     pub fn expect_worktree(&self) -> Option<&str> {
         match self {
@@ -761,7 +819,10 @@ impl OpRequest {
             | Self::PushTag { .. }
             | Self::Push { .. }
             | Self::FetchIntoLocal { .. }
-            | Self::DeleteRemoteBranch { .. } => None,
+            | Self::DeleteRemoteBranch { .. }
+            | Self::WorktreeAdd { .. }
+            | Self::WorktreeRemove { .. }
+            | Self::WorktreePrune {} => None,
         }
     }
 
@@ -835,7 +896,10 @@ impl OpRequest {
             | Self::PushTag { .. }
             | Self::Push { .. }
             | Self::FetchIntoLocal { .. }
-            | Self::DeleteRemoteBranch { .. } => None,
+            | Self::DeleteRemoteBranch { .. }
+            | Self::WorktreeAdd { .. }
+            | Self::WorktreeRemove { .. }
+            | Self::WorktreePrune {} => None,
         }
     }
 }
@@ -871,6 +935,14 @@ pub enum DangerKind {
     /// Skipping a rebase's commit puts every tracked file back as HEAD has it: changes made
     /// since it stopped go too.
     SkipDiscards,
+    /// Removing a worktree that holds work (uncommitted changes, untracked files, commits on
+    /// no remote, something in progress): it is removed with `--force`. Red.
+    RemoveWorktreeWithWork,
+    /// Removing a worktree whose only work is ignored files, which git deletes with it
+    /// without asking. An ordinary confirmation, not red.
+    RemoveWorktreeIgnoredFiles,
+    /// Deleting, after its worktree, a branch that `branch -d` would refuse (R9). Red.
+    DeleteUnmergedBranchWithWorktree,
 }
 
 /// What would be lost, said plainly, for the confirmation.
@@ -885,7 +957,10 @@ pub struct Danger {
     /// on two lines; `delete_remote_branch`, the remote-tracking commit (`null` without one),
     /// which is also the lease; `hard_reset`, HEAD and the files it would discard;
     /// `delete_unmerged_branch`, the branch's tip; `drop_stash`, the stash's commit;
-    /// `abort`, what is stopped and HEAD; `skip_discards`, HEAD and the files whose changes go.
+    /// `abort`, what is stopped and HEAD; `skip_discards`, HEAD and the files whose changes go;
+    /// `remove_worktree_with_work` and `remove_worktree_ignored_files`, the worktree's HEAD,
+    /// what is in progress there, and hashes of its status, of its commits on no remote and
+    /// of its ignored files; `delete_unmerged_branch_with_worktree`, the branch's tip.
     /// Confirming sends it back with its kind; if it no
     /// longer matches, the core asks again, with the state as it is then.
     pub token: Option<String>,
@@ -923,6 +998,11 @@ pub enum OpHint {
     /// empty.
     Skip {
         commit: String,
+    },
+    /// Make the worktree at `worktree` the active one: the branch the operation needed is
+    /// checked out there.
+    MakeActive {
+        worktree: String,
     },
 }
 
@@ -1057,7 +1137,8 @@ mod tests {
             json!({
                 "recents": [{"path": "/r", "name": "r", "lastOpenedMs": 5}],
                 "session": {"tabs": ["/r"], "active": null},
-                "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null},
+                "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
+                             "worktreePattern": "../{repo}.worktrees/{branch}"},
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,
@@ -1126,6 +1207,11 @@ mod tests {
             json!({"op": "continue", "evenWithMarkers": true, "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
             json!({"op": "abort", "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
             json!({"op": "skip", "expectHead": {"branch": "main", "hash": null}, "commit": "h", "expectWorktree": "/w"}),
+            json!({"op": "worktree_add", "path": "/w", "branch": {"existing": "b"}}),
+            json!({"op": "worktree_add", "path": "../w", "branch": {"create": "b", "at": "h"}}),
+            json!({"op": "worktree_add", "path": "/w", "branch": {"detach": "h"}}),
+            json!({"op": "worktree_remove", "path": "/w", "deleteBranch": true}),
+            json!({"op": "worktree_prune"}),
         ];
         for case in cases {
             let request: OpRequest =
@@ -1164,6 +1250,21 @@ mod tests {
             None,
             "only those that run in one"
         );
+        // The worktree operations name their target and run from the main worktree (P3-R5).
+        for bad in [
+            json!({"op": "worktree_prune", "expectWorktree": "/w"}),
+            json!({"op": "worktree_remove", "path": "/w", "deleteBranch": false, "expectWorktree": "/w"}),
+            json!({"op": "worktree_remove", "path": "/w"}),
+            json!({"op": "worktree_add", "path": "/w", "branch": {"existing": "b", "at": "h"}}),
+            json!({"op": "worktree_add", "path": "/w", "branch": {"create": "b"}}),
+            json!({"op": "worktree_add", "path": "/w", "branch": "b"}),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<OpRequest>(bad.clone()).ok(),
+                None,
+                "{bad}"
+            );
+        }
         // A request on the current branch says which HEAD it was asked for (R39).
         assert_eq!(
             serde_json::from_value::<OpRequest>(

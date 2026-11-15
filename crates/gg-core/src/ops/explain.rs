@@ -67,8 +67,15 @@ pub fn explain(args: &[&str], out: &GitOutput) -> Step {
     } else {
         out.stderr.clone()
     };
-    let hints: Vec<OpHint> = Vec::new();
     let all = format!("{}\n{}", out.stderr, out.text());
+    // The branch is checked out in another worktree (spec §5.4): offer to make that one
+    // active.
+    let hints: Vec<OpHint> = checked_out_elsewhere(&all)
+        .map(|(_, worktree)| OpHint::MakeActive {
+            worktree: worktree.to_owned(),
+        })
+        .into_iter()
+        .collect();
     let message =
         known_failure(args, &all).unwrap_or_else(|| git_failed(args, out.code, &detail).message);
     Step::Failed {
@@ -161,6 +168,13 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
         if let Some(name) = between(line, "fatal: tag '", "' already exists") {
             return Some(format!(
                 "A tag named \u{201c}{name}\u{201d} already exists."
+            ));
+        }
+        if let Some((branch, path)) = delete_refused_by_worktree(line) {
+            return Some(format!(
+                "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, so \
+                 it cannot be deleted. Check out another branch there, or remove that worktree, \
+                 first."
             ));
         }
         if let Some(name) = between(line, "error: the branch '", "' is not fully merged") {
@@ -384,6 +398,36 @@ pub(crate) fn file_list(files: &[&str]) -> String {
     }
 }
 
+/// The branch and the worktree holding it, when git refused because a branch is checked
+/// out in a worktree: a checkout or a new worktree ([`held_by_worktree`]), a delete
+/// ([`delete_refused_by_worktree`]), a fetch into it.
+pub(crate) fn checked_out_elsewhere(all: &str) -> Option<(&str, &str)> {
+    all.lines().map(str::trim).find_map(|line| {
+        held_by_worktree(line)
+            .or_else(|| delete_refused_by_worktree(line))
+            .or_else(|| {
+                let rest =
+                    line.strip_prefix("fatal: refusing to fetch into branch 'refs/heads/")?;
+                let (branch, path) = rest.split_once("' checked out at '")?;
+                Some((branch, path.strip_suffix('\'').unwrap_or(path)))
+            })
+    })
+}
+
+/// The branch and the worktree path in git's "error: cannot delete branch 'x' used by
+/// worktree at '/p'" (older git: "error: Cannot delete branch 'x' checked out at '/p'").
+fn delete_refused_by_worktree(line: &str) -> Option<(&str, &str)> {
+    let rest = line
+        .strip_prefix("error: cannot delete branch '")
+        .or_else(|| line.strip_prefix("error: Cannot delete branch '"))?;
+    for middle in ["' used by worktree at '", "' checked out at '"] {
+        if let Some((branch, path)) = rest.split_once(middle) {
+            return Some((branch, path.strip_suffix('\'').unwrap_or(path)));
+        }
+    }
+    None
+}
+
 /// The branch and the worktree path in git's "'x' is already used by worktree at '/p'"
 /// (older git: "'x' is already checked out at '/p'").
 fn held_by_worktree(line: &str) -> Option<(&str, &str)> {
@@ -519,6 +563,52 @@ mod tests {
         assert!(message.contains("/w/topic"), "{message}");
         assert!(message.contains("that worktree"), "{message}");
         assert!(!message.contains("pull it instead"), "{message}");
+    }
+
+    /// Every refusal over a branch checked out in another worktree says which one, and offers
+    /// to make it active (spec §5.4).
+    #[test]
+    fn a_branch_checked_out_elsewhere_offers_its_worktree() {
+        let cases: [(&[&str], &str); 5] = [
+            (
+                &["checkout", "--no-guess", "f", "--"],
+                "fatal: 'f' is already used by worktree at '/w/f'\n",
+            ),
+            (
+                &["worktree", "add", "--", "/w/g", "f"],
+                "Preparing worktree (checking out 'f')\nfatal: 'f' is already used by worktree at '/w/f'\n",
+            ),
+            (
+                &["branch", "-d", "--", "f"],
+                "error: cannot delete branch 'f' used by worktree at '/w/f'\n",
+            ),
+            (
+                &["branch", "-D", "--", "f"],
+                "error: Cannot delete branch 'f' checked out at '/w/f'\n",
+            ),
+            (
+                &["fetch", "origin", "x:f"],
+                "fatal: refusing to fetch into branch 'refs/heads/f' checked out at '/w/f'\n",
+            ),
+        ];
+        for (args, stderr) in cases {
+            let Step::Failed { message, hints, .. } = explain(args, &failed(stderr, "")) else {
+                panic!("not failed");
+            };
+            assert!(message.contains("/w/f"), "{args:?}: {message}");
+            assert!(message.contains("\u{201c}f\u{201d}"), "{args:?}: {message}");
+            assert_eq!(
+                hints,
+                [OpHint::MakeActive {
+                    worktree: "/w/f".into()
+                }],
+                "{args:?}"
+            );
+        }
+        let Step::Failed { hints, .. } = explain(&["merge"], &failed("fatal: other\n", "")) else {
+            panic!("not failed");
+        };
+        assert!(hints.is_empty());
     }
 
     #[test]

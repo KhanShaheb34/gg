@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::dto::{Recent, RepoPrefs, Session, Settings, Theme};
+use crate::dto::{DEFAULT_WORKTREE_PATTERN, Recent, RepoPrefs, Session, Settings, Theme};
 use crate::error::{CoreError, ErrorCode, Result};
 
 const FILE_NAME: &str = "state.json";
@@ -41,6 +41,8 @@ pub struct SettingsPatch {
     /// `Some(None)` (JSON `null`) goes back to the system's default opener.
     #[serde(default, deserialize_with = "present")]
     pub editor_command: Option<Option<String>>,
+    /// A blank pattern goes back to the default; any other must contain `{branch}`.
+    pub worktree_pattern: Option<String>,
 }
 
 /// A change to [`RepoPrefs`]: only the fields present are changed.
@@ -311,6 +313,15 @@ impl Store {
                 format!("The fetch interval must be 0 (off) or 30 to 86400 seconds, not {secs}."),
             ));
         }
+        if let Some(pattern) = &patch.worktree_pattern
+            && !pattern.trim().is_empty()
+            && !valid_worktree_pattern(pattern)
+        {
+            return Err(CoreError::new(
+                ErrorCode::BadRequest,
+                "The worktree location must contain {branch}, so that each branch gets its own folder.",
+            ));
+        }
         self.change(|data| {
             if let Some(theme) = patch.theme {
                 data.settings.theme = theme;
@@ -321,6 +332,14 @@ impl Store {
             if let Some(command) = patch.editor_command {
                 // A blank command means the default opener, like `null`.
                 data.settings.editor_command = command.filter(|c| !c.trim().is_empty());
+            }
+            if let Some(pattern) = patch.worktree_pattern {
+                // A blank pattern means the default.
+                data.settings.worktree_pattern = if pattern.trim().is_empty() {
+                    DEFAULT_WORKTREE_PATTERN.to_owned()
+                } else {
+                    pattern
+                };
             }
             Ok(data.settings.clone())
         })
@@ -448,6 +467,8 @@ impl StoreData {
                 fetch_interval_secs: field(settings, "fetchIntervalSecs")
                     .unwrap_or(defaults.fetch_interval_secs),
                 editor_command: field(settings, "editorCommand"),
+                worktree_pattern: field(settings, "worktreePattern")
+                    .unwrap_or(defaults.worktree_pattern),
             },
             repo_prefs,
         })
@@ -485,7 +506,15 @@ impl StoreData {
         };
         differs(top, &known, "recents")
             || lost_inner("session", &["tabs", "active"])
-            || lost_inner("settings", &["theme", "fetchIntervalSecs", "editorCommand"])
+            || lost_inner(
+                "settings",
+                &[
+                    "theme",
+                    "fetchIntervalSecs",
+                    "editorCommand",
+                    "worktreePattern",
+                ],
+            )
             || lost_prefs
     }
 
@@ -516,6 +545,9 @@ impl StoreData {
         if !valid_fetch_interval(self.settings.fetch_interval_secs) {
             self.settings.fetch_interval_secs = Settings::default().fetch_interval_secs;
         }
+        if !valid_worktree_pattern(&self.settings.worktree_pattern) {
+            self.settings.worktree_pattern = DEFAULT_WORKTREE_PATTERN.to_owned();
+        }
         self
     }
 }
@@ -541,6 +573,11 @@ fn copy_aside(dir: &Path) -> io::Result<()> {
 
 fn valid_fetch_interval(secs: u32) -> bool {
     secs == 0 || FETCH_INTERVAL_RANGE.contains(&secs)
+}
+
+/// Whether `pattern` can place worktrees: it names the branch, so each gets its own folder.
+fn valid_worktree_pattern(pattern: &str) -> bool {
+    pattern.contains("{branch}")
 }
 
 /// `path` with symlinks resolved (unchanged if it cannot be, for example a deleted folder).
@@ -1222,6 +1259,46 @@ mod tests {
             .update_settings(patch(serde_json::json!({"editorCommand": "  "})))
             .unwrap();
         assert_eq!(s.editor_command, None, "blank is the default opener");
+    }
+
+    #[test]
+    fn worktree_pattern_is_set_checked_and_reset() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(
+            store.settings().worktree_pattern,
+            "../{repo}.worktrees/{branch}"
+        );
+        let s = store
+            .update_settings(patch(
+                serde_json::json!({"worktreePattern": "../wt/{repo}-{branch}"}),
+            ))
+            .unwrap();
+        assert_eq!(s.worktree_pattern, "../wt/{repo}-{branch}");
+        let err = store
+            .update_settings(patch(serde_json::json!({"worktreePattern": "../same"})))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("{branch}"), "{}", err.message);
+        assert_eq!(store.settings().worktree_pattern, "../wt/{repo}-{branch}");
+        // Survives a reload; blank goes back to the default.
+        let again = Store::load(config.path());
+        assert_eq!(again.settings().worktree_pattern, "../wt/{repo}-{branch}");
+        let s = again
+            .update_settings(patch(serde_json::json!({"worktreePattern": " "})))
+            .unwrap();
+        assert_eq!(s.worktree_pattern, "../{repo}.worktrees/{branch}");
+        // A hand-edited pattern without {branch} reads as the default.
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"worktreePattern": "/fixed"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path());
+        assert_eq!(
+            edited.settings().worktree_pattern,
+            "../{repo}.worktrees/{branch}"
+        );
     }
 
     /// Repository preferences are read field by field like the rest: a newer version's

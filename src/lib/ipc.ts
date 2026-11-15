@@ -19,6 +19,7 @@ import type {
   RowsPage,
   Settings,
   ViewOptions,
+  WorktreePath,
 } from "./types";
 
 export type EventName =
@@ -350,6 +351,9 @@ export const api = {
     call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
   /** Makes the worktree at `path` the active one (refused while an operation runs or waits there). */
   setActiveWorktree: (repoId: number, path: string) => call<RepoSnapshot>("set_active_worktree", { repoId, path }),
+  /** Where a new worktree for `branch` goes by default (the `worktreePattern` setting). */
+  worktreeDefaultPath: (repoId: number, branch: string) =>
+    call<WorktreePath>("worktree_default_path", { repoId, branch }),
   /**
    * Opens `path` (relative to the worktree), or the worktree folder when null, in the editor.
    * Resolves to a note to show when something else was opened (no editor command is set:

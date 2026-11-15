@@ -145,6 +145,13 @@ struct SetActiveWorktreeArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DefaultPathArgs {
+    repo_id: u32,
+    branch: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StopOpArgs {
     repo_id: u32,
     /// The operation to stop (`RunningOp.id`): nothing happens if another one runs by then.
@@ -359,6 +366,15 @@ impl Core {
                 to_json(
                     self.repos()?
                         .set_active_worktree(a.repo_id, &a.path)
+                        .await?,
+                )
+            }
+            "worktree_default_path" => {
+                let a: DefaultPathArgs = parse(cmd, args)?;
+                let pattern = self.store.settings().worktree_pattern;
+                to_json(
+                    self.repos()?
+                        .worktree_default_path(a.repo_id, &a.branch, &pattern)
                         .await?,
                 )
             }

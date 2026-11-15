@@ -58,6 +58,9 @@ const LEADING_ARGS: [&str; 8] = [
     "core.fsmonitor=false",
 ];
 
+/// How much of a child's output is read at a time.
+const READ_CHUNK: usize = 8192;
+
 /// Where `core.hooksPath` points for the git another program runs: nowhere.
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
@@ -1259,7 +1262,9 @@ async fn exec_limited(
     let read = async {
         let read_out = async {
             if let Some(p) = stdout_pipe.as_mut() {
-                let mut buf = [0u8; 8192];
+                // On the heap: kept in the future, the buffers would make every runner future
+                // 16 KiB larger (and a debug build's stack overflow; Task 9 review minor 8).
+                let mut buf = vec![0u8; READ_CHUNK];
                 while let Ok(n @ 1..) = p.read(&mut buf).await {
                     lock_tail(&out).push(&buf[..n]);
                     output_seen();
@@ -1268,7 +1273,7 @@ async fn exec_limited(
         };
         let read_err = async {
             if let Some(p) = stderr_pipe.as_mut() {
-                let mut buf = [0u8; 8192];
+                let mut buf = vec![0u8; READ_CHUNK];
                 while let Ok(n @ 1..) = p.read(&mut buf).await {
                     lock_tail(&err).push(&buf[..n]);
                     output_seen();
@@ -1693,6 +1698,35 @@ mod tests {
             index_file: None,
         };
         git.for_repo(3).tool(PathBuf::from("/bin/sh"), "gh")
+    }
+
+    /// The read buffers live on the heap: a runner future stays small, so the futures that
+    /// hold it (an operation's, a load's) do not overflow a debug build's stack (Task 9
+    /// review minor 8).
+    #[test]
+    fn a_limited_run_is_a_small_future() {
+        let git = GitRunner {
+            log: CommandLog::new(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+        };
+        let limit = TimeLimit::total(Duration::from_secs(1));
+        let run = git.run_with_timeout(Path::new("/"), &["status"], CmdKind::Read, limit);
+        let size = std::mem::size_of_val(&run);
+        assert!(size < 8192, "{size} bytes");
+        let tool = git.tool(PathBuf::from("/bin/sh"), "gh");
+        let run = tool.run(
+            Path::new("/"),
+            &["-c", "true"],
+            CmdKind::Read,
+            StdinPolicy::Null,
+            limit,
+        );
+        let size = std::mem::size_of_val(&run);
+        assert!(size < 8192, "{size} bytes");
     }
 
     /// The git another program runs gets every setting the app gives its own git (each

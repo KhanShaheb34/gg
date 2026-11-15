@@ -1,177 +1,231 @@
-# GitGraph
+# gg
 
-A fast, light desktop git client built around the commit graph: tabs of repositories, each a
-virtualized graph with branch and tag labels, a branch filter, search, fetch and refresh, a
-details panel with the commit's message and changed files, and the everyday actions on
-commits, branches, tags and stashes from right-click menus. Tauri 2 shell, Rust core
-(`crates/gg-core`), Svelte 5 UI (`src/`).
+A small, fast desktop app for the git commit graph, and the everyday actions on it.
 
-It writes into a repository only when you ask for an action (and for `git fetch`, which also
-runs on a schedule you can turn off, updating remote-tracking refs, objects and `FETCH_HEAD`
-as in a terminal). Every action runs git itself, with your hooks, one at a time per
-repository, and shows git's own message when it fails.
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-## Using it
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/graph-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/graph-light.png">
+  <img alt="gg showing a repository's commit graph: coloured lanes on the left, branch, remote and tag labels beside each commit's subject, then date, author and short hash columns" src="docs/screens/graph-light.png" width="1280">
+</picture>
 
-- Open a repository folder with the + button, ⌘O, by dropping the folder on the window, or
-  by launching the app with the folder as its argument. Open tabs come back at the next start.
-- ⌘1…⌘8 go to a tab, ⌘9 to the last one, Ctrl+Tab / Ctrl+Shift+Tab to the next or previous
-  one; ⌘W closes the tab (with no tab open, the window). On a focused tab, ←/→ move and
-  Delete closes it.
-- In the graph: ↑/↓, Page Up/Down, Home/End select commits; Esc clears the selection.
-  Clicking a short hash copies the full one.
-- ⌘F searches subjects, authors and hashes (Enter / Shift+Enter: next / previous hit),
-  ⌘⇧F fetches from all remotes, ⌘R re-reads the repository. On Windows and Linux, Ctrl
-  stands for ⌘.
-- The command log (⌘⇧L, or the terminal button in the toolbar) shows the git commands the app
-  ran for the repository: each operation under its title, with each command's line, time,
-  duration, exit code and output; "Background reads" adds the reads the app makes by itself.
-  "Show log" on a failed operation's notice opens it there. Credentials in URLs
-  (`https://user:token@host/…`) are shown as `***` here and in every message, notice and
-  error the app shows from git.
-- A conflict banner above the graph shows when git stops in a merge, rebase, cherry-pick or
-  revert (started in the app or in a terminal): what is coming in, each conflicted file
-  ("Conflict markers", "Check this file" for one with no markers to go by, "Resolved"; a file
-  opens in your editor from there), Abort…, Open in editor and Continue…. Continue is enabled
-  once every file is resolved; "Continue anyway…" goes ahead after listing what is not. The
-  app never edits a conflicted file. When the commit being applied has no changes left (they
-  are already there), the banner and the notice of the continue offer "Skip this commit"
-  instead (rebase, cherry-pick, revert). Skip leaves out that commit only: if git has moved
-  on to another, it is refused. Skipping a rebase's commit puts every tracked file back as
-  HEAD has it, so with other uncommitted changes it asks first, listing them.
-- Opening a folder of another worktree of a repository already open shows that
-  repository's tab, which keeps working in its own worktree; a notice names the folder, and
-  the tab's tooltip shows it. (Switching worktrees comes later.)
-- Git 2.29 or newer is needed. With an older one the app says so once, when it starts, and
-  skips the background fetch; some actions fail until git is updated.
-- git is looked up on your login shell's `PATH` (read when the app starts), falling back
-  to the app's own `PATH`, so a git your shell finds is the one used even when the app is
-  started from the Finder.
+## Why
 
-### Actions
+If you open VS Code or Cursor just to look at the commit graph, merge a branch and push it,
+gg does that job on its own, without the editor. It is a small desktop app around the git you
+already have: it opens in under a second on a 20,000-commit repository, uses no CPU while it sits
+there, and is light enough to leave open beside your terminal all day.
 
-Right-click a commit, a branch or tag label, or a stash (or press the menu key or Shift+F10
-on the selected row) for its menu. Items that cannot run say why when you point at them
-(for example "HEAD is detached: there is no current branch").
+## Install
 
-| On | Items |
-| --- | --- |
-| A commit | Check out this commit · Create branch here… · Create tag here… · Cherry-pick… · Revert… · Reset *current* to here (Soft, Mixed, Hard) · Copy hash · Copy message |
-| A local branch | Check out · Rename… · Delete… · Merge *it* into *current*… · Rebase *current* onto *it*… · Push… · Pull · Copy name |
-| A remote branch | Check out as a local branch… · Fetch into a local branch… · Merge *it* into *current*… · Delete from *remote*… · Copy name |
-| A tag | Push… · Delete… · Copy name |
-| A stash | Apply · Pop · Create branch from stash… · Drop… |
-| The uncommitted row | Stash changes… |
+1. Download gg from **https://gg.shakirul.com**.
+2. Open the download and drag **gg** to **Applications**.
 
-- **Check out** a branch that is behind its upstream asks whether to fast-forward it first.
-  Double-clicking a local branch's label checks it out too.
-- **Merge** offers "Create a merge commit even if fast-forward is possible" (remembered per
-  repository), "Squash the commits" and "No commit". After a merge, the notice offers
-  **Push** *branch* **to** *remote/branch*; a push the remote rejects offers Fetch, Pull and
-  a separate Force push…. So the staging routine is: check out `staging`, merge your branch
-  into it, push — three clicks from the graph.
-- **Push** goes to the branch of the same name on the remote, like git's own default
-  (`push.default=simple`). A branch whose upstream has another name (made with
-  `git switch -c feature origin/main`, say) is pushed there only if you pick it in the Push
-  dialog, which names where the push goes; the merge notice then offers no one-click push.
-  A branch without an upstream gets the branch pushed to as its upstream; an existing
-  upstream is never changed.
-- **Pull** on a branch that has diverged from its upstream asks whether to merge or rebase.
-- Actions on one repository run one at a time, in the order asked; a second waits (the
-  toolbar shows what runs and how many wait). A busy indicator shows when one takes more
-  than 150 ms. An action on the current branch (reset, merge, rebase, cherry-pick, revert,
-  pull, continue, abort, skip) runs only on the branch it was asked for: if another branch
-  was checked out meanwhile (by an action queued before it, or in a terminal), it is refused
-  with a plain notice and nothing changes.
-- **Stop** appears beside the busy indicator once an action has run for 5 seconds (a hook
-  that hangs, say): it ends the git command and everything it started, and the action fails
-  as "Stopped.". git runs without a terminal and without input, so it never waits for a
-  password or a prompt there.
-- Because git runs without a terminal, anything that would ask on one fails at once instead,
-  even when the app was started from a terminal: commit signing with a loopback pinentry
-  (`pinentry-mode loopback`), an SSH signing key whose passphrase is not in an agent, and
-  hooks that read `/dev/tty`. Use an agent (gpg-agent, ssh-agent, 1Password) or a GUI
-  pinentry such as pinentry-mac; credential helpers and askpass programs keep working.
-- Names (branches, tags) are checked as you type and again by the core: a name git would
-  refuse, one that is taken, or one starting with `-` is refused before git runs.
-- Network actions (push, pull, fetch into a branch, deleting on a remote) stop after 120 s
-  without output or 2 hours in all; git never waits for a password prompt in a terminal.
+Requires macOS 12 or later.
 
-### Safety confirmations
+gg is not notarized by Apple: that needs a paid Apple developer account, which this project
+does not have. So the first time you open it, macOS will say it cannot check the app. Open it
+either way:
 
-These run only after a red confirmation that says what would be lost; the core refuses them
-otherwise, whatever the UI sends:
+- Right-click (or Control-click) **gg** in Applications and choose **Open**, then **Open**
+  again. If macOS does not offer **Open**, open **System Settings → Privacy & Security**,
+  scroll down to the message about gg and click **Open Anyway**.
+- Or, in a terminal, remove the quarantine flag the download was given:
 
-| Action | Why it is confirmed |
-| --- | --- |
-| Force push | It replaces the remote branch's commits; the confirmation lists the commits that would be lost there. It always uses `--force-with-lease` pinned to the remote commit you were shown: if the remote moved meanwhile, it asks again. |
-| Reset hard | Uncommitted changes to tracked files are discarded and cannot be got back, and an untracked file where the target commit has a file is overwritten. The confirmation lists both; other untracked files are kept. |
-| Delete a branch that is not merged | Its commits would be reachable from no branch (they stay in the reflog for a while). The confirmation says when they are safe in the current branch. |
-| Delete a branch on a remote | Other people's clones lose it at their next fetch. The delete is pinned to the remote commit you were shown: if someone pushed to it since your last fetch, it is refused. |
-| Delete a tag on a remote | Other people's clones lose it at their next fetch. |
-| Drop a stash | Its changes are gone from the stash list. |
-| Abort a merge, rebase, cherry-pick or revert | The changes made to resolve its conflicts are lost. |
-| Skip a rebase's commit with other changes | git puts every tracked file back: those changes go too. |
+  ```sh
+  xattr -cr /Applications/gg.app
+  ```
 
-Each confirmation is for what it showed: if the branch, the commit or the files it is about
-changed before the action ran, it asks again with them as they are now (or, for another
-branch checked out, refuses).
+After the first time it opens normally.
 
-While git is stopped in a merge, rebase, cherry-pick or revert, actions that would start
-another one, check out something else, apply a stash or save one are refused with a plain
-reason; reset stays allowed (it is a way out). The same actions are refused (and their
-menu items disabled, saying why) while files still have conflicts from an earlier step,
-such as a stash that did not apply cleanly.
+## Open from the terminal
 
-### Keyboard shortcuts
+```sh
+gg            # opens the repository you are in
+gg path/to/repo
+```
 
-On Windows and Linux, Ctrl stands for ⌘.
+Install the command from the app's menu with **Install 'gg' Command…**.
+
+If your shell already has an alias called `gg` (oh-my-zsh's git plugin defines one, for
+example), the alias wins until you remove it with `unalias gg`, for instance at the end of
+your `~/.zshrc`.
+
+## Features
+
+**The graph**
+
+- Each repository in its own tab. Lanes and coloured lines for every branch, with local
+  branch, remote branch, tag and stash labels on their commits; ahead and behind counts on
+  a branch's label.
+- Search subjects, authors and hashes; filter which branches are shown; show or hide remote
+  branches, tags and stashes.
+- Select a commit for its details: full hash, parents, author, date, message, and the files
+  it changed with added and deleted line counts, as a tree or a list.
+- The uncommitted changes of the active worktree as a row at the top.
+
+**Right-click actions**
+
+<img alt="The right-click menu of a commit: check out, create branch or tag, cherry-pick, revert, and a reset submenu with soft, mixed and a red hard reset" src="docs/screens/commit-menu-dark.png" width="640">
+
+- Commits: check out, create a branch or tag here, cherry-pick, revert, reset the current
+  branch here (soft, mixed, hard), copy the hash or message.
+- Branches: check out, rename, delete, merge into the current branch, rebase the current
+  branch onto it, push, pull; remote branches: check out as a local branch, fetch into a
+  local branch, merge, delete from the remote.
+- Tags: push, delete. Stashes: save, apply, pop, drop, create a branch from one.
+- Push sets the upstream on a first push. A push the remote rejects offers fetch, pull or a
+  separate **force push**, which always uses `--force-with-lease` pinned to the remote commit
+  you were shown.
+
+**Checkout, merge, push**
+
+The routine of updating a shared branch takes three clicks from the graph: check out
+`staging` (gg offers to fast-forward it if it is behind), merge your branch into it, then
+press **Push** on the notice the merge leaves.
+
+**Worktrees**
+
+A worktree panel lists every worktree of the repository, including ones made in a terminal
+or by other tools. Make one the active worktree, create a new one, commit the files you tick,
+push, and delete a worktree, with a warning first when that would lose work. Stale entries
+can be pruned.
+
+**Pull requests**
+
+Pull requests for your branches, through the GitHub CLI [`gh`](https://cli.github.com).
+
+**Conflicts**
+
+<img alt="The conflict banner above the graph: merging feature/x into main, two files with conflict markers, and Abort, Open in editor, Continue anyway and Continue buttons" src="docs/screens/conflict-banner-dark.png" width="640">
+
+When git stops in a merge, rebase, cherry-pick or revert, started in gg or in a terminal, a
+banner names it and lists each conflicted file, with **Open in editor**, **Abort…** and
+**Continue…** (once every file is resolved), and **Skip this commit** when the commit being
+applied has nothing left to apply.
+
+**Seeing what happened**
+
+- The command log (⌘⇧L) shows every git command gg ran for the repository, grouped by
+  operation, with its output, exit code and duration. A failed operation's notice links to
+  its entry.
+- Light and dark themes, following the system by default.
+- The graph refreshes by itself when the repository changes on disk (a commit in a terminal,
+  an agent working in a worktree), keeping your scroll position, and gg fetches from your
+  remotes in the background, every 5 minutes by default.
+- **Settings** holds the theme, the background fetch interval (or turning it off) and the
+  editor that conflicted files open in.
+
+**Keyboard**
 
 | Keys | Does |
 | --- | --- |
 | ⌘O | Open a repository |
-| ⌘W | Close the tab (with none open, the window) |
-| Ctrl+Tab, Ctrl+Shift+Tab | Next, previous tab |
-| ⌘1…⌘8, ⌘9 | A tab, the last tab |
-| ⌘F | Search commits |
+| ⌘F | Search commits (Enter / Shift+Enter: next / previous) |
 | ⌘⇧F | Fetch from all remotes |
 | ⌘R | Refresh |
-| F6 | The newest notice (its first button) |
 | ⌘⇧L | Show or hide the command log |
-| Menu key, Shift+F10 | The selected row's menu (arrow keys, Enter, Esc in it) |
-| ↑/↓, Page Up/Down, Home/End | Select commits in the graph |
-| Esc | Close what has the focus: a dialog, a menu, the command log, the details panel; in the graph, clear the selection |
+| ⌘1…⌘9, Ctrl+Tab | Switch tabs |
+| ⌘W | Close the tab |
+| ↑ ↓, Page Up/Down, Home/End | Move through commits |
+| Shift+F10 or the menu key | The selected row's menu |
 
-In the command log: ↑/↓, Home/End move between rows, Enter or Space opens one, C copies its
-command line.
+## Safety
 
-## Dev commands
+- **Every destructive action says what will be lost, and is confirmed against the state you
+  were shown.** Force push lists the commits the remote would lose; a hard reset lists the
+  changes it would discard; deleting an unmerged branch, a branch or tag on a remote, a stash
+  or a worktree with work in it, and aborting a merge or rebase, each say what goes. The
+  check is made by the core, not the UI. If the branch, commit or files changed between the
+  confirmation and the action, gg asks again with things as they are now.
+- **gg never edits a conflicted file.** You resolve conflicts in your editor; Continue stages
+  the files you resolved, after asking.
+- **gg writes to a repository only when you ask.** The exception is the background fetch,
+  which updates remote-tracking branches as `git fetch` does and can be turned off. Actions
+  on one repository run one at a time, in the order asked, and an action on the current
+  branch is refused if another branch was checked out meanwhile.
+
+## How it works, and privacy
+
+- gg runs the git you have installed, found on your login shell's `PATH`. Your SSH keys,
+  credential helpers, config and hooks behave as they do in a terminal, and every action
+  shows git's own message when it fails.
+- git runs without a terminal, so nothing can wait on a prompt there. Anything that would
+  ask on a terminal fails at once instead: commit signing with a loopback pinentry, an SSH
+  key whose passphrase is not in an agent, hooks that read `/dev/tty`. Use an agent
+  (ssh-agent, gpg-agent, 1Password) or a graphical pinentry such as pinentry-mac.
+- No telemetry and no account. The only network use is git talking to your own remotes,
+  and `gh` when you use pull requests.
+- Credentials in URLs (`https://user:token@host/…`) are shown as `***` in everything gg
+  displays: notices, errors and the command log.
+
+## Requirements
+
+- macOS 12 or later.
+- git 2.29 or later. With an older git, gg says so once and skips the background fetch.
+- Optional: the GitHub CLI `gh`, signed in, for pull requests.
+
+## Build from source
+
+Prerequisites: [Rust](https://rustup.rs) (stable), [Node.js](https://nodejs.org) and
+[pnpm](https://pnpm.io), and Xcode's command line tools on macOS.
 
 ```sh
-pnpm install                 # install JS dependencies
-pnpm dev                     # vite dev server on http://127.0.0.1:1420
-pnpm test                    # unit tests (vitest)
-pnpm e2e                     # browser tests (Playwright, chromium)
-pnpm check                   # type-check (svelte-check)
-pnpm tauri dev               # run the desktop app
-pnpm tauri build --debug     # build a debug app bundle
-cargo test --workspace       # Rust tests
+pnpm install                     # JavaScript dependencies
+pnpm tauri dev                   # run the app with hot reload
+pnpm tauri build --bundles app   # build the .app into target/release/bundle/macos/
 ```
 
-The browser build talks to `gg-devserver` (dev/test only) on http://127.0.0.1:1421:
+Tests and checks:
 
 ```sh
-cargo run -p gg-devserver -- --config-dir /tmp/gg-config [--open <repo>] [--allow-origin <origin>]
-curl -s -XPOST 127.0.0.1:1421/invoke -H 'content-type: application/json' \
-  -d '{"cmd":"get_app_state","args":{}}'
+cargo test --workspace           # Rust unit and integration tests
+pnpm test                        # UI unit tests (Vitest)
+pnpm e2e                         # end-to-end tests (Playwright, Chromium)
+pnpm check                       # type-check (svelte-check, tsc)
 ```
 
-It answers only loopback `Host` names, and browsers only from http://127.0.0.1:1420,
-http://localhost:1420 and each `--allow-origin`; `/invoke` takes only `application/json`.
+The end-to-end tests run the UI in a browser against `gg-devserver`, a small HTTP server for
+the core that exists only for development and tests:
 
-## Speed
+```sh
+pnpm dev                         # the UI on http://127.0.0.1:1420
+cargo run -p gg-devserver -- --config-dir /tmp/gg-config --open path/to/repo
+```
 
-Targets and measured numbers are in [docs/perf/2026-11-plan-1.md](docs/perf/2026-11-plan-1.md)
-and, for the actions, [docs/perf/2026-11-plan-2.md](docs/perf/2026-11-plan-2.md);
-`scripts/perf.sh` measures the release app (macOS) on a repository, and
-`scripts/gen-synthetic-repo.sh` makes the large test repositories it uses.
+It listens on 127.0.0.1:1421 and answers only loopback hosts and the dev UI's origin.
+
+See [docs/architecture.md](docs/architecture.md) for how the code is laid out.
+
+## Performance
+
+Measured on an Apple M1 Pro laptop with a 20,000-commit, 200-branch repository:
+
+- about 0.75 s from launch to the first rows of the graph;
+- 0 % CPU while idle;
+- about 160 MB of memory idle, across the app and its WebKit processes; about 250 MB after
+  scrolling the whole history (the 150 MB target is missed; the reasons are in the
+  performance notes);
+- an app of about 7 MB.
+
+Method, all numbers and how to reproduce them: [docs/performance.md](docs/performance.md).
+
+## Status and platforms
+
+gg runs on macOS today. Windows and Linux builds are planned.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Security issues: see [SECURITY.md](SECURITY.md).
+
+## Licence
+
+[MIT](LICENSE).
+
+## Credits
+
+gg is inspired by the Git Graph extension for VS Code.
+
+Built by [Shakirul](https://shakirul.com).

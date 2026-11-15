@@ -69,13 +69,6 @@
   /** A refusal about neither field (an operation running, say): said above the buttons. */
   let general: string | null = $state(null);
 
-  /** Which field a refusal of the core is about, if one: a branch name, or the folder. */
-  function fieldOf(message: string): "name" | "location" | null {
-    if (/a branch named .* already exists/.test(message)) return "name";
-    if (/worktree at|is inside|is a link|not a folder|not empty|git folder|Prune stale entries|Could not look at/.test(message))
-      return "location";
-    return null;
-  }
   let open = true;
   onDestroy(() => (open = false));
 
@@ -164,7 +157,7 @@
     try {
       const outcome = await runOp(repoId, request, { ownErrors: ["bad_name", "bad_request"], ownRefusals: true });
       if (isRefusal(outcome) && open) {
-        const field = fieldOf(outcome.message);
+        const field = outcome.field;
         if (field === null) general = outcome.message;
         else refused = { field, message: outcome.message, sent: field === "name" ? sent.name : sent.location };
         pending = false;
@@ -177,7 +170,7 @@
       }
     } catch (e) {
       if (e instanceof CoreError && (e.code === "bad_name" || e.code === "bad_request") && open) {
-        const field = e.code === "bad_name" ? "name" : fieldOf(e.message);
+        const field = e.field;
         if (field === null) general = e.message;
         else refused = { field, message: e.message, sent: field === "name" ? sent.name : sent.location };
         pending = false;

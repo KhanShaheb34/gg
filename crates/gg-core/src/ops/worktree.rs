@@ -12,7 +12,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::dto::{
-    DEFAULT_WORKTREE_PATTERN, Danger, DangerKind, InProgressKind, OpHint, OpRequest,
+    DEFAULT_WORKTREE_PATTERN, Danger, DangerKind, InProgressKind, InputField, OpHint, OpRequest,
     WorktreeBranch, WorktreeInfo, WorktreePath,
 };
 use crate::error::{CoreError, ErrorCode, Result};
@@ -101,13 +101,19 @@ fn holder<'l>(
 
 /// Why the worktree operation `request` cannot run as asked, if it cannot (nothing runs
 /// then): checked in its turn, against git's list of worktrees as it is then.
-pub(crate) async fn refused(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Option<String>> {
+/// A refusal of `worktree_add` names the field of the dialog it is about, when it is one.
+pub(crate) async fn refused(
+    ctx: &OpCtx<'_>,
+    request: &OpRequest,
+) -> Result<Option<(String, Option<InputField>)>> {
     match request {
         OpRequest::WorktreeAdd { path, branch } => add_refused(ctx, path, branch).await,
         OpRequest::WorktreeRemove {
             path,
             delete_branch,
-        } => remove_refused(ctx, path, *delete_branch).await,
+        } => Ok(remove_refused(ctx, path, *delete_branch)
+            .await?
+            .map(|why| (why, None))),
         _ => Ok(None),
     }
 }
@@ -128,31 +134,36 @@ async fn add_refused(
     ctx: &OpCtx<'_>,
     path: &str,
     branch: &WorktreeBranch,
-) -> Result<Option<String>> {
+) -> Result<Option<(String, Option<InputField>)>> {
+    let about = |field| move |why: String| Some((why, Some(field)));
     match branch {
         WorktreeBranch::Existing { existing } => {
             if !ref_exists(ctx, &format!("refs/heads/{existing}")).await? {
-                return Ok(Some(format!(
-                    "Nothing was created: there is no local branch named \u{201c}{existing}\u{201d}."
+                return Ok(Some((
+                    format!(
+                        "Nothing was created: there is no local branch named \u{201c}{existing}\u{201d}."
+                    ),
+                    None,
                 )));
             }
         }
         WorktreeBranch::Create { create, .. } => {
             if ref_exists(ctx, &format!("refs/heads/{create}")).await? {
-                return Ok(Some(format!(
+                return Ok(about(InputField::Name)(format!(
                     "Nothing was created: a branch named \u{201c}{create}\u{201d} already exists."
                 )));
             }
         }
         WorktreeBranch::Detach { .. } => {}
     }
+    let location = about(InputField::Location);
     let resolved = resolve(&ctx.repo.root, path);
     let shown = resolved.display();
     let target = real(&resolved);
     for wt in listed(ctx).await? {
         let there = Path::new(&wt.path);
         if target == there {
-            return Ok(Some(if wt.prunable {
+            return Ok(location(if wt.prunable {
                 format!(
                     "Nothing was created: git still lists a worktree at {shown}, whose folder \
                      is gone. Prune stale entries first."
@@ -162,7 +173,7 @@ async fn add_refused(
             }));
         }
         if target.starts_with(there) {
-            return Ok(Some(format!(
+            return Ok(location(format!(
                 "Nothing was created: {shown} is inside the worktree at {}. A worktree cannot \
                  go inside another.",
                 wt.path
@@ -171,33 +182,33 @@ async fn add_refused(
     }
     match fs::symlink_metadata(&resolved) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Ok(Some(format!(
+            return Ok(location(format!(
                 "Nothing was created: {shown} is a link. Choose a new folder, or an empty one."
             )));
         }
         Ok(meta) if !meta.is_dir() => {
-            return Ok(Some(format!(
+            return Ok(location(format!(
                 "Nothing was created: {shown} exists and is not a folder."
             )));
         }
         Ok(_) => {
             let empty = fs::read_dir(&resolved)
-                .map_err(|e| io_error(&resolved, &e))?
+                .map_err(|e| io_error(&resolved, &e).about(InputField::Location))?
                 .next()
                 .is_none();
             if !empty {
-                return Ok(Some(format!(
+                return Ok(location(format!(
                     "Nothing was created: the folder {shown} is not empty. A new worktree needs \
                      a new folder, or an empty one."
                 )));
             }
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(io_error(&resolved, &e)),
+        Err(e) => return Err(io_error(&resolved, &e).about(InputField::Location)),
     }
     let git_dir = canonical(&ctx.repo.common_dir);
     if target.starts_with(&git_dir) {
-        return Ok(Some(format!(
+        return Ok(location(format!(
             "Nothing was created: {shown} is inside the repository's git folder ({}).",
             git_dir.display()
         )));

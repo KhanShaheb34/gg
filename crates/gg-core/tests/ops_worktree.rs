@@ -8,7 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use gg_core::dto::{
-    Confirmed, Danger, DangerKind, OpHint, OpOutcome, OpRequest, OpStatus, WorktreeBranch,
+    Confirmed, Danger, DangerKind, InputField, OpHint, OpOutcome, OpRequest, OpStatus,
+    WorktreeBranch,
 };
 use gg_core::error::ErrorCode;
 use gg_core::git::runner::CommandRecord;
@@ -1425,6 +1426,8 @@ async fn adding_refuses_a_bad_place_or_name() {
             "{}",
             out.message
         );
+        // The dialog shows it under the location, told so by the core, not by the wording.
+        assert_eq!(out.field, Some(InputField::Location), "{path:?}");
     }
     // Inside the git dir (outside the main worktree only for a separate git dir; here it
     // is inside main too, and refused as such or as the git folder).
@@ -1446,6 +1449,7 @@ async fn adding_refuses_a_bad_place_or_name() {
         "{}",
         out.message
     );
+    assert_eq!(out.field, None);
     let out = h
         .run(
             id,
@@ -1459,10 +1463,11 @@ async fn adding_refuses_a_bad_place_or_name() {
         )
         .await;
     assert!(out.message.contains("already exists"), "{}", out.message);
+    assert_eq!(out.field, Some(InputField::Name));
     assert!(h.writes_since(mark).is_empty(), "nothing ran");
     assert!(!base.join("x").exists() && !base.join("y").exists());
     // Bad names and arguments never reach the queue.
-    for (request, code) in [
+    for (request, code, field) in [
         (
             add(
                 &base.join("z").to_string_lossy(),
@@ -1472,10 +1477,12 @@ async fn adding_refuses_a_bad_place_or_name() {
                 },
             ),
             ErrorCode::BadName,
+            Some(InputField::Name),
         ),
         (
             add(&base.join("z").to_string_lossy(), existing("-x")),
             ErrorCode::BadRequest,
+            None,
         ),
         (
             add(
@@ -1485,11 +1492,23 @@ async fn adding_refuses_a_bad_place_or_name() {
                 },
             ),
             ErrorCode::BadRequest,
+            None,
         ),
-        (add(" ", existing("free")), ErrorCode::BadRequest),
+        (
+            add(" ", existing("free")),
+            ErrorCode::BadRequest,
+            Some(InputField::Location),
+        ),
     ] {
         let err = h.m.run_op(id, request, &[]).await.unwrap_err();
         assert_eq!(err.code, code, "{}", err.message);
+        assert_eq!(err.field, field, "{}", err.message);
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(
+            json.get("field").cloned(),
+            field.map(|f| serde_json::to_value(f).unwrap()),
+            "absent when about no field"
+        );
     }
 }
 

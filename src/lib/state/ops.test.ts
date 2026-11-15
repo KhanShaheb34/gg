@@ -57,6 +57,7 @@ function outcome(overrides: Partial<OpOutcome> = {}): OpOutcome {
     hints: [],
     created: null,
     committed: null,
+    field: null,
     snapshot: snap({ seq: 5 }),
     ...overrides,
   };

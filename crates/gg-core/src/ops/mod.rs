@@ -30,8 +30,8 @@ pub use explain::explain;
 
 use crate::EventSink;
 use crate::dto::{
-    Confirmed, Danger, DangerKind, HeadInfo, InProgressKind, MergeTargetKind, OpHint, OpOutcome,
-    OpRequest, OpStatus, ResetMode, WorktreeBranch,
+    Confirmed, Danger, DangerKind, HeadInfo, InProgressKind, InputField, MergeTargetKind, OpHint,
+    OpOutcome, OpRequest, OpStatus, ResetMode, WorktreeBranch,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
@@ -617,11 +617,11 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             )
         }
         OpRequest::WorktreeAdd { path, branch } => {
-            check_path(&path)?;
+            check_path(&path).map_err(|e| e.about(InputField::Location))?;
             match &branch {
                 WorktreeBranch::Existing { existing } => check_arg(existing, "branch")?,
                 WorktreeBranch::Create { create, at } => {
-                    check_branch_name(create)?;
+                    check_branch_name(create).map_err(|e| e.about(InputField::Name))?;
                     check_full_hash(at)?;
                 }
                 WorktreeBranch::Detach { detach } => check_full_hash(detach)?,
@@ -756,6 +756,9 @@ enum Ran {
     Unconfirmed(Vec<Danger>),
     /// Nothing ran: it cannot while git is stopped in something (the plain line why).
     Refused(String),
+    /// Nothing ran: what was asked for cannot be, because of one field of the form it came
+    /// from (the plain line why, and the field).
+    RefusedAbout(String, InputField),
 }
 
 /// Said when an operation's body panicked.
@@ -927,6 +930,7 @@ impl RepoManager {
             hints: Vec::new(),
             created: created.lock().unwrap_or_else(|e| e.into_inner()).take(),
             committed: committed.lock().unwrap_or_else(|e| e.into_inner()).take(),
+            field: None,
             snapshot,
         };
         match ran {
@@ -958,6 +962,11 @@ impl RepoManager {
             Ran::Refused(message) => {
                 outcome.status = OpStatus::Failed;
                 outcome.message = message;
+            }
+            Ran::RefusedAbout(message, field) => {
+                outcome.status = OpStatus::Failed;
+                outcome.message = message;
+                outcome.field = Some(field);
             }
             Ran::Unconfirmed(dangers) => {
                 outcome.status = OpStatus::NeedsConfirmation;
@@ -1116,8 +1125,14 @@ impl RepoManager {
         {
             return Ok((title, Ran::Refused(why)));
         }
-        if let Some(why) = worktree::refused(&ctx, &request).await? {
-            return Ok((title, Ran::Refused(why)));
+        if let Some((why, field)) = worktree::refused(&ctx, &request).await? {
+            return Ok((
+                title,
+                match field {
+                    Some(field) => Ran::RefusedAbout(why, field),
+                    None => Ran::Refused(why),
+                },
+            ));
         }
         if let OpRequest::Commit { paths, push, .. } = &request
             && let Some(why) =

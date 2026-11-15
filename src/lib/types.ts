@@ -17,7 +17,11 @@ export type CoreErrorDto = {
     | "nothing_to_do";
   message: string;
   detail: string | null;
+  field?: InputField; // the form field it is about, when the core knows (create worktree)
 };
+
+/** A field of the form a request came from, which a refusal or error is about. */
+export type InputField = "location" | "name";
 
 export type ViewOptions = { branches: string[] | null; showRemotes: boolean; showTags: boolean; showStashes: boolean }; // branches null = all
 export type WorktreeInfo = {
@@ -343,6 +347,7 @@ export type OpOutcome = {
   hints: OpHint[];
   created: string | null; // worktree_add: the worktree it made, as the snapshot lists it
   committed: string | null; // commit: the commit it made (full hash), whatever came after it
+  field: InputField | null; // a refusal about one field of the form it came from (worktree_add)
   snapshot: RepoSnapshot; // after the operation and its refresh; after pull / fetch_into_local maybe before the log reload (a repo-changed with a higher seq follows)
 };
 

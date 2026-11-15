@@ -1137,10 +1137,24 @@ pub struct OpOutcome {
     /// `commit`: the commit it made (its full hash), whatever came after it (a push that
     /// failed, a Stop, a hook's complaint, trouble updating the staging area); else `None`.
     pub committed: Option<String>,
+    /// A refusal about one field of the form the request came from (`worktree_add`: the
+    /// location, or the new branch's name), so the form can show it there; else `None`.
+    pub field: Option<InputField>,
     /// The repository after the operation and its refresh. After a pull or a fetch into a
     /// local branch it may still be the state before the log reload has caught up; a
     /// `repo-changed` with a higher `seq` follows.
     pub snapshot: RepoSnapshot,
+}
+
+/// A field of a form a request came from, which a refusal or error is about. Serialized
+/// lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputField {
+    /// Where a new worktree goes.
+    Location,
+    /// The new branch's name.
+    Name,
 }
 
 /// A recently opened repository.
@@ -1421,6 +1435,7 @@ mod tests {
             ],
             created: Some("/r.worktrees/x".into()),
             committed: None,
+            field: None,
             snapshot: RepoSnapshot {
                 repo_id: 1,
                 name: "r".into(),

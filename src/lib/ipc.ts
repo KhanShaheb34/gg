@@ -10,6 +10,7 @@ import type {
   CommitDetails,
   Confirmed,
   CoreErrorDto,
+  InputField,
   OpOutcome,
   OpenedRepo,
   OpRequest,
@@ -39,12 +40,15 @@ export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "d
 export class CoreError extends Error {
   code: CoreErrorDto["code"];
   detail: string | null;
+  /** The form field it is about, when the core says. */
+  field: InputField | null;
 
   constructor(dto: CoreErrorDto) {
     super(dto.message);
     this.name = "CoreError";
     this.code = dto.code;
     this.detail = dto.detail;
+    this.field = dto.field ?? null;
   }
 }
 

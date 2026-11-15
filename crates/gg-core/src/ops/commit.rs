@@ -777,35 +777,46 @@ fn index_trouble(output: &str) -> String {
     }
 }
 
-/// `path` as one word for a shell: unless it is plain, in single quotes (POSIX), or in double
-/// quotes on Windows (`windows`; no file name there has one).
-fn shell_quoted(path: &str, windows: bool) -> String {
-    let plain = !path.is_empty()
-        && !path.starts_with('-')
-        && path
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "._/+@%=,:".contains(c));
-    if plain {
-        path.to_owned()
-    } else if windows {
-        format!("\"{path}\"")
-    } else {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    }
-}
-
 /// Most paths the reset hint lists; past it, it resets every path.
 const RESET_HINT_PATHS: usize = 20;
 
-/// The command that brings the staging area level with the commit for `paths`: `git reset
-/// -q -- <paths>` quoted for the platform's shell (`windows`: double quotes), or `git reset
-/// -q` for every path when there are more than [`RESET_HINT_PATHS`].
-fn reset_hint(paths: &[String], windows: bool) -> String {
-    if paths.len() > RESET_HINT_PATHS {
-        return "git reset -q".to_owned();
+/// The command the user is told to run when the staging area could not follow a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResetHint {
+    /// `git reset -q -- <paths>`: every path plain (see [`plain_path`]), at most
+    /// [`RESET_HINT_PATHS`] of them.
+    Paths(String),
+    /// `git reset -q`: the whole staging area made to match the last commit.
+    All,
+}
+
+impl ResetHint {
+    fn command(&self) -> &str {
+        match self {
+            Self::Paths(command) => command,
+            Self::All => "git reset -q",
+        }
     }
-    let quoted: Vec<String> = paths.iter().map(|p| shell_quoted(p, windows)).collect();
-    format!("git reset -q -- {}", quoted.join(" "))
+}
+
+/// Whether `path` is safe to paste unquoted into any shell (cmd.exe, PowerShell, POSIX):
+/// only letters, digits and `. _ / \ -`, not starting with `-`. Inside quotes cmd.exe still
+/// expands `%VAR%` and PowerShell `$(..)`, so nothing else is listed at all.
+fn plain_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('-')
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/\\-".contains(c))
+}
+
+/// The command that brings the staging area level with the commit for `paths`: the paths
+/// listed when all are plain and there are at most [`RESET_HINT_PATHS`]; else every path.
+fn reset_hint(paths: &[String]) -> ResetHint {
+    if paths.len() > RESET_HINT_PATHS || !paths.iter().all(|p| plain_path(p)) {
+        return ResetHint::All;
+    }
+    ResetHint::Paths(format!("git reset -q -- {}", paths.join(" ")))
 }
 
 /// The commit HEAD is on, read with `runner` (None before the first commit).
@@ -1049,9 +1060,17 @@ pub(crate) async fn commit(
     if let Some(output) = note {
         let mut paths = committed_paths(ctx, &after, parent.as_deref(), &new).await;
         paths.extend(stale.iter().cloned());
+        let hint = reset_hint(&paths);
+        let fix = match &hint {
+            ResetHint::Paths(_) => "Run the command below in the worktree to update it.",
+            ResetHint::All => {
+                "Run `git reset -q` in the worktree to make the staging area match the last \
+                 commit; your files are not changed."
+            }
+        };
         let mut message = format!(
             "{committed} gg could not update the staging area ({}), so the committed files may \
-             show as staged changes. Run the command below in the worktree to update it.",
+             show as staged changes. {fix}",
             index_trouble(&output)
         );
         if push {
@@ -1059,7 +1078,7 @@ pub(crate) async fn commit(
         }
         return Ok(Step::DoneWith {
             message,
-            detail: Some(format!("{}\n\n{output}", reset_hint(&paths, cfg!(windows)))),
+            detail: Some(format!("{}\n\n{output}", hint.command())),
             hints: retry,
         });
     }
@@ -1214,35 +1233,26 @@ mod tests {
         assert!(path_chunks(&[]).is_empty());
     }
 
+    /// The hint lists the paths only when every one is plain (nothing any shell reads as more
+    /// than a name, pasted into cmd.exe, PowerShell or a POSIX shell), and at most 20 of them;
+    /// otherwise it is the bare `git reset -q`.
     #[test]
-    fn paths_are_quoted_for_a_shell_when_they_need_it() {
-        let q = |p: &str| shell_quoted(p, false);
-        assert_eq!(q("src/a.rs"), "src/a.rs");
-        assert_eq!(q("a b.txt"), "'a b.txt'");
-        assert_eq!(q("it's"), "'it'\\''s'");
-        assert_eq!(q("-x"), "'-x'");
-        assert_eq!(q("$(rm)"), "'$(rm)'");
-        assert_eq!(q(""), "''");
-        // Windows: double quotes (no file name there has one).
-        let w = |p: &str| shell_quoted(p, true);
-        assert_eq!(w("src/a.rs"), "src/a.rs");
-        assert_eq!(w("a b.txt"), "\"a b.txt\"");
-        assert_eq!(w("it's"), "\"it's\"");
-        assert_eq!(w(""), "\"\"");
-    }
-
-    /// The command that puts the staging area right: the paths listed, up to 20; past that,
-    /// a reset of every path.
-    #[test]
-    fn the_reset_hint_lists_at_most_twenty_paths() {
-        let few: Vec<String> = vec!["a.txt".into(), "b c.txt".into()];
-        assert_eq!(reset_hint(&few, false), "git reset -q -- a.txt 'b c.txt'");
-        assert_eq!(reset_hint(&few, true), "git reset -q -- a.txt \"b c.txt\"");
+    fn the_reset_hint_lists_only_plain_paths() {
+        let paths = |p: &[&str]| p.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            reset_hint(&paths(&["a.txt", "src/b-c_d.rs", r"win\path.md"])),
+            ResetHint::Paths(r"git reset -q -- a.txt src/b-c_d.rs win\path.md".to_owned())
+        );
+        for odd in [
+            "$(x)", "%PATH%", "a`b", "a b.txt", "-x", "it's", "a\"b", "a;b", "é.txt",
+        ] {
+            assert_eq!(reset_hint(&paths(&["a.txt", odd])), ResetHint::All, "{odd}");
+        }
         let twenty: Vec<String> = (0..20).map(|i| format!("f{i}")).collect();
-        assert!(reset_hint(&twenty, false).ends_with(" f19"));
+        assert!(matches!(reset_hint(&twenty), ResetHint::Paths(c) if c.ends_with(" f19")));
         let many: Vec<String> = (0..21).map(|i| format!("f{i}")).collect();
-        assert_eq!(reset_hint(&many, false), "git reset -q");
-        assert_eq!(reset_hint(&many, true), "git reset -q");
+        assert_eq!(reset_hint(&many), ResetHint::All);
+        assert_eq!(ResetHint::All.command(), "git reset -q");
     }
 
     #[test]

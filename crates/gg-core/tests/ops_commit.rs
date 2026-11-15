@@ -1622,16 +1622,15 @@ async fn a_held_index_lock_after_the_commit_is_waited_for_once_then_explained() 
         format!(
             "Committed 2 files to main ({}). gg could not update the staging area (another \
              program holds its lock, index.lock), so the committed files may show as staged \
-             changes. Run the command below in the worktree to update it.",
+             changes. Run `git reset -q` in the worktree to make the staging area match the \
+             last commit; your files are not changed.",
             &new[..8]
         )
     );
     assert_eq!(out.committed.as_deref(), Some(new.as_str()));
+    // A name a shell could read as more than a name (`it's`) is never listed for pasting.
     let detail = out.detail.as_deref().unwrap();
-    assert!(
-        detail.starts_with("git reset -q -- a.txt 'it'\\''s.txt'\n"),
-        "{detail}"
-    );
+    assert!(detail.starts_with("git reset -q\n"), "{detail}");
     assert_eq!(changed_by(repo.path(), &new), set(&["a.txt", "it's.txt"]));
 }
 

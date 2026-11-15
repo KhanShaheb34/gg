@@ -256,9 +256,15 @@ pub(crate) fn push_rejected(all: &str) -> Option<Rejected> {
 }
 
 /// Whether a pull failed because the branches diverged and no way to reconcile them is
-/// configured (`pull.rebase`, `pull.ff`).
+/// configured (`pull.rebase`, `pull.ff`), or only fast-forwards are allowed (`pull.ff=only`,
+/// `merge.ff=only`, `--ff-only`): either way merging or rebasing is the user's choice.
 pub(crate) fn needs_pull_mode(all: &str) -> bool {
-    all.contains("Need to specify how to reconcile divergent branches")
+    all.contains("Need to specify how to reconcile divergent branches") || fast_forward_only(all)
+}
+
+/// Whether git refused because only a fast-forward was allowed and none was possible.
+fn fast_forward_only(all: &str) -> bool {
+    all.contains("Not possible to fast-forward")
 }
 
 /// Whether git run with `args` talks to a remote. Only then do words like "Connection
@@ -333,6 +339,14 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
                     .to_owned(),
             );
         }
+    }
+    if args.first() == Some(&"pull") && fast_forward_only(all) {
+        return Some(
+            "This branch and its upstream have diverged, and git is set to pull by \
+             fast-forward only (pull.ff), which is not possible here: choose whether to pull \
+             by merging or by rebasing."
+                .to_owned(),
+        );
     }
     if needs_pull_mode(all) {
         return Some(

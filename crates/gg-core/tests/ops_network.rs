@@ -686,6 +686,61 @@ async fn pull_diverged_asks_for_a_mode() {
     assert_eq!(rev(&repo, "HEAD~1"), theirs);
 }
 
+/// Diverged with `pull.ff=only` configured: git refuses ("Not possible to fast-forward"),
+/// and the outcome offers the same merge-or-rebase choice, each of which then works: a
+/// merge commit (`--ff` lifts the fast-forward-only rule for that pull only) or a rebase.
+#[tokio::test]
+async fn pull_diverged_with_fast_forward_only_offers_merge_or_rebase() {
+    let (repo, _origin, other) = with_remote();
+    let theirs = other.commit("theirs");
+    other.git(&["push", "-q", "origin", "main"]);
+    let mine = repo.commit("mine");
+    repo.git(&["config", "pull.ff", "only"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, pull("main", PullMode::Default)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        out.hints,
+        [OpHint::ChoosePullMode {
+            branch: "main".into()
+        }]
+    );
+    assert!(out.message.contains("diverged"), "{}", out.message);
+    assert!(out.message.contains("fast-forward"), "{}", out.message);
+    assert_eq!(rev(&repo, "HEAD"), mine);
+
+    let out = h.run(id, pull("main", PullMode::Merge)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        ran(
+            &h,
+            &out,
+            &["pull", "--progress", "--no-edit", "--no-rebase", "--ff"]
+        ),
+        "{:?}",
+        op_args(&h, &out)
+    );
+    assert_eq!(
+        repo.git(&["rev-list", "--parents", "-n", "1", "HEAD"])
+            .split(' ')
+            .count(),
+        3,
+        "a merge commit"
+    );
+    assert_eq!(
+        repo.git(&["config", "pull.ff"]),
+        "only",
+        "the setting stays"
+    );
+
+    repo.git(&["reset", "-q", "--hard", &mine]);
+    let out = h.run(id, pull("main", PullMode::Rebase)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(rev(&repo, "HEAD~1"), theirs);
+}
+
 /// `main` here and on `origin` both change `clash.txt` after a shared `base`: the other
 /// clone pushed its change, this one committed its own. HEAD on `main`.
 fn clashing_with_remote() -> (TestRepo, TestRepo) {

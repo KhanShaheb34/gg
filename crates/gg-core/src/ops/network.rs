@@ -249,7 +249,14 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
     let mut args = vec!["pull", "--progress", "--no-edit"];
     match mode {
         PullMode::Default => {}
-        PullMode::Merge => args.push("--no-rebase"),
+        PullMode::Merge => {
+            args.push("--no-rebase");
+            // Merging was chosen over the fast-forward-only rule that stopped the pull: for
+            // this pull only (older git does not let --no-rebase lift it).
+            if fast_forward_only_configured(ctx).await? {
+                args.push("--ff");
+            }
+        }
         PullMode::Rebase => args.push("--rebase"),
     }
     let from = upstream(ctx, branch).await?.map(|u| u.short);
@@ -288,6 +295,18 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         }),
         &out,
     ))
+}
+
+/// Whether a pull here may only fast-forward: `pull.ff=only`, or with no `pull.ff`,
+/// `merge.ff=only`.
+async fn fast_forward_only_configured(ctx: &OpCtx<'_>) -> Result<bool> {
+    for key in ["pull.ff", "merge.ff"] {
+        let out = ctx.read(&["config", "--get", key]).await?;
+        if out.code == 0 {
+            return Ok(out.text().trim() == "only");
+        }
+    }
+    Ok(false)
 }
 
 async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {

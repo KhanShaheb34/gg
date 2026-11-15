@@ -601,6 +601,30 @@ async fn follow_commit(
     Ok(None)
 }
 
+/// The commit HEAD is on, read with `runner` (None before the first commit).
+async fn head_of(ctx: &OpCtx<'_>, runner: &GitRunner) -> Result<Option<String>> {
+    let out = runner
+        .run_unchecked(
+            &ctx.cwd,
+            &["rev-parse", "--verify", "-q", "HEAD"],
+            CmdKind::Read,
+        )
+        .await?;
+    Ok((out.code == 0).then(|| out.text().trim().to_owned()))
+}
+
+/// The branch HEAD is on, read with `runner` (None when detached).
+async fn branch_of(ctx: &OpCtx<'_>, runner: &GitRunner) -> Result<Option<String>> {
+    let out = runner
+        .run_unchecked(
+            &ctx.cwd,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            CmdKind::Read,
+        )
+        .await?;
+    Ok((out.code == 0).then(|| out.text().trim().to_owned()))
+}
+
 /// "the staged entry for a deleted file", "the staged entries for 2 deleted files".
 fn stale_said(n: usize) -> String {
     if n == 1 {
@@ -612,12 +636,17 @@ fn stale_said(n: usize) -> String {
 
 /// How many files commit `new` changed compared with `parent` (renames found, each one
 /// file), or with nothing for a first commit.
-async fn changed_count(ctx: &OpCtx<'_>, parent: Option<&str>, new: &str) -> Result<usize> {
+async fn changed_count(
+    ctx: &OpCtx<'_>,
+    runner: &GitRunner,
+    parent: Option<&str>,
+    new: &str,
+) -> Result<usize> {
     let args: Vec<&str> = match parent {
         Some(parent) => vec!["diff-tree", "-r", "-z", "--name-only", "-M", parent, new],
         None => vec!["diff-tree", "--root", "-r", "-z", "--name-only", new],
     };
-    let out = ctx.read(&args).await?;
+    let out = runner.run_unchecked(&ctx.cwd, &args, CmdKind::Read).await?;
     // The root form names the commit first.
     let names = out.stdout.split(|&b| b == 0).filter(|p| !p.is_empty());
     Ok(match parent {
@@ -701,32 +730,60 @@ pub(crate) async fn commit(
             )));
         }
     }
-    let out = runner
+    // Where a push goes, worked out before anything is committed (a Stop later ends every
+    // command but those that follow a commit made).
+    let push_to = match (push, current_branch(ctx).await?) {
+        (true, Some(branch)) => push_remote(ctx, &branch)
+            .await?
+            .map(|remote| (branch, remote)),
+        _ => None,
+    };
+    let ran = runner
         .run_unchecked(&ctx.cwd, &commit_args, CmdKind::Write)
-        .await?;
-    if out.code != 0 {
-        return commit_failed(&commit_args, &out);
-    }
-    let new = head_commit(ctx)
-        .await?
-        .ok_or_else(|| CoreError::new(ErrorCode::GitFailed, "The new commit cannot be found."))?;
+        .await;
+    // Whatever git's exit (a Stop, a post-commit hook that failed), a HEAD that moved is a
+    // commit made: what follows runs to its end, and the outcome says it was made.
+    let after = ctx.runner.unstoppable();
+    let now = head_of(ctx, &after).await?;
+    let made = now.is_some() && now != parent;
+    let trouble = match ran {
+        Ok(out) if out.code == 0 => None,
+        Ok(out) if !made => return commit_failed(&commit_args, &out),
+        Ok(out) => Some((
+            "git reported a problem after the commit was made (below).".to_owned(),
+            output(&out),
+        )),
+        Err(e) if !made => return Err(e),
+        Err(e) if ctx.runner.is_stopped() => Some((
+            "Stopped while git finished it (a post-commit hook, say).".to_owned(),
+            e.detail.unwrap_or_default(),
+        )),
+        Err(e) => Some((e.message, e.detail.unwrap_or_default())),
+    };
+    let Some(new) = now.filter(|_| made) else {
+        return Err(CoreError::new(
+            ErrorCode::GitFailed,
+            "The new commit cannot be found.",
+        ));
+    };
+    ctx.keep_outcome_when_stopped();
 
     // The paths the commit changed are as the new HEAD has them in the user's index too;
     // nothing else there changes.
     let mut note = None;
     if !in_merge {
-        note = follow_commit(ctx, &ctx.runner, parent.as_deref(), &new).await?;
+        note = follow_commit(ctx, &after, parent.as_deref(), &new).await?;
         if note.is_none() && !stale.is_empty() {
             let stale: Vec<&str> = stale.iter().map(String::as_str).collect();
-            note = update_index(ctx, &ctx.runner, &["--force-remove"], &stale)
+            note = update_index(ctx, &after, &["--force-remove"], &stale)
                 .await?
                 .map(|(_, out)| output(&out));
         }
     }
     drop(scratch);
 
-    let count = changed_count(ctx, parent.as_deref(), &new).await?;
-    let branch = current_branch(ctx).await?;
+    let count = changed_count(ctx, &after, parent.as_deref(), &new).await?;
+    let branch = branch_of(ctx, &after).await?;
     let on = match &branch {
         Some(branch) => format!("to {branch}"),
         None => "on the detached HEAD".to_owned(),
@@ -740,6 +797,38 @@ pub(crate) async fn commit(
     } else {
         format!("Committed {} {on} ({}).", files(count), short(&new))
     };
+    let retry: Vec<OpHint> = push_to
+        .iter()
+        .map(|(branch, remote)| OpHint::Push {
+            branch: branch.clone(),
+            remote: remote.clone(),
+        })
+        .collect();
+    if let Some((why, detail)) = trouble {
+        let stopped = ctx.runner.is_stopped();
+        let message = if stopped && push {
+            format!("{committed} Stopped before the push.")
+        } else {
+            format!("{committed} {why}")
+        };
+        let detail = match note {
+            Some(note) => format!("{detail}\n{note}"),
+            None => detail,
+        };
+        return Ok(if push {
+            Step::Failed {
+                message,
+                detail,
+                hints: retry,
+            }
+        } else {
+            Step::DoneWith {
+                message,
+                detail: Some(detail).filter(|d| !d.trim().is_empty()),
+                hints: Vec::new(),
+            }
+        });
+    }
     if let Some(detail) = note {
         return Ok(Step::DoneWith {
             message: format!(
@@ -747,7 +836,7 @@ pub(crate) async fn commit(
                  failed (below)."
             ),
             detail: Some(detail),
-            hints: Vec::new(),
+            hints: retry,
         });
     }
     if !push {
@@ -798,7 +887,20 @@ async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) 
         branch: branch.clone(),
         remote: remote.clone(),
     });
-    match network::push(ctx, &branch, &remote, None, false, None, None).await {
+    let pushed = network::push(ctx, &branch, &remote, None, false, None, None).await;
+    if ctx.runner.is_stopped() {
+        // The commit stands; the push did not go (or not to its end).
+        return Step::Failed {
+            message: format!("{committed} Stopped before the push."),
+            detail: match &pushed {
+                Ok(Step::Failed { detail, .. } | Step::Stopped { detail, .. }) => detail.clone(),
+                Err(e) => e.detail.clone().unwrap_or_default(),
+                _ => String::new(),
+            },
+            hints: retry.into_iter().collect(),
+        };
+    }
+    match pushed {
         Ok(Step::Done(pushed)) => Step::Done(format!("{committed} {pushed}")),
         Ok(Step::DoneWith {
             message,

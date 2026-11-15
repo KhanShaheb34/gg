@@ -76,12 +76,25 @@ pub(crate) struct OpCtx<'a> {
     pub op_id: u64,
     sink: &'a dyn EventSink,
     net_limit: TimeLimit,
+    /// The outcome the body gives stands when the user stops it: it says what was done that
+    /// cannot be taken back (a commit made before the Stop).
+    kept: std::sync::atomic::AtomicBool,
 }
 
 /// Fewest milliseconds between two `op-progress` events of one operation.
 const PROGRESS_EVERY_MS: u128 = 100;
 
 impl OpCtx<'_> {
+    /// From now on, a Stop does not replace the body's outcome with "Stopped.": the body
+    /// says itself what was done before it (see [`OpCtx::kept`]).
+    pub fn keep_outcome_when_stopped(&self) {
+        self.kept.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn kept(&self) -> bool {
+        self.kept.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Runs a git command that changes the repository; its exit code is the caller's to
     /// check (see [`explain`]).
     pub async fn git(&self, args: &[&str]) -> Result<GitOutput> {
@@ -986,6 +999,7 @@ impl RepoManager {
             op_id,
             sink: self.sink.as_ref(),
             net_limit: self.net_limit(),
+            kept: std::sync::atomic::AtomicBool::new(false),
         };
         // A request runs only in the worktree it was asked for: switching worktrees never
         // redirects one already asked for. Checked before anything is read there.
@@ -1101,8 +1115,9 @@ impl RepoManager {
         let step = body(&ctx, &dangers).await;
         *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // Stopped by the user (R41): whatever the body made of it, the operation failed, with
-        // what git said before it was ended.
-        let step = if stop.is_stopped() {
+        // what git said before it was ended; unless the body says what was done before the
+        // Stop that stands (a commit made).
+        let step = if stop.is_stopped() && !ctx.kept() {
             let detail = match step {
                 Ok(Step::Failed { detail, .. } | Step::Stopped { detail, .. }) => detail,
                 Ok(Step::DoneWith { detail, .. }) => detail.unwrap_or_default(),
@@ -1529,6 +1544,7 @@ mod tests {
             op_id: 1,
             sink: m.sink.as_ref(),
             net_limit: m.net_limit(),
+            kept: std::sync::atomic::AtomicBool::new(false),
         };
         let mark = log.since(0).last().map_or(0, |c| c.id);
 

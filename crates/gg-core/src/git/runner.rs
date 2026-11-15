@@ -558,6 +558,19 @@ impl GitRunner {
         runner
     }
 
+    /// This runner without its operation's Stop: for what must still run once git has done
+    /// something that cannot be taken back (the user's index following a commit made).
+    pub(crate) fn unstoppable(&self) -> Self {
+        let mut runner = self.clone();
+        runner.stop = None;
+        runner
+    }
+
+    /// Whether the operation this runner runs for was stopped.
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.as_ref().is_some_and(|s| s.is_stopped())
+    }
+
     /// This runner, with git using the index file `index` (an absolute path) instead of the
     /// worktree's own: `GIT_INDEX_FILE` for git and the hooks it runs.
     pub(crate) fn with_index_file(&self, index: &Path) -> Self {

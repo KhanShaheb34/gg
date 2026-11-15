@@ -1272,3 +1272,103 @@ async fn a_file_below_a_folder_that_became_a_link_is_committed_as_deleted() {
         porcelain(repo.path())
     );
 }
+
+/// Runs `request` on `id` and stops it once `marker` exists (a hook made it); its outcome.
+#[cfg(unix)]
+async fn stopped_once(h: &Harness, id: u32, request: OpRequest, marker: &Path) -> OpOutcome {
+    let request = h.at_head(id, request).await;
+    let run = tokio::spawn({
+        let m = h.m.clone();
+        async move { m.run_op(id, request, &[]).await }
+    });
+    let running = h
+        .sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("it runs");
+    let op_id = running.1["op"]["id"].as_u64().unwrap();
+    let started = Instant::now();
+    while !marker.exists() {
+        assert!(started.elapsed() < TIMEOUT, "the hook ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(h.m.stop_op(id, op_id).unwrap());
+    tokio::time::timeout(TIMEOUT, run)
+        .await
+        .expect("ends once stopped")
+        .unwrap()
+        .unwrap()
+}
+
+/// Stopped while the post-commit hook hangs: git has made the commit, so the outcome says
+/// so, and the user's index follows it (the committed file no longer shows as changed; a
+/// file staged but not ticked stays staged).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_after_the_commit_is_made_says_it_was_made() {
+    let repo = three_files();
+    repo.write("a.txt", "edited\n");
+    repo.write("b.txt", "staged\n");
+    repo.git(&["add", "b.txt"]);
+    let marker = repo.dir.path().join("post-commit-started");
+    hook(
+        &repo,
+        "post-commit",
+        &format!("touch '{}'\nsleep 60", marker.display()),
+    );
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = stopped_once(&h, id, commit(&["a.txt"], "slow after", false), &marker).await;
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert_ne!(new, before, "committed");
+    assert!(
+        out.message
+            .starts_with(&format!("Committed 1 file to main ({}).", &new[..8])),
+        "{out:#?}"
+    );
+    assert!(out.message.contains("Stopped"), "{}", out.message);
+    assert_eq!(porcelain(repo.path()), ["M  b.txt"]);
+    assert!(scratch_left(&repo.path().join(".git")).is_empty());
+}
+
+/// Stopped during the push of a commit-and-push: the commit stands and is said, with a push
+/// to try again.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_during_the_push_keeps_the_commit_and_offers_the_push() {
+    let repo = three_files();
+    let _origin = repo.clone_as_remote();
+    repo.write("a.txt", "edited\n");
+    let marker = repo.dir.path().join("pre-push-started");
+    hook(
+        &repo,
+        "pre-push",
+        &format!("touch '{}'\nsleep 60", marker.display()),
+    );
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = stopped_once(&h, id, commit(&["a.txt"], "and push", true), &marker).await;
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert!(
+        out.message
+            .starts_with(&format!("Committed 1 file to main ({}).", &new[..8])),
+        "{out:#?}"
+    );
+    assert!(
+        out.message.contains("Stopped before the push"),
+        "{}",
+        out.message
+    );
+    assert_eq!(
+        out.hints.first(),
+        Some(&OpHint::Push {
+            branch: "main".into(),
+            remote: "origin".into()
+        }),
+        "{out:#?}"
+    );
+    assert!(porcelain(repo.path()).is_empty());
+}

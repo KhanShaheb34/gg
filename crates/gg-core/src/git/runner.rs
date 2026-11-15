@@ -1,5 +1,8 @@
 //! `GitRunner` is the only place the app spawns `git`. Every command gets the same
 //! non-interactive environment and leading `-c` options, and lands in the `CommandLog`.
+//! `ToolRunner` runs another program the app needs (`gh`) the same way: no terminal, its own
+//! process group, a time limit, the operation's Stop, the log, masking; and stdin null or
+//! bytes it is given, never the app's.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
@@ -235,6 +238,8 @@ impl GitOutput {
 #[serde(rename_all = "camelCase")]
 pub struct CommandRecord {
     pub id: u64,
+    /// The program run: `git`, or another tool (`gh`).
+    pub program: String,
     pub kind: CmdKind,
     pub cwd: String,
     pub args: Vec<String>,
@@ -389,6 +394,7 @@ impl CommandLog {
         }
         ring.push_back(CommandRecord {
             id,
+            program: tags.program.to_owned(),
             kind,
             cwd: cwd.to_string_lossy().into_owned(),
             args: args.iter().map(|a| mask_userinfo(a).into_owned()).collect(),
@@ -413,30 +419,45 @@ fn lock_tail(t: &Mutex<Tail>) -> std::sync::MutexGuard<'_, Tail> {
     t.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The last [`KEPT_TAIL`] bytes written to it, starting at a line when it had to drop some.
-#[derive(Default)]
+/// The last `keep` bytes ([`KEPT_TAIL`] by default) written to it, starting at a line when
+/// it had to drop some.
 struct Tail {
     bytes: Vec<u8>,
     dropped: bool,
+    keep: usize,
+}
+
+impl Default for Tail {
+    fn default() -> Self {
+        Self::keeping(KEPT_TAIL)
+    }
 }
 
 impl Tail {
+    fn keeping(keep: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            dropped: false,
+            keep,
+        }
+    }
+
     fn push(&mut self, chunk: &[u8]) {
         self.bytes.extend_from_slice(chunk);
         // Trimmed only once it holds twice the tail, so each byte is moved at most once.
-        if self.bytes.len() > 2 * KEPT_TAIL {
+        if self.bytes.len() > 2 * self.keep {
             self.trim();
         }
     }
 
     fn trim(&mut self) {
-        if self.bytes.len() <= KEPT_TAIL {
+        if self.bytes.len() <= self.keep {
             return;
         }
-        let mut cut = self.bytes.len() - KEPT_TAIL;
+        let mut cut = self.bytes.len() - self.keep;
         // Start at the next line, if one starts early in the tail.
         if let Some(nl) = self.bytes[cut..].iter().position(|&b| b == b'\n')
-            && nl < KEPT_TAIL / 2
+            && nl < self.keep / 2
         {
             cut += nl + 1;
         }
@@ -468,10 +489,31 @@ fn truncate_text(mut s: String) -> String {
 }
 
 /// What a runner's log records are tagged with.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Tags {
+    /// The program's name, as the log shows it.
+    program: &'static str,
     repo_id: Option<u32>,
     op_id: Option<u64>,
+}
+
+impl Default for Tags {
+    fn default() -> Self {
+        Self {
+            program: "git",
+            repo_id: None,
+            op_id: None,
+        }
+    }
+}
+
+/// What a command reads on its standard input: nothing (null), or these bytes, written and
+/// then closed. Never the app's own stdin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum StdinPolicy {
+    #[default]
+    Null,
+    Bytes(Vec<u8>),
 }
 
 /// Runs git commands. Cheap to clone; clones share the command log.
@@ -800,150 +842,21 @@ impl GitRunner {
         on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
         cancel: Option<&tokio::sync::Notify>,
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
-        use tokio::io::AsyncReadExt;
-
-        if self.stop.as_ref().is_some_and(|s| s.is_stopped()) {
-            return Err(stopped_error(""));
-        }
-        let started = Instant::now();
-        let mut cmd = self.command(Some(cwd), args);
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let fail = |e: io::Error| {
-            let err = spawn_error(cwd, e);
-            self.log
-                .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
-            err
+        let exec = Exec {
+            log: &self.log,
+            tags: self.tags,
+            stop: self.stop.as_deref(),
         };
-        let mut child = cmd.spawn().map_err(fail)?;
-        let group = child.id();
-        let mut stdout_pipe = child.stdout.take();
-        let mut stderr_pipe = child.stderr.take();
-        // When git last wrote anything, for an idle limit.
-        let last_output = Mutex::new(tokio::time::Instant::now());
-        let output_seen = || {
-            *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+        let cmd = self.command(Some(cwd), args);
+        let run = Run {
+            cwd,
+            args,
+            kind,
+            stdin: StdinPolicy::Null,
+            limit,
+            keep_stdout: KEPT_TAIL,
         };
-        // Outside the reading future, so what was read is still there when it is dropped
-        // on timeout.
-        let (out, err) = (Mutex::new(Tail::default()), Mutex::new(Tail::default()));
-        let take = |t: &Mutex<Tail>| std::mem::take(&mut *lock_tail(t)).into_bytes();
-        let read = async {
-            let read_out = async {
-                if let Some(p) = stdout_pipe.as_mut() {
-                    let mut buf = [0u8; 8192];
-                    while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        lock_tail(&out).push(&buf[..n]);
-                        output_seen();
-                    }
-                }
-            };
-            let read_err = async {
-                if let Some(p) = stderr_pipe.as_mut() {
-                    let mut buf = [0u8; 8192];
-                    while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        lock_tail(&err).push(&buf[..n]);
-                        output_seen();
-                        on_stderr(&buf[..n]);
-                    }
-                }
-            };
-            tokio::join!(read_out, read_err);
-            (take(&out), take(&err))
-        };
-        let run = async {
-            let ((out, err), status) = tokio::join!(read, child.wait());
-            (out, err, status)
-        };
-        let deadline = tokio::time::Instant::now() + limit.total;
-        let expired = async {
-            loop {
-                let idle_due = limit
-                    .idle
-                    .map(|idle| *last_output.lock().unwrap_or_else(|e| e.into_inner()) + idle);
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    return Expired::Total(limit.total);
-                }
-                match (idle_due, limit.idle) {
-                    (Some(due), Some(idle)) if now >= due => return Expired::Idle(idle),
-                    (Some(due), _) => tokio::time::sleep_until(due.min(deadline)).await,
-                    _ => tokio::time::sleep_until(deadline).await,
-                }
-            }
-        };
-        let cancelled = async {
-            let stopped = async {
-                match &self.stop {
-                    Some(stop) => stop.stopped().await,
-                    None => std::future::pending().await,
-                }
-            };
-            match cancel {
-                Some(cancel) => tokio::select! {
-                    () = cancel.notified() => {}
-                    () = stopped => {}
-                },
-                None => stopped.await,
-            }
-        };
-        let expired = async {
-            tokio::select! {
-                hit = expired => hit,
-                () = cancelled => Expired::Cancelled,
-            }
-        };
-        let finished = {
-            tokio::pin!(run);
-            let finished = tokio::select! {
-                done = &mut run => Ok(done),
-                hit = expired => Err(hit),
-            };
-            // Cancelled: ask git to stop, so that it removes its lock files, and give it a
-            // moment before it is killed with the rest.
-            #[cfg(unix)]
-            if let Err(Expired::Cancelled) = finished
-                && let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok())
-            {
-                // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-                unsafe {
-                    libc::killpg(pid, libc::SIGTERM);
-                }
-                let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
-            }
-            finished
-        };
-        match finished {
-            Ok((out, err, Ok(status))) => {
-                let code = status.code().unwrap_or(-1);
-                let stderr = String::from_utf8_lossy(&err).into_owned();
-                self.log
-                    .push(self.tags, kind, cwd, args, started, code, &out, &stderr);
-                Ok(Ok(GitOutput {
-                    stdout: out,
-                    stderr,
-                    code,
-                }))
-            }
-            Ok((_, _, Err(e))) => Err(fail(e)),
-            Err(hit) => {
-                #[cfg(unix)]
-                if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
-                    // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-                    unsafe {
-                        libc::killpg(pid, libc::SIGKILL);
-                    }
-                }
-                #[cfg(not(unix))]
-                let _ = group;
-                let _ = child.kill().await;
-                self.log_timed_out(cwd, args, kind, started);
-                Ok(Err(TimedOut {
-                    limit: hit,
-                    stdout: take(&out),
-                    stderr: String::from_utf8_lossy(&take(&err)).into_owned(),
-                }))
-            }
-        }
+        exec_limited(exec, cmd, run, on_stderr, cancel).await
     }
 
     /// Starts a read-only git command with stdout and stderr piped, for output too large to
@@ -1019,34 +932,11 @@ impl GitRunner {
     /// started from a terminal; it fails at once instead. The session leader (git) also leads
     /// a new process group whose id is its pid: what a time limit or a Stop ends.
     fn command(&self, cwd: Option<&Path>, args: &[&str]) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.args(LEADING_ARGS)
-            .args(args)
-            .envs(GIT_ENV)
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            // SAFETY: the closure runs in the forked child before exec and only calls
-            // setsid, which is async-signal-safe and touches no memory of the parent.
-            unsafe {
-                cmd.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-        for var in INHERITED_REPO_VARS {
-            cmd.env_remove(var);
-        }
+        // With PATH overridden, the program lookup for "git" also uses this PATH.
+        let mut cmd = child_command(std::ffi::OsStr::new("git"), self.path.as_ref(), cwd);
+        cmd.args(LEADING_ARGS).args(args).envs(GIT_ENV);
         if let Some(index) = &self.index_file {
             cmd.env("GIT_INDEX_FILE", index);
-        }
-        // With PATH overridden, the program lookup for "git" also uses this PATH.
-        if let Some(path) = &self.path {
-            cmd.env("PATH", path);
         }
         // Test builds only (the app refuses `testutil` in a release build): the developer's
         // global and system config must not change what tests see.
@@ -1054,10 +944,344 @@ impl GitRunner {
         cmd.env("GIT_CONFIG_GLOBAL", crate::testutil::empty_git_config())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("GIT_CONFIG_SYSTEM");
-        if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
-        }
         cmd
+    }
+
+    /// A runner of `program` (an absolute path, found by the caller), logged as `name`, with
+    /// this runner's log, tags, Stop and `PATH`.
+    pub(crate) fn tool(&self, program: PathBuf, name: &'static str) -> ToolRunner {
+        ToolRunner {
+            log: self.log.clone(),
+            program,
+            path: self.path.clone(),
+            env: Vec::new(),
+            tags: Tags {
+                program: name,
+                ..self.tags
+            },
+            stop: self.stop.clone(),
+        }
+    }
+}
+
+/// The spawn path every child of the app's shares (git and the other tools): `program` in
+/// `cwd`, with `path` as its `PATH` when known (and found with it), stdin null, killed when
+/// dropped, and (Unix) in a session of its own (R15, R41), so without a controlling terminal
+/// and leading its own process group. Without the variables an enclosing git process (a
+/// hook) exports, which would point it, or the git it runs, at another repository.
+fn child_command(
+    program: &std::ffi::OsStr,
+    path: Option<&OsString>,
+    cwd: Option<&Path>,
+) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.stdin(Stdio::null()).kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        // SAFETY: the closure runs in the forked child before exec and only calls
+        // setsid, which is async-signal-safe and touches no memory of the parent.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    for var in INHERITED_REPO_VARS {
+        cmd.env_remove(var);
+    }
+    if let Some(path) = path {
+        cmd.env("PATH", path);
+    }
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd
+}
+
+/// Most bytes of another program's stdout kept: its answer is parsed (`gh`'s JSON list of
+/// up to 1000 pull requests), not only shown.
+const TOOL_STDOUT: usize = 32 * 1024 * 1024;
+
+/// Runs another program than git (`gh`) on the same spawn path as git (see
+/// [`child_command`]): an absolute path, an argument array, never a shell; no terminal, its
+/// own process group, a time limit, the operation's Stop; stdin null or the bytes given,
+/// written and then closed. Logged (as its name) and masked like git. Cheap to clone.
+#[derive(Clone)]
+pub struct ToolRunner {
+    log: Arc<CommandLog>,
+    program: PathBuf,
+    path: Option<OsString>,
+    /// Set for every command, beside the inherited environment.
+    env: Vec<(String, String)>,
+    tags: Tags,
+    stop: Option<Arc<Stop>>,
+}
+
+impl ToolRunner {
+    /// This runner with `PATH` `path` for its children instead.
+    pub(crate) fn with_path(mut self, path: Option<OsString>) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// This runner, also setting `var` to `value` for every command.
+    pub(crate) fn with_env(mut self, var: &str, value: &str) -> Self {
+        self.env.push((var.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// The program it runs.
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+
+    /// Runs the program with `args` in `cwd`, reading `stdin`, giving up at `limit` (it and
+    /// what it started are killed: `Ok(Err(..))`); an operation's Stop ends it too. Errs only
+    /// when it cannot start, or was stopped before it could.
+    pub async fn run(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        stdin: StdinPolicy,
+        limit: TimeLimit,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        let mut cmd = child_command(self.program.as_os_str(), self.path.as_ref(), Some(cwd));
+        cmd.args(args)
+            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        let exec = Exec {
+            log: &self.log,
+            tags: self.tags,
+            stop: self.stop.as_deref(),
+        };
+        let run = Run {
+            cwd,
+            args,
+            kind,
+            stdin,
+            limit,
+            keep_stdout: TOOL_STDOUT,
+        };
+        exec_limited(exec, cmd, run, &|_| {}, None).await
+    }
+
+    /// The environment it sets, beside `PATH` (tests).
+    #[cfg(test)]
+    fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+}
+
+/// Where a limited command's record goes, and the Stop that ends it.
+struct Exec<'a> {
+    log: &'a CommandLog,
+    tags: Tags,
+    stop: Option<&'a Stop>,
+}
+
+/// A limited command's arguments (beside the program, in its `Command`), what it reads on
+/// stdin and when it is given up on.
+struct Run<'a> {
+    cwd: &'a Path,
+    args: &'a [&'a str],
+    kind: CmdKind,
+    stdin: StdinPolicy,
+    limit: TimeLimit,
+    /// Most bytes of stdout kept (the last ones).
+    keep_stdout: usize,
+}
+
+/// Runs `cmd` (built by [`child_command`] and the runner's own options) as
+/// [`GitRunner::run_with_timeout`] describes, for git and every other program alike: stdin
+/// as `run.stdin` says, the output's tail kept, given up on at `run.limit`, on `cancel` or
+/// at the Stop, its process group ended then, and logged under `exec.tags`.
+async fn exec_limited(
+    exec: Exec<'_>,
+    mut cmd: Command,
+    run: Run<'_>,
+    on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
+    cancel: Option<&tokio::sync::Notify>,
+) -> Result<std::result::Result<GitOutput, TimedOut>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let Run {
+        cwd,
+        args,
+        kind,
+        stdin,
+        limit,
+        keep_stdout,
+    } = run;
+    if exec.stop.is_some_and(Stop::is_stopped) {
+        return Err(stopped_error(""));
+    }
+    let started = Instant::now();
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let input = match stdin {
+        StdinPolicy::Null => {
+            cmd.stdin(Stdio::null());
+            None
+        }
+        StdinPolicy::Bytes(bytes) => {
+            cmd.stdin(Stdio::piped());
+            Some(bytes)
+        }
+    };
+    let fail = |e: io::Error| {
+        let err = spawn_error_of(exec.tags.program, cwd, e);
+        exec.log
+            .push(exec.tags, kind, cwd, args, started, -1, b"", &err.message);
+        err
+    };
+    let mut child = cmd.spawn().map_err(fail)?;
+    let group = child.id();
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let mut stdin_pipe = child.stdin.take();
+    // When git last wrote anything, for an idle limit.
+    let last_output = Mutex::new(tokio::time::Instant::now());
+    let output_seen = || {
+        *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    };
+    // Outside the reading future, so what was read is still there when it is dropped
+    // on timeout.
+    let (out, err) = (
+        Mutex::new(Tail::keeping(keep_stdout)),
+        Mutex::new(Tail::default()),
+    );
+    let take = |t: &Mutex<Tail>| {
+        let keep = lock_tail(t).keep;
+        std::mem::replace(&mut *lock_tail(t), Tail::keeping(keep)).into_bytes()
+    };
+    let read = async {
+        let read_out = async {
+            if let Some(p) = stdout_pipe.as_mut() {
+                let mut buf = [0u8; 8192];
+                while let Ok(n @ 1..) = p.read(&mut buf).await {
+                    lock_tail(&out).push(&buf[..n]);
+                    output_seen();
+                }
+            }
+        };
+        let read_err = async {
+            if let Some(p) = stderr_pipe.as_mut() {
+                let mut buf = [0u8; 8192];
+                while let Ok(n @ 1..) = p.read(&mut buf).await {
+                    lock_tail(&err).push(&buf[..n]);
+                    output_seen();
+                    on_stderr(&buf[..n]);
+                }
+            }
+        };
+        // Written beside the reads, so a program that answers before it has read all of
+        // its input never blocks on a full pipe; then closed, so it sees the end.
+        let write_in = async {
+            if let (Some(pipe), Some(bytes)) = (stdin_pipe.as_mut(), input.as_deref()) {
+                let _ = pipe.write_all(bytes).await;
+                let _ = pipe.shutdown().await;
+            }
+            drop(stdin_pipe.take());
+        };
+        tokio::join!(read_out, read_err, write_in);
+        (take(&out), take(&err))
+    };
+    let run = async {
+        let ((out, err), status) = tokio::join!(read, child.wait());
+        (out, err, status)
+    };
+    let deadline = tokio::time::Instant::now() + limit.total;
+    let expired = async {
+        loop {
+            let idle_due = limit
+                .idle
+                .map(|idle| *last_output.lock().unwrap_or_else(|e| e.into_inner()) + idle);
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Expired::Total(limit.total);
+            }
+            match (idle_due, limit.idle) {
+                (Some(due), Some(idle)) if now >= due => return Expired::Idle(idle),
+                (Some(due), _) => tokio::time::sleep_until(due.min(deadline)).await,
+                _ => tokio::time::sleep_until(deadline).await,
+            }
+        }
+    };
+    let cancelled = async {
+        let stopped = async {
+            match exec.stop {
+                Some(stop) => stop.stopped().await,
+                None => std::future::pending().await,
+            }
+        };
+        match cancel {
+            Some(cancel) => tokio::select! {
+                () = cancel.notified() => {}
+                () = stopped => {}
+            },
+            None => stopped.await,
+        }
+    };
+    let expired = async {
+        tokio::select! {
+            hit = expired => hit,
+            () = cancelled => Expired::Cancelled,
+        }
+    };
+    let finished = {
+        tokio::pin!(run);
+        let finished = tokio::select! {
+            done = &mut run => Ok(done),
+            hit = expired => Err(hit),
+        };
+        // Cancelled: ask git to stop, so that it removes its lock files, and give it a
+        // moment before it is killed with the rest.
+        #[cfg(unix)]
+        if let Err(Expired::Cancelled) = finished
+            && let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok())
+        {
+            // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+            unsafe {
+                libc::killpg(pid, libc::SIGTERM);
+            }
+            let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
+        }
+        finished
+    };
+    match finished {
+        Ok((out, err, Ok(status))) => {
+            let code = status.code().unwrap_or(-1);
+            let stderr = String::from_utf8_lossy(&err).into_owned();
+            exec.log
+                .push(exec.tags, kind, cwd, args, started, code, &out, &stderr);
+            Ok(Ok(GitOutput {
+                stdout: out,
+                stderr,
+                code,
+            }))
+        }
+        Ok((_, _, Err(e))) => Err(fail(e)),
+        Err(hit) => {
+            #[cfg(unix)]
+            if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
+                // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+                unsafe {
+                    libc::killpg(pid, libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = group;
+            let _ = child.kill().await;
+            exec.log
+                .push(exec.tags, kind, cwd, args, started, -1, b"", "timed out");
+            Ok(Err(TimedOut {
+                limit: hit,
+                stdout: take(&out),
+                stderr: String::from_utf8_lossy(&take(&err)).into_owned(),
+            }))
+        }
     }
 }
 
@@ -1109,16 +1333,26 @@ pub(crate) fn git_failed(args: &[&str], code: i32, stderr: &str) -> CoreError {
 }
 
 fn spawn_error(cwd: &Path, e: io::Error) -> CoreError {
+    spawn_error_of("git", cwd, e)
+}
+
+/// Why `program` could not start in `cwd`.
+fn spawn_error_of(program: &str, cwd: &Path, e: io::Error) -> CoreError {
     if !cwd.is_dir() {
         CoreError::new(
             ErrorCode::PathMissing,
             format!("folder not found: {}", cwd.display()),
         )
     } else if e.kind() == io::ErrorKind::NotFound {
-        CoreError::new(ErrorCode::GitNotFound, "git was not found on PATH")
-            .with_detail(e.to_string())
+        let code = if program == "git" {
+            ErrorCode::GitNotFound
+        } else {
+            ErrorCode::Io
+        };
+        CoreError::new(code, format!("{program} was not found on PATH")).with_detail(e.to_string())
     } else {
-        CoreError::new(ErrorCode::Io, "could not start git").with_detail(e.to_string())
+        CoreError::new(ErrorCode::Io, format!("could not start {program}"))
+            .with_detail(e.to_string())
     }
 }
 
@@ -1345,6 +1579,141 @@ mod tests {
         assert_ne!(theirs, ours, "git runs in a session of its own");
         let out = run.await.unwrap().unwrap().expect("finished");
         assert_eq!(out.code, 0);
+    }
+
+    /// A tool runner of `/bin/sh` (as `gh`), logging to `log`.
+    #[cfg(unix)]
+    fn sh_tool(log: Arc<CommandLog>, stop: Option<Arc<Stop>>) -> ToolRunner {
+        let git = GitRunner {
+            log,
+            path: None,
+            tags: Tags::default(),
+            stop,
+            version: None,
+            index_file: None,
+        };
+        git.for_repo(3).tool(PathBuf::from("/bin/sh"), "gh")
+    }
+
+    /// Another program runs on git's spawn path: no controlling terminal (a session of its
+    /// own), stdin null unless bytes are given, which it reads exactly and then sees end;
+    /// the variables given are set; its record shows its name, masked like git's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tool_runs_without_a_terminal_and_reads_only_what_it_is_given() {
+        let log = CommandLog::new();
+        let tool = sh_tool(log.clone(), None).with_env("GH_PROMPT_DISABLED", "1");
+        assert_eq!(
+            tool.env(),
+            [("GH_PROMPT_DISABLED".to_owned(), "1".to_owned())]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let script = format!(
+            "if (: < /dev/tty) 2>/dev/null; then echo tty; else echo no-tty; fi; \
+             echo \"prompt=$GH_PROMPT_DISABLED\"; echo $$ > '{}'; sleep 1; od -An -c",
+            pidfile.display()
+        );
+        let limit = TimeLimit::total(Duration::from_secs(20));
+        let args = ["-c", script.as_str(), "https://ada:SECRET@github.com/o/r"];
+        let run = |stdin| tool.run(dir.path(), &args, CmdKind::Read, stdin, limit);
+        let (null, pid) = tokio::join!(run(StdinPolicy::Null), async {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(pid) = std::fs::read_to_string(&pidfile)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+                {
+                    // SAFETY: getsid only reads a process's session id.
+                    break unsafe { (libc::getsid(pid), libc::getsid(0)) };
+                }
+                assert!(Instant::now() < deadline, "the script ran");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let (theirs, ours) = pid;
+        assert!(theirs > 0, "the script is running");
+        assert_ne!(theirs, ours, "it runs in a session of its own");
+        let null = null.unwrap().expect("finished");
+        assert_eq!(null.code, 0, "{}", null.stderr);
+        let lines: Vec<&str> = std::str::from_utf8(&null.stdout).unwrap().lines().collect();
+        assert_eq!(
+            lines,
+            ["no-tty", "prompt=1"],
+            "read nothing from a null stdin"
+        );
+
+        let body = "line one\n- `two` \u{e9}\n".as_bytes().to_vec();
+        let given = run(StdinPolicy::Bytes(body.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut piped = Command::new("od");
+        piped
+            .args(["-An", "-c"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut od = piped.spawn().unwrap();
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut input = od.stdin.take().unwrap();
+            input.write_all(&body).await.unwrap();
+        }
+        let expected = od.wait_with_output().await.unwrap().stdout;
+        let text = String::from_utf8_lossy(&given.stdout).into_owned();
+        assert!(
+            text.ends_with(&*String::from_utf8_lossy(&expected)),
+            "the exact bytes, then the end: {text:?}"
+        );
+
+        let records = log.since(0);
+        assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|r| r.program == "gh" && r.repo_id == Some(3))
+        );
+        assert_eq!(records[0].args[2], "https://***@github.com/o/r");
+    }
+
+    /// A tool that does not end within its limit is killed with what it started; a
+    /// stopped operation's tool ends at the Stop.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tool_is_given_up_on_at_its_limit_and_at_the_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let gave_up = sh_tool(CommandLog::new(), None)
+            .run(
+                dir.path(),
+                &["-c", "sleep 30"],
+                CmdKind::Read,
+                StdinPolicy::Null,
+                TimeLimit::total(Duration::from_millis(500)),
+            )
+            .await
+            .unwrap()
+            .expect_err("timed out");
+        assert_eq!(gave_up.limit, Expired::Total(Duration::from_millis(500)));
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        let stop = Stop::new();
+        let tool = sh_tool(CommandLog::new(), Some(stop.clone()));
+        let path = dir.path().to_path_buf();
+        let run = tokio::spawn(async move {
+            tool.run(
+                &path,
+                &["-c", "sleep 30"],
+                CmdKind::Write,
+                StdinPolicy::Bytes(b"x".to_vec()),
+                TimeLimit::total(Duration::from_secs(60)),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop.stop();
+        let out = run.await.unwrap().unwrap().expect_err("stopped");
+        assert_eq!(out.limit, Expired::Cancelled);
     }
 
     /// M3: the version is read from `git --version`, and one older than 2.29 is a problem
@@ -1691,6 +2060,7 @@ mod tests {
         let op = Tags {
             repo_id: Some(1),
             op_id: Some(7),
+            ..Tags::default()
         };
         record(&log, op, CmdKind::Write, "branch");
         record(&log, op, CmdKind::Write, "checkout");
@@ -1698,6 +2068,7 @@ mod tests {
             let repo = Tags {
                 repo_id: Some(1 + i % 2),
                 op_id: None,
+                ..Tags::default()
             };
             record(&log, repo, CmdKind::Read, "status");
         }
@@ -1771,6 +2142,7 @@ mod tests {
         let op = Tags {
             repo_id: Some(1),
             op_id: Some(7),
+            ..Tags::default()
         };
         record(&log, op, CmdKind::Read, "rev-parse");
         log.name_op(7, "Merge feature/x into main");
@@ -1849,6 +2221,7 @@ mod tests {
     fn command_record_serializes_camel_case() {
         let rec = CommandRecord {
             id: 1,
+            program: "git".into(),
             kind: CmdKind::Write,
             cwd: "/r".into(),
             args: vec!["status".into()],
@@ -1863,6 +2236,7 @@ mod tests {
         };
         let json = serde_json::to_value(&rec).unwrap();
         assert_eq!(json["kind"], "write");
+        assert_eq!(json["program"], "git");
         assert_eq!(json["startedAtMs"], 5);
         assert_eq!(json["durationMs"], 2);
         assert_eq!(json["exitCode"], 0);

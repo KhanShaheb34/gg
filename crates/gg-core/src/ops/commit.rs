@@ -777,8 +777,9 @@ fn index_trouble(output: &str) -> String {
     }
 }
 
-/// `path` as one word for a POSIX shell: in single quotes unless it is plain.
-fn shell_quoted(path: &str) -> String {
+/// `path` as one word for a shell: unless it is plain, in single quotes (POSIX), or in double
+/// quotes on Windows (`windows`; no file name there has one).
+fn shell_quoted(path: &str, windows: bool) -> String {
     let plain = !path.is_empty()
         && !path.starts_with('-')
         && path
@@ -786,9 +787,25 @@ fn shell_quoted(path: &str) -> String {
             .all(|c| c.is_ascii_alphanumeric() || "._/+@%=,:".contains(c));
     if plain {
         path.to_owned()
+    } else if windows {
+        format!("\"{path}\"")
     } else {
         format!("'{}'", path.replace('\'', "'\\''"))
     }
+}
+
+/// Most paths the reset hint lists; past it, it resets every path.
+const RESET_HINT_PATHS: usize = 20;
+
+/// The command that brings the staging area level with the commit for `paths`: `git reset
+/// -q -- <paths>` quoted for the platform's shell (`windows`: double quotes), or `git reset
+/// -q` for every path when there are more than [`RESET_HINT_PATHS`].
+fn reset_hint(paths: &[String], windows: bool) -> String {
+    if paths.len() > RESET_HINT_PATHS {
+        return "git reset -q".to_owned();
+    }
+    let quoted: Vec<String> = paths.iter().map(|p| shell_quoted(p, windows)).collect();
+    format!("git reset -q -- {}", quoted.join(" "))
 }
 
 /// The commit HEAD is on, read with `runner` (None before the first commit).
@@ -1032,7 +1049,6 @@ pub(crate) async fn commit(
     if let Some(output) = note {
         let mut paths = committed_paths(ctx, &after, parent.as_deref(), &new).await;
         paths.extend(stale.iter().cloned());
-        let quoted: Vec<String> = paths.iter().map(|p| shell_quoted(p)).collect();
         let mut message = format!(
             "{committed} gg could not update the staging area ({}), so the committed files may \
              show as staged changes. Run the command below in the worktree to update it.",
@@ -1043,7 +1059,7 @@ pub(crate) async fn commit(
         }
         return Ok(Step::DoneWith {
             message,
-            detail: Some(format!("git reset -q -- {}\n\n{output}", quoted.join(" "))),
+            detail: Some(format!("{}\n\n{output}", reset_hint(&paths, cfg!(windows)))),
             hints: retry,
         });
     }
@@ -1200,12 +1216,33 @@ mod tests {
 
     #[test]
     fn paths_are_quoted_for_a_shell_when_they_need_it() {
-        assert_eq!(shell_quoted("src/a.rs"), "src/a.rs");
-        assert_eq!(shell_quoted("a b.txt"), "'a b.txt'");
-        assert_eq!(shell_quoted("it's"), "'it'\\''s'");
-        assert_eq!(shell_quoted("-x"), "'-x'");
-        assert_eq!(shell_quoted("$(rm)"), "'$(rm)'");
-        assert_eq!(shell_quoted(""), "''");
+        let q = |p: &str| shell_quoted(p, false);
+        assert_eq!(q("src/a.rs"), "src/a.rs");
+        assert_eq!(q("a b.txt"), "'a b.txt'");
+        assert_eq!(q("it's"), "'it'\\''s'");
+        assert_eq!(q("-x"), "'-x'");
+        assert_eq!(q("$(rm)"), "'$(rm)'");
+        assert_eq!(q(""), "''");
+        // Windows: double quotes (no file name there has one).
+        let w = |p: &str| shell_quoted(p, true);
+        assert_eq!(w("src/a.rs"), "src/a.rs");
+        assert_eq!(w("a b.txt"), "\"a b.txt\"");
+        assert_eq!(w("it's"), "\"it's\"");
+        assert_eq!(w(""), "\"\"");
+    }
+
+    /// The command that puts the staging area right: the paths listed, up to 20; past that,
+    /// a reset of every path.
+    #[test]
+    fn the_reset_hint_lists_at_most_twenty_paths() {
+        let few: Vec<String> = vec!["a.txt".into(), "b c.txt".into()];
+        assert_eq!(reset_hint(&few, false), "git reset -q -- a.txt 'b c.txt'");
+        assert_eq!(reset_hint(&few, true), "git reset -q -- a.txt \"b c.txt\"");
+        let twenty: Vec<String> = (0..20).map(|i| format!("f{i}")).collect();
+        assert!(reset_hint(&twenty, false).ends_with(" f19"));
+        let many: Vec<String> = (0..21).map(|i| format!("f{i}")).collect();
+        assert_eq!(reset_hint(&many, false), "git reset -q");
+        assert_eq!(reset_hint(&many, true), "git reset -q");
     }
 
     #[test]

@@ -761,6 +761,9 @@ enum Ran {
     RefusedAbout(String, InputField),
 }
 
+/// Where a body says what it made (a worktree's path, a commit's hash) for the outcome.
+type Said = Arc<std::sync::Mutex<Option<String>>>;
+
 /// Said when an operation's body panicked.
 const STOPPED_UNEXPECTEDLY: &str = "The operation stopped unexpectedly.";
 
@@ -997,10 +1000,7 @@ impl RepoManager {
         turn: Turn,
         op_id: u64,
         started: &AtomicBool,
-        made: &(
-            Arc<std::sync::Mutex<Option<String>>>,
-            Arc<std::sync::Mutex<Option<String>>>,
-        ),
+        made: &(Said, Said),
     ) -> Result<(String, Ran)> {
         let Turn {
             repo,

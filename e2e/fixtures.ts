@@ -14,7 +14,7 @@ import type { OpOutcome, OpRequest } from "../src/lib/types";
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DEVSERVER = path.join(ROOT, "target", "debug", "gg-devserver");
 /** The vite dev server the page is loaded from (playwright.config.ts `baseURL`). */
-const VITE_ORIGIN = "http://127.0.0.1:1420";
+const VITE_ORIGIN = `http://127.0.0.1:${process.env.GG_E2E_PORT ?? 1420}`;
 
 /** Runs git with `args` in the repository; returns its stdout. */
 export type Git = (...args: string[]) => string;

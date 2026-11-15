@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const baseURL = "http://127.0.0.1:1420";
+// GG_E2E_PORT: another port for the page's vite server, when 1420 is taken by another checkout's.
+const port = Number(process.env.GG_E2E_PORT ?? 1420);
+const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: "e2e",
@@ -17,7 +19,7 @@ export default defineConfig({
   use: { baseURL },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "pnpm dev",
+    command: port === 1420 ? "pnpm dev" : `pnpm dev --port ${port}`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
   },

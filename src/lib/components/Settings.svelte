@@ -8,7 +8,7 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { formatDate, formatDateLong, shellQuote, shortenPath, type DateFormat } from "../format";
+  import { formatDate, formatDateLong, homeInText, shellQuote, shortenPath, type DateFormat } from "../format";
   import { api } from "../ipc";
   import { isMac, isWindows } from "../platform";
   import { app, notify, setTheme } from "../state/app.svelte";
@@ -60,8 +60,9 @@
   /** The command as gg will run it on the open folder (one word per argument, quoted for reading). */
   function preview(command: string): string | null {
     if (command.trim() === "") return null;
-    const words = commandWords(command, shownFolder ?? (windows ? "C:\\repos\\app" : "~/repos/app"));
-    return words === null ? null : words.map(shellQuote).join(" ");
+    const words = commandWords(command, folder ?? (windows ? "C:\\repos\\app" : "/repos/app"));
+    // Each argument as a shell would need it written (for reading only), home as ~.
+    return words === null ? null : homeInText(words.map(shellQuote).join(" "), app.homeDir);
   }
 
   // --- Dates --------------------------------------------------------------------------

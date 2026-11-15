@@ -21,7 +21,15 @@
   import { makeActiveReason } from "../menus/worktreeMenu";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
-  import { addWorktree, makeActive, openCommit, openWorktreeMenu, panelState, revealWorktree } from "../state/worktrees.svelte";
+  import {
+    addWorktree,
+    listedWorktrees,
+    makeActive,
+    openCommit,
+    openWorktreeMenu,
+    panelState,
+    revealWorktree,
+  } from "../state/worktrees.svelte";
   import { clock, openPullRequest, staleSince } from "../state/prs.svelte";
   import type { WorktreeInfo } from "../types";
   import MiddleText from "./MiddleText.svelte";
@@ -32,7 +40,7 @@
   const panel = $derived(panelState(view.repoId));
   const snap = $derived(view.snapshot);
   /** The main worktree first, then the others in git's order. */
-  const rows = $derived([...snap.worktrees].sort((a, b) => Number(b.isMain) - Number(a.isMain)));
+  const rows = $derived(listedWorktrees(snap));
   const folders = $derived(worktreeFolders(rows.map((w) => w.path), rows.find((w) => w.isMain)?.path ?? null, app.homeDir));
   const loading = $derived(snap.generation < 0 && rows.length === 0);
   const selectedIndex = $derived(rows.findIndex((w) => w.path === panel.selected));

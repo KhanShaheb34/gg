@@ -926,6 +926,8 @@ export type GG = {
   launches(): string[][];
   /** The fake `gh` the devserver runs (the real one never runs). */
   gh: FakeGh;
+  /** The app quit and started again: a new devserver on the same config folder, the page loaded afresh. */
+  relaunch(): Promise<void>;
 };
 
 /**
@@ -1001,7 +1003,18 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: nu
           .map((l) => JSON.parse(l) as string[]);
       };
 
-      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root) });
+      const relaunch = async () => {
+        if (server) await stopDevserver(server);
+        server = null;
+        server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders);
+        // Run after the first one, so this address wins.
+        await page.addInitScript((url) => {
+          (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
+        }, server.url);
+        await page.reload();
+      };
+
+      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), relaunch });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

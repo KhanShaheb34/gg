@@ -40,6 +40,7 @@
     addWorktree,
     closeCommit,
     makeActive,
+    listedWorktrees,
     docked,
     openCommit,
     panelState,
@@ -201,7 +202,7 @@
   function switchWorktree(index: number) {
     if (!active) return;
     const view = repoView(active.repoId);
-    const wt = view.snapshot.worktrees[index];
+    const wt = listedWorktrees(view.snapshot)[index];
     if (!wt) {
       const n = view.snapshot.worktrees.length;
       toast("info", n <= 1 ? "This repository has one worktree." : `This repository has ${n} worktrees.`);

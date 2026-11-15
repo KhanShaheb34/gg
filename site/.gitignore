@@ -1,3 +1,4 @@
 .preview/
 .wrangler/
 node_modules/
+public/download/

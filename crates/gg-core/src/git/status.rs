@@ -170,6 +170,9 @@ pub(crate) fn parse_files(out: &[u8]) -> Vec<FileEntry> {
 /// how the working tree differs from HEAD, which is what a commit of it records.
 fn changed(x: u8, y: u8) -> EntryStatus {
     match (x, y) {
+        // Added to the index, deleted from the working tree since: what a commit of it does
+        // is drop that entry (HEAD never had it).
+        (b'A', b'D') => EntryStatus::D,
         (b'A', _) | (_, b'A') => EntryStatus::A,
         (b'D', _) | (_, b'D') => EntryStatus::D,
         (b'T', _) | (_, b'T') => EntryStatus::T,

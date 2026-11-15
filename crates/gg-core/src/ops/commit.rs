@@ -1,15 +1,18 @@
 //! Committing the files the user ticked (`commit`), optionally pushing after, and the list
 //! of changed files the commit panel shows (`worktree_files`).
 //!
-//! A commit of chosen files never starts from the user's index: its tree is built in a
-//! fresh temporary index beside it (`GIT_INDEX_FILE`), filled from HEAD (`read-tree`;
-//! nothing on an unborn branch) and then with exactly the ticked paths as they are in the
-//! working tree (`add -A`, literal pathspecs, read from a file). So a file staged but not
-//! ticked is not committed, and a failure leaves the user's index as it was. Hooks run as
-//! with `git commit <paths>`, and see the temporary index. Once the commit is made, the
-//! committed paths, and only they, are set to the new HEAD in the user's index, so they no
-//! longer show as changed while other staged changes stay staged. The temporary index and
-//! files are always removed, also when the commit fails or is stopped.
+//! A commit of chosen files never starts from the user's staging: its tree is built in a
+//! temporary index beside the user's (`GIT_INDEX_FILE`), made from HEAD with the user's
+//! index's stat data (`read-tree --reset --index-output`, so git hashes only what changes;
+//! nothing on an unborn branch), then given exactly the ticked paths as they are in the
+//! working tree (`update-index` with each path as it is: no pathspec matching, so the
+//! deletion of a file `dir` never takes what is now under a folder `dir`). So a file staged
+//! but not ticked is not committed, and a failure leaves the user's index as it was. Hooks
+//! run as with `git commit <paths>`, and see the temporary index. Once the commit is made,
+//! the paths it changed (a file a hook added included), and only they, are set to the new
+//! HEAD in the user's index, so they no longer show as changed while other staged changes
+//! stay staged. The temporary index and files are always removed, also when the commit
+//! fails or is stopped.
 //!
 //! git allows no partial commit while a merge is in progress: a merge with no conflicts
 //! left is concluded with all its files, in the user's index.
@@ -54,8 +57,8 @@ const EMPTY_MESSAGE: &str = "Nothing was committed: the message is empty once gi
 const REFUSED: &str = "Nothing was committed: git or one of the repository's hooks \
                        (pre-commit, commit-msg) refused the commit. What it said is below.";
 
-/// Most paths given to one `ls-files`, so the command line stays short on any platform.
-const LS_CHUNK: usize = 100;
+/// Most paths given to one command, so the command line stays short on any platform.
+const CHUNK: usize = 100;
 
 /// "1 file", "3 files".
 pub(crate) fn files(n: usize) -> String {
@@ -117,30 +120,81 @@ async fn changed_files(ctx: &OpCtx<'_>) -> Result<Vec<FileEntry>> {
     Ok(parse_files(&out.stdout))
 }
 
-/// Whether `entry` is ticked in `ticked`: its path, or for a rename or copy either side.
+/// Whether `entry` is ticked in `ticked`: its path, or for a rename either side (a copy's
+/// source is not changed by it, and does not tick it).
 fn is_ticked(entry: &FileEntry, ticked: &BTreeSet<&str>) -> bool {
     ticked.contains(entry.path.as_str())
-        || entry
-            .orig_path
-            .as_deref()
-            .is_some_and(|orig| ticked.contains(orig))
+        || (entry.status == EntryStatus::R
+            && entry
+                .orig_path
+                .as_deref()
+                .is_some_and(|orig| ticked.contains(orig)))
 }
 
-/// The paths a commit of `ticked` records, given the changed files `entries`: each ticked
-/// entry's path, and a rename's original path with it (both sides of a rename are one
-/// change). Paths that are no changed file now record nothing and are left out.
-fn chosen(entries: &[FileEntry], ticked: &[String]) -> BTreeSet<String> {
-    let ticked: BTreeSet<&str> = ticked.iter().map(String::as_str).collect();
-    let mut out = BTreeSet::new();
-    for entry in entries.iter().filter(|e| is_ticked(e, &ticked)) {
-        out.insert(entry.path.clone());
-        if entry.status == EntryStatus::R
-            && let Some(orig) = &entry.orig_path
-        {
-            out.insert(orig.clone());
+/// The folder above `path` in the worktree `cwd` that is a symbolic link now, if any (git
+/// does not look beyond one).
+fn link_above(cwd: &Path, path: &str) -> Option<String> {
+    let mut at = PathBuf::new();
+    let parts: Vec<&str> = path.split('/').collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        at.push(part);
+        if fs::symlink_metadata(cwd.join(&at)).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Some(at.to_string_lossy().into_owned());
         }
     }
-    out
+    None
+}
+
+/// Why committing the ticked entries of `entries` exactly cannot work, if it cannot: a file
+/// that takes the place of a folder removes the folder's files from the commit too, and a
+/// file in a folder that takes the place of a file removes that file, so those must be
+/// ticked as well; and git does not look beyond a folder that is a link now, except to
+/// record that what was there is gone.
+fn transition_refused(
+    cwd: &Path,
+    entries: &[FileEntry],
+    ticked: &BTreeSet<&str>,
+) -> Option<String> {
+    let mine: Vec<&FileEntry> = entries.iter().filter(|e| is_ticked(e, ticked)).collect();
+    let deleted_unticked: Vec<&FileEntry> = entries
+        .iter()
+        .filter(|e| e.status == EntryStatus::D && !is_ticked(e, ticked))
+        .collect();
+    for entry in &mine {
+        if entry.status == EntryStatus::D {
+            continue;
+        }
+        let path = entry.path.as_str();
+        if let Some(link) = link_above(cwd, path) {
+            return Some(format!(
+                "Nothing was committed: {path} is inside {link}, which is a link to another \
+                 folder now; git does not look inside it."
+            ));
+        }
+        let is_file = fs::symlink_metadata(cwd.join(path)).is_ok_and(|m| !m.is_dir());
+        let under = format!("{path}/");
+        let below = deleted_unticked
+            .iter()
+            .filter(|d| d.path.starts_with(&under))
+            .count();
+        if is_file && below > 0 {
+            return Some(format!(
+                "Committing {path} also removes {} under it; tick them too.",
+                files(below)
+            ));
+        }
+        if let Some(file) = deleted_unticked
+            .iter()
+            .find(|d| path.starts_with(&format!("{}/", d.path)))
+        {
+            return Some(format!(
+                "Committing {path} also removes the file {}, whose place its folder takes; tick \
+                 it too.",
+                file.path
+            ));
+        }
+    }
+    None
 }
 
 /// The unmerged paths among `entries` (those `ticked` only, if given).
@@ -187,6 +241,9 @@ pub(crate) async fn refused(
                 file_list(&conflicted)
             )));
         }
+    }
+    if let Some(why) = transition_refused(&ctx.cwd, &entries, &ticked) {
+        return Ok(Some(why));
     }
     if push {
         let Some(branch) = head else {
@@ -272,19 +329,6 @@ impl Scratch {
     /// The temporary index (git makes it).
     fn index(&self) -> PathBuf {
         self.dir.join("index")
-    }
-
-    /// Writes `paths`, each ended by NUL, for `--pathspec-from-file --pathspec-file-nul`;
-    /// returns the argument naming the file.
-    fn paths(&self, paths: &BTreeSet<String>) -> Result<String> {
-        let file = self.dir.join("paths");
-        let mut bytes = Vec::new();
-        for path in paths {
-            bytes.extend_from_slice(path.as_bytes());
-            bytes.push(0);
-        }
-        fs::write(&file, bytes).map_err(|e| io_error(&file, &e))?;
-        Ok(format!("--pathspec-from-file={}", file.display()))
     }
 
     /// Writes `message` as it is; returns the file's path, for `-F`.
@@ -373,48 +417,197 @@ fn commit_failed(args: &[&str], out: &GitOutput) -> Result<Step> {
     })
 }
 
-/// Of `paths`, those `git add -A` can be given in the index `runner` uses: a path neither in
-/// the working tree nor in that index (an untracked file deleted since, a file added and
-/// deleted again) matches nothing, would fail the whole `add`, and has nothing to commit.
-async fn addable(
+/// Runs `update-index` with `options`, then `--`, then `paths`, a chunk at a time, in the
+/// index `runner` uses. The first failure is returned as it is.
+async fn update_index(
     ctx: &OpCtx<'_>,
     runner: &GitRunner,
-    paths: BTreeSet<String>,
-) -> Result<BTreeSet<String>> {
-    let missing: Vec<&String> = paths
-        .iter()
-        .filter(|p| fs::symlink_metadata(ctx.cwd.join(p)).is_err())
-        .collect();
-    if missing.is_empty() {
-        return Ok(paths);
-    }
-    let mut indexed = BTreeSet::new();
-    for chunk in missing.chunks(LS_CHUNK) {
-        let mut args = vec!["--literal-pathspecs", "ls-files", "-z", "--cached", "--"];
-        args.extend(chunk.iter().map(|p| p.as_str()));
-        let out = runner.run_unchecked(&ctx.cwd, &args, CmdKind::Read).await?;
+    options: &[&str],
+    paths: &[&str],
+) -> Result<Option<(Vec<String>, GitOutput)>> {
+    for chunk in paths.chunks(CHUNK) {
+        let mut args = vec!["update-index"];
+        args.extend_from_slice(options);
+        args.push("--");
+        args.extend_from_slice(chunk);
+        let out = runner
+            .run_unchecked(&ctx.cwd, &args, CmdKind::Write)
+            .await?;
         if out.code != 0 {
-            return Err(
-                CoreError::new(ErrorCode::GitFailed, "Could not read the index.")
-                    .with_detail(out.stderr),
-            );
+            return Ok(Some((args.iter().map(|a| (*a).to_owned()).collect(), out)));
         }
-        indexed.extend(
+    }
+    Ok(None)
+}
+
+/// Puts exactly the paths of `entries` (the ticked ones) as the working tree has them into
+/// the index `runner` uses, each by its own name: what is gone (or is a folder now) leaves
+/// it first, then what is there is added. A rename's old name leaves by name (`--force-remove`:
+/// on a file system that ignores case, `Readme.md` is still "there" as `README.md`), and so
+/// does a deleted file below a folder that is a link now (git looks no further than a link).
+/// The failed step, if one fails.
+async fn stage(
+    ctx: &OpCtx<'_>,
+    runner: &GitRunner,
+    entries: &[&FileEntry],
+) -> Result<Option<Step>> {
+    let mut forced: BTreeSet<&str> = BTreeSet::new();
+    for entry in entries {
+        if entry.status == EntryStatus::R
+            && let Some(orig) = &entry.orig_path
+        {
+            forced.insert(orig);
+        }
+        if entry.status == EntryStatus::D && link_above(&ctx.cwd, &entry.path).is_some() {
+            forced.insert(&entry.path);
+        }
+    }
+    let forced: Vec<&str> = forced.into_iter().collect();
+    if let Some((args, out)) = update_index(ctx, runner, &["--force-remove"], &forced).await? {
+        return Ok(Some(step_failed(
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &out,
+        )));
+    }
+    let (mut gone, mut there) = (Vec::new(), Vec::new());
+    for entry in entries {
+        let path = entry.path.as_str();
+        if forced.contains(&path) {
+            continue;
+        }
+        match fs::symlink_metadata(ctx.cwd.join(path)) {
+            Ok(meta) if !meta.is_dir() => there.push(path),
+            _ => gone.push(path),
+        }
+    }
+    gone.extend(there);
+    if let Some((args, out)) = update_index(ctx, runner, &["--add", "--remove"], &gone).await? {
+        return Ok(Some(step_failed(
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &out,
+        )));
+    }
+    Ok(None)
+}
+
+/// Of the deleted `entries`, those HEAD (`parent`) does not have: added to the index, then
+/// deleted from the working tree. A commit records nothing for them; their stale index
+/// entries are dropped from the user's index.
+async fn stale_entries(
+    ctx: &OpCtx<'_>,
+    parent: Option<&str>,
+    entries: &[&FileEntry],
+) -> Result<Vec<String>> {
+    let candidates: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.status == EntryStatus::D && e.staged)
+        .map(|e| e.path.as_str())
+        .collect();
+    let Some(parent) = parent else {
+        return Ok(candidates.into_iter().map(str::to_owned).collect());
+    };
+    let mut in_head = BTreeSet::new();
+    for chunk in candidates.chunks(CHUNK) {
+        let mut args = vec![
+            "--literal-pathspecs",
+            "ls-tree",
+            "-z",
+            "--name-only",
+            parent,
+            "--",
+        ];
+        args.extend_from_slice(chunk);
+        let out = ctx.read(&args).await?;
+        in_head.extend(
             out.stdout
                 .split(|&b| b == 0)
                 .filter(|p| !p.is_empty())
                 .map(|p| String::from_utf8_lossy(p).into_owned()),
         );
     }
-    let gone: BTreeSet<&String> = missing
+    Ok(candidates
         .into_iter()
-        .filter(|p| !indexed.contains(*p))
-        .collect();
-    Ok(paths
-        .iter()
-        .filter(|p| !gone.contains(p))
-        .cloned()
+        .filter(|p| !in_head.contains(*p))
+        .map(str::to_owned)
         .collect())
+}
+
+/// Sets the user's index to commit `new` for exactly the paths it changed from `parent`
+/// (from nothing, for a first commit): what it deleted leaves the index, what it added or
+/// changed takes the new content (`--replace`: a file that takes a folder's place takes its
+/// entries' place too). Nothing else there changes. git's output when a step fails.
+async fn follow_commit(
+    ctx: &OpCtx<'_>,
+    runner: &GitRunner,
+    parent: Option<&str>,
+    new: &str,
+) -> Result<Option<String>> {
+    let args: Vec<&str> = match parent {
+        Some(parent) => vec!["diff-tree", "-r", "-z", "--no-renames", parent, new],
+        None => vec![
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-r",
+            "-z",
+            "--no-renames",
+            new,
+        ],
+    };
+    let out = runner.run_unchecked(&ctx.cwd, &args, CmdKind::Read).await?;
+    if out.code != 0 {
+        return Ok(Some(output(&out)));
+    }
+    let (mut removed, mut set) = (Vec::new(), Vec::new());
+    let mut fields = out.stdout.split(|&b| b == 0).filter(|f| !f.is_empty());
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let meta = String::from_utf8_lossy(meta);
+        let parts: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+        let path = String::from_utf8_lossy(path).into_owned();
+        match parts.as_slice() {
+            [_, _, _, _, status] if status.starts_with('D') => removed.push(path),
+            [_, mode, _, sha, _] => set.push(((*mode).to_owned(), (*sha).to_owned(), path)),
+            _ => {}
+        }
+    }
+    let removed: Vec<&str> = removed.iter().map(String::as_str).collect();
+    if let Some((_, out)) = update_index(ctx, runner, &["--force-remove"], &removed).await? {
+        return Ok(Some(output(&out)));
+    }
+    for chunk in set.chunks(CHUNK) {
+        let mut args = vec!["update-index", "--add", "--replace"];
+        for (mode, sha, path) in chunk {
+            args.extend(["--cacheinfo", mode.as_str(), sha.as_str(), path.as_str()]);
+        }
+        let out = runner
+            .run_unchecked(&ctx.cwd, &args, CmdKind::Write)
+            .await?;
+        if out.code != 0 {
+            return Ok(Some(output(&out)));
+        }
+    }
+    // Entries set from the commit have no stat data: one refresh records it (each committed
+    // file is read once more), so later reads do not read them again and again. Its exit code
+    // says whether anything is modified, which is no failure here.
+    if !set.is_empty() {
+        runner
+            .run_unchecked(
+                &ctx.cwd,
+                &["update-index", "-q", "--refresh"],
+                CmdKind::Write,
+            )
+            .await?;
+    }
+    Ok(None)
+}
+
+/// "the staged entry for a deleted file", "the staged entries for 2 deleted files".
+fn stale_said(n: usize) -> String {
+    if n == 1 {
+        "the staged entry for a deleted file".to_owned()
+    } else {
+        format!("the staged entries for {n} deleted files")
+    }
 }
 
 /// How many files commit `new` changed compared with `parent` (renames found, each one
@@ -443,8 +636,9 @@ pub(crate) async fn commit(
 ) -> Result<Step> {
     let in_merge = read_kind(&ctx.runner, &ctx.cwd).await? == Some(InProgressKind::Merge);
     let entries = changed_files(ctx).await?;
-    let chosen = chosen(&entries, paths);
-    if chosen.is_empty() {
+    let ticked: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+    let mine: Vec<&FileEntry> = entries.iter().filter(|e| is_ticked(e, &ticked)).collect();
+    if mine.is_empty() {
         return Err(nothing_to_commit());
     }
     let parent = head_commit(ctx).await?;
@@ -456,38 +650,55 @@ pub(crate) async fn commit(
         // The user's index: a merge is committed whole.
         ctx.runner.clone()
     } else {
-        let temp = ctx.runner.with_index_file(&scratch.index());
         if let Some(parent) = &parent {
-            let args = ["read-tree", parent.as_str()];
-            let out = temp.run_unchecked(&ctx.cwd, &args, CmdKind::Write).await?;
+            // HEAD's tree, with the stat data the user's index has for it: git hashes again
+            // only what differs (never the user's staging: `--reset` takes HEAD's entries).
+            let output_to = format!("--index-output={}", scratch.index().display());
+            let args = ["read-tree", "--reset", output_to.as_str(), parent.as_str()];
+            let out = ctx.git(&args).await?;
             if out.code != 0 {
                 return Ok(step_failed(&args, &out));
             }
         }
-        temp
+        ctx.runner.with_index_file(&scratch.index())
     };
-    let chosen = addable(ctx, &runner, chosen).await?;
-    if chosen.is_empty() {
-        return Err(nothing_to_commit());
+    if let Some(failed) = stage(ctx, &runner, &mine).await? {
+        return Ok(failed);
     }
-    let paths_arg = scratch.paths(&chosen)?;
-    let add = [
-        "--literal-pathspecs",
-        "add",
-        "-A",
-        paths_arg.as_str(),
-        "--pathspec-file-nul",
-    ];
-    let out = runner.run_unchecked(&ctx.cwd, &add, CmdKind::Write).await?;
-    if out.code != 0 {
-        return Ok(step_failed(&add, &out));
-    }
-    if !in_merge && let Some(parent) = &parent {
+    let stale = if in_merge {
+        Vec::new()
+    } else {
+        stale_entries(ctx, parent.as_deref(), &mine).await?
+    };
+    if !in_merge {
         // Nothing differs from HEAD: no commit, and no hook runs for nothing.
-        let same = ["diff-index", "--cached", "--quiet", parent.as_str(), "--"];
+        let same: Vec<&str> = match &parent {
+            Some(parent) => vec!["diff-index", "--cached", "--quiet", parent.as_str(), "--"],
+            None => vec!["ls-files", "--cached", "--error-unmatch", "--", "."],
+        };
         let out = runner.run_unchecked(&ctx.cwd, &same, CmdKind::Read).await?;
-        if out.code == 0 {
-            return Err(nothing_to_commit());
+        let nothing = if parent.is_some() {
+            out.code == 0
+        } else {
+            out.code != 0
+        };
+        if nothing {
+            if stale.is_empty() {
+                return Err(nothing_to_commit());
+            }
+            let stale: Vec<&str> = stale.iter().map(String::as_str).collect();
+            if let Some((args, out)) =
+                update_index(ctx, &ctx.runner, &["--force-remove"], &stale).await?
+            {
+                return Ok(step_failed(
+                    &args.iter().map(String::as_str).collect::<Vec<_>>(),
+                    &out,
+                ));
+            }
+            return Ok(Step::Done(format!(
+                "Nothing to commit; removed {}.",
+                stale_said(stale.len())
+            )));
         }
     }
     let out = runner
@@ -500,20 +711,16 @@ pub(crate) async fn commit(
         .await?
         .ok_or_else(|| CoreError::new(ErrorCode::GitFailed, "The new commit cannot be found."))?;
 
-    // The committed paths are as the new HEAD has them in the user's index too; nothing else
-    // there changes.
+    // The paths the commit changed are as the new HEAD has them in the user's index too;
+    // nothing else there changes.
     let mut note = None;
     if !in_merge {
-        let reset = [
-            "--literal-pathspecs",
-            "reset",
-            "-q",
-            paths_arg.as_str(),
-            "--pathspec-file-nul",
-        ];
-        let out = ctx.git(&reset).await?;
-        if out.code != 0 {
-            note = Some(output(&out));
+        note = follow_commit(ctx, &ctx.runner, parent.as_deref(), &new).await?;
+        if note.is_none() && !stale.is_empty() {
+            let stale: Vec<&str> = stale.iter().map(String::as_str).collect();
+            note = update_index(ctx, &ctx.runner, &["--force-remove"], &stale)
+                .await?
+                .map(|(_, out)| output(&out));
         }
     }
     drop(scratch);
@@ -682,21 +889,27 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_is_committed_whole_and_unknown_paths_record_nothing() {
+    fn either_side_ticks_a_rename_and_only_its_own_path_a_copy() {
         let entries = [
             entry("new", EntryStatus::R, Some("old")),
             entry("copy", EntryStatus::C, Some("source")),
             entry("m", EntryStatus::M, None),
         ];
-        let set = |paths: &[&str]| -> Vec<String> {
-            chosen(&entries, &strings(paths)).into_iter().collect()
+        let ticked_by = |paths: &[&str]| -> Vec<&str> {
+            let ticked: BTreeSet<&str> = paths.iter().copied().collect();
+            entries
+                .iter()
+                .filter(|e| is_ticked(e, &ticked))
+                .map(|e| e.path.as_str())
+                .collect()
         };
-        assert_eq!(set(&["new"]), ["new", "old"]);
-        assert_eq!(set(&["old"]), ["new", "old"]);
-        // A copy's source is not changed by it: only the copy.
-        assert_eq!(set(&["copy"]), ["copy"]);
-        assert_eq!(set(&["m", "not changed"]), ["m"]);
-        assert!(set(&["not changed"]).is_empty());
+        assert_eq!(ticked_by(&["new"]), ["new"]);
+        assert_eq!(ticked_by(&["old"]), ["new"]);
+        // A copy's source is not changed by it: ticking the source does not tick the copy.
+        assert_eq!(ticked_by(&["copy"]), ["copy"]);
+        assert!(ticked_by(&["source"]).is_empty());
+        assert_eq!(ticked_by(&["m", "not changed"]), ["m"]);
+        assert!(ticked_by(&["not changed"]).is_empty());
     }
 
     #[test]

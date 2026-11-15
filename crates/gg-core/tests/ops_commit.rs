@@ -220,15 +220,36 @@ async fn only_the_ticked_files_are_committed_and_staged_unticked_ones_stay_stage
     // b stays staged; the committed ones are clean now.
     assert_eq!(porcelain(repo.path()), ["M  b.txt"]);
     assert!(scratch_left(&repo.path().join(".git")).is_empty());
-    // The temporary index: filled from HEAD, then exactly the ticked paths, literally.
+    // The temporary index: HEAD with the user's index's stat data, then exactly the ticked
+    // paths by name; after the commit, the user's index gets exactly what it changed.
     let w = writes(&h, &out);
-    assert_eq!(w[0], ["read-tree", before.as_str()], "{w:?}");
-    assert_eq!(w[1][..3], ["--literal-pathspecs", "add", "-A"], "{w:?}");
-    assert!(w[1][3].starts_with("--pathspec-from-file="), "{w:?}");
-    assert_eq!(w[1][4], "--pathspec-file-nul");
+    assert_eq!(w[0][..2], ["read-tree", "--reset"], "{w:?}");
+    assert!(
+        w[0][2].starts_with("--index-output=") && w[0][2].ends_with("/index"),
+        "{w:?}"
+    );
+    assert_eq!(w[0][3], before);
+    assert_eq!(
+        w[1],
+        [
+            "update-index",
+            "--add",
+            "--remove",
+            "--",
+            "a.txt",
+            "c.txt",
+            "d.txt"
+        ]
+    );
     assert_eq!(w[2][..2], ["commit", "--cleanup=strip"], "{w:?}");
-    assert_eq!(w[3][..3], ["--literal-pathspecs", "reset", "-q"], "{w:?}");
-    assert_eq!(w.len(), 4, "{w:?}");
+    assert_eq!(w[3][..3], ["update-index", "--add", "--replace"], "{w:?}");
+    assert_eq!(
+        w[3].iter().filter(|a| *a == "--cacheinfo").count(),
+        3,
+        "{w:?}"
+    );
+    assert_eq!(w[4], ["update-index", "-q", "--refresh"], "{w:?}");
+    assert_eq!(w.len(), 5, "{w:?}");
 }
 
 /// A rename is one change: ticking either side commits both paths.
@@ -1027,4 +1048,227 @@ async fn the_file_list_is_for_the_repositorys_worktrees_only() {
     assert_eq!(err.code, ErrorCode::BadRequest);
     let err = h.m.worktree_files(id, &gone).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::PathMissing);
+}
+
+// ---- Task 5 review fixes ----
+
+/// The temporary index starts from the user's index's stat data (`read-tree --reset
+/// --index-output`), so git hashes only what is staged there: a clean filter (LFS, say) runs
+/// for the ticked file, not for every tracked one (once to stage it, once when the user's
+/// index records the committed file's stat data).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_clean_filter_runs_for_the_ticked_files_only() {
+    let repo = TestRepo::new();
+    let count = repo.dir.path().join("filter-runs");
+    repo.write(".gitattributes", "*.txt filter=count\n");
+    repo.git(&[
+        "config",
+        "filter.count.clean",
+        &format!(
+            "sh -c 'echo \"${{GIT_INDEX_FILE:-the user index}}\" >> \"{}\"; cat'",
+            count.display()
+        ),
+    ]);
+    for i in 0..300 {
+        repo.write(&format!("f{i}.txt"), format!("{i}\n"));
+    }
+    repo.commit_all("three hundred");
+    // Files written in the same second as the index are "racily clean": git hashes them
+    // again on any read. A refresh a second later records them as clean for good.
+    std::thread::sleep(Duration::from_millis(1100));
+    repo.git(&["update-index", "-q", "--really-refresh"]);
+    repo.git(&["status", "--porcelain"]);
+    repo.write("f7.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    fs::write(&count, "").unwrap();
+    let out = h.run(id, commit(&["f7.txt"], "one file", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let runs = fs::read_to_string(&count).unwrap();
+    // Building the commit: for the ticked file only (once; twice when git reads it again
+    // because it was staged in the same second as the index was written: "racily clean").
+    let building = runs.lines().filter(|l| l.contains("/gg-commit-")).count();
+    assert!((1..=2).contains(&building), "{runs}");
+    // In all (the user's index taking the commit, git's own reads after): a few, never 300.
+    assert!(runs.lines().count() <= 5, "{runs}");
+    assert_eq!(changed_by(repo.path(), "HEAD"), set(&["f7.txt"]));
+}
+
+/// Exact paths, no pathspec matching: the deletion of the file `dir`, now a folder with an
+/// untracked and a staged file in it, commits the deletion only; the staging under `dir/`
+/// stays as it was.
+#[tokio::test]
+async fn a_deleted_file_that_is_now_a_folder_commits_only_its_deletion() {
+    let repo = three_files();
+    repo.write("dir", "a file\n");
+    repo.commit_all("dir is a file");
+    fs::remove_file(repo.path().join("dir")).unwrap();
+    repo.write("dir/x.txt", "untracked\n");
+    repo.write("dir/y.txt", "staged, not ticked\n");
+    repo.git(&["add", "dir/y.txt"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, commit(&["dir"], "dir goes", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(changed_by(repo.path(), "HEAD"), set(&["dir"]));
+    assert_eq!(porcelain(repo.path()), ["?? dir/x.txt", "A  dir/y.txt"]);
+}
+
+/// A folder replaced by a file: committing the file also removes the folder's files, so
+/// they must be ticked too; then all go in one commit.
+#[tokio::test]
+async fn a_folder_replaced_by_a_file_needs_its_files_ticked_too() {
+    let repo = three_files();
+    repo.write("sub/a.txt", "a\n");
+    repo.write("sub/b.txt", "b\n");
+    repo.commit_all("sub is a folder");
+    fs::remove_dir_all(repo.path().join("sub")).unwrap();
+    repo.write("sub", "now a file\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+    let out = h.run(id, commit(&["sub"], "sub", false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "Committing sub also removes 2 files under it; tick them too."
+    );
+    assert!(h.writes_since(mark).is_empty(), "nothing ran");
+    let out = h
+        .run(id, commit(&["sub", "sub/a.txt", "sub/b.txt"], "sub", false))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        changed_by(repo.path(), "HEAD"),
+        set(&["sub", "sub/a.txt", "sub/b.txt"])
+    );
+    assert!(porcelain(repo.path()).is_empty());
+}
+
+/// A file a hook stages goes into the commit; the user's index follows exactly what the
+/// commit changed, that file included, so nothing shows as changed after.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_a_hook_adds_is_committed_and_the_index_follows() {
+    let repo = three_files();
+    repo.write("a.txt", "edited\n");
+    hook(
+        &repo,
+        "pre-commit",
+        "echo generated > generated.txt\ngit add generated.txt",
+    );
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, commit(&["a.txt"], "with generated", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        changed_by(repo.path(), "HEAD"),
+        set(&["a.txt", "generated.txt"])
+    );
+    assert!(
+        porcelain(repo.path()).is_empty(),
+        "{:?}",
+        porcelain(repo.path())
+    );
+}
+
+/// Whether the file system of `dir` ignores case in names.
+fn ignores_case(dir: &Path) -> bool {
+    let probe = dir.join("Case-Probe");
+    fs::write(&probe, "").unwrap();
+    let folded = dir.join("case-probe").exists();
+    fs::remove_file(&probe).unwrap();
+    folded
+}
+
+/// A rename that changes only the case of a name, on a file system that ignores case: the
+/// old name leaves the commit's index by name, so the rename is committed.
+#[tokio::test]
+async fn a_rename_of_case_only_is_committed() {
+    let repo = three_files();
+    if !ignores_case(repo.path()) {
+        eprintln!("skipped: this file system tells names apart by case");
+        return;
+    }
+    repo.write("Readme.md", "read me\n");
+    repo.commit_all("readme");
+    repo.git(&["mv", "Readme.md", "README.md"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, commit(&["README.md"], "case", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        changed_by(repo.path(), "HEAD"),
+        set(&["README.md", "Readme.md"])
+    );
+    assert!(
+        porcelain(repo.path()).is_empty(),
+        "{:?}",
+        porcelain(repo.path())
+    );
+}
+
+/// A file added to the index and deleted from the working tree is listed; ticking it records
+/// nothing (HEAD never had it) but drops the stale index entry, and says so.
+#[tokio::test]
+async fn a_staged_file_deleted_since_is_listed_and_its_entry_dropped() {
+    let repo = three_files();
+    repo.write("ghost.txt", "x\n");
+    repo.git(&["add", "ghost.txt"]);
+    fs::remove_file(repo.path().join("ghost.txt")).unwrap();
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    let listed = files_of(&h, snap.repo_id, repo.path()).await;
+    let ghost = listed
+        .files
+        .iter()
+        .find(|f| f.path == "ghost.txt")
+        .expect("listed");
+    assert_eq!(ghost.status, EntryStatus::D);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let out = h
+        .run(snap.repo_id, commit(&["ghost.txt"], "m", false))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "Nothing to commit; removed the staged entry for a deleted file."
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(
+        porcelain(repo.path()).is_empty(),
+        "{:?}",
+        porcelain(repo.path())
+    );
+}
+
+/// A folder that became a link to another folder: the deletion of a file that was in it is
+/// committed (no "beyond a symbolic link" from git).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_below_a_folder_that_became_a_link_is_committed_as_deleted() {
+    let repo = three_files();
+    repo.write("docs/a.md", "a\n");
+    repo.commit_all("docs");
+    let elsewhere = repo.dir.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join("a.md"), "a\n").unwrap();
+    fs::remove_dir_all(repo.path().join("docs")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, repo.path().join("docs")).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h
+        .run(id, commit(&["docs/a.md"], "docs/a.md goes", false))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(changed_by(repo.path(), "HEAD"), set(&["docs/a.md"]));
+    let out = h.run(id, commit(&["docs"], "docs is a link", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(changed_by(repo.path(), "HEAD"), set(&["docs"]));
+    assert!(
+        porcelain(repo.path()).is_empty(),
+        "{:?}",
+        porcelain(repo.path())
+    );
 }

@@ -249,6 +249,8 @@ test("the worktree menu opens a worktree in the editor, a terminal and the file 
     await item(page, name).click();
   }
   await expect.poll(() => gg.launches().length).toBe(3);
+  // No editor is set: the notice says the folder was shown instead, and where to set one.
+  await expect(notice(page, /No editor is set; showed the folder in .+\. Set an editor command in Settings\./)).toBeVisible();
   const [editor, terminal, reveal] = gg.launches();
   // No editor command: the folder with the platform's opener; Terminal; the folder shown.
   expect(editor.at(-1)).toBe(topic);

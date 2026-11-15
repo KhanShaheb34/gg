@@ -291,6 +291,17 @@ const FOLDER_INSTEAD: &str = "No editor command is set, so the worktree folder w
                               file from a repository could run it. Set an editor command in \
                               Settings to open files.";
 
+/// Said when the worktree folder was asked for in the editor and no editor command is set:
+/// it shows in the file manager.
+fn no_editor(os: &str) -> String {
+    let manager = match os {
+        "macos" => "Finder",
+        "windows" => "File Explorer",
+        _ => "the file manager",
+    };
+    format!("No editor is set; showed the folder in {manager}. Set an editor command in Settings.")
+}
+
 /// Said when no terminal program is found on Linux and no terminal command is set.
 const NO_TERMINAL: &str = "No terminal program was found (x-terminal-emulator, gnome-terminal, \
                            konsole or xterm), so nothing was opened. Set a terminal command in \
@@ -427,7 +438,7 @@ fn launch_plan(os: &str, command: Option<&str>, root: &Path, file: Option<Target
             None,
         ),
         Some(_) => (folder_argv(os, root)?, Some(FOLDER_INSTEAD.to_owned())),
-        None => (folder_argv(os, root)?, None),
+        None => (folder_argv(os, root)?, Some(no_editor(os))),
     };
     Ok(Plan {
         note,
@@ -839,7 +850,8 @@ mod tests {
 
     /// On macOS without an editor command, only a regular file goes to `open -t`: a folder
     /// inside the worktree (an `X.app` bundle, which `open` would start) opens the worktree
-    /// folder instead, with the note; the worktree itself (`.`) opens without one.
+    /// folder instead, with the note; the worktree itself (`.`) opens with the note that no
+    /// editor is set.
     #[test]
     fn folders_never_go_to_open_as_text() {
         let Plan { argv, note, .. } = launch_plan(
@@ -865,7 +877,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(argv, ["/usr/bin/open", "/r"]);
-        assert!(note.is_none());
+        assert_eq!(note, Some(no_editor("macos")));
     }
 
     /// A worktree folder whose name has an extension (`fix.app`, made for a branch of that
@@ -875,7 +887,7 @@ mod tests {
         let root = Path::new("/w/fix.app");
         let Plan { argv, note, .. } = launch_plan("macos", None, root, None).unwrap();
         assert_eq!(argv, ["/usr/bin/open", "-R", "/w/fix.app"]);
-        assert!(note.is_none());
+        assert_eq!(note, Some(no_editor("macos")));
         let file = Target {
             path: Path::new("/w/fix.app/run.sh"),
             regular: false,
@@ -976,18 +988,39 @@ mod tests {
             plan_on("linux", Some("  "), file),
             (words(&["xdg-open", "/r"]), true)
         );
-        // The worktree folder itself opens as before.
+        // The worktree folder itself opens in the file manager, and the note says so.
         assert_eq!(
             plan_on("macos", None, None),
-            (words(&["/usr/bin/open", "/r"]), false)
+            (words(&["/usr/bin/open", "/r"]), true)
         );
         assert_eq!(
             plan_on("linux", None, None),
-            (words(&["xdg-open", "/r"]), false)
+            (words(&["xdg-open", "/r"]), true)
         );
         assert_eq!(
             plan_on("windows", None, None),
-            (words(&[&explorer(), "\"/r\""]), false)
+            (words(&[&explorer(), "\"/r\""]), true)
+        );
+        let note = |os| launch_plan(os, None, Path::new("/r"), None).unwrap().note;
+        assert_eq!(
+            note("macos").as_deref(),
+            Some(
+                "No editor is set; showed the folder in Finder. Set an editor command in Settings."
+            )
+        );
+        assert_eq!(
+            note("windows").as_deref(),
+            Some(
+                "No editor is set; showed the folder in File Explorer. Set an editor command in \
+                 Settings."
+            )
+        );
+        assert_eq!(
+            note("linux").as_deref(),
+            Some(
+                "No editor is set; showed the folder in the file manager. Set an editor command \
+                 in Settings."
+            )
         );
         // With a command, the file goes to it, on every platform.
         for os in ["macos", "linux", "windows"] {

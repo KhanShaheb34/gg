@@ -7,7 +7,7 @@ From this folder:
 
 ```sh
 npx wrangler@4 dev       # preview on http://localhost:8787 (applies _headers and _redirects)
-npx wrangler@4 deploy    # publish to gg.shakirul.com (needs `wrangler login` once)
+sh scripts/deploy.sh      # publish to gg.shakirul.com; checks the download is present and matches latest.json
 ```
 
 ## What lives where

@@ -113,6 +113,25 @@ fn parse(url: &str) -> Option<(RemoteRepo, Option<String>)> {
     Some((repo, ssh.then_some(written)))
 }
 
+/// Whether `host` is a plain host name: `^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`
+/// (letters, digits, `.`, `_`, `-`; neither starting nor ending with a dot or hyphen; at most
+/// 253 characters). Only such a name is handed to `ssh -G`, and only such a name is taken
+/// from its answer: ssh puts the host into `Match exec` and `ProxyCommand` strings of the
+/// user's ssh config (`%h`, `%n`), which a shell runs, so `$(…)`, a backtick, `;`, `|`,
+/// quotes, `%` or a space in a remote's address must never reach it.
+pub fn is_plain_host(host: &str) -> bool {
+    let bytes = host.as_bytes();
+    let (Some(first), Some(last)) = (bytes.first(), bytes.last()) else {
+        return false;
+    };
+    bytes.len() <= 253
+        && first.is_ascii_alphanumeric()
+        && last.is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// Whether `host` is GitHub by its name alone: `github.com`, or an Enterprise Cloud host
 /// (`*.ghe.com`). Any other host (an Enterprise Server's) is taken for GitHub only when `gh`
 /// already has credentials stored for exactly that host (`RepoManager::on_github`), never by
@@ -222,6 +241,45 @@ mod tests {
         ] {
             assert_eq!(parse_remote(url), None, "{url}");
         }
+    }
+
+    #[test]
+    fn only_plain_host_names_are_plain() {
+        for host in [
+            "github.com",
+            "gh-work",
+            "github.com-work",
+            "a",
+            "a_b.c-d",
+            "x9",
+        ] {
+            assert!(is_plain_host(host), "{host}");
+        }
+        let long = "a".repeat(254);
+        for host in [
+            "",
+            "$(touch x)",
+            "a`id`b",
+            "a;b",
+            "%h",
+            "a%hb",
+            "a'b",
+            "a\"b",
+            ".lead",
+            "trail.",
+            "-lead",
+            "trail-",
+            "a b",
+            "a|b",
+            "a&b",
+            "a\nb",
+            "[::1]",
+            "a:22",
+            long.as_str(),
+        ] {
+            assert!(!is_plain_host(host), "{host:?}");
+        }
+        assert!(is_plain_host(&"a".repeat(253)));
     }
 
     /// The host an ssh address is reached at, as written (maybe an alias of the ssh config).

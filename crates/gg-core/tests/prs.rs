@@ -1193,3 +1193,35 @@ async fn a_pull_request_made_without_an_address_printed_is_done() {
         out.message
     );
 }
+
+/// Security: ssh puts the host into `Match exec` and `ProxyCommand` strings of the user's
+/// ssh config (`%h`, `%n`), which a shell runs; `ssh -G` is run only for a plain host name
+/// (letters, digits, `.`, `_`, `-`; no leading or trailing dot or hyphen; at most 253), any
+/// other host is kept as written (and is not GitHub).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ssh_is_never_asked_about_a_host_that_is_not_a_plain_name() {
+    for host in [
+        "$(touch x)",
+        "a`id`b",
+        "a;b",
+        "%h",
+        "a'b",
+        "a\"b",
+        ".lead",
+        "trail-",
+        "a|b",
+    ] {
+        let s = setup_with(&format!("git@{host}:me/cat.git")).await;
+        s.gh.reply("auth-token", 1, "", "");
+        let snap = s.load().await;
+        assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub), "{host}");
+        assert!(s.gh.ssh_calls().is_empty(), "{host}: ssh was run");
+    }
+    // ssh's answer is taken only when it is a plain name too.
+    let s = setup_with("git@gh-work:me/cat.git").await;
+    s.gh.ssh_alias("gh-work", "github.com;id");
+    s.gh.reply("auth-token", 1, "", "");
+    let snap = s.load().await;
+    assert_eq!(snap.prs.reason, Some(PrUnavailable::NotGithub));
+    assert_eq!(s.gh.ssh_calls().len(), 1);
+}

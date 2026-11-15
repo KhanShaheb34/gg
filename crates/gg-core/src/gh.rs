@@ -31,7 +31,7 @@ use crate::git::refs::RefInfo;
 use crate::git::runner::{
     CmdKind, Expired, GitOutput, GitRunner, StdinPolicy, TimeLimit, ToolRunner,
 };
-use crate::hosts::{RemoteRepo, parse_remote, ssh_host};
+use crate::hosts::{RemoteRepo, is_plain_host, parse_remote, ssh_host};
 
 /// The variables `gh` takes a token from instead of its stored credentials.
 const TOKEN_VARS: [&str; 4] = [
@@ -642,19 +642,15 @@ fn pick<'a>(
         .map(|l| &l.pr)
 }
 
-/// The host name in `ssh -G <alias>` output `text` (its `hostname` line), if it is one.
+/// The host name in `ssh -G <alias>` output `text` (its `hostname` line), if it is a plain
+/// host name ([`is_plain_host`]).
 pub(crate) fn ssh_hostname(text: &str) -> Option<String> {
     let host = text
         .lines()
         .find_map(|l| l.strip_prefix("hostname "))?
         .trim()
         .to_ascii_lowercase();
-    let plain = !host.is_empty()
-        && !host.starts_with('-')
-        && host
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'));
-    plain.then_some(host)
+    is_plain_host(&host).then_some(host)
 }
 
 /// `branch` as a title: its last part, words split at `-` and `_`, the first capitalised
@@ -780,6 +776,8 @@ mod tests {
         assert_eq!(ssh_hostname("port 22\n"), None);
         assert_eq!(ssh_hostname("hostname -oProxyCommand=x\n"), None);
         assert_eq!(ssh_hostname("hostname a b\n"), None);
+        assert_eq!(ssh_hostname("hostname github.com;id\n"), None);
+        assert_eq!(ssh_hostname("hostname $(id)\n"), None);
     }
 
     #[test]

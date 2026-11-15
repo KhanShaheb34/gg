@@ -20,7 +20,7 @@ use crate::gh::{
     parse_default_branch, parse_list, ssh_hostname, unavailable_message,
 };
 use crate::git::runner::{CmdKind, GitRunner, StdinPolicy};
-use crate::hosts::{RemoteRepo, compare_url, is_known_github};
+use crate::hosts::{RemoteRepo, compare_url, is_known_github, is_plain_host};
 use crate::repo::fetch::unix_ms;
 use crate::repo::manager::{ErrorKind, Repo, RepoManager, lock};
 
@@ -312,10 +312,12 @@ impl RepoManager {
     }
 
     /// The real host name ssh address host `alias` stands for: `ssh -G -- <alias>`'s
-    /// `hostname` line (no connection is made). Run as git's children are (no terminal, stdin
+    /// `hostname` line (no connection is made), asked only for a plain host name and taken
+    /// only when it is one ([`is_plain_host`]). Run as git's children are (no terminal, stdin
     /// null), within 5 s, logged as a read (its output, the user's ssh settings, is not kept).
     async fn ask_ssh(&self, repo: &Repo, runner: &GitRunner, alias: &str) -> Option<String> {
-        if alias.starts_with('-') || alias.contains(|c: char| c.is_whitespace() || c.is_control()) {
+        // ssh puts the host into commands of the user's ssh config: a plain name only.
+        if !is_plain_host(alias) {
             return None;
         }
         let (program, tool_path) =

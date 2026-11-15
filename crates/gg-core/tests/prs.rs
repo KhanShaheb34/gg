@@ -1024,7 +1024,7 @@ async fn the_git_gh_runs_is_protected_as_the_apps_own() {
         "GIT_CONFIG_PARAMETERS='core.quotePath=false' 'color.ui=false' \
          'log.showSignature=false' 'core.fsmonitor=false' 'core.hooksPath={null}'"
     );
-    assert!(call.env.iter().any(|e| *e == params), "{git_env:?}");
+    assert!(call.env.contains(&params), "{git_env:?}");
     assert!(!call.env.iter().any(|e| e.starts_with("GIT_CONFIG_COUNT=")));
     for var in [
         "GIT_DIR",

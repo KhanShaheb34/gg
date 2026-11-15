@@ -11,12 +11,18 @@
   import type { Snippet } from "svelte";
   import { isMac } from "../platform";
   import { clampWidth, dockedWidth, NARROW_W, saveWidth, SIDE_DEFAULT_W, sidePanel } from "../state/worktrees.svelte";
+  import MiddleText from "./MiddleText.svelte";
   import Splitter from "./Splitter.svelte";
 
   type Props = {
     title: string;
     /** Said beside the title, quieter ("3"). */
     count?: string | null;
+    /** After the title, what it is about (the commit panel's worktree: its branch), cut in the middle; its tooltip `detailTitle`. */
+    detail?: string | null;
+    detailTitle?: string;
+    /** Shows a back control before the title (from the commit panel to the worktree list). */
+    onback?: () => void;
     /** Over the graph rather than beside it. */
     overlay: boolean;
     /** Over the graph: how far from the top it starts (below the conflict banner), px. */
@@ -26,7 +32,7 @@
     children: Snippet;
   };
 
-  let { title, count = null, overlay, top = 0, onhide, actions, children }: Props = $props();
+  let { title, count = null, detail = null, detailTitle, onback, overlay, top = 0, onhide, actions, children }: Props = $props();
 
   const HIDE_KEYS = isMac() ? "⌘B" : "Ctrl+B";
   /** Over the graph, the panel leaves the graph at least this much of the window. */
@@ -37,6 +43,14 @@
   const resizable = $derived(overlay || sidePanel.windowW >= NARROW_W);
 
   let startW = 0;
+
+  // Docked, notices keep clear of it (Toast reads --side-w), as they do of the command log.
+  $effect(() => {
+    if (overlay) return;
+    const root = document.documentElement;
+    root.style.setProperty("--side-w", `${width}px`);
+    return () => root.style.removeProperty("--side-w");
+  });
 
   function onKeydown(e: KeyboardEvent) {
     if (overlay && e.key === "Escape" && !e.defaultPrevented) {
@@ -68,8 +82,18 @@
       saveWidth();
     }}
   />{/if}
-  <header class="head">
+  <header class="head" class:back={onback !== undefined}>
+    {#if onback}
+      <button class="icon-btn small" aria-label="Back to the worktrees" title="Back to the worktrees" onclick={onback} data-testid="side-back">
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <path d="M8.4 3.2 4.6 7l3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    {/if}
     <h2 class="title">{title}</h2>
+    {#if detail}
+      <span class="detail" data-testid="side-detail"><MiddleText text={detail} keep={12} title={detailTitle ?? detail} /></span>
+    {/if}
     {#if count !== null}
       <span class="count">{count}</span>
     {/if}
@@ -134,6 +158,24 @@
     font-size: var(--fs-xs);
     font-weight: 600;
     white-space: nowrap;
+  }
+
+  .head.back {
+    gap: 4px;
+    padding-left: 4px;
+  }
+
+  .back .title {
+    margin-right: 2px;
+  }
+
+  .detail {
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    color: var(--text);
+    font-size: var(--fs-xs);
+    font-weight: 600;
   }
 
   .count {

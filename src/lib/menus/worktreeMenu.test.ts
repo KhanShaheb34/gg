@@ -2,33 +2,50 @@ import { describe, expect, it } from "vitest";
 import { disabled, find, ids, RUNNING, snap, worktree } from "./menuTestData";
 import { worktreeMenu, worktreePanelMenu } from "./worktreeMenu";
 
-const IDS = ["make_active", "-", "push", "-", "copy.path", "-", "delete"];
+/** A worktree with changes to commit. */
+const DIRTY = { status: { changed: 2, untracked: 0, conflicted: 0, conflictedPaths: [] } };
+
+const IDS = ["make_active", "commit", "-", "push", "-", "open.editor", "open.terminal", "open.reveal", "copy.path", "-", "delete"];
 
 describe("worktreeMenu", () => {
-  it("another worktree on a branch: make active, push its branch, copy the path, delete", () => {
-    const items = worktreeMenu(worktree(), snap());
+  it("another worktree on a branch: make active, commit, push its branch, open it outside, copy the path, delete", () => {
+    const items = worktreeMenu(worktree(DIRTY), snap());
     expect(ids(items)).toEqual(IDS);
     expect(disabled(items)).toEqual([]);
     expect(find(items, "push").label).toBe("Push feature/x…");
     expect(find(items, "delete").danger).toBe(true);
   });
 
-  it("leaves out what is not built yet: no commit, pull request, terminal, reveal or editor items", () => {
+  it("leaves out what is not built yet: no pull request items", () => {
     const all = ids(worktreeMenu(worktree(), snap()));
-    for (const id of ["commit", "pr.create", "pr.open", "open.editor", "open.terminal", "open.reveal"]) {
-      expect(all).not.toContain(id);
-    }
+    for (const id of ["pr.create", "pr.open"]) expect(all).not.toContain(id);
+  });
+
+  it("commits a worktree with changes; one without has nothing to commit", () => {
+    const items = worktreeMenu(worktree({ status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] } }), snap());
+    expect(find(items, "commit").disabledReason).toBe("Nothing to commit: no file has changed");
+    const changed = worktreeMenu(worktree({ status: { changed: 0, untracked: 1, conflicted: 0, conflictedPaths: [] } }), snap());
+    expect(find(changed, "commit").disabledReason).toBeUndefined();
+    // Not read yet: offered (the panel reads the files).
+    expect(find(worktreeMenu(worktree({ status: null }), snap()), "commit").disabledReason).toBeUndefined();
+  });
+
+  it("opens the worktree in the editor, a terminal and the file manager", () => {
+    const items = worktreeMenu(worktree(), snap());
+    expect(find(items, "open.editor").label).toBe("Open in editor");
+    expect(find(items, "open.terminal").label).toBe("Open in terminal");
+    expect(find(items, "open.reveal").label).toMatch(/^(Reveal in Finder|Show in File Explorer|Open containing folder)$/);
   });
 
   it("the active worktree cannot be made active again", () => {
-    const items = worktreeMenu(worktree({ active: true }), snap());
+    const items = worktreeMenu(worktree({ ...DIRTY, active: true }), snap());
     expect(disabled(items)).toEqual(["make_active"]);
     expect(find(items, "make_active").disabledReason).toBe("Already the active worktree");
   });
 
   it("a worktree whose folder is missing can be neither made active nor deleted", () => {
     const items = worktreeMenu(worktree({ prunable: true }), snap());
-    expect(disabled(items)).toEqual(["make_active", "delete"]);
+    expect(disabled(items)).toEqual(["make_active", "commit", "open.editor", "open.terminal", "open.reveal", "delete"]);
     expect(find(items, "make_active").disabledReason).toBe("Its folder is missing");
     expect(find(items, "delete").disabledReason).toBe("Its folder is missing: prune stale entries instead");
   });
@@ -40,7 +57,20 @@ describe("worktreeMenu", () => {
 
   it("a locked worktree shows its lock, with the reason, and cannot be deleted", () => {
     const items = worktreeMenu(worktree({ locked: true, lockReason: "on a USB drive" }), snap());
-    expect(ids(items)).toEqual(["make_active", "-", "push", "-", "locked", "copy.path", "-", "delete"]);
+    expect(ids(items)).toEqual([
+      "make_active",
+      "commit",
+      "-",
+      "push",
+      "-",
+      "locked",
+      "open.editor",
+      "open.terminal",
+      "open.reveal",
+      "copy.path",
+      "-",
+      "delete",
+    ]);
     expect(find(items, "locked").label).toBe("Locked: on a USB drive");
     expect(find(items, "locked").disabledReason).toMatch(/git worktree unlock/);
     expect(find(items, "delete").disabledReason).toBe("It is locked (on a USB drive): unlock it first");

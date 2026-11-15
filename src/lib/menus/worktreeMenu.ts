@@ -1,8 +1,8 @@
 // The menu of a worktree in the side panel (spec §5.4), and the panel's own menu. Like the
-// other builders, a pure function of the worktree and the snapshot the panel shows.
-// Commit…, the pull-request items, Open in terminal and Reveal come with the commit panel and
-// the pull requests; Open in editor with the launchers (it opens the active worktree only today).
+// other builders, a pure function of the worktree and the snapshot the panel shows (and, for
+// the file manager's name, the platform). The pull-request items come with the pull requests.
 
+import { revealLabel } from "../platform";
 import type { RepoSnapshot, WorktreeInfo } from "../types";
 import { firstReason, item, noRemoteReason, SEPARATOR, shown } from "./common";
 import type { MenuItem } from "./types";
@@ -26,9 +26,23 @@ export function deleteReason(wt: WorktreeInfo): string | undefined {
   );
 }
 
+/** Why worktree `wt`'s changes cannot be committed from its menu, or undefined. */
+export function commitReason(wt: WorktreeInfo): string | undefined {
+  const s = wt.status;
+  return firstReason(
+    wt.prunable ? "Its folder is missing" : undefined,
+    s !== null && s.changed + s.untracked + s.conflicted === 0 ? "Nothing to commit: no file has changed" : undefined,
+  );
+}
+
 /** The menu of worktree `wt`. */
 export function worktreeMenu(wt: WorktreeInfo, snap: RepoSnapshot): MenuItem[] {
-  const items: MenuItem[] = [item("make_active", "Make active", { disabledReason: makeActiveReason(wt, snap) }), SEPARATOR];
+  const gone = wt.prunable ? "Its folder is missing" : undefined;
+  const items: MenuItem[] = [
+    item("make_active", "Make active", { disabledReason: makeActiveReason(wt, snap) }),
+    item("commit", "Commit…", { disabledReason: commitReason(wt) }),
+    SEPARATOR,
+  ];
   items.push(
     item("push", wt.branch === null ? "Push…" : `Push ${shown(wt.branch)}…`, {
       disabledReason: firstReason(
@@ -46,7 +60,14 @@ export function worktreeMenu(wt: WorktreeInfo, snap: RepoSnapshot): MenuItem[] {
       }),
     );
   }
-  items.push(item("copy.path", "Copy path"), SEPARATOR, item("delete", "Delete…", { danger: true, disabledReason: deleteReason(wt) }));
+  items.push(
+    item("open.editor", "Open in editor", { disabledReason: gone }),
+    item("open.terminal", "Open in terminal", { disabledReason: gone }),
+    item("open.reveal", revealLabel(), { disabledReason: gone }),
+    item("copy.path", "Copy path"),
+    SEPARATOR,
+    item("delete", "Delete…", { danger: true, disabledReason: deleteReason(wt) }),
+  );
   return items;
 }
 

@@ -21,7 +21,7 @@
   import { makeActiveReason } from "../menus/worktreeMenu";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
-  import { addWorktree, makeActive, openWorktreeMenu, panelState, revealWorktree } from "../state/worktrees.svelte";
+  import { addWorktree, makeActive, openCommit, openWorktreeMenu, panelState, revealWorktree } from "../state/worktrees.svelte";
   import type { WorktreeInfo } from "../types";
   import MiddleText from "./MiddleText.svelte";
 
@@ -285,8 +285,18 @@
                 {#if wt.status === null && !wt.prunable}
                   <span class="pending" title="Not read yet">…</span>
                 {:else if n > 0 || (wt.status?.conflicted ?? 0) > 0}
-                  <span class="changes" class:conflicts={(wt.status?.conflicted ?? 0) > 0} title={changesText(wt)}
-                    ><span class="dot"></span>{n}</span
+                  <!-- The changes, a button: their commit panel. -->
+                  <button
+                    class="changes"
+                    class:conflicts={(wt.status?.conflicted ?? 0) > 0}
+                    tabindex="-1"
+                    title="{changesText(wt)}. Commit…"
+                    aria-label="Commit the changes of {wt.branch ?? 'this worktree'}"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      openCommit(view, wt.path);
+                    }}
+                    ondblclick={(e) => e.stopPropagation()}><span class="dot"></span>{n}</button
                   >
                 {/if}
                 <!-- How it stands with its upstream, in one place. -->
@@ -535,7 +545,19 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    height: 18px;
+    margin: 0 -5px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
     color: var(--text);
+    font: inherit;
+    transition: background-color 80ms linear;
+  }
+
+  .changes:hover {
+    background: var(--bg-pressed);
   }
 
   .changes .dot {
@@ -605,13 +627,14 @@
     color: var(--warning);
   }
 
-  /* Make active and the menu, over the row's right end while the pointer is on it (the keys
-     have Enter and the menu key; a selected row keeps its facts in sight). */
+  /* Make active and the menu, over the right end of the row's second line while the pointer
+     is on it (the first line's changes stay in reach; the keys have Enter and the menu key; a
+     selected row keeps its facts in sight). */
   .tools {
     position: absolute;
-    top: 0;
     right: 0;
-    bottom: 0;
+    bottom: 3px;
+    height: 24px;
     display: none;
     align-items: center;
     gap: 2px;

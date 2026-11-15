@@ -356,6 +356,39 @@ const REPOS: Record<string, RepoScript> = {
     git("reset", "-q", "--hard", "FETCH_HEAD");
   },
   /**
+   * The commit panel's: `main` level with a bare `origin` (`commit-origin.git`), its upstream,
+   * and changes of every kind in the working tree: `src/app.ts` modified, `old.txt` deleted,
+   * `notes/plan.md` renamed to `notes/roadmap.md` (staged), `a file with spaces.txt` modified,
+   * `todo.md` new (untracked), and a file deep in long folder names modified. A linked worktree
+   * `topic` (in `commit.worktrees/topic`, branch `topic`, no upstream) with one new file. An
+   * identity for the commits the app makes.
+   */
+  commit(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const deep = "packages/payments-service/src/components/checkout/summary/LineItemPriceBreakdown.tsx";
+    write("src/app.ts", "export const app = 1;\n");
+    write("old.txt", "old\n");
+    write("notes/plan.md", "# Plan\n\nShip it.\n");
+    write("a file with spaces.txt", "spaces\n");
+    write(deep, "export {};\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Start the app");
+    const origin = path.join(path.dirname(dir), "commit-origin.git");
+    git("init", "-q", "--bare", "-b", "main", origin);
+    git("remote", "add", "origin", origin);
+    git("push", "-q", "-u", "origin", "main");
+    git("worktree", "add", "-q", "-b", "topic", path.join(path.dirname(dir), "commit.worktrees", "topic"));
+    writeFileSync(path.join(path.dirname(dir), "commit.worktrees", "topic", "topic.txt"), "topic\n");
+    write("src/app.ts", "export const app = 2;\n");
+    rmSync(path.join(dir, "old.txt"));
+    git("mv", "notes/plan.md", "notes/roadmap.md");
+    write("a file with spaces.txt", "spaces, changed\n");
+    write("todo.md", "- write the docs\n");
+    write(deep, "export const total = 0;\n");
+  },
+  /**
    * Worktrees in every state, beside a bare `origin` (`worktrees-origin.git`); the linked ones
    * in `worktrees.worktrees/` (the default location pattern). `main` (the main worktree): clean,
    * level with origin/main, a `.gitignore` for `build/`. `feature/login`: 2 ahead and 1 behind

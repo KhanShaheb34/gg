@@ -45,7 +45,7 @@ test("every worktree is listed with how it stands, the main one first and the ac
   await expect(login.locator(".path")).toHaveAttribute("title", path.join(linked(gg.repoPath("worktrees")), "feature-login"));
   await expect(activeRow(page).locator(".path")).toHaveText("worktrees");
   await expect(login.locator(".changes")).toHaveText("2");
-  await expect(login.locator(".changes")).toHaveAttribute("title", "Uncommitted: 1 changed, 1 new");
+  await expect(login.locator(".changes")).toHaveAttribute("title", "Uncommitted: 1 changed, 1 new. Commit…");
   await expect(login.locator(".ab")).toHaveText("↑2 ↓1");
   // No upstream, a commit on no remote.
   await expect(row(page, "fix-typo").locator(".line.one .upstream")).toHaveText("1 unpushed");

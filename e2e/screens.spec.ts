@@ -1032,3 +1032,74 @@ for (const theme of ["light", "dark"] as const) {
     await page.evaluate(() => localStorage.removeItem("gg.side.v1"));
   });
 }
+
+// The commit panel: the files of the active worktree with a message; some unticked with what
+// stops a commit said; another worktree offered to be made active; a merge with a conflict
+// left (the file that cannot be ticked, the merge's note); a hook's refusal in a notice.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`commit panel, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.goto("/");
+      const repo = gg.repoPath("commit");
+      await open(page, repo);
+      const shot = async (name: string) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      const files = page.getByRole("listbox", { name: "Changed files" });
+      await page.keyboard.press("ControlOrMeta+k");
+      await expect(files.getByRole("option")).toHaveCount(6);
+      await page.getByTestId("commit-message").fill("Rework the checkout summary\n\nThe line items show their price breakdown.");
+      await park(page);
+      await shot("commit");
+
+      // Two unticked, the message gone: what stops a commit is said under the buttons.
+      await files.locator('[data-path="todo.md"]').click();
+      await files.locator('[data-path="old.txt"]').click();
+      await page.getByTestId("commit-message").fill("");
+      await files.locator('[data-path="src/app.ts"]').hover();
+      await shot("commit-subset");
+
+      // A failing hook: the notice with git's output, the message kept.
+      writeFileSync(
+        path.join(repo, ".git", "hooks", "pre-commit"),
+        "#!/bin/sh\necho 'lint: src/app.ts:1: missing semicolon' >&2\nexit 1\n",
+      );
+      chmodSync(path.join(repo, ".git", "hooks", "pre-commit"), 0o755);
+      await page.getByTestId("commit-message").fill("Rework the checkout summary");
+      await page.getByTestId("commit-button").click();
+      const failed = page.locator("[data-notices] .toast", { hasText: "refused the commit" });
+      await failed.getByRole("button", { name: "Git output" }).click();
+      await park(page);
+      await shot("commit-hook-failed");
+      await failed.getByRole("button", { name: /Dismiss/ }).click();
+
+      // Another worktree: its files, and the offer to make it active.
+      await page.getByTestId("side-back").click();
+      const topic = page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"][data-path$="/topic"]');
+      await topic.click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Commit…" }).click();
+      await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
+      await park(page);
+      await shot("commit-elsewhere");
+    });
+
+    test(`commit panel concluding a merge, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.goto("/");
+      await open(page, gg.repoPath("worktrees"));
+      const hotfix = page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"][data-path$="/hotfix"]');
+      await hotfix.dblclick();
+      await expect(page.getByTestId("active-worktree")).toContainText("hotfix");
+      await page.keyboard.press("ControlOrMeta+k");
+      await expect(page.getByTestId("commit-merge")).toBeVisible();
+      await park(page);
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: path.join(OUT, `${prefix}commit-merge-${theme}.png`) });
+    });
+  }

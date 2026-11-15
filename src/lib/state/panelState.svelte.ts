@@ -1,5 +1,6 @@
 // One repository's side panel: whether it shows (RepoPrefs.sidePanel, kept by the core), the
-// worktree selected in it and the switch underway. Made with the repository's view (outside
+// worktree selected in it, the switch underway, and which view it shows (the worktree list, or
+// the commit panel of one worktree). Made with the repository's view (outside
 // any reactive context, so everything reading it follows its changes); see worktrees.svelte.ts.
 
 import { api } from "../ipc";
@@ -13,6 +14,10 @@ export class PanelState {
   switching: string | null = $state(null);
   /** Asks to move the focus into the list (bumped; the list follows it). */
   focusRequest = $state(0);
+  /** The worktree whose commit panel shows (its path), or null: the worktree list. */
+  commitFor: string | null = $state(null);
+  /** Asks to move the focus to the commit message (bumped; the commit panel follows it). */
+  commitFocus = $state(0);
   /** The user chose since the view opened: the remembered choice no longer applies. */
   chosen = false;
 

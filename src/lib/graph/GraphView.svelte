@@ -30,6 +30,7 @@
   import { api } from "../ipc";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
+  import { openCommit } from "../state/worktrees.svelte";
   import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
   import {
     alignSlackFor,
@@ -336,12 +337,17 @@
   }
 
   /**
-   * A double click on a local branch's label checks it out, as its menu's item does; on
-   * anything else (a remote branch's label or part of one, a tag, the row) it does nothing
-   * more than the clicks before it (selecting the row).
+   * A double click on a local branch's label checks it out, as its menu's item does; on the
+   * uncommitted row it opens the commit panel; on anything else (a remote branch's label or
+   * part of one, a tag, another row) it does nothing more than the clicks before it
+   * (selecting the row).
    */
   function onRowsDblClick(e: MouseEvent) {
     const on = e.target as Element;
+    if (rowAt(e)?.row.kind === "uncommitted") {
+      openCommit(view);
+      return;
+    }
     const ref = on.closest<HTMLElement>(".ref[data-slot]");
     const slot = ref?.dataset.slot;
     if (slot === undefined || slot === "more" || on.closest(".remotes")) return;

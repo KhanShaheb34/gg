@@ -6,6 +6,8 @@
 //   Cmd+R            refresh                  F6               next region: graph, newest notice, side panel
 //   Cmd+Shift+L      show or hide the command log (Escape in it closes it)
 //   Cmd+B            show or hide the side panel (Shift+F6: the region before)
+//   Cmd+K            commit: the active worktree's commit panel, its message focused
+//                    (Cmd+Enter in the message commits)
 
 export type Shortcut =
   | { kind: "open" }
@@ -17,7 +19,8 @@ export type Shortcut =
   | { kind: "refresh" }
   | { kind: "regions"; delta: 1 | -1 }
   | { kind: "log" }
-  | { kind: "sidePanel" };
+  | { kind: "sidePanel" }
+  | { kind: "commit" };
 
 type Keys = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> &
   Partial<Pick<KeyboardEvent, "isComposing">>;
@@ -42,6 +45,7 @@ export function shortcutFor(e: Keys, isMac: boolean): Shortcut | null {
   if (key === "o") return { kind: "open" };
   if (key === "w") return { kind: "close" };
   if (key === "b") return { kind: "sidePanel" };
+  if (key === "k") return { kind: "commit" };
   if (key === "9") return { kind: "jump", index: -1 };
   if (/^[1-8]$/.test(key)) return { kind: "jump", index: Number(key) - 1 };
   return null;

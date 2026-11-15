@@ -7,6 +7,7 @@
   import Mark from "./lib/components/Mark.svelte";
   import SidePanel from "./lib/components/SidePanel.svelte";
   import WorktreePanel from "./lib/components/WorktreePanel.svelte";
+  import CommitPanel from "./lib/components/CommitPanel.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
@@ -36,7 +37,10 @@
   import { repoView } from "./lib/state/repo.svelte";
   import {
     addWorktree,
+    closeCommit,
     docked,
+    openCommit,
+    panelState,
     openPanelMenu,
     panelShown,
     setPanelShown,
@@ -74,7 +78,9 @@
     const graph = document.querySelector<HTMLElement>('#repo-panel [role="grid"]');
     const notices = document.querySelectorAll<HTMLElement>("[data-notices] .toast");
     const notice = notices[notices.length - 1]?.querySelector<HTMLElement>("button") ?? null;
-    const panel = document.querySelector<HTMLElement>('[data-region="side-panel"] [data-testid="worktree-list"]');
+    const panel = document.querySelector<HTMLElement>(
+      '[data-region="side-panel"] [data-testid="worktree-list"], [data-region="side-panel"] [data-testid="commit-message"]',
+    );
     const regions = [graph, notice, panel];
     const focused = document.activeElement;
     const at = regions.findIndex(
@@ -202,6 +208,9 @@
       case "regions":
         cycleRegion(shortcut.delta);
         break;
+      case "commit":
+        if (view) openCommit(view);
+        break;
       case "sidePanel":
         if (active) setPanelShown(active.repoId);
         break;
@@ -301,9 +310,15 @@
             </div>
             {#if panelShown(active.repoId)}
               {@const view = repoView(active.repoId)}
+              {@const panel = panelState(active.repoId)}
+              <!-- The commit panel of a worktree still listed; else the worktree list. -->
+              {@const committing = panel.commitFor === null ? null : (view.snapshot.worktrees.find((w) => w.path === panel.commitFor) ?? null)}
               <SidePanel
-                title="Worktrees"
-                count={view.snapshot.worktrees.length > 1 ? String(view.snapshot.worktrees.length) : null}
+                title={committing ? "Commit" : "Worktrees"}
+                count={committing === null && view.snapshot.worktrees.length > 1 ? String(view.snapshot.worktrees.length) : null}
+                detail={committing ? (committing.branch ?? `${shortHash(committing.head ?? "")} (detached)`) : null}
+                detailTitle={committing ? shortenPath(committing.path, app.homeDir) : undefined}
+                onback={committing ? () => closeCommit(active.repoId) : undefined}
                 overlay={!docked()}
                 top={bannerH}
                 onhide={() => {
@@ -312,6 +327,7 @@
                 }}
               >
                 {#snippet actions()}
+                  {#if !committing}
                   <button
                     class="icon-btn small"
                     aria-label="Add worktree"
@@ -338,8 +354,15 @@
                       <circle cx="10.8" cy="7" r="1.1" fill="currentColor" />
                     </svg>
                   </button>
+                  {/if}
                 {/snippet}
-                <WorktreePanel {view} />
+                {#if committing}
+                  {#key committing.path}
+                    <CommitPanel {view} path={committing.path} />
+                  {/key}
+                {:else}
+                  <WorktreePanel {view} />
+                {/if}
               </SidePanel>
             {/if}
           </div>

@@ -161,7 +161,8 @@
 <style>
   .stack {
     position: fixed;
-    right: 16px;
+    /* Beside the docked side panel (it sets --side-w), never over its buttons (Commit). */
+    right: calc(16px + var(--side-w, 0px));
     /* Above the command log while it is open (it sets --log-h), so it never hides the entry a notice's Show log went to. */
     bottom: calc(16px + var(--log-h, 0px));
     z-index: 50;

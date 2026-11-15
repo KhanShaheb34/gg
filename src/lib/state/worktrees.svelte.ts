@@ -9,6 +9,7 @@ import CreateWorktreeDialog, { type CreateFrom } from "../components/dialogs/Cre
 import DeleteWorktreeDialog from "../components/dialogs/DeleteWorktreeDialog.svelte";
 import PushDialog from "../components/dialogs/PushDialog.svelte";
 import { api } from "../ipc";
+import { openExternal } from "./editor";
 import { shown } from "../menus/common";
 import { worktreeMenu, worktreePanelMenu } from "../menus/worktreeMenu";
 import type { RepoSnapshot, WorktreeInfo } from "../types";
@@ -73,6 +74,28 @@ export function docked(): boolean {
 /** The panel's width docked: the user's, or its least in a window narrower than NARROW_W. */
 export function dockedWidth(): number {
   return sidePanel.windowW < NARROW_W ? SIDE_MIN_W : sidePanel.width;
+}
+
+/** Commit messages being written, by worktree path, while the app runs (closed panels keep theirs). */
+export const commitDrafts = new Map<string, string>();
+
+/**
+ * Shows the commit panel of worktree `path` of `view`'s repository (the active one when
+ * omitted) in the side panel, which shows, with the focus in its message.
+ */
+export function openCommit(view: RepoView, path?: string): void {
+  const state = panelState(view.repoId);
+  state.commitFor = path ?? view.snapshot.activeWorktree;
+  state.commitFocus++;
+  setPanelShown(view.repoId, true);
+}
+
+/** Back from the commit panel to the worktree list, with the focus in it. */
+export function closeCommit(repoId: number): void {
+  const state = panelState(repoId);
+  state.selected = state.commitFor ?? state.selected;
+  state.commitFor = null;
+  state.focusRequest++;
 }
 
 /** A panel state for a repository with no view (never shown). */
@@ -198,6 +221,16 @@ function pickWorktree(id: string, view: RepoView, wt: WorktreeInfo, snap: RepoSn
     case "make_active":
       void makeActive(view.repoId, wt.path, view);
       return;
+    case "commit":
+      openCommit(view, wt.path);
+      return;
+    case "open.editor":
+    case "open.terminal":
+    case "open.reveal": {
+      const target = id === "open.editor" ? "editor" : id === "open.terminal" ? "terminal" : "reveal";
+      void openExternal(view.repoId, { target, path: wt.path });
+      return;
+    }
     case "push":
       if (wt.branch !== null) {
         showDialog(PushDialog, { repoId: view.repoId, branch: wt.branch, upstream: wt.upstream?.name ?? null, remotes: snap.remotes });

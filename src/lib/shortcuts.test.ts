@@ -98,6 +98,14 @@ describe("region and panel shortcuts", () => {
     expect(repeatable({ kind: "sidePanel" })).toBe(false);
   });
 
+  it("Cmd+K opens the commit panel (Ctrl+K elsewhere), once per press", () => {
+    expect(shortcutFor(key("k", { metaKey: true }), true)).toEqual({ kind: "commit" });
+    expect(shortcutFor(key("K", { ctrlKey: true }), false)).toEqual({ kind: "commit" });
+    expect(shortcutFor(key("k", { ctrlKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("k", { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "commit" })).toBe(false);
+  });
+
   it("Cmd+Shift+L shows or hides the command log (Ctrl+Shift+L elsewhere)", () => {
     expect(shortcutFor(key("L", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "log" });
     expect(shortcutFor(key("l", { ctrlKey: true, shiftKey: true }), false)).toEqual({ kind: "log" });

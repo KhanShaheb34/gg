@@ -20,7 +20,8 @@ pub async fn read_worktrees(r: &GitRunner, cwd: &Path) -> Result<Vec<WorktreeInf
 
 /// Parses `worktree list --porcelain -z`: NUL-terminated `key[ value]` attributes, each
 /// worktree ended by an empty attribute. The first worktree is the main one. Only what git
-/// lists is filled in (the state fields stay empty).
+/// lists is filled in (the state fields stay empty); paths are spelled as the platform does
+/// ([`crate::platform::native_path`]).
 fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
     let mut list = Vec::new();
     let mut current: Option<WorktreeInfo> = None;
@@ -36,7 +37,7 @@ fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
             list.extend(current.take());
             if !value.is_empty() {
                 current = Some(WorktreeInfo {
-                    path: value.to_owned(),
+                    path: crate::platform::native_path(value),
                     is_main: list.is_empty(),
                     ..WorktreeInfo::default()
                 });

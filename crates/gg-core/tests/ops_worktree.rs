@@ -77,8 +77,18 @@ fn worktree_writes(h: &Harness, out: &OpOutcome) -> Vec<Vec<String>> {
 fn listed(repo: &TestRepo) -> Vec<String> {
     repo.git(&["worktree", "list", "--porcelain"])
         .lines()
-        .filter_map(|l| l.strip_prefix("worktree ").map(str::to_owned))
+        .filter_map(|l| l.strip_prefix("worktree ").map(native))
         .collect()
+}
+
+/// `path` written with `/` (as git for Windows writes paths, or as a test does), spelled as
+/// the platform does.
+fn native(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('/', "\\")
+    } else {
+        path.to_owned()
+    }
 }
 
 fn confirmed(dangers: &[Danger]) -> Vec<Confirmed> {
@@ -1592,7 +1602,10 @@ async fn the_default_location_follows_the_pattern_and_skips_taken_folders() {
         h.m.worktree_default_path(id, "feature/x:y", pattern)
             .await
             .unwrap();
-    assert_eq!(path.path, format!("{base}/repo.worktrees/feature-xy"));
+    assert_eq!(
+        path.path,
+        native(&format!("{base}/repo.worktrees/feature-xy"))
+    );
     assert!(!path.exists);
     // A non-empty folder there: -2. An empty one is usable and said to exist.
     fs::create_dir_all(format!("{base}/repo.worktrees/feature-xy")).unwrap();
@@ -1602,7 +1615,10 @@ async fn the_default_location_follows_the_pattern_and_skips_taken_folders() {
         h.m.worktree_default_path(id, "feature/x:y", pattern)
             .await
             .unwrap();
-    assert_eq!(path.path, format!("{base}/repo.worktrees/feature-xy-2"));
+    assert_eq!(
+        path.path,
+        native(&format!("{base}/repo.worktrees/feature-xy-2"))
+    );
     assert!(path.exists);
     // A worktree git lists (its folder gone) is taken too.
     let wt = repo.add_worktree("main2");
@@ -1613,13 +1629,13 @@ async fn the_default_location_follows_the_pattern_and_skips_taken_folders() {
         h.m.worktree_default_path(id, "main2", pattern)
             .await
             .unwrap();
-    assert_eq!(path.path, format!("{base}/repo.worktrees/main2-2"));
+    assert_eq!(path.path, native(&format!("{base}/repo.worktrees/main2-2")));
     // Absolute patterns, and through dispatch-free settings: an odd branch.
     let path =
         h.m.worktree_default_path(id, "@@", &format!("{base}/flat/{{repo}}-{{branch}}"))
             .await
             .unwrap();
-    assert_eq!(path.path, format!("{base}/flat/repo-worktree"));
+    assert_eq!(path.path, native(&format!("{base}/flat/repo-worktree")));
     // One that lands inside the main worktree, a linked one or the git dir: the default
     // pattern instead (Task 4 review).
     let other = repo.add_worktree("other");
@@ -1629,7 +1645,11 @@ async fn the_default_location_follows_the_pattern_and_skips_taken_folders() {
         format!("{base}/repo/.git/{{branch}}"),
     ] {
         let path = h.m.worktree_default_path(id, "x", &inside).await.unwrap();
-        assert_eq!(path.path, format!("{base}/repo.worktrees/x"), "{inside}");
+        assert_eq!(
+            path.path,
+            native(&format!("{base}/repo.worktrees/x")),
+            "{inside}"
+        );
     }
 }
 

@@ -72,7 +72,7 @@ pub fn explain(args: &[&str], out: &GitOutput) -> Step {
     // active.
     let hints: Vec<OpHint> = checked_out_elsewhere(&all)
         .map(|(_, worktree)| OpHint::MakeActive {
-            worktree: worktree.to_owned(),
+            worktree: crate::platform::native_path(worktree),
         })
         .into_iter()
         .collect();
@@ -155,6 +155,7 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
     }
     for line in all.lines().map(str::trim) {
         if let Some((branch, path)) = held_by_worktree(line) {
+            let path = crate::platform::native_path(path);
             return Some(format!(
                 "Branch \u{201c}{branch}\u{201d} is checked out in another worktree, at \
                  {path}. Switch to that worktree, or check out another branch here."
@@ -171,6 +172,7 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
             ));
         }
         if let Some((branch, path)) = delete_refused_by_worktree(line) {
+            let path = crate::platform::native_path(path);
             return Some(format!(
                 "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, so \
                  it cannot be deleted. Check out another branch there, or delete that worktree, \

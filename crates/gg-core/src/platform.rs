@@ -324,6 +324,22 @@ pub(crate) fn process_gone(pid: u32) -> bool {
     }
 }
 
+/// A path as git writes it in its output (git for Windows: `C:/Users/me/repo`) in the
+/// platform's own spelling (`C:\Users\me\repo`), so it compares equal to the paths the app
+/// reads from the file system and reads as Windows users write paths; elsewhere unchanged.
+pub fn native_path(git: &str) -> String {
+    native_path_for(cfg!(windows), git)
+}
+
+/// [`native_path`] on Windows (`windows`) or elsewhere.
+pub(crate) fn native_path_for(windows: bool, git: &str) -> String {
+    if windows {
+        git.replace('/', "\\")
+    } else {
+        git.to_owned()
+    }
+}
+
 /// Whether `a` and `b` name the same file or folder. When both exist, compared with links
 /// resolved (which also gives each the case it has on disk, on macOS and Windows); when
 /// neither exists, their nearest existing folders resolved and the rest compared as written,
@@ -835,6 +851,17 @@ mod tests {
     /// Paths are compared as the file system does: a folder spelled in another case is the
     /// same folder where names ignore case (macOS by default, Windows), whether it exists
     /// or not (a worktree removed outside the app).
+    /// git for Windows writes paths with `/`; the app spells them with `\`.
+    #[test]
+    fn paths_from_git_are_spelled_natively() {
+        assert_eq!(
+            native_path_for(true, "C:/Users/me/my repo"),
+            r"C:\Users\me\my repo"
+        );
+        assert_eq!(native_path_for(true, r"\\server\share"), r"\\server\share");
+        assert_eq!(native_path_for(false, "/home/me/a\\b"), "/home/me/a\\b");
+    }
+
     /// A rename that must not replace never does, and works when the name is free.
     #[test]
     fn a_rename_without_replacing_never_replaces() {

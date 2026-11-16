@@ -299,3 +299,25 @@ test("several branches with pull requests on one commit: the ones folded into +k
   await row.locator("button.pr-chip:not([hidden])").first().click();
   await expect(grid(page)).toBeFocused();
 });
+
+test("a long branch keeps the dialog in a small window: its name on one line, the base still in view (found in the screenshots)", async ({ gg }) => {
+  const { page } = gg;
+  const long = "feature/rework-the-parser-error-recovery-for-unterminated-strings";
+  listing(gg, []);
+  gg.git("prs", "branch", long, "fix/typo");
+  await page.setViewportSize({ width: 900, height: 560 });
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await refresh(page);
+  await menuOn(page, long, "Create pull request…");
+  await expect(dialog(page).getByTestId("pr-title")).not.toHaveValue("");
+  // The branch on one line beside the push note, not broken over four.
+  const from = dialog(page).locator(".dialog-target.from");
+  const ref = from.locator(".dialog-ref");
+  const lineHeight = await ref.evaluate((e) => parseFloat(getComputedStyle(e).lineHeight) || 20);
+  expect((await ref.boundingBox())!.height).toBeLessThan(lineHeight * 1.5);
+  // Everything up to the buttons fits in the window.
+  for (const el of [dialog(page).getByTestId("pr-base"), dialog(page).getByTestId("pr-draft"), dialog(page).getByRole("button", { name: "Cancel" })]) {
+    await expect(el).toBeInViewport({ ratio: 1 });
+  }
+});

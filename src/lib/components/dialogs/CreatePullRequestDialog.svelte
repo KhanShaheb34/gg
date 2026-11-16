@@ -323,7 +323,7 @@
     <span class="dialog-target-label">From</span>
     <span class="dialog-ref" title={branch}>{shown(branch)}</span>
     {#if mode === "form" && needsPush && pushNote !== null}
-      <span class="push-note" data-testid="push-note">{pushNote}</span>
+      <span class="push-note" data-testid="push-note" title={pushNote}>{pushNote}</span>
     {/if}
   </div>
 
@@ -465,11 +465,25 @@
     align-items: center;
   }
 
+  /* One line each: a long branch is cut (its name in full in the tooltip), never broken over
+     several lines that push the base branch and the buttons out of a small window. */
+  .from .dialog-ref {
+    flex: 0 1 auto;
+    overflow: hidden;
+    overflow-wrap: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .push-note {
     margin-left: auto;
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
     color: var(--text-faint);
     font-size: var(--fs-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .waiting {

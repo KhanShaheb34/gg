@@ -476,7 +476,6 @@
             role="option"
             tabindex="-1"
             aria-selected={on}
-            aria-checked={on}
             aria-disabled={why !== null || locked(f)}
             aria-label={rowLabel(f)}
             title={rowTitle(f)}

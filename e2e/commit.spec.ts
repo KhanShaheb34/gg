@@ -449,7 +449,9 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   await page.keyboard.press("ControlOrMeta+k");
   // Still conflicted: the row says why it cannot be ticked, to the eye and in its name; the
   // panel says it up front, and why Commit cannot be pressed.
-  await expect(file(page, "shared.txt")).toHaveAttribute("aria-checked", "false");
+  await expect(file(page, "shared.txt")).toHaveAttribute("aria-selected", "false");
+  // An option is selected, not checked (final review M13).
+  await expect(file(page, "shared.txt")).not.toHaveAttribute("aria-checked");
   await expect(file(page, "shared.txt")).toHaveAccessibleName(/shared\.txt.*Resolve its conflicts first\./);
   await expect(page.getByTestId("commit-merge")).toContainText("shared.txt");
   await expect(reason(page)).toHaveText("Resolve the conflicts in your editor, then continue: commit here, or Continue in the banner.");
@@ -462,7 +464,6 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   await expect(page.getByTestId("commit-merge")).not.toContainText("shared.txt");
   for (const tracked of ["shared.txt", "src/app.ts"]) {
     await expect(file(page, tracked)).toHaveAttribute("aria-selected", "true");
-    await expect(file(page, tracked)).toHaveAttribute("aria-checked", "true");
     await expect(file(page, tracked)).toHaveAccessibleName(/goes in with the merge/);
     await expect(file(page, tracked)).toHaveAttribute("aria-disabled", "true");
     await file(page, tracked).click({ force: true });

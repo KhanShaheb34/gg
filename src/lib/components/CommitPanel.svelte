@@ -70,6 +70,8 @@
     if (!f.committable) return f.reason ?? "git cannot take this name.";
     return null;
   }
+  /** A sentence of its own said after a colon: its first letter lower-cased (final review M12). */
+  const midSentence = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
   /** Ticked and kept so: a tracked file while a merge is concluded. */
   const locked = (f: FileEntry) => merging && f.status !== "?" && blocked(f) === null;
   const isTicked = (f: FileEntry) => blocked(f) === null && (locked(f) || ticked.has(f.path));
@@ -284,7 +286,7 @@
     if (files === null || filesHead === null) return "Reading the changed files…";
     if (stopped && !merging)
       return `A ${KIND[stopped.kind]} is stopped here: Continue, in the banner, commits its changes (or abort it).`;
-    if (merging && conflicts > 0) return "Resolve the conflicts, then conclude the merge.";
+    if (merging && conflicts > 0) return "Resolve the conflicts in your editor, then continue: commit here, or Continue in the banner.";
     if (merging && truncated) return "More than 5,000 files changed: conclude this merge in a terminal.";
     if (files.length === 0) return "Nothing to commit: no file has changed.";
     if (chosen.length === 0) return "Tick the files to commit.";
@@ -417,7 +419,7 @@
     <p class="banner" data-testid="commit-merge">
       Concluding the merge{stopped?.incoming ? ` of ${visibleText(stopped.incoming)}` : ""}: every changed tracked file goes into it.
       {#each mergeBlocked.slice(0, 3) as f (f.path)}
-        <span class="blocked">{visibleText(f.path)} cannot go in yet: {blocked(f)}</span>
+        <span class="blocked">{visibleText(f.path)} cannot go in yet: {midSentence(blocked(f) ?? "")}</span>
       {/each}
       {#if mergeBlocked.length > 3}
         <span class="blocked">And {mergeBlocked.length - 3} more.</span>

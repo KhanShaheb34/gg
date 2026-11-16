@@ -115,7 +115,7 @@
   function testWhy(kind: "editor" | "terminal"): string | null {
     if (repoId === null) return "Open a repository to try it on.";
     const field = kind === "editor" ? fields.editor : fields.terminal;
-    if (field.status === "error") return "Fix the command first: the one above was not saved.";
+    if (field.status === "error") return "It was not saved, so Test waits until it is fixed.";
     return null;
   }
 
@@ -273,11 +273,15 @@
         >
       </div>
       <div class="note" id="settings-{kind}-note">
+        <!-- The specific reason first, then what it means for Test (final review M12). -->
+        {#if field.status === "error" && field.error}
+          <p class="problem" role="alert">{field.error}</p>
+        {/if}
         {#if testWhy(kind) !== null}
           <p class="hint" id="settings-{kind}-test-why" data-testid="settings-{kind}-test-why">{testWhy(kind)}</p>
         {/if}
         {#if field.status === "error" && field.error}
-          <p class="problem" role="alert">{field.error}</p>
+          <!-- Said above. -->
         {:else if runs !== null}
           <p class="runs" data-testid="settings-{kind}-runs">{@render arrow()}<code>{runs}</code></p>
         {:else if value.trim() === ""}

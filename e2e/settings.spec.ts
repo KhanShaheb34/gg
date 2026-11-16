@@ -227,4 +227,12 @@ test("a disabled Test button says why, visibly", async ({ gg }) => {
   await page.getByTestId("open-settings").click();
   await expect(sheet(page).getByTestId("settings-editor-test")).toBeEnabled();
   await expect(sheet(page).getByTestId("settings-editor-test-why")).toHaveCount(0);
+  // A command the core refuses: its own reason first, then what it means for Test (final
+  // review M12).
+  await sheet(page).getByTestId("settings-editor").fill("code x{path}");
+  await sheet(page).getByTestId("settings-editor").blur();
+  const note = sheet(page).locator("#settings-editor-note p");
+  await expect(note.first()).toHaveAttribute("role", "alert");
+  await expect(note.first()).toContainText("{path}");
+  await expect(note.nth(1)).toHaveText("It was not saved, so Test waits until it is fixed.");
 });

@@ -452,7 +452,9 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   await expect(file(page, "shared.txt")).toHaveAttribute("aria-checked", "false");
   await expect(file(page, "shared.txt")).toHaveAccessibleName(/shared\.txt.*Resolve its conflicts first\./);
   await expect(page.getByTestId("commit-merge")).toContainText("shared.txt");
-  await expect(reason(page)).toHaveText("Resolve the conflicts, then conclude the merge.");
+  await expect(reason(page)).toHaveText("Resolve the conflicts in your editor, then continue: commit here, or Continue in the banner.");
+  // Said mid-sentence, lower-cased (final review M12).
+  await expect(page.getByTestId("commit-merge")).toContainText("shared.txt cannot go in yet: resolve its conflicts first.");
   // Resolved and staged.
   writeFileSync(path.join(topic, "shared.txt"), "both\n");
   at("add", "shared.txt");

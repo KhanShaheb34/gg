@@ -82,7 +82,9 @@ export class SettingField<K extends keyof Settings> {
     try {
       const saved = await api.updateSettings({ [this.key]: pending.value } as Partial<Settings>);
       if (seq !== this.#seq) return true; // a later value is on its way
-      app.settings = saved;
+      // This field's value only: another field's answer may come later or sooner, and the
+      // rest of this one is as the core had it then (an older value of that other field).
+      app.settings = { ...app.settings, [this.key]: saved[this.key] };
       this.error = null;
       this.status = "saved";
       saving.problem = null;

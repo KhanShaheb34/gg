@@ -50,6 +50,44 @@ describe("saving a setting", () => {
     expect(field.status).toBe("idle");
   });
 
+  it("two settings changed at once both stay, whichever answer comes last (found in the real app)", async () => {
+    // The core saved the theme first and the dates second, but the theme's answer (which still
+    // has the old dates) arrives last: it must not put the old dates back.
+    const themeAnswer = { ...DEFAULTS, theme: "dark" as const };
+    const datesAnswer = { ...DEFAULTS, theme: "dark" as const, dateFormat: "iso" as const };
+    let answerTheme: (s: Settings) => void = () => {};
+    vi.mocked(ipc.api.updateSettings).mockImplementation((patch) =>
+      "theme" in patch ? new Promise((resolve) => (answerTheme = resolve)) : Promise.resolve(datesAnswer),
+    );
+    const { setTheme } = await import("./app.svelte");
+    const theme = setTheme("dark");
+    const dates = new s.SettingField("dateFormat");
+    await dates.flush(); // nothing pending yet
+    dates.set("iso");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(app.settings.dateFormat).toBe("iso");
+    answerTheme(themeAnswer);
+    await theme;
+    expect(app.settings.dateFormat).toBe("iso");
+    expect(app.settings.theme).toBe("dark");
+
+    // And the other way round between two fields.
+    let answerFetch: (s: Settings) => void = () => {};
+    vi.mocked(ipc.api.updateSettings).mockImplementation((patch) =>
+      "fetchIntervalSecs" in patch
+        ? new Promise((resolve) => (answerFetch = resolve))
+        : Promise.resolve({ ...datesAnswer, dateFormat: "relative" as const }),
+    );
+    const fetch = new s.SettingField("fetchIntervalSecs");
+    fetch.set(900);
+    dates.set("relative");
+    await vi.advanceTimersByTimeAsync(0);
+    answerFetch({ ...datesAnswer, fetchIntervalSecs: 900 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(app.settings.dateFormat).toBe("relative");
+    expect(app.settings.fetchIntervalSecs).toBe(900);
+  });
+
   it("shows the core's refusal and applies nothing; the next good value clears it", async () => {
     const { CoreError } = ipc;
     vi.mocked(ipc.api.updateSettings).mockRejectedValueOnce(

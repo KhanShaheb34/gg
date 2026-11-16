@@ -420,8 +420,9 @@ export async function setTheme(theme: ThemeSetting): Promise<void> {
   const request = ++themeRequest;
   try {
     const settings = await api.updateSettings({ theme });
-    // An answer to an earlier choice must not undo a later one.
-    if (request === themeRequest) app.settings = settings;
+    // An answer to an earlier choice must not undo a later one; nor, as the rest of it is as
+    // the core had it then, another setting changed meanwhile.
+    if (request === themeRequest) app.settings = { ...app.settings, theme: settings.theme };
   } catch (e) {
     reportError(e, "Could not save the theme");
   }

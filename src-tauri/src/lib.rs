@@ -437,7 +437,8 @@ mod tests {
         let urls = [
             tauri::Url::from_directory_path(&dir).unwrap(),
             tauri::Url::from_file_path(&file).unwrap(),
-            tauri::Url::from_directory_path("/no/such/folder").unwrap(),
+            // Absolute on every platform (a bare "/no/such" is not on Windows).
+            tauri::Url::from_directory_path(dir.join("gg-no-such-folder-test")).unwrap(),
             tauri::Url::parse("https://example.com/").unwrap(),
         ];
         let dirs = opened_dirs(&urls);

@@ -632,7 +632,102 @@ fn create(branch: &str, base: &str, title: &str, body: &str, draft: bool) -> OpR
         title: title.into(),
         body: body.into(),
         draft,
+        compare_page: false,
     }
+}
+
+/// `create`, as the dialog sends it when it promised the compare page.
+fn create_on_compare_page(branch: &str) -> OpRequest {
+    OpRequest::PrCreate {
+        branch: branch.into(),
+        base: "main".into(),
+        base_remote: None,
+        title: branch.into(),
+        body: String::new(),
+        draft: false,
+        compare_page: true,
+    }
+}
+
+/// Final boundary review I1: the dialog said the compare page (gh was not there when the
+/// list was loaded); gh installed since must not make a pull request the user never saw.
+/// The request carries the mode, and the core never runs gh in that mode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_compare_page_the_dialog_promised_never_runs_gh() {
+    let s = setup().await;
+    s.repo.branch("feature");
+    let out = s.h.run(s.id, create_on_compare_page("feature")).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "Pushed feature to origin/feature. Finish on GitHub:"
+    );
+    assert!(
+        matches!(&out.hints[..], [OpHint::OpenUrl { url, .. }] if url.contains("/compare/")),
+        "{:?}",
+        out.hints
+    );
+    assert!(s.gh.calls_of(&["pr", "create"]).is_empty(), "gh never ran");
+}
+
+/// Final boundary review I1: after "no gh" (or signed out), the user's own refresh asks gh
+/// again at once, whatever the minute between loads says: the dialog does it when it opens,
+/// so a gh installed or signed in meanwhile shows the real form.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_users_refresh_asks_gh_again_at_once_after_it_was_unavailable() {
+    let s = setup().await;
+    let empty = tempfile::tempdir().unwrap();
+    s.h.m
+        .set_tool_path(Some(empty.path().as_os_str().to_owned()));
+    s.h.m.set_prs_every(Duration::from_secs(600));
+    let snap = s.load().await;
+    assert_eq!(snap.prs.reason, Some(PrUnavailable::NoGh));
+    // gh installed meanwhile.
+    s.h.m.set_tool_path(Some(s.gh.path()));
+    s.gh.reply("pr-list", 0, &list(&[]), "");
+    let snap = s.load().await;
+    assert_eq!(
+        snap.prs.status,
+        gg_core::dto::PrStatus::Ready,
+        "{:?}",
+        snap.prs
+    );
+}
+
+/// Final boundary review M8: gh signed out at create time, after the form was filled in:
+/// the compare page gets the title and description typed, so nothing is lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_compare_page_fallback_keeps_the_title_and_description() {
+    let s = setup().await;
+    s.repo.branch("feature");
+    s.gh.reply(
+        "pr-create",
+        4,
+        "",
+        "To get started with GitHub CLI, please run:  gh auth login\n",
+    );
+    let out =
+        s.h.run(
+            s.id,
+            create(
+                "feature",
+                "main",
+                "Fix the cat & dog",
+                "Line one\nLine 2 #3",
+                false,
+            ),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(
+        out.hints,
+        [OpHint::OpenUrl {
+            url: "https://github.com/octo/cat/compare/main...feature?expand=1\
+                  &title=Fix%20the%20cat%20%26%20dog&body=Line%20one%0ALine%202%20%233"
+                .into(),
+            label: "Open the compare page".into()
+        }]
+    );
 }
 
 /// Remembers the pull request base given, as the app's store does.
@@ -861,7 +956,9 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     assert_eq!(
         out.hints,
         [OpHint::OpenUrl {
-            url: "https://github.com/octo/cat/compare/main...feature?expand=1".into(),
+            // The form's title and description go with it (final boundary review M8).
+            url: "https://github.com/octo/cat/compare/main...feature?expand=1&title=T&body=b"
+                .into(),
             label: "Open the compare page".into()
         }]
     );
@@ -1098,7 +1195,7 @@ async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
     assert_eq!(
         out.hints,
         [OpHint::OpenUrl {
-            url: "https://github.com/octo/cat/compare/main...ada:topic?expand=1".into(),
+            url: "https://github.com/octo/cat/compare/main...ada:topic?expand=1&title=Topic".into(),
             label: "Open the compare page".into()
         }]
     );

@@ -701,6 +701,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             title,
             body: text,
             draft,
+            compare_page,
         } => {
             pr::check(&branch, &base, base_remote.as_deref(), &title)?;
             let into = match &base_remote {
@@ -718,6 +719,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                             title: &title,
                             body: &text,
                             draft,
+                            compare_page,
                         };
                         pr::create(ctx, request).await
                     })

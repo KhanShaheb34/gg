@@ -190,9 +190,9 @@ test("an existing pull request: the dialog says so and opens it; a failure stays
   await expect(dialog(page).getByRole("button", { name: "Cancel" })).toBeEnabled();
   await expect(page.locator("[data-notices] .toast", { hasText: "502" })).toHaveCount(0);
   await error.getByRole("button", { name: "Open the compare page" }).click();
-  await expect
-    .poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/compare/main...docs/readme?expand=1")))
-    .toBe(true);
+  // With the form's title and description (final boundary review M8): nothing typed is lost.
+  const page_ = "https://github.com/octo/cat/compare/main...docs/readme?expand=1&title=Explain%20the%20parser&body=-%20Explain%20the%20parser";
+  await expect.poll(() => gg.launches().some((l) => l.includes(page_))).toBe(true);
 });
 
 test("gh signed out: said once, plainly; the branch menu pushes and opens GitHub's compare page, through the dialog", async ({ gg }) => {
@@ -251,6 +251,41 @@ test("gh not installed: the dialog says it pushes and then opens GitHub's compar
     .toBe(true);
   expect(gg.git("prs", "rev-parse", "refs/remotes/origin/fix/typo").trim()).toBe(gg.git("prs", "rev-parse", "fix/typo").trim());
   expect(gg.gh.calls()).toEqual([]);
+});
+
+test("gh installed after it was missing: the dialog asks again when it opens and shows the real form (final review I1)", async ({ gg }) => {
+  const { page } = gg;
+  gg.gh.uninstall();
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await refresh(page);
+  await expect(notice(page, "Pull requests need the GitHub CLI (gh)")).toBeVisible();
+  // Installed within the minute between loads: the dialog's own refresh finds it.
+  gg.gh.install();
+  listing(gg, []);
+  await menuOn(page, "fix/typo", "Create pull request…");
+  await expect(dialog(page).getByTestId("pr-title")).toBeVisible();
+  await expect(dialog(page).getByTestId("pr-no-gh")).toHaveCount(0);
+  await expect(dialog(page).getByRole("button", { name: /and create pull request$/ })).toBeVisible();
+});
+
+test("the compare page the dialog promised is what happens, even if gh is installed meanwhile (final review I1)", async ({ gg }) => {
+  const { page } = gg;
+  gg.gh.uninstall();
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await refresh(page);
+  await expect(notice(page, "Pull requests need the GitHub CLI (gh)")).toBeVisible();
+  await menuOn(page, "fix/typo", "Create pull request…");
+  const go = dialog(page).getByRole("button", { name: "Push fix/typo to origin/fix/typo and open the compare page" });
+  await expect(go).toBeEnabled();
+  // gh appears while the dialog shows the compare page (no form): it must not be used.
+  gg.gh.install();
+  gg.gh.reply("pr-create", 0, "https://github.com/octo/cat/pull/99\n");
+  await go.click();
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(notice(page, "Pushed fix/typo to origin/fix/typo. Finish on GitHub:")).toBeVisible();
+  expect(gg.gh.calls().filter((c) => c[1] === "create")).toEqual([]);
 });
 
 test("the button names where the branch really goes: remote.pushDefault sends it to the fork (Task 9 review I3)", async ({ gg }) => {

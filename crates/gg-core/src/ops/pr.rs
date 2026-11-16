@@ -27,6 +27,8 @@ pub(crate) struct Request<'a> {
     pub title: &'a str,
     pub body: &'a str,
     pub draft: bool,
+    /// The dialog promised GitHub's compare page: gh is never run.
+    pub compare_page: bool,
 }
 
 /// Checks a `pr_create` request without git: the branch and the base can be branch names
@@ -83,6 +85,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         title,
         body,
         draft,
+        compare_page,
     } = request;
     if ref_commit(ctx, &format!("refs/heads/{branch}"))
         .await?
@@ -139,16 +142,25 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         Some(owner) => format!("{owner}:{branch}"),
         None => branch.to_owned(),
     };
+    // The compare page, with what the form had in it (final boundary review M8): nothing
+    // typed is lost when it ends there after all. Not when the dialog showed no form.
+    let page = compare_url(&on, base, branch, fork.as_deref());
+    let page = if compare_page {
+        page
+    } else {
+        with_text(&page, title, body)
+    };
     let compare = vec![OpHint::OpenUrl {
-        url: compare_url(&on, base, branch, fork.as_deref()),
+        url: page,
         label: "Open the compare page".to_owned(),
     }];
 
     // gh looked for before anything is pushed: without it, or signed out (as the list last
     // said), the branch is still pushed and the pull request is finished on GitHub's compare
-    // page.
+    // page. Never when the dialog promised that page (final boundary review I1): gh found
+    // since would make a pull request the user never saw the form of.
     let signed_out = ctx.repo.prs_unavailable().await == Some(PrUnavailable::SignedOut);
-    let gh = if signed_out {
+    let gh = if signed_out || compare_page {
         None
     } else {
         ctx.manager.gh(ctx.repo, &ctx.runner, &on)
@@ -262,6 +274,36 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
             })
         }
     }
+}
+
+/// Most bytes of a description put into the compare page's address.
+const MAX_BODY_IN_URL: usize = 4000;
+
+/// The compare page `page` with `title` and `body` (its first [`MAX_BODY_IN_URL`] bytes, cut
+/// at a character) as its `title` and `body` parameters, which GitHub fills the form with.
+fn with_text(page: &str, title: &str, body: &str) -> String {
+    let mut end = body.len().min(MAX_BODY_IN_URL);
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut url = format!("{page}&title={}", query_encode(title));
+    if end > 0 {
+        url.push_str(&format!("&body={}", query_encode(&body[..end])));
+    }
+    url
+}
+
+/// `text` percent-encoded for a query value: every byte but letters, digits and `-._~`.
+fn query_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// Remembers `base` as the next pull request's suggested base, in the background.

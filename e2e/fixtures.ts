@@ -726,6 +726,8 @@ export type FakeGh = {
   stdin(i: number): string;
   /** Takes `gh` away: the devserver finds none, as when it is not installed. */
   uninstall(): void;
+  /** Puts `gh` back, as when the user installs it. */
+  install(): void;
 };
 
 function fakeGh(home: string): FakeGh {
@@ -753,6 +755,9 @@ function fakeGh(home: string): FakeGh {
     },
     uninstall() {
       rmSync(path.join(home, "tools", "gh"));
+    },
+    install() {
+      writeFileSync(path.join(home, "tools", "gh"), FAKE_GH, { mode: 0o755 });
     },
   };
 }

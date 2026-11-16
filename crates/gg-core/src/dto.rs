@@ -904,7 +904,9 @@ pub enum OpRequest {
     /// base repository; `None`: the one `pr_suggest` names), through `gh`, with `title` (one
     /// line) and `body` (any text), as a draft with `draft`. The branch is pushed first (R38)
     /// when its namesake on its remote is missing or behind. Uses no working directory (runs
-    /// from the main worktree).
+    /// from the main worktree). With `compare_page` (the dialog said gh cannot make it, and
+    /// showed no form), the branch is only pushed and the outcome is GitHub's compare page:
+    /// gh is never run, even if it can be by now (final boundary review I1).
     PrCreate {
         branch: String,
         base: String,
@@ -913,6 +915,7 @@ pub enum OpRequest {
         title: String,
         body: String,
         draft: bool,
+        compare_page: bool,
     },
 }
 

@@ -316,7 +316,17 @@ export type OpRequest =
   | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string }
   // base: a branch on baseRemote, the repository it goes to (null: the one pr_suggest names); every gh command names it
   | { op: "remove_index_lock"; expectWorktree: string } // the active worktree's stale index.lock, once confirmed (M5)
-  | { op: "pr_create"; branch: string; base: string; baseRemote: string | null; title: string; body: string; draft: boolean };
+  | {
+      op: "pr_create";
+      branch: string;
+      base: string;
+      baseRemote: string | null;
+      title: string;
+      body: string;
+      draft: boolean;
+      /** The dialog promised GitHub's compare page (no form): the core only pushes, and never runs gh. */
+      comparePage: boolean;
+    };
 
 /** What a new worktree checks out: an existing local branch, a new branch at a commit (full hash), or a commit, detached. */
 export type WorktreeBranch = { existing: string } | { create: string; at: string } | { detach: string };

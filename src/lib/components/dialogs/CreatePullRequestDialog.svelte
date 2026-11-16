@@ -89,8 +89,10 @@
   }
 
   void (async () => {
-    // Not known yet whether gh can be asked: a refresh the user would have asked for loads them.
-    if (prs?.status === "unknown") {
+    // Not known yet whether gh can be asked, or it could not be (not installed, signed out:
+    // the user may have fixed that a moment ago): a refresh the user would have asked for
+    // loads them, and asks gh again at once (final boundary review I1).
+    if (prs?.status === "unknown" || prs?.status === "unavailable") {
       api.refresh(repoId, true).then(
         (s) => view?.applySnapshot(s),
         () => {},
@@ -113,8 +115,19 @@
   const existing: PullRequest | null = $derived(suggestion?.existing ?? null);
   const compareUrl = $derived(suggestion?.compareUrl ?? null);
 
+  /**
+   * The repository's pull-request state as last settled: while the refresh the dialog asked
+   * for loads them, what was known stays shown (no form flashing up and away).
+   */
+  // svelte-ignore state_referenced_locally
+  let settled = $state(prs);
+  $effect(() => {
+    if (prs !== null && prs.status !== "loading") settled = prs;
+  });
   /** Why gh cannot make it, when the repository's pull requests say so. */
-  const unavailable = $derived(prs?.status === "unavailable" && prs.reason !== null && prs.reason !== "failed" ? prs.reason : null);
+  const unavailable = $derived(
+    settled?.status === "unavailable" && settled.reason !== null && settled.reason !== "failed" ? settled.reason : null,
+  );
   /**
    * gh cannot make it here (not installed, or signed out), but GitHub can: the branch is
    * pushed and GitHub's compare page opens to finish there (Task 9 review I5).
@@ -247,6 +260,9 @@
           title: title.trim() || branch,
           body,
           draft,
+          // What the dialog shows is what is done: the compare page it promised never turns
+          // into a pull request made through gh (final boundary review I1).
+          comparePage: compareOnly,
         },
         { ownErrors: ["bad_request", "bad_name"], ownOutcome: true },
       );

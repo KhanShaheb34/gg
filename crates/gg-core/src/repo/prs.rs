@@ -127,6 +127,10 @@ impl RepoManager {
     }
 
     async fn load_prs(self: &Arc<Self>, repo: &Arc<Repo>, trigger: PrTrigger) {
+        // After "no gh" or "signed out", the user's own refresh asks again at once (the
+        // pull-request dialog does it when it opens): they may have installed gh or signed
+        // in a moment ago (final boundary review I1).
+        let asked_again = trigger == PrTrigger::User && repo.prs_unavailable().await.is_some();
         {
             let mut gate = lock(&repo.prs_gate);
             if gate.running {
@@ -134,7 +138,10 @@ impl RepoManager {
                 return;
             }
             let every = self.prs_every();
-            if trigger != PrTrigger::Created && gate.last.is_some_and(|t| t.elapsed() < every) {
+            if trigger != PrTrigger::Created
+                && !asked_again
+                && gate.last.is_some_and(|t| t.elapsed() < every)
+            {
                 return;
             }
             gate.running = true;

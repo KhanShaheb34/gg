@@ -57,7 +57,9 @@ cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 hdiutil create -volname gg -srcfolder "$stage" -ov -format UDZO "$out/$file" >/dev/null
 
+# A pipe hides a failed shasum (sh has no pipefail): the hash is checked for its shape.
 sha=$(shasum -a 256 "$out/$file" | cut -d' ' -f1)
+printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$' || fail "could not compute the sha256 of $out/$file"
 printf '%s  %s\n' "$sha" "$file" >"$out/$file.sha256"
 bytes=$(stat -f %z "$out/$file")
 # Megabytes as Finder counts them (10^6 bytes), one decimal.

@@ -96,17 +96,36 @@ async fn lock_path(ctx: &OpCtx<'_>) -> Result<Option<PathBuf>> {
     if out.code != 0 {
         return Ok(None);
     }
-    let text = out.text();
+    Ok(lock_path_from(&out.text(), &ctx.cwd, cfg!(windows)))
+}
+
+/// The lock's path from `git rev-parse --git-path`'s output `text`, made absolute against
+/// `cwd`, spelt as the platform does (`windows`: git writes `/` there, which the messages and
+/// the hint would otherwise show, or mix with the worktree's `\`; Task 12 review minor 10).
+fn lock_path_from(text: &str, cwd: &Path, windows: bool) -> Option<PathBuf> {
     let text = text.trim_end_matches(['\n', '\r']);
     if text.is_empty() {
-        return Ok(None);
+        return None;
+    }
+    if windows {
+        // Spelt out rather than with `Path` (pure, so it is tested on any host): a drive
+        // (`C:\`) or a share (`\\host`) is absolute; anything else is under `cwd`.
+        let native = crate::platform::native_path_for(true, text);
+        let b = native.as_bytes();
+        let absolute = native.starts_with('\\') || (b.len() > 2 && b[1] == b':' && b[2] == b'\\');
+        return Some(if absolute {
+            PathBuf::from(native)
+        } else {
+            let cwd = cwd.to_string_lossy();
+            PathBuf::from(format!("{}\\{native}", cwd.trim_end_matches('\\')))
+        });
     }
     let path = Path::new(text);
-    Ok(Some(if path.is_absolute() {
+    Some(if path.is_absolute() {
         path.to_owned()
     } else {
-        ctx.cwd.join(path)
-    }))
+        cwd.join(path)
+    })
 }
 
 /// Whether git child of the app's is running for the repository, after waiting up to
@@ -517,6 +536,27 @@ fn failed(message: &str) -> Step {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lock_path_is_spelt_as_the_platform_does() {
+        let cwd = Path::new("/r");
+        assert_eq!(
+            lock_path_from(".git/index.lock\n", cwd, false),
+            Some(PathBuf::from("/r/.git/index.lock"))
+        );
+        assert_eq!(lock_path_from("\n", cwd, false), None);
+        // Git for Windows: `/` in what it prints, `\` in what the app shows.
+        let shown = |text: &str, cwd: &str| {
+            lock_path_from(text, Path::new(cwd), true).map(|p| p.to_string_lossy().into_owned())
+        };
+        let relative = shown(".git/index.lock\r\n", r"C:\repo").unwrap();
+        assert!(!relative.contains('/'), "{relative}");
+        assert!(relative.ends_with(r".git\index.lock"), "{relative}");
+        assert_eq!(
+            shown("C:/repo/.git/worktrees/x/index.lock\n", r"C:\repo").as_deref(),
+            Some(r"C:\repo\.git\worktrees\x\index.lock")
+        );
+    }
 
     #[test]
     fn ages_read_as_people_say_them() {

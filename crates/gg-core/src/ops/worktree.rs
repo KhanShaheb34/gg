@@ -423,9 +423,9 @@ async fn nested_refusal(list: &[WorktreeInfo], wt: &WorktreeInfo, raw: &[u8]) ->
             .unwrap_or_else(|e| Some(Inside::Unchecked(PathBuf::from(&wt.path), e.to_string())));
     inside.map(|inside| match inside {
         Inside::Repository(inner) => format!(
-            "{shown} contains another repository at {}, which git would delete with it. Move \
-             or delete it first.",
-            inner.display()
+            "Nothing was deleted: {shown} contains another repository, at {} inside it, which \
+             git would delete with it. Move or delete it first.",
+            inner.strip_prefix(shown).unwrap_or(&inner).display()
         ),
         Inside::Unchecked(folder, why) => format!(
             "Nothing was deleted: gg could not make sure that {} holds no other repository \
@@ -1036,8 +1036,20 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
     }
     let mut parts = Vec::new();
     if !work.changed.is_empty() {
+        // Edits git status does not show are said so, in full here (the list is short).
+        let hidden = match (work.marked.len(), work.changed.len()) {
+            (0, _) => String::new(),
+            (1, 1) => " (marked assume-unchanged or skip-worktree, so git status does not show \
+                       it)"
+            .to_owned(),
+            (m, _) => format!(
+                " ({m} of them marked assume-unchanged or skip-worktree, so git status does \
+                 not show {})",
+                if m == 1 { "it" } else { "them" }
+            ),
+        };
         parts.push(format!(
-            "uncommitted changes to {}",
+            "uncommitted changes to {}{hidden}",
             count(work.changed.len(), "file", "files")
         ));
     }
@@ -1097,7 +1109,7 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
         .changed
         .iter()
         .map(|path| match work.marked.iter().find(|(p, _)| p == path) {
-            Some((_, why)) => format!("{path} (marked {why}: git status does not show it)"),
+            Some((_, why)) => format!("{path} ({why})"),
             None => path.clone(),
         })
         .collect();

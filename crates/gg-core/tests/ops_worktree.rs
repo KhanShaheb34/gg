@@ -726,22 +726,21 @@ async fn edits_to_files_marked_assume_unchanged_or_skip_worktree_are_work() {
     let id = h.open(repo.path()).await.repo_id;
     let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
     assert!(
-        danger
-            .message
-            .contains("has uncommitted changes to 2 files."),
+        danger.message.contains(
+            "has uncommitted changes to 2 files (2 of them marked assume-unchanged or \
+                 skip-worktree, so git status does not show them)."
+        ),
         "{}",
         danger.message
     );
     let detail = danger.detail.as_deref().unwrap();
     assert!(detail.starts_with("Uncommitted changes (2):\n"), "{detail}");
     assert!(
-        detail.contains("  a.txt (marked assume-unchanged: git status does not show it)"),
+        // Short in the list (the box does not wrap), said in full in the message.
+        detail.contains("  a.txt (assume-unchanged)"),
         "{detail}"
     );
-    assert!(
-        detail.contains("  .gitignore (marked skip-worktree: git status does not show it)"),
-        "{detail}"
-    );
+    assert!(detail.contains("  .gitignore (skip-worktree)"), "{detail}");
     let out = h
         .run_with(id, remove(&wt, false), &confirmed(&[danger]))
         .await;
@@ -1189,11 +1188,13 @@ async fn another_repository_inside_is_never_removed_with_it() {
     fs::create_dir_all(&deep).unwrap();
     git_in(&deep, &["init", "-q"]);
     fs::write(deep.join("mine.txt"), "x").unwrap();
+    // The inner repository named inside the worktree, not by a second long path (seen in
+    // the real app).
     let says = format!(
-        "{} contains another repository at {}, which git would delete with it. Move or \
-         delete it first.",
+        "Nothing was deleted: {} contains another repository, at {} inside it, which git \
+         would delete with it. Move or delete it first.",
         real(&wt),
-        real(&deep)
+        native("build/other")
     );
     refused_for(&h, id, &wt, &deep, &says).await;
     fs::remove_dir_all(wt.join("build")).unwrap();
@@ -1204,13 +1205,13 @@ async fn another_repository_inside_is_never_removed_with_it() {
     let vendored = wt.join("vendored");
     fs::create_dir(&vendored).unwrap();
     git_in(&vendored, &["init", "-q"]);
-    refused_for(&h, id, &wt, &vendored, "contains another repository at").await;
+    refused_for(&h, id, &wt, &vendored, "contains another repository, at").await;
     fs::remove_dir_all(&vendored).unwrap();
     // An untracked folder that is a repository.
     let plain = wt.join("plain");
     fs::create_dir(&plain).unwrap();
     git_in(&plain, &["init", "-q"]);
-    refused_for(&h, id, &wt, &plain, "contains another repository at").await;
+    refused_for(&h, id, &wt, &plain, "contains another repository, at").await;
 }
 
 /// Final review I1 (P3-R12): git lists an ignored folder as one entry, so a repository two
@@ -1229,9 +1230,9 @@ async fn a_repository_at_any_depth_inside_an_ignored_folder_is_never_removed_wit
         // Something beside it, so the folder is not only the repository.
         fs::write(wt.join("build/out.o"), "built").unwrap();
         let says = format!(
-            "{} contains another repository at {}, which git would delete with it.",
+            "{} contains another repository, at {} inside it, which git would delete with it.",
             real(&wt),
-            real(&inner)
+            native(depth)
         );
         refused_for(&h, id, &wt, &inner, &says).await;
         fs::remove_dir_all(wt.join("build")).unwrap();
@@ -1242,13 +1243,13 @@ async fn a_repository_at_any_depth_inside_an_ignored_folder_is_never_removed_wit
     fs::write(wt.join("new/keep.txt"), "x").unwrap();
     fs::write(wt.join("new/.gitignore"), "cache/\n").unwrap();
     git_in(&inner, &["init", "-q"]);
-    refused_for(&h, id, &wt, &inner, "contains another repository at").await;
+    refused_for(&h, id, &wt, &inner, "contains another repository, at").await;
     // An untracked folder, four levels down (git itself stops at the repository).
     fs::remove_dir_all(wt.join("new")).unwrap();
     let inner = wt.join("plain/a/b/c");
     fs::create_dir_all(&inner).unwrap();
     git_in(&inner, &["init", "-q"]);
-    refused_for(&h, id, &wt, &inner, "contains another repository at").await;
+    refused_for(&h, id, &wt, &inner, "contains another repository, at").await;
 }
 
 /// Final boundary review M6: the dialog names the branch and commit it showed; a worktree

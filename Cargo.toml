@@ -12,3 +12,8 @@ opt-level = 3
 lto = "thin"
 strip = true
 panic = "abort"
+
+# Build scripts and proc macros run on the build machine only: not stripped (a stripping
+# tool that writes a malformed library, as Homebrew's llvm-objcopy did here, breaks the build).
+[profile.release.build-override]
+strip = false

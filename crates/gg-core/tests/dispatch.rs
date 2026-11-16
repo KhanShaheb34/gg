@@ -1664,6 +1664,8 @@ async fn worktree_files_and_commit_via_dispatch() {
             ],
             "truncated": false,
             "mergeMessage": null,
+            // No remote: nowhere to push (final boundary review M7).
+            "pushRemote": null,
         })
     );
     let err = h
@@ -1757,7 +1759,8 @@ async fn pull_requests_via_dispatch() {
             json!({
                 "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
                 "request": { "op": "pr_create", "branch": "topic", "base": "main",
-                             "title": "Topic", "body": "b", "draft": false },
+                             "title": "Topic", "body": "b", "draft": false,
+                             "comparePage": false },
             }),
         )
         .await;

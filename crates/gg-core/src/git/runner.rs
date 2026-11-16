@@ -758,8 +758,6 @@ impl GitRunner {
         self.stop.as_ref().is_some_and(|s| s.is_stopped())
     }
 
-    /// This runner, with git using the index file `index` (an absolute path) instead of the
-    /// worktree's own: `GIT_INDEX_FILE` for git and the hooks it runs.
     /// This runner, setting `GIT_SSH_COMMAND` to `command` for every git child when it is
     /// `Some` (see [`batch_ssh_command`]).
     pub(crate) fn with_ssh_command(mut self, command: Option<&'static str>) -> Self {
@@ -781,6 +779,8 @@ impl GitRunner {
         batch_ssh_command(true, has_env, configured)
     }
 
+    /// This runner, with git using the index file `index` (an absolute path) instead of the
+    /// worktree's own: `GIT_INDEX_FILE` for git and the hooks it runs.
     pub(crate) fn with_index_file(&self, index: &Path) -> Self {
         let mut runner = self.clone();
         runner.index_file = Some(index.to_path_buf());

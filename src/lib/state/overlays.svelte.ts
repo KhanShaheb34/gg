@@ -133,3 +133,12 @@ export function showDialog<P extends Record<string, unknown>>(
 ): void {
   const id = openDialog(component, { ...props, close: () => closeDialog(id) } as P & { close: () => void });
 }
+
+/**
+ * Runs `action`, asked for from the app's native menu (Settings…, Keyboard Shortcuts, Install
+ * ‘gg’ Command…), unless a dialog is open: a dialog is modal, for the menu as for the keys.
+ */
+export function fromAppMenu(action: () => void): void {
+  if (overlays.dialog) return;
+  action();
+}

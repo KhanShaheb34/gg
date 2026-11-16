@@ -34,7 +34,7 @@
   import { openCliDialog } from "./lib/state/cli.svelte";
   import { openSettings, openShortcuts } from "./lib/state/settings.svelte";
   import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
-  import { overlays } from "./lib/state/overlays.svelte";
+  import { fromAppMenu, overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import {
     addWorktree,
@@ -167,11 +167,11 @@
       dragging = event.kind === "enter";
       if (event.kind === "drop") for (const path of event.paths) await openPath(path);
     });
-    // The app menu's "Install ‘gg’ Command…" (macOS).
-    const stopCliMenu = onEvent("menu-install-cli", () => void openCliDialog());
-    // The app menu's "Settings…" and Help's "Keyboard Shortcuts" (macOS).
-    const stopSettingsMenu = onEvent("menu-settings", () => openSettings());
-    const stopShortcutsMenu = onEvent("menu-shortcuts", () => openShortcuts());
+    // The app menu's "Install ‘gg’ Command…", "Settings…" and Help's "Keyboard Shortcuts"
+    // (macOS's menu bar; the window's menu on Windows and Linux): not while a dialog is open.
+    const stopCliMenu = onEvent("menu-install-cli", () => fromAppMenu(() => void openCliDialog()));
+    const stopSettingsMenu = onEvent("menu-settings", () => fromAppMenu(openSettings));
+    const stopShortcutsMenu = onEvent("menu-shortcuts", () => fromAppMenu(openShortcuts));
     // The webview's own context menu (Reload, Inspect…) is not the app's; text fields keep
     // theirs. The graph opens the app's own menus on its rows (GraphView), before this.
     const onContextMenu = (e: MouseEvent) => {

@@ -1,13 +1,15 @@
 //! The Windows `gg` launcher (`src-tauri/resources/gg.cmd`) as installed, run through cmd
-//! against fixture folders. The app is never started: these cases all end before the
-//! launcher's `start` (version, help, a missing folder, a folder outside any repository,
-//! an app that is no longer where it was installed from), which is enough to see how cmd
-//! reads paths with spaces, parentheses, `&` and `!` in them. Windows only (CI).
+//! against fixture folders. The app is never started: most cases end before the launcher's
+//! `start` (version, help, a missing folder, a folder outside any repository, an app that is
+//! no longer where it was installed from), which is enough to see how cmd reads paths with
+//! spaces, parentheses, `&` and `!` in them; the cases that get as far as `start` start a
+//! recording stub instead (`GG_APP_BIN`). Windows only (CI).
 #![cfg(windows)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use gg_core::cli::windows_launcher_script;
 use gg_core::testutil::{TestRepo, empty_git_config};
@@ -109,4 +111,98 @@ fn a_git_in_the_current_folder_is_never_run() {
     let out = run(&gg, &plain, &[]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(!marker.exists(), "the folder's git.cmd ran");
+}
+
+/// `script` run in `cwd` with `args`, starting the stub `stub` instead of the app.
+fn run_with_stub(script: &Path, cwd: &Path, args: &[&str], stub: &Path) -> Output {
+    Command::new(script)
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_GLOBAL", empty_git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GG_APP_BIN", stub)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .unwrap()
+}
+
+/// A stub in `dir` that writes the folder it is given to `record` (in `dir`): what the app
+/// would have been asked to open.
+fn recording_stub(dir: &Path) -> (PathBuf, PathBuf) {
+    let stub = dir.join("stub.cmd");
+    let record = dir.join("record.txt");
+    fs::write(&stub, "@echo off\r\n>\"%~dp0record.txt\" echo(%~1\r\n").unwrap();
+    (stub, record)
+}
+
+/// What the stub recorded, once it has (`start` returns before the stub has run).
+fn recorded(record: &Path) -> String {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(text) = fs::read_to_string(record)
+            && text.ends_with('\n')
+        {
+            return text.trim_end().to_owned();
+        }
+        assert!(Instant::now() < deadline, "the stub was not started");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// In a repository (a folder of it, or given as an argument), the app is started with that
+/// folder in full.
+#[test]
+fn a_folder_of_a_repository_is_given_to_the_app() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let sub = repo.path().join("my folder");
+    fs::create_dir_all(&sub).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let gg = installed(dir.path(), r"C:\nowhere\gg-desktop.exe");
+    let (stub, record) = recording_stub(dir.path());
+    for (cwd, args) in [
+        (sub.as_path(), vec![]),
+        (dir.path(), vec![sub.to_str().unwrap()]),
+    ] {
+        let _ = fs::remove_file(&record);
+        let out = run_with_stub(&gg, cwd, &args, &stub);
+        assert!(out.status.success(), "{out:?}");
+        let opened = recorded(&record);
+        assert_eq!(
+            dunce::canonicalize(&opened).unwrap(),
+            dunce::canonicalize(&sub).unwrap(),
+            "{opened}"
+        );
+    }
+}
+
+/// A repository at a drive's root (`subst` makes one of a fixture folder): the app is given
+/// `X:\.`, never `X:\` (whose `\` would escape the closing quote).
+#[test]
+fn a_repository_at_a_drive_root_is_given_as_the_root() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let free = ('M'..='Z')
+        .rev()
+        .map(|l| format!("{l}:"))
+        .find(|d| !Path::new(&format!("{d}\\")).exists())
+        .expect("a free drive letter");
+    let subst = |args: &[&str]| Command::new("subst").args(args).output().unwrap();
+    let made = subst(&[&free, repo.path().to_str().unwrap()]);
+    assert!(made.status.success(), "{made:?}");
+    struct Unsubst(String);
+    impl Drop for Unsubst {
+        fn drop(&mut self) {
+            let _ = Command::new("subst").args([&self.0, "/d"]).output();
+        }
+    }
+    let _undo = Unsubst(free.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let gg = installed(dir.path(), r"C:\nowhere\gg-desktop.exe");
+    let (stub, record) = recording_stub(dir.path());
+    let root = format!("{free}\\");
+    let out = run_with_stub(&gg, dir.path(), &[&root], &stub);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(recorded(&record), format!("{free}\\."));
 }

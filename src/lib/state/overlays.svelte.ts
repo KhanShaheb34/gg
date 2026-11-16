@@ -4,59 +4,7 @@
 // top one closes. ContextMenu.svelte and the dialog host in App.svelte show what is here.
 
 import { type Component, tick } from "svelte";
-import LazyDialogHost from "../components/LazyDialog.svelte";
 import type { MenuItem } from "../menus/types";
-
-/**
- * A dialog (or sheet) whose code is loaded when it is first opened, not with the app: the
- * app's start-up script is then smaller, and WebKit compiles it sooner (final review: the
- * launch's ~100 ms before the page's first line were compiling it). Made with
- * [`lazyDialog`]; opened like a component, with `openDialog` or `showDialog`.
- */
-export type LazyDialog<P extends Record<string, any>> = {
-  readonly load: () => Promise<{ default: Component<P> }>;
-  /** The component, once loaded: then it is shown at once, with no frame without it. */
-  readonly loaded: () => Component<P> | null;
-};
-
-/** Every dialog loaded on first use, for [`preloadDialogs`]. */
-const lazyDialogs: LazyDialog<any>[] = [];
-
-/** `load` (an `import()` of the dialog's module) as a dialog loaded on first use. */
-export function lazyDialog<P extends Record<string, unknown>>(load: () => Promise<{ default: Component<P> }>): LazyDialog<P> {
-  let loading: Promise<{ default: Component<P> }> | null = null;
-  let component: Component<P> | null = null;
-  const dialog: LazyDialog<P> = {
-    load: () =>
-      (loading ??= load().then((m) => {
-        component = m.default;
-        return m;
-      })),
-    loaded: () => component,
-  };
-  lazyDialogs.push(dialog);
-  return dialog;
-}
-
-/**
- * Loads every dialog loaded on first use, in the background: called once the first screen is
- * up, so that a dialog opened later shows at once (and a key typed right after opening it is
- * never lost while its code loads). A failure is left to the dialog's own open.
- */
-export function preloadDialogs(): void {
-  for (const dialog of lazyDialogs) void dialog.load().catch(() => {});
-}
-
-function isLazy<P extends Record<string, any>>(c: Component<P> | LazyDialog<P>): c is LazyDialog<P> {
-  return typeof c === "object" && c !== null && "load" in c;
-}
-
-/** Whether `dialog` (a component, or a dialog loaded on first use) is open. */
-export function isShowing<P extends Record<string, any>>(dialog: Component<P> | LazyDialog<P>): boolean {
-  return overlays.dialogs.some(
-    (d) => d.component === dialog || (isLazy(dialog) && (d.props.load === dialog.load || d.component === dialog.loaded())),
-  );
-}
 
 export type OpenMenu = {
   /** Changes with every menu opened, so a new one starts afresh. */
@@ -148,12 +96,7 @@ export function closeMenu(restoreFocus = true): void {
  * is). Returns its id. The dialog says how it ends through its props' callbacks; whoever
  * opened it closes it with `closeDialog(id)`.
  */
-export function openDialog<P extends Record<string, unknown>>(component: Component<P> | LazyDialog<P>, props: P): number {
-  if (isLazy(component)) {
-    const loaded = component.loaded();
-    if (loaded) return openDialog(loaded, props);
-    return openDialog(LazyDialogHost, { load: component.load, props });
-  }
+export function openDialog<P extends Record<string, unknown>>(component: Component<P>, props: P): number {
   closeMenu(false);
   const id = nextId++;
   // Taken now: once the dialog is shown, what is under it is inert and has lost the focus.
@@ -185,7 +128,7 @@ export function closeDialog(id: number): void {
 
 /** Opens `component` as a dialog with `props` and a `close` that closes it. */
 export function showDialog<P extends Record<string, unknown>>(
-  component: Component<P & { close: () => void }> | LazyDialog<P & { close: () => void }>,
+  component: Component<P & { close: () => void }>,
   props: P,
 ): void {
   const id = openDialog(component, { ...props, close: () => closeDialog(id) } as P & { close: () => void });

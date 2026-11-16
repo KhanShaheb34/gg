@@ -2,12 +2,12 @@
 // the "check it out instead" of the remote branch dialog: a branch behind its upstream and
 // not ahead of it asks whether to fast-forward it first (spec §5.3); one level with its
 // upstream, or diverged from it, or without one, is checked out directly.
+
+import FastForwardDialog from "../components/dialogs/FastForwardDialog.svelte";
 import { runOp } from "../state/ops.svelte";
-import { lazyDialog, showDialog } from "../state/overlays.svelte";
+import { showDialog } from "../state/overlays.svelte";
 import { findRepoView } from "../state/repo.svelte";
 import type { RefLabel } from "../types";
-
-const FastForwardDialog = lazyDialog(() => import("../components/dialogs/FastForwardDialog.svelte"));
 
 /**
  * Checks out local branch `branch` of repository `repoId`, in `worktree`, the active worktree

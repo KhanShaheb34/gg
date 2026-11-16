@@ -14,13 +14,7 @@ vi.mock("../ipc", async (importOriginal) => {
     },
   };
 });
-vi.mock("./overlays.svelte", () => ({
-  openDialog: vi.fn(),
-  closeDialog: vi.fn(),
-  showDialog: vi.fn(),
-  lazyDialog: (load: () => Promise<unknown>) => ({ load, loaded: () => null }),
-  isShowing: vi.fn(() => false),
-}));
+vi.mock("./overlays.svelte", () => ({ openDialog: vi.fn(), closeDialog: vi.fn(), showDialog: vi.fn() }));
 vi.mock("../components/dialogs/CreatePullRequestDialog.svelte", () => ({ default: { name: "CreatePullRequestDialog" } }));
 
 import { api } from "../ipc";
@@ -80,11 +74,8 @@ describe("opening", () => {
     expect(api.openExternal).toHaveBeenCalledWith(1, { target: "url", url: "https://github.com/octo/cat/pull/12" });
   });
 
-  it("Create pull request… opens the dialog for the branch named when the menu opened", async () => {
+  it("Create pull request… opens the dialog for the branch named when the menu opened", () => {
     openCreatePullRequest(snap({ repoId: 4 }), "feature/x");
-    expect(showDialog).toHaveBeenCalledWith(expect.objectContaining({ load: expect.any(Function) }), { repoId: 4, branch: "feature/x" });
-    // The dialog, loaded when first opened.
-    const [dialog] = vi.mocked(showDialog).mock.calls.at(-1)! as unknown as [{ load: () => Promise<{ default: unknown }> }];
-    expect((await dialog.load()).default).toEqual({ name: "CreatePullRequestDialog" });
+    expect(showDialog).toHaveBeenCalledWith({ name: "CreatePullRequestDialog" }, { repoId: 4, branch: "feature/x" });
   });
 });

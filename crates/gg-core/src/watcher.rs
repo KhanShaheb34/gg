@@ -15,7 +15,10 @@
 //!
 //! The active worktree's files are watched too ([`watch_worktree`]): recursively, leaving out
 //! `.git` and what git ignores, so an edit shows up as a status read and a build writing into
-//! an ignored folder costs nothing.
+//! an ignored folder costs nothing. On Linux, where a recursive watch is one inotify watch
+//! per folder (and the user's limit of them is soon reached by a `node_modules` or a
+//! `target`), the folders are watched one by one instead, never `.git` or a folder git
+//! ignores, and the watches follow the folders as they come and go ([`TreeMode`]).
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -299,6 +302,25 @@ const TREE_MAX_DELAY: Duration = Duration::from_secs(2);
 /// Most changed paths kept per debounce period; past it, the period counts as a change.
 const MAX_BATCH: usize = 4096;
 
+/// How a worktree's files are watched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TreeMode {
+    /// One recursive watch of the worktree (macOS's FSEvents, Windows' directory changes: one
+    /// handle for the whole tree), its events about ignored paths left out.
+    Recursive,
+    /// A watch of each folder on its own, except `.git` and what git ignores (Linux's
+    /// inotify, where a recursive watch would be one watch per folder all the same, the
+    /// ignored ones included).
+    PerFolder,
+}
+
+/// How this platform watches a worktree.
+const TREE_MODE: TreeMode = if cfg!(target_os = "linux") {
+    TreeMode::PerFolder
+} else {
+    TreeMode::Recursive
+};
+
 /// Watches a worktree's files until dropped, like [`RepoWatcher`].
 pub struct TreeWatcher {
     os: Arc<Mutex<Option<RecommendedWatcher>>>,
@@ -411,6 +433,78 @@ fn tree_relative(root: &Path, path: &Path) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+/// The folders of the worktree at `root` to watch one by one ([`TreeMode::PerFolder`]): `root`
+/// and every folder under it, reached without following a link (nothing outside the
+/// worktree), except any `.git` (the repository's own files, a submodule's) and what
+/// `ignored` covers.
+fn folders_to_watch(root: &Path, ignored: &Ignored) -> Vec<PathBuf> {
+    let mut out = vec![root.to_path_buf()];
+    let mut next = 0;
+    while next < out.len() {
+        let dir = out[next].clone();
+        next += 1;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue; // gone meanwhile, or unreadable
+        };
+        for entry in entries.flatten() {
+            // The entry's own type: a link to a folder is not a folder here.
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            if tree_relative(root, &path).is_some_and(|rel| !ignored.covers(&rel)) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// The folders watched one by one, each with what tells it from a folder made later under
+/// the same name (whose watch is a new one).
+type Watched = std::collections::HashMap<PathBuf, Option<u128>>;
+
+/// What tells folder `dir` from another one of the same name.
+fn folder_identity(dir: &Path) -> Option<u128> {
+    let meta = std::fs::symlink_metadata(dir).ok()?;
+    crate::platform::file_identity(dir, &meta)
+}
+
+/// Makes the folders `os` watches one by one (`watched`) those of `wanted`: the watches of
+/// folders no longer wanted (gone, or ignored now) are removed, and the new ones added (a
+/// folder removed and made again counts as new). A folder that is there and cannot be
+/// watched (the platform's limit reached) is `Err`: its changes would be missed.
+fn sync_folders<W: Watcher>(os: &mut W, watched: &mut Watched, wanted: Vec<PathBuf>) -> Result<()> {
+    let wanted: HashSet<PathBuf> = wanted.into_iter().collect();
+    let gone: Vec<PathBuf> = watched
+        .keys()
+        .filter(|d| !wanted.contains(*d))
+        .cloned()
+        .collect();
+    for dir in gone {
+        // The OS may have dropped the watch of a removed folder already.
+        let _ = os.unwatch(&dir);
+        watched.remove(&dir);
+    }
+    let mut failed = None;
+    for dir in wanted {
+        let id = folder_identity(&dir);
+        if id.is_some() && watched.get(&dir) == Some(&id) {
+            continue;
+        }
+        match os.watch(&dir, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                watched.insert(dir, id);
+            }
+            Err(e) if dir.is_dir() => {
+                failed.get_or_insert_with(|| watch_error(&dir, e.to_string()));
+            }
+            Err(_) => {} // gone meanwhile
+        }
+    }
+    failed.map_or(Ok(()), Err)
+}
+
 /// Notes in `batch` the paths of `event` under `root` that are not in `ignored`; whether any
 /// was noted.
 fn note_tree_event(root: &Path, ignored: &Ignored, event: &Event, batch: &mut Batch) -> bool {
@@ -467,6 +561,29 @@ pub async fn watch_worktree(
     runner: GitRunner,
     on_change: impl Fn() + Send + Sync + 'static,
 ) -> Result<TreeWatcher> {
+    watch_worktree_reporting(root, runner, on_change, |_| {}).await
+}
+
+/// Like [`watch_worktree`], and calls `on_error` (on the debounce task) each time a folder
+/// that appeared later cannot be watched (where folders are watched one by one: the
+/// platform's limit reached), so changes in it will be missed.
+pub async fn watch_worktree_reporting(
+    root: &Path,
+    runner: GitRunner,
+    on_change: impl Fn() + Send + Sync + 'static,
+    on_error: impl Fn(CoreError) + Send + Sync + 'static,
+) -> Result<TreeWatcher> {
+    watch_worktree_in(TREE_MODE, root, runner, on_change, on_error).await
+}
+
+/// [`watch_worktree_reporting`] in `mode`.
+pub(crate) async fn watch_worktree_in(
+    mode: TreeMode,
+    root: &Path,
+    runner: GitRunner,
+    on_change: impl Fn() + Send + Sync + 'static,
+    on_error: impl Fn(CoreError) + Send + Sync + 'static,
+) -> Result<TreeWatcher> {
     let runtime = tokio::runtime::Handle::try_current().map_err(|e| {
         CoreError::new(ErrorCode::Io, "no async runtime").with_detail(e.to_string())
     })?;
@@ -508,23 +625,34 @@ pub async fn watch_worktree(
             }
         }
     };
-    // Adding a recursive watch walks the whole tree on some platforms: on the blocking pool.
-    // Links are not followed, so nothing outside the worktree is watched.
-    let os = {
+    // Adding a recursive watch walks the whole tree on some platforms, and the folders to
+    // watch one by one are found by walking it: on the blocking pool. Links are not
+    // followed, so nothing outside the worktree is watched.
+    let (os, watched) = {
         let at = root.clone();
+        let skip = ignored.read().unwrap_or_else(|e| e.into_inner()).clone();
         tokio::task::spawn_blocking(move || {
             let root = at;
             let config = notify::Config::default().with_follow_symlinks(false);
             let mut os = RecommendedWatcher::new(handler, config)
                 .map_err(|e| watch_error(&root, e.to_string()))?;
-            os.watch(&root, RecursiveMode::Recursive)
-                .map_err(|e| watch_error(&root, e.to_string()))?;
-            Ok::<_, CoreError>(os)
+            let mut watched = Watched::new();
+            match mode {
+                TreeMode::Recursive => os
+                    .watch(&root, RecursiveMode::Recursive)
+                    .map_err(|e| watch_error(&root, e.to_string()))?,
+                TreeMode::PerFolder => {
+                    sync_folders(&mut os, &mut watched, folders_to_watch(&root, &skip))?;
+                }
+            }
+            Ok::<_, CoreError>((os, watched))
         })
         .await
         .map_err(|e| watch_error(&root, e.to_string()))??
     };
     let os = Arc::new(Mutex::new(Some(os)));
+    let task_os = os.clone();
+    let mut watched = watched;
     let task = runtime.spawn(async move {
         loop {
             wait_for_quiet(&signal, TREE_QUIET, TREE_MAX_DELAY).await;
@@ -533,6 +661,18 @@ pub async fn watch_worktree(
                 && let Ok(fresh) = read_ignored(&runner, &root).await
             {
                 *ignored.write().unwrap_or_else(|e| e.into_inner()) = fresh;
+            }
+            // Folders came, went or are ignored now: the watches follow.
+            if mode == TreeMode::PerFolder && (batch.reread || batch.overflow) {
+                let skip = ignored.read().unwrap_or_else(|e| e.into_inner()).clone();
+                let at = root.clone();
+                if let Ok(wanted) =
+                    tokio::task::spawn_blocking(move || folders_to_watch(&at, &skip)).await
+                    && let Some(os) = lock(&task_os).as_mut()
+                    && let Err(e) = sync_folders(os, &mut watched, wanted)
+                {
+                    on_error(e);
+                }
             }
             let relevant = batch.overflow || {
                 let ignored = ignored.read().unwrap_or_else(|e| e.into_inner());
@@ -662,6 +802,113 @@ mod tests {
         fn kind() -> notify::WatcherKind {
             notify::WatcherKind::NullWatcher
         }
+    }
+
+    /// Records the folders it is asked to watch and to stop watching; refuses `refuse`.
+    #[derive(Default)]
+    struct Recorder {
+        watches: Vec<(PathBuf, RecursiveMode)>,
+        unwatches: Vec<PathBuf>,
+        refuse: Option<PathBuf>,
+    }
+
+    impl Watcher for Recorder {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self::default())
+        }
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            if self.refuse.as_deref() == Some(path) {
+                return Err(notify::Error::generic("no more watches"));
+            }
+            self.watches.push((path.to_owned(), mode));
+            Ok(())
+        }
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            self.unwatches.push(path.to_owned());
+            Ok(())
+        }
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    /// Linux's per-folder watch: every folder but `.git`, what git ignores and what is only
+    /// reached through a link (Task 11; Task 3 review concern 3).
+    #[test]
+    fn folders_watched_one_by_one_leave_out_git_and_ignored_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        for d in [
+            ".git/objects/ab",
+            "src/app",
+            "node_modules/x/y",
+            "target/debug",
+            "docs",
+            "sub/.git/refs",
+            "sub/lib",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::write(root.join("docs/.git"), "gitdir: elsewhere").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("src"), root.join("linked")).unwrap();
+        let ignored = Ignored::parse(b"node_modules/\0target/\0");
+        let mut found: Vec<String> = folders_to_watch(&root, &ignored)
+            .iter()
+            .map(|p| tree_relative(&root, p).unwrap_or_default())
+            .collect();
+        found.sort();
+        assert_eq!(found, ["", "docs", "src", "src/app", "sub", "sub/lib"]);
+    }
+
+    #[test]
+    fn folder_watches_follow_the_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::create_dir(&a).unwrap();
+        let mut os = Recorder::default();
+        let mut watched = Watched::new();
+        sync_folders(&mut os, &mut watched, vec![root.clone(), a.clone()]).unwrap();
+        let mut first = os.watches.clone();
+        first.sort_by(|x, y| x.0.cmp(&y.0));
+        assert_eq!(
+            first,
+            [
+                (root.clone(), RecursiveMode::NonRecursive),
+                (a.clone(), RecursiveMode::NonRecursive)
+            ]
+        );
+        assert_eq!(os.watches.len(), 2);
+        // The same again: nothing new.
+        sync_folders(&mut os, &mut watched, vec![root.clone(), a.clone()]).unwrap();
+        assert_eq!(os.watches.len(), 2);
+        // `a` gone (or ignored now), `b` new.
+        std::fs::remove_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        sync_folders(&mut os, &mut watched, vec![root.clone(), b.clone()]).unwrap();
+        assert_eq!(os.unwatches, std::slice::from_ref(&a));
+        assert_eq!(
+            os.watches.last(),
+            Some(&(b.clone(), RecursiveMode::NonRecursive))
+        );
+        // `b` removed and made again under the same name: watched again.
+        std::fs::remove_dir(&b).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let before = os.watches.len();
+        sync_folders(&mut os, &mut watched, vec![root.clone(), b.clone()]).unwrap();
+        assert_eq!(os.watches.len(), before + 1);
+        // A folder that cannot be watched is said: its changes would be missed.
+        std::fs::create_dir(&a).unwrap();
+        os.refuse = Some(a.clone());
+        let err = sync_folders(
+            &mut os,
+            &mut watched,
+            vec![root.clone(), a.clone(), b.clone()],
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Could not watch"), "{err:?}");
+        assert_eq!(err.detail.as_deref(), Some("no more watches"));
     }
 
     #[test]
@@ -823,6 +1070,70 @@ mod tests {
         let top = Event::new(write).add_path(root.join("loose.txt"));
         note_tree_event(root, &ignored, &top, &mut batch);
         assert!(batch.overflow);
+    }
+
+    /// The per-folder mode end to end (the OS's own watcher, folder by folder): an edit in a
+    /// folder made after the start is seen; a build writing into an ignored folder is not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_folder_watching_follows_new_folders_and_skips_ignored_ones() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let repo = crate::testutil::TestRepo::new();
+        repo.write(".gitignore", "build/\n");
+        repo.commit_all("ignore build");
+        std::fs::create_dir_all(repo.path().join("build")).unwrap();
+        let runner = crate::git::runner::GitRunner::detect(crate::git::runner::CommandLog::new())
+            .await
+            .unwrap();
+        let fired = Arc::new(AtomicUsize::new(0));
+        let count = fired.clone();
+        let _watcher = watch_worktree_in(
+            TreeMode::PerFolder,
+            repo.path(),
+            runner,
+            move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let settle = Duration::from_millis(1500);
+        let seen = |n: usize| {
+            let fired = fired.clone();
+            async move {
+                let until = std::time::Instant::now() + Duration::from_secs(10);
+                while std::time::Instant::now() < until {
+                    if fired.load(Ordering::SeqCst) > n {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                false
+            }
+        };
+        tokio::time::sleep(settle).await;
+        let base = fired.load(Ordering::SeqCst);
+
+        // A new folder (seen), then a file in it, once its watch is there (seen again).
+        std::fs::create_dir_all(repo.path().join("src/new")).unwrap();
+        assert!(seen(base).await, "the new folder");
+        tokio::time::sleep(settle).await;
+        let after_folder = fired.load(Ordering::SeqCst);
+        std::fs::write(repo.path().join("src/new/file.txt"), "x").unwrap();
+        assert!(seen(after_folder).await, "a file in the new folder");
+
+        // A build writing into the ignored folder: nothing.
+        tokio::time::sleep(settle).await;
+        let quiet = fired.load(Ordering::SeqCst);
+        for i in 0..50 {
+            std::fs::write(repo.path().join(format!("build/out{i}.o")), "x").unwrap();
+        }
+        tokio::time::sleep(settle * 2).await;
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            quiet,
+            "the ignored folder fired"
+        );
     }
 
     #[tokio::test(start_paused = true)]

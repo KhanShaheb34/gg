@@ -43,7 +43,7 @@ use crate::repo::fetch::{FETCH_CAP, FETCH_TIMEOUT, Schedule, unix_ms};
 use crate::repo::loader::start_load;
 use crate::repo::state::{RepoIdentity, RepoInfo, RepoState, Update, normalize_view};
 use crate::watcher::{
-    GitDirChange, RepoWatcher, TreeWatcher, watch_git_dir_reporting, watch_worktree,
+    GitDirChange, RepoWatcher, TreeWatcher, watch_git_dir_reporting, watch_worktree_reporting,
 };
 
 /// How long an operation's final refresh (and a switch of worktree) waits for the working
@@ -1473,7 +1473,29 @@ impl RepoManager {
                     }
                 }
             };
-            let watched = watch_worktree(&repo.worktree(), repo.runner.clone(), on_change).await;
+            // A folder made later that cannot be watched (Linux, the inotify limit reached):
+            // said once, like a watch refused at the start.
+            let on_error = {
+                let (m, repo) = (m.clone(), Arc::downgrade(&repo));
+                move |reason: CoreError| {
+                    if let (Some(m), Some(repo)) = (m.upgrade(), repo.upgrade())
+                        && !repo.live_reported.swap(true, Ordering::SeqCst)
+                    {
+                        repo.report_error(
+                            m.sink.as_ref(),
+                            ErrorKind::TreeWatch,
+                            tree_watch_unavailable(id, reason),
+                        );
+                    }
+                }
+            };
+            let watched = watch_worktree_reporting(
+                &repo.worktree(),
+                repo.runner.clone(),
+                on_change,
+                on_error,
+            )
+            .await;
             if repo.tree_watch_seq.load(Ordering::SeqCst) != seq || repo.is_closed().await {
                 return; // a newer watch (or none) is wanted now
             }

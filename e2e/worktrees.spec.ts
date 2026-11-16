@@ -473,6 +473,24 @@ test("squeezed ref labels keep what does not fit inside their own pill, never ov
   for (let i = 1; i < boxes.length; i++) expect(boxes[i][0]).toBeGreaterThanOrEqual(boxes[i - 1][1] - 0.5);
 });
 
+test("at 900 px beside the docked panel the description keeps 280 px: Author gives way first, then Date (final review I2)", async ({ gg }) => {
+  const { page } = gg;
+  await page.setViewportSize({ width: 900, height: 560 });
+  await page.goto("/");
+  await open(page, gg.repoPath("worktrees"));
+  await expect(list(page)).toBeVisible();
+  const header = page.locator("[data-header] [role=columnheader]");
+  const width = async (name: string) => (await header.filter({ hasText: name }).boundingBox())!.width;
+  await expect.poll(() => width("Description")).toBeGreaterThanOrEqual(279);
+  // Author narrowed (from 150), Date as it was or narrowed less; the commit column kept.
+  expect(await width("Author")).toBeLessThan(150);
+  expect(await width("Commit")).toBe(84);
+  // A wide window: every column as set again.
+  await page.setViewportSize({ width: 1400, height: 800 });
+  await expect.poll(() => width("Author")).toBe(150);
+  expect(await width("Date")).toBe(140);
+});
+
 test("the keyboard reaches the panel: F6, arrows, Enter and the menu key", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

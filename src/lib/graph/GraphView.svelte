@@ -620,7 +620,12 @@
 
   onMount(() => {
     lanes.readColors(document.documentElement);
-    const resize = new ResizeObserver((entries) => onResize(entries[entries.length - 1].contentRect.height));
+    const resize = new ResizeObserver((entries) => {
+      const rect = entries[entries.length - 1].contentRect;
+      // Below its room, the description takes from Author, then Date (final review I2).
+      columns.available = rect.width;
+      onResize(rect.height);
+    });
     resize.observe(scroller);
     const theme = new MutationObserver(() => {
       lanes.readColors(document.documentElement);

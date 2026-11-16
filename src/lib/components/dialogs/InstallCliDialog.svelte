@@ -7,6 +7,7 @@
   import { launcherPath, preferredFolder } from "../../cli";
   import { shortenPath } from "../../format";
   import { app, notify, toast } from "../../state/app.svelte";
+  import { isWindows } from "../../platform";
   import { installCli, removedMessage, uninstallCli } from "../../state/cli.svelte";
   import Dialog from "../Dialog.svelte";
 
@@ -15,6 +16,7 @@
   let { close }: Props = $props();
 
   const uid = Math.random().toString(36).slice(2, 8);
+  const windows = isWindows();
   /** Most folders shown as a column of choices; more go in a list. */
   const MAX_RADIOS = 4;
   // The folders as the dialog opened: they do not move under the user's pointer. What the
@@ -88,8 +90,13 @@
   {#if shown.candidates.length === 0}
     <p class="dialog-text muted" data-testid="cli-no-folder">
       No folder on your <code>PATH</code> can take it: each one is missing, not writable by you, or inside a repository.
-      Add a folder such as <code>~/.local/bin</code> to your <code>PATH</code> in your shell’s profile, then open this
-      again.
+      {#if windows}
+        Add a folder of your own, such as <code>%USERPROFILE%\bin</code>, to your user <code>PATH</code> (Environment
+        Variables in Windows’ settings), then open this again.
+      {:else}
+        Add a folder such as <code>~/.local/bin</code> to your <code>PATH</code> in your shell’s profile, then open this
+        again.
+      {/if}
     </p>
   {:else if shown.candidates.length > MAX_RADIOS}
     <!-- A long PATH: a list rather than a column of rows taller than the window. -->
@@ -123,8 +130,13 @@
 
   {#if shadowedBy !== null}
     <p class="shadowed" data-testid="cli-shadowed">
-      Your shell already defines <code>gg</code> as {shadowedBy}; that wins over this command until you remove
-      it.
+      {#if windows}
+        Another <code>gg</code> comes first on your <code>PATH</code>: {shadowedBy}; that wins over this command until
+        you remove it.
+      {:else}
+        Your shell already defines <code>gg</code> as {shadowedBy}; that wins over this command until you remove
+        it.
+      {/if}
     </p>
   {/if}
 

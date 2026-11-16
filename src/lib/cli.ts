@@ -5,8 +5,11 @@ import type { CliState } from "./types";
 
 /** The launcher's path in folder `dir` (`dir/gg`, with the folder's own separator). */
 export function launcherPath(dir: string): string {
-  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
-  return dir.endsWith(sep) ? `${dir}gg` : `${dir}${sep}gg`;
+  const windows = dir.includes("\\") && !dir.includes("/");
+  const sep = windows ? "\\" : "/";
+  // On Windows the launcher is a batch file, gg.cmd.
+  const name = windows ? "gg.cmd" : "gg";
+  return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`;
 }
 
 /** The folder of launcher path `file`. */

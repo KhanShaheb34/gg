@@ -378,6 +378,11 @@ struct Batch {
     overflow: bool,
     /// A `.gitignore` changed or a folder appeared: what git ignores is read again first.
     reread: bool,
+    /// The folders made, removed or renamed in (at most [`MAX_BATCH`]; past that,
+    /// `named_all`): where folders are watched one by one, they are watched again.
+    named: HashSet<PathBuf>,
+    /// More such folders than that: every folder is watched again.
+    named_all: bool,
 }
 
 /// Longest a read of what git ignores may take: one that hangs is given up on (git is
@@ -460,24 +465,35 @@ fn folders_to_watch(root: &Path, ignored: &Ignored) -> Vec<PathBuf> {
     out
 }
 
-/// The folders watched one by one, each with what tells it from a folder made later under
-/// the same name (whose watch is a new one).
-type Watched = std::collections::HashMap<PathBuf, Option<u128>>;
+/// The folders watched one by one.
+type Watched = HashSet<PathBuf>;
 
-/// What tells folder `dir` from another one of the same name.
-fn folder_identity(dir: &Path) -> Option<u128> {
-    let meta = std::fs::symlink_metadata(dir).ok()?;
-    crate::platform::file_identity(dir, &meta)
+/// Which of the folders already watched are watched again by [`sync_folders`].
+#[derive(Debug, Clone, Copy)]
+enum Renew<'a> {
+    /// Those named in a batch of changes (made, removed or renamed): one removed and made
+    /// again under the same name is another folder, whose watch the platform has not got
+    /// (Linux drops a removed folder's watch; the new folder may even have the old one's
+    /// inode, so it cannot be told apart by its identity).
+    Named(&'a HashSet<PathBuf>),
+    /// Every one: changes were lost, so which folders were made again is not known.
+    All,
 }
 
 /// Makes the folders `os` watches one by one (`watched`) those of `wanted`: the watches of
-/// folders no longer wanted (gone, or ignored now) are removed, and the new ones added (a
-/// folder removed and made again counts as new). A folder that is there and cannot be
-/// watched (the platform's limit reached) is `Err`: its changes would be missed.
-fn sync_folders<W: Watcher>(os: &mut W, watched: &mut Watched, wanted: Vec<PathBuf>) -> Result<()> {
+/// folders no longer wanted (gone, or ignored now) are removed, the new ones added, and the
+/// ones `renew` names watched again (watching a folder that is watched already changes
+/// nothing). A folder that is there and cannot be watched (the platform's limit reached) is
+/// `Err`: its changes would be missed. Blocking (a system call per folder).
+fn sync_folders<W: Watcher>(
+    os: &mut W,
+    watched: &mut Watched,
+    wanted: Vec<PathBuf>,
+    renew: Renew<'_>,
+) -> Result<()> {
     let wanted: HashSet<PathBuf> = wanted.into_iter().collect();
     let gone: Vec<PathBuf> = watched
-        .keys()
+        .iter()
         .filter(|d| !wanted.contains(*d))
         .cloned()
         .collect();
@@ -488,18 +504,23 @@ fn sync_folders<W: Watcher>(os: &mut W, watched: &mut Watched, wanted: Vec<PathB
     }
     let mut failed = None;
     for dir in wanted {
-        let id = folder_identity(&dir);
-        if id.is_some() && watched.get(&dir) == Some(&id) {
+        let again = match renew {
+            Renew::All => true,
+            Renew::Named(named) => named.contains(&dir),
+        };
+        if watched.contains(&dir) && !again {
             continue;
         }
         match os.watch(&dir, RecursiveMode::NonRecursive) {
             Ok(()) => {
-                watched.insert(dir, id);
+                watched.insert(dir);
             }
             Err(e) if dir.is_dir() => {
                 failed.get_or_insert_with(|| watch_error(&dir, e.to_string()));
             }
-            Err(_) => {} // gone meanwhile
+            Err(_) => {
+                watched.remove(&dir); // gone meanwhile
+            }
         }
     }
     failed.map_or(Ok(()), Err)
@@ -528,7 +549,18 @@ fn note_tree_event(root: &Path, ignored: &Ignored, event: &Event, batch: &mut Ba
             event.kind,
             EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Name(_))
         );
-        if path.file_name().is_some_and(|n| n == ".gitignore") || (appeared && path.is_dir()) {
+        let folder_appeared = appeared && path.is_dir();
+        // A removed path cannot be looked at; only a file's removal is known to be one.
+        let folder_removed = matches!(event.kind, EventKind::Remove(kind)
+            if kind != notify::event::RemoveKind::File);
+        if folder_appeared || folder_removed {
+            if batch.named.len() < MAX_BATCH {
+                batch.named.insert(path.clone());
+            } else {
+                batch.named_all = true;
+            }
+        }
+        if path.file_name().is_some_and(|n| n == ".gitignore") || folder_appeared {
             batch.reread = true;
         }
         if batch.paths.len() < MAX_BATCH {
@@ -642,7 +674,8 @@ pub(crate) async fn watch_worktree_in(
                     .watch(&root, RecursiveMode::Recursive)
                     .map_err(|e| watch_error(&root, e.to_string()))?,
                 TreeMode::PerFolder => {
-                    sync_folders(&mut os, &mut watched, folders_to_watch(&root, &skip))?;
+                    let wanted = folders_to_watch(&root, &skip);
+                    sync_folders(&mut os, &mut watched, wanted, Renew::All)?;
                 }
             }
             Ok::<_, CoreError>((os, watched))
@@ -656,22 +689,39 @@ pub(crate) async fn watch_worktree_in(
     let task = runtime.spawn(async move {
         loop {
             wait_for_quiet(&signal, TREE_QUIET, TREE_MAX_DELAY).await;
-            let batch = std::mem::take(&mut *lock(&batch));
+            let mut batch = std::mem::take(&mut *lock(&batch));
             if batch.reread
                 && let Ok(fresh) = read_ignored(&runner, &root).await
             {
                 *ignored.write().unwrap_or_else(|e| e.into_inner()) = fresh;
             }
-            // Folders came, went or are ignored now: the watches follow.
+            // Folders came, went or are ignored now: the watches follow (on the blocking
+            // pool: the tree is walked and each folder watched).
             if mode == TreeMode::PerFolder && (batch.reread || batch.overflow) {
                 let skip = ignored.read().unwrap_or_else(|e| e.into_inner()).clone();
-                let at = root.clone();
-                if let Ok(wanted) =
-                    tokio::task::spawn_blocking(move || folders_to_watch(&at, &skip)).await
-                    && let Some(os) = lock(&task_os).as_mut()
-                    && let Err(e) = sync_folders(os, &mut watched, wanted)
-                {
-                    on_error(e);
+                let (at, os) = (root.clone(), task_os.clone());
+                let all = batch.overflow || batch.named_all;
+                let named = std::mem::take(&mut batch.named);
+                let mut kept = std::mem::take(&mut watched);
+                let synced = tokio::task::spawn_blocking(move || {
+                    let wanted = folders_to_watch(&at, &skip);
+                    let renew = if all {
+                        Renew::All
+                    } else {
+                        Renew::Named(&named)
+                    };
+                    let result = match lock(&os).as_mut() {
+                        Some(os) => sync_folders(os, &mut kept, wanted, renew),
+                        None => Ok(()),
+                    };
+                    (kept, result)
+                })
+                .await;
+                if let Ok((kept, result)) = synced {
+                    watched = kept;
+                    if let Err(e) = result {
+                        on_error(e);
+                    }
                 }
             }
             let relevant = batch.overflow || {
@@ -867,9 +917,16 @@ mod tests {
         let root = dunce::canonicalize(dir.path()).unwrap();
         let (a, b) = (root.join("a"), root.join("b"));
         std::fs::create_dir(&a).unwrap();
+        let none = HashSet::new();
         let mut os = Recorder::default();
         let mut watched = Watched::new();
-        sync_folders(&mut os, &mut watched, vec![root.clone(), a.clone()]).unwrap();
+        sync_folders(
+            &mut os,
+            &mut watched,
+            vec![root.clone(), a.clone()],
+            Renew::All,
+        )
+        .unwrap();
         let mut first = os.watches.clone();
         first.sort_by(|x, y| x.0.cmp(&y.0));
         assert_eq!(
@@ -880,24 +937,38 @@ mod tests {
             ]
         );
         assert_eq!(os.watches.len(), 2);
-        // The same again: nothing new.
-        sync_folders(&mut os, &mut watched, vec![root.clone(), a.clone()]).unwrap();
+        // The same again, nothing named: nothing new.
+        let same = vec![root.clone(), a.clone()];
+        sync_folders(&mut os, &mut watched, same, Renew::Named(&none)).unwrap();
         assert_eq!(os.watches.len(), 2);
         // `a` gone (or ignored now), `b` new.
         std::fs::remove_dir(&a).unwrap();
         std::fs::create_dir(&b).unwrap();
-        sync_folders(&mut os, &mut watched, vec![root.clone(), b.clone()]).unwrap();
+        let named = HashSet::from([a.clone(), b.clone()]);
+        let now = vec![root.clone(), b.clone()];
+        sync_folders(&mut os, &mut watched, now, Renew::Named(&named)).unwrap();
         assert_eq!(os.unwatches, std::slice::from_ref(&a));
         assert_eq!(
             os.watches.last(),
             Some(&(b.clone(), RecursiveMode::NonRecursive))
         );
-        // `b` removed and made again under the same name: watched again.
+        assert_eq!(os.watches.len(), 3);
+        // `b` removed and made again under the same name (on Linux, often with the same
+        // inode): named in the batch, so watched again, whatever its identity.
         std::fs::remove_dir(&b).unwrap();
         std::fs::create_dir(&b).unwrap();
-        let before = os.watches.len();
-        sync_folders(&mut os, &mut watched, vec![root.clone(), b.clone()]).unwrap();
-        assert_eq!(os.watches.len(), before + 1);
+        let named = HashSet::from([b.clone()]);
+        let now = vec![root.clone(), b.clone()];
+        sync_folders(&mut os, &mut watched, now, Renew::Named(&named)).unwrap();
+        assert_eq!(os.watches.len(), 4);
+        assert_eq!(
+            os.watches.last(),
+            Some(&(b.clone(), RecursiveMode::NonRecursive))
+        );
+        // Changes lost: every folder is watched again.
+        let now = vec![root.clone(), b.clone()];
+        sync_folders(&mut os, &mut watched, now, Renew::All).unwrap();
+        assert_eq!(os.watches.len(), 6);
         // A folder that cannot be watched is said: its changes would be missed.
         std::fs::create_dir(&a).unwrap();
         os.refuse = Some(a.clone());
@@ -905,10 +976,54 @@ mod tests {
             &mut os,
             &mut watched,
             vec![root.clone(), a.clone(), b.clone()],
+            Renew::Named(&none),
         )
         .unwrap_err();
         assert!(err.message.contains("Could not watch"), "{err:?}");
         assert_eq!(err.detail.as_deref(), Some("no more watches"));
+    }
+
+    /// Where folders are watched one by one, a batch names the folders made, removed or
+    /// renamed, so a folder made again under an old name is watched again.
+    #[test]
+    fn a_batch_names_the_folders_made_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let made = root.join("made");
+        std::fs::create_dir(&made).unwrap();
+        let ignored = Ignored::default();
+        let mut batch = Batch::default();
+        let event = |kind, path: &Path| Event::new(kind).add_path(path.to_path_buf());
+        let removed = root.join("removed");
+        note_tree_event(
+            &root,
+            &ignored,
+            &event(
+                EventKind::Remove(notify::event::RemoveKind::Folder),
+                &removed,
+            ),
+            &mut batch,
+        );
+        note_tree_event(
+            &root,
+            &ignored,
+            &event(EventKind::Create(CreateKind::Folder), &made),
+            &mut batch,
+        );
+        for (kind, name) in [
+            (EventKind::Modify(ModifyKind::Any), "file"),
+            (EventKind::Create(CreateKind::File), "new-file"),
+            (
+                EventKind::Remove(notify::event::RemoveKind::File),
+                "old-file",
+            ),
+        ] {
+            std::fs::write(root.join(name), "").unwrap();
+            note_tree_event(&root, &ignored, &event(kind, &root.join(name)), &mut batch);
+        }
+        assert_eq!(batch.named, HashSet::from([removed, made]));
+        assert!(!batch.named_all);
+        assert!(batch.reread);
     }
 
     #[test]

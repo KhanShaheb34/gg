@@ -408,6 +408,9 @@ test("the delete dialog says up front what is stopped there, and the create dial
   await page.goto("/");
   const repo = gg.repoPath("worktrees");
   await open(page, repo);
+  // The other worktrees' states are read in the background after the open: once the merge
+  // stopped there is known (on a loaded machine that takes a moment).
+  await expect(row(page, "hotfix").locator(".badge")).toHaveText("merging");
   await row(page, "hotfix").click({ button: "right" });
   await item(page, "Delete…").click();
   const del = page.getByRole("dialog", { name: "Delete worktree hotfix" });

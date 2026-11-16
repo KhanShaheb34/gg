@@ -782,6 +782,35 @@ async fn autostash_that_cannot_be_reapplied_is_said() {
     }
 }
 
+/// The stash is read before and after: an entry the user already had, even one git's
+/// reflog calls "autostash", is not taken for changes this op kept there, and auto-stashed
+/// changes that are put back cleanly are not mentioned.
+#[tokio::test]
+async fn an_older_autostash_entry_is_not_taken_for_this_ops() {
+    for (config, request) in [
+        ("rebase.autoStash", rebase("feature")),
+        ("merge.autoStash", merge_branch("feature")),
+    ] {
+        let repo = TestRepo::new();
+        dirty_against_feature(&repo);
+        // An entry of the user's own, stored under git's own name for one.
+        let kept = repo.git(&["stash", "create"]);
+        repo.git(&["stash", "store", "-m", "autostash", kept.trim()]);
+        // A change that does not touch what `feature` changes, auto-stashed and put back.
+        repo.write("clash.txt", "base\n");
+        repo.write("other.txt", "mine\n");
+        repo.git(&["add", "other.txt"]);
+        repo.git(&["config", config, "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+
+        let out = h.run(id, request).await;
+        assert_eq!(out.status, OpStatus::Done, "{config}: {out:?}");
+        assert!(!out.message.contains("stash"), "{config}: {}", out.message);
+        assert_eq!(repo.git(&["stash", "list"]).lines().count(), 1, "{config}");
+    }
+}
+
 #[tokio::test]
 async fn rebase_replays_the_branch_onto_another() {
     let repo = TestRepo::new();

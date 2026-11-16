@@ -13,7 +13,8 @@ use crate::error::Result;
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{Rejected, needs_pull_mode, nothing_to_do, push_rejected};
 use crate::ops::local::{
-    autostash_note, current_branch, git_may_stop, head_commit, kind_name, short, stopped_kind,
+    autostash_note, current_branch, git_may_stop, head_commit, kind_name, short, stash_top,
+    stopped_kind,
 };
 use crate::ops::{OpCtx, Step, explain};
 
@@ -260,6 +261,8 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         PullMode::Rebase => args.push("--rebase"),
     }
     let from = upstream(ctx, branch).await?.map(|u| u.short);
+    let stash_before = stash_top(ctx).await?;
+    let stash_before = stash_before.as_deref();
     let out = match git_may_stop(ctx, &args, true).await? {
         Ok(out) => out,
         Err(step) => {
@@ -280,21 +283,17 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         }
     };
     if nothing_to_do(&args, &out).is_some() {
-        return Ok(autostash_note(
-            Step::Done(format!(
-                "Already up to date: {branch} has every commit of {}.",
-                from.as_deref().unwrap_or("its upstream")
-            )),
-            &out,
-        ));
+        let done = format!(
+            "Already up to date: {branch} has every commit of {}.",
+            from.as_deref().unwrap_or("its upstream")
+        );
+        return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
-    Ok(autostash_note(
-        Step::Done(match from {
-            Some(from) => format!("Pulled {from} into {branch}."),
-            None => format!("Pulled into {branch}."),
-        }),
-        &out,
-    ))
+    let done = match from {
+        Some(from) => format!("Pulled {from} into {branch}."),
+        None => format!("Pulled into {branch}."),
+    };
+    autostash_note(ctx, Step::Done(done), &out, stash_before).await
 }
 
 /// Whether a pull here may only fast-forward: `pull.ff=only`, or with no `pull.ff`,

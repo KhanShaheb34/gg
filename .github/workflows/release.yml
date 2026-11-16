@@ -30,6 +30,10 @@ jobs:
     name: The tag matches the version
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Reads the CI runs of the tagged commit (below).
+    permissions:
+      contents: read
+      actions: read
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -53,6 +57,22 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: CI passed on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The tests ran for this very commit (CI runs on pull requests and pushes to main),
+          # every OS passed: a red or untested commit is not built into a release.
+          runs=$(gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" --limit 20 \
+            --json conclusion --jq '[.[] | select(.conclusion == "success")] | length')
+          if [ "${runs:-0}" -lt 1 ]; then
+            echo "::error::No passing CI run for $SHA, the commit $TAG points at. Tag a commit CI passed on (open a pull request or push it to main first)."
+            exit 1
+          fi
 
   macos:
     name: macOS (universal .dmg)

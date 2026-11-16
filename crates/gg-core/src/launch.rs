@@ -1345,17 +1345,7 @@ vim",
         assert!(err.message.contains("Settings"), "{err:?}");
 
         let plan = terminal("windows", None, r"C:\w\a b", &["wt.exe"]).unwrap();
-        assert_eq!(
-            strings(&plan.argv),
-            [
-                Path::new("/usr/bin")
-                    .join("wt.exe")
-                    .to_string_lossy()
-                    .as_ref(),
-                "-d",
-                r"C:\w\a b"
-            ]
-        );
+        assert_eq!(strings(&plan.argv), ["/usr/bin/wt.exe", "-d", r"C:\w\a b"]);
         assert!(!plan.console);
         let cmd = windows_dir().join("System32").join("cmd.exe");
         for (dir, found) in [(r"C:\w\a b", &[][..]), (r"C:\w\x;calc", &["wt.exe"][..])] {

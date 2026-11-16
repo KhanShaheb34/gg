@@ -897,13 +897,13 @@ async fn editor_command_is_split_without_a_shell() {
             note.as_deref().unwrap_or("").contains("Settings"),
             "{note:?}"
         );
-        let opener = if cfg!(windows) {
+        if cfg!(windows) {
+            // Explorer reads its own command line: the folder is given quoted, as written.
             let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-            format!(r"{windows}\explorer.exe")
+            vec![format!(r"{windows}\explorer.exe"), format!("\"{root}\"")]
         } else {
-            "xdg-open".to_owned()
-        };
-        vec![opener, root]
+            vec!["xdg-open".to_owned(), root]
+        }
     };
     assert_eq!(
         h.m.launches(),

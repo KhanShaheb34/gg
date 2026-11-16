@@ -1,27 +1,10 @@
 // What a context menu holds for a target, and what picking one of its items does: copy items
 // and the commit, tag, branch and stash actions. What an item acts on is taken from the target as it was when the menu
 // opened (hashes and names, never row positions: the graph may have changed underneath since).
-
-import CheckoutRemoteDialog from "../components/dialogs/CheckoutRemoteDialog.svelte";
-import CherryPickDialog from "../components/dialogs/CherryPickDialog.svelte";
-import CreateBranchDialog from "../components/dialogs/CreateBranchDialog.svelte";
-import CreateTagDialog from "../components/dialogs/CreateTagDialog.svelte";
-import DeleteBranchDialog from "../components/dialogs/DeleteBranchDialog.svelte";
-import DeleteTagDialog from "../components/dialogs/DeleteTagDialog.svelte";
-import FetchIntoLocalDialog from "../components/dialogs/FetchIntoLocalDialog.svelte";
-import MergeDialog from "../components/dialogs/MergeDialog.svelte";
-import PushDialog from "../components/dialogs/PushDialog.svelte";
-import PushTagDialog from "../components/dialogs/PushTagDialog.svelte";
-import RebaseDialog from "../components/dialogs/RebaseDialog.svelte";
-import RenameBranchDialog from "../components/dialogs/RenameBranchDialog.svelte";
-import ResetDialog from "../components/dialogs/ResetDialog.svelte";
-import RevertDialog from "../components/dialogs/RevertDialog.svelte";
-import StashBranchDialog from "../components/dialogs/StashBranchDialog.svelte";
-import StashSaveDialog from "../components/dialogs/StashSaveDialog.svelte";
 import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
 import { runOp } from "../state/ops.svelte";
-import { showDialog as show } from "../state/overlays.svelte";
+import { lazyDialog, showDialog as show } from "../state/overlays.svelte";
 import { openCreatePullRequest, openPullRequest } from "../state/prs.svelte";
 import { openCreateWorktree } from "../state/worktrees.svelte";
 import type { CommitRow, OpRequest, PullRequest, RefLabel, RepoSnapshot } from "../types";
@@ -32,6 +15,23 @@ import { commitMenu } from "./commitMenu";
 import { stashMenu, uncommittedMenu } from "./stashMenu";
 import { tagMenu } from "./tagMenu";
 import type { MenuItem, MenuTarget } from "./types";
+
+const CheckoutRemoteDialog = lazyDialog(() => import("../components/dialogs/CheckoutRemoteDialog.svelte"));
+const CherryPickDialog = lazyDialog(() => import("../components/dialogs/CherryPickDialog.svelte"));
+const CreateBranchDialog = lazyDialog(() => import("../components/dialogs/CreateBranchDialog.svelte"));
+const CreateTagDialog = lazyDialog(() => import("../components/dialogs/CreateTagDialog.svelte"));
+const DeleteBranchDialog = lazyDialog(() => import("../components/dialogs/DeleteBranchDialog.svelte"));
+const DeleteTagDialog = lazyDialog(() => import("../components/dialogs/DeleteTagDialog.svelte"));
+const FetchIntoLocalDialog = lazyDialog(() => import("../components/dialogs/FetchIntoLocalDialog.svelte"));
+const MergeDialog = lazyDialog(() => import("../components/dialogs/MergeDialog.svelte"));
+const PushDialog = lazyDialog(() => import("../components/dialogs/PushDialog.svelte"));
+const PushTagDialog = lazyDialog(() => import("../components/dialogs/PushTagDialog.svelte"));
+const RebaseDialog = lazyDialog(() => import("../components/dialogs/RebaseDialog.svelte"));
+const RenameBranchDialog = lazyDialog(() => import("../components/dialogs/RenameBranchDialog.svelte"));
+const ResetDialog = lazyDialog(() => import("../components/dialogs/ResetDialog.svelte"));
+const RevertDialog = lazyDialog(() => import("../components/dialogs/RevertDialog.svelte"));
+const StashBranchDialog = lazyDialog(() => import("../components/dialogs/StashBranchDialog.svelte"));
+const StashSaveDialog = lazyDialog(() => import("../components/dialogs/StashSaveDialog.svelte"));
 
 /** The menu for `target`: its label's, or its row's. */
 export function itemsFor(target: MenuTarget, snap: RepoSnapshot): MenuItem[] {

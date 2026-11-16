@@ -1,9 +1,6 @@
 // Operations from the UI: `runOp` sends one request to the core and sees it through: it asks
 // the user to confirm the dangers the core finds, applies the repository's new state, and
 // shows how it went. The running operation itself is part of the repository's snapshot.
-
-import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
-import PullDialog from "../components/dialogs/PullDialog.svelte";
 import { shortenPath } from "../format";
 import { api, CoreError } from "../ipc";
 import { shown } from "../menus/common";
@@ -11,8 +8,11 @@ import type { Confirmed, CoreErrorDto, OpHint, OpOutcome, OpRequest, RepoSnapsho
 import { app, dismissToast, notify, reportError, showLog, type ToastAction } from "./app.svelte";
 import { markStopped } from "./commandLog.svelte";
 import { openExternal } from "./editor";
-import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
+import { closeDialog, lazyDialog, openDialog, showDialog } from "./overlays.svelte";
 import { findRepoView } from "./repo.svelte";
+
+const ConfirmDialog = lazyDialog(() => import("../components/dialogs/ConfirmDialog.svelte"));
+const PullDialog = lazyDialog(() => import("../components/dialogs/PullDialog.svelte"));
 
 /**
  * Runs `request` on repository `repoId` (queued behind the operations before it, by the

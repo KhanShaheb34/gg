@@ -1,12 +1,12 @@
 // The `gg` terminal command: reading its state, installing and removing it, and the dialog
 // that does both (the app menu's "Install ‘gg’ Command…", the welcome screen's hint).
-
-import InstallCliDialog from "../components/dialogs/InstallCliDialog.svelte";
 import { api } from "../ipc";
 import type { CliState } from "../types";
 import { shortenPath } from "../format";
 import { app, reportError, toast } from "./app.svelte";
-import { overlays, showDialog } from "./overlays.svelte";
+import { isShowing, lazyDialog, showDialog } from "./overlays.svelte";
+
+const InstallCliDialog = lazyDialog(() => import("../components/dialogs/InstallCliDialog.svelte"));
 
 /** Reads the command's state again (it may have changed outside the app); keeps the old one if that fails. */
 export async function refreshCli(): Promise<void> {
@@ -57,8 +57,8 @@ export async function removeCli(): Promise<void> {
 
 /** Shows the install dialog with the command's state read afresh; nothing if one is open. */
 export async function openCliDialog(): Promise<void> {
-  if (overlays.dialogs.some((d) => d.component === InstallCliDialog)) return;
+  if (isShowing(InstallCliDialog)) return;
   await refreshCli();
-  if (overlays.dialogs.some((d) => d.component === InstallCliDialog)) return;
+  if (isShowing(InstallCliDialog)) return;
   showDialog(InstallCliDialog, {});
 }

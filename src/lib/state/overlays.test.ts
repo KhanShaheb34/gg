@@ -52,3 +52,49 @@ describe("dialogs", () => {
     expect(action).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("dialogs loaded on first use (final review: launch)", () => {
+  it("a lazy dialog opens at once, with its loader and props, and is shown once loaded", async () => {
+    const load = vi.fn(async () => ({ default: Form }));
+    const lazy = overlays.lazyDialog(load);
+    const props = { name: "x" };
+    const id = overlays.openDialog(lazy, props);
+    const open = overlays.overlays.dialog!;
+    expect(open.id).toBe(id);
+    expect(overlays.isShowing(lazy)).toBe(true);
+    expect(open.props).toEqual({ load: lazy.load, props });
+    expect(load).not.toHaveBeenCalled(); // the host loads it when it renders
+    overlays.closeDialog(id);
+    expect(overlays.isShowing(lazy)).toBe(false);
+  });
+
+  it("once loaded (preloaded after start-up), a lazy dialog opens as itself, with no wait", async () => {
+    const lazy = overlays.lazyDialog(async () => ({ default: Confirm }));
+    overlays.preloadDialogs();
+    await vi.waitFor(() => expect(lazy.loaded()).toBe(Confirm));
+    const id = overlays.openDialog(lazy, { a: 1 });
+    expect(overlays.overlays.dialog).toMatchObject({ id, component: Confirm, props: { a: 1 } });
+    expect(overlays.isShowing(lazy)).toBe(true);
+  });
+});
+
+describe("the start-up bundle (final review: launch)", () => {
+  it("no module imports a dialog or a sheet statically: they load when first opened", () => {
+    // Every source module under src/, as text (keys relative to this file).
+    const sources = import.meta.glob(["../../**/*.ts", "../../**/*.svelte", "!../../**/*.test.ts"], {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    expect(Object.keys(sources).length).toBeGreaterThan(50);
+    const offenders = Object.entries(sources).flatMap(([file, text]) => {
+      // What is itself loaded on first use may import the rest of its own code.
+      if (file.includes("/components/dialogs/") || /\/(Settings|ShortcutsSheet)\.svelte$/.test(file)) return [];
+      const imports = [...text.matchAll(/^\s*import\s+(?!type\b)[^;]*?from\s+"([^"]+)"/gm)].map((m) => m[1]);
+      return imports
+        .filter((spec) => /\/dialogs\/[^/]+\.svelte$|\/(Settings|ShortcutsSheet)\.svelte$/.test(spec))
+        .map((spec) => `${file}: ${spec}`);
+    });
+    expect(offenders).toEqual([]);
+  });
+});

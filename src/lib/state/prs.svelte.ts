@@ -4,13 +4,13 @@
 // compare page, after pushing, when gh cannot make one).
 // The core loads the open pull requests with fetches and the user's refreshes; nothing here
 // asks gh for anything but `pr_suggest`.
-
-import CreatePullRequestDialog from "../components/dialogs/CreatePullRequestDialog.svelte";
 import { clockTime, formatClock, relativeTime, type DateFormat } from "../format";
 import type { PrState, PullRequest, RepoSnapshot } from "../types";
 import { toast } from "./app.svelte";
 import { openExternal } from "./editor";
-import { showDialog } from "./overlays.svelte";
+import { lazyDialog, showDialog } from "./overlays.svelte";
+
+const CreatePullRequestDialog = lazyDialog(() => import("../components/dialogs/CreatePullRequestDialog.svelte"));
 
 /** A list of pull requests older than this is shown as of when it was loaded. */
 export const STALE_AFTER_MS = 10 * 60_000;

@@ -30,7 +30,13 @@ vi.mock("./repo.svelte", () => ({
 }));
 
 // Dialogs: the test plays the user, through the props the dialog was opened with.
-vi.mock("./overlays.svelte", () => ({ openDialog: vi.fn(), closeDialog: vi.fn(), showDialog: vi.fn() }));
+vi.mock("./overlays.svelte", () => ({
+  openDialog: vi.fn(),
+  closeDialog: vi.fn(),
+  showDialog: vi.fn(),
+  lazyDialog: (load: () => Promise<unknown>) => ({ load, loaded: () => null }),
+  isShowing: vi.fn(() => false),
+}));
 vi.mock("../components/dialogs/ConfirmDialog.svelte", () => ({ default: { name: "ConfirmDialog" } }));
 vi.mock("../components/dialogs/PullDialog.svelte", () => ({ default: { name: "PullDialog" } }));
 
@@ -505,9 +511,12 @@ describe("hint buttons", () => {
     await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD, expectWorktree: "/r/wt" });
     expect(app.app.toasts).toEqual([]);
     expect(overlays.showDialog).toHaveBeenCalledWith(
-      { name: "PullDialog" },
+      expect.objectContaining({ load: expect.any(Function) }),
       { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head, worktree: "/r/wt" },
     );
+    // The pull dialog, loaded when first opened.
+    const [dialog] = vi.mocked(overlays.showDialog).mock.calls.at(-1)! as unknown as [{ load: () => Promise<{ default: unknown }> }];
+    expect((await dialog.load()).default).toEqual({ name: "PullDialog" });
   });
 
   it("a follow-up that fails is reported, not thrown at the button", async () => {

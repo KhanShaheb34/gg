@@ -2,24 +2,24 @@
 // pause), saying "Saved" quietly or the core's own refusal inline, and putting everything back
 // to the defaults. The core checks every value (store.rs); what it refuses is never applied,
 // and the text typed stays in its field.
-
-import SettingsSheet from "../components/Settings.svelte";
-import ShortcutsSheet from "../components/ShortcutsSheet.svelte";
 import { api, CoreError } from "../ipc";
 import { applyTheme } from "../theme";
 import type { Settings } from "../types";
 import { app } from "./app.svelte";
-import { overlays, showDialog } from "./overlays.svelte";
+import { isShowing, lazyDialog, showDialog } from "./overlays.svelte";
+
+const SettingsSheet = lazyDialog(() => import("../components/Settings.svelte"));
+const ShortcutsSheet = lazyDialog(() => import("../components/ShortcutsSheet.svelte"));
 
 /** Shows the settings (once: a second ask while it is open does nothing). */
 export function openSettings(): void {
-  if (overlays.dialogs.some((d) => d.component === SettingsSheet)) return;
+  if (isShowing(SettingsSheet)) return;
   showDialog(SettingsSheet, {});
 }
 
 /** Shows the keyboard shortcuts sheet (once). */
 export function openShortcuts(): void {
-  if (overlays.dialogs.some((d) => d.component === ShortcutsSheet)) return;
+  if (isShowing(ShortcutsSheet)) return;
   showDialog(ShortcutsSheet, {});
 }
 

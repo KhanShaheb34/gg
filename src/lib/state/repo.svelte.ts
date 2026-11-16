@@ -4,6 +4,7 @@
 // It follows `repo-changed` events, and when the rows change under it, keeps the visible
 // commit and the selection where they were.
 
+import { preloadDialogs } from "./overlays.svelte";
 import { startMark } from "../perf/startMarks";
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
@@ -506,6 +507,9 @@ export class RepoView {
     if (this.markedFirstRows) return;
     this.markedFirstRows = true;
     void api.perfMark("first-rows", performance.now()).catch(() => {});
+    // The first screen is up: the dialogs' code loads now, in the background, so that one
+    // opened later shows at once.
+    setTimeout(preloadDialogs, 300);
   }
 
   /**

@@ -5,9 +5,7 @@
 // it lies over the graph instead of taking room from it, and shows only when asked for in this
 // session.
 
-import CreateWorktreeDialog, { type CreateFrom } from "../components/dialogs/CreateWorktreeDialog.svelte";
-import DeleteWorktreeDialog from "../components/dialogs/DeleteWorktreeDialog.svelte";
-import PushDialog from "../components/dialogs/PushDialog.svelte";
+import type { CreateFrom } from "../components/dialogs/CreateWorktreeDialog.svelte";
 import { api } from "../ipc";
 import { openExternal } from "./editor";
 import { shown } from "../menus/common";
@@ -16,9 +14,13 @@ import { worktreeMenu, worktreePanelMenu } from "../menus/worktreeMenu";
 import type { RepoSnapshot, WorktreeInfo } from "../types";
 import { app, reportError, toast } from "./app.svelte";
 import { runOp } from "./ops.svelte";
-import { openMenu, showDialog } from "./overlays.svelte";
+import { lazyDialog, openMenu, showDialog } from "./overlays.svelte";
 import { PanelState } from "./panelState.svelte";
 import { findRepoView, type RepoView } from "./repo.svelte";
+
+const CreateWorktreeDialog = lazyDialog(() => import("../components/dialogs/CreateWorktreeDialog.svelte"));
+const DeleteWorktreeDialog = lazyDialog(() => import("../components/dialogs/DeleteWorktreeDialog.svelte"));
+const PushDialog = lazyDialog(() => import("../components/dialogs/PushDialog.svelte"));
 
 /** Least, greatest and first width of the panel, px. */
 export const SIDE_MIN_W = 240;

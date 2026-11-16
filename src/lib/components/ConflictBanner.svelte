@@ -23,10 +23,10 @@
   import { shown } from "../menus/common";
   import { openInEditor } from "../state/editor";
   import { runOp } from "../state/ops.svelte";
-  import { showDialog } from "../state/overlays.svelte";
+  import { lazyDialog, showDialog } from "../state/overlays.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { ConflictFile, InProgress } from "../types";
-  import ContinueDialog from "./dialogs/ContinueDialog.svelte";
+  const ContinueDialog = lazyDialog(() => import("./dialogs/ContinueDialog.svelte"));
 
   /** `compact`: a panel is open below the graph; the file list shows about three rows. */
   let { view, compact = false }: { view: RepoView; compact?: boolean } = $props();

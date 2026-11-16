@@ -40,3 +40,31 @@ fn the_tauri_configs_take_the_cargo_version() {
         );
     }
 }
+
+/// About and `gg --version` say gg-core's version: every crate takes the workspace's, none
+/// a version of its own (Task 12 review minor 11).
+#[test]
+fn every_crate_takes_the_workspace_version() {
+    for rel in [
+        "crates/gg-core/Cargo.toml",
+        "crates/gg-devserver/Cargo.toml",
+        "src-tauri/Cargo.toml",
+    ] {
+        let path = root().join(rel);
+        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let package = text
+            .split("\n[")
+            .find(|section| section.starts_with("[package]") || section.starts_with("package]"))
+            .unwrap_or_else(|| panic!("{rel} has no [package]"));
+        let versions: Vec<&str> = package
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("version"))
+            .collect();
+        assert_eq!(
+            versions,
+            ["version.workspace = true"],
+            "{rel}: the version must be the workspace's"
+        );
+    }
+}

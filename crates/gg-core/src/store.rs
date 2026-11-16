@@ -1589,23 +1589,24 @@ mod tests {
 
     /// Repository preferences are read field by field like the rest: a newer version's
     /// keys inside an entry survive a save, and a value that falls back copies the file
-    /// aside first.
+    /// aside first. (Folders that exist nowhere: the keys are the folders' real paths, and
+    /// on Windows `/a` is the current drive's `\a`, which exists on CI: `D:\a`.)
     #[test]
     fn repo_prefs_keep_unknown_keys_and_fall_back_one_value_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         fs::write(
             &path,
-            r#"{"repoPrefs": {"/a": {"mergeNoFf": false, "future": 1}, "/b": "junk"}}"#,
+            r#"{"repoPrefs": {"/no-repo-a": {"mergeNoFf": false, "future": 1}, "/no-repo-b": "junk"}}"#,
         )
         .unwrap();
         let store = Store::load(dir.path());
-        assert!(!store.repo_prefs(Path::new("/a")).merge_no_ff);
-        assert!(store.repo_prefs(Path::new("/b")).merge_no_ff);
-        assert!(store.repo_prefs(Path::new("/c")).merge_no_ff);
+        assert!(!store.repo_prefs(Path::new("/no-repo-a")).merge_no_ff);
+        assert!(store.repo_prefs(Path::new("/no-repo-b")).merge_no_ff);
+        assert!(store.repo_prefs(Path::new("/no-repo-c")).merge_no_ff);
         store
             .set_repo_prefs(
-                Path::new("/c"),
+                Path::new("/no-repo-c"),
                 RepoPrefsPatch {
                     merge_no_ff: Some(false),
                     side_panel: Some(false),
@@ -1616,24 +1617,26 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
-            saved["repoPrefs"]["/a"],
+            saved["repoPrefs"]["/no-repo-a"],
             serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null, "sidePanel": true, "prBase": null})
         );
         assert_eq!(
-            saved["repoPrefs"]["/c"],
+            saved["repoPrefs"]["/no-repo-c"],
             serde_json::json!({"mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": "develop"})
         );
         // Read back, and forgotten with null.
         assert_eq!(
             Store::load(dir.path())
-                .repo_prefs(Path::new("/c"))
+                .repo_prefs(Path::new("/no-repo-c"))
                 .pr_base
                 .as_deref(),
             Some("develop")
         );
         let patch: RepoPrefsPatch =
             serde_json::from_value(serde_json::json!({"prBase": null})).unwrap();
-        let prefs = store.set_repo_prefs(Path::new("/c"), patch).unwrap();
+        let prefs = store
+            .set_repo_prefs(Path::new("/no-repo-c"), patch)
+            .unwrap();
         assert_eq!(prefs.pr_base, None);
         let aside = fs::read_dir(dir.path())
             .unwrap()

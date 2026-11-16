@@ -414,7 +414,7 @@ async fn open_missing_recent_path_errors_and_recent_is_removable() {
     h.call("close_repo", json!({ "repoId": snap["repoId"] }))
         .await;
 
-    std::fs::remove_dir_all(repo.path()).unwrap();
+    remove_soon(repo.path()).await;
     let err = h.fail("open_repo", json!({ "path": root })).await;
     assert_eq!(err.code, ErrorCode::PathMissing);
 
@@ -424,6 +424,22 @@ async fn open_missing_recent_path_errors_and_recent_is_removable() {
     assert_eq!(rest[0]["path"], path_string(keep.path()));
     let state = h.call("get_app_state", json!({})).await;
     assert_eq!(state["recents"], Value::Array(rest.clone()));
+}
+
+/// Removes folder `dir`, trying again for a few seconds: on Windows a folder cannot be
+/// removed while a handle in it is open, and a closed repository's watcher closes its own
+/// on its thread, just after the close returns.
+async fn remove_soon(dir: &Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("{} could not be removed: {e}", dir.display()),
+        }
+    }
 }
 
 /// A core whose saved session holds `tabs` and whose launch path is `launch`.
@@ -1255,7 +1271,13 @@ async fn open_external_opens_the_repositorys_worktrees_only() {
     for _ in 0..up {
         relative.push("..");
     }
-    relative.push(linked.strip_prefix("/").unwrap_or(&linked));
+    // The worktree's folders after its root (and drive, on Windows: from another drive the
+    // path leads nowhere, and is refused all the same).
+    relative.extend(
+        linked
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_))),
+    );
     assert!(relative.is_relative());
     for target in ["editor", "terminal", "reveal"] {
         let err = h.fail("open_external", open(target, Some(&relative))).await;
@@ -1565,7 +1587,7 @@ async fn worktree_default_path_and_worktree_ops_via_dispatch() {
         .await;
     assert_eq!(
         path,
-        json!({ "path": base.join("repo.worktrees/feature-a").to_string_lossy(), "exists": false })
+        json!({ "path": base.join("repo.worktrees").join("feature-a").to_string_lossy(), "exists": false })
     );
     h.call(
         "update_settings",

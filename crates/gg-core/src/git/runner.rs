@@ -2336,12 +2336,23 @@ mod tests {
             program: None,
         };
         let dir = tempfile::tempdir().unwrap();
-        // git prints back a 300 KiB config value given on its command line.
-        let big = "x".repeat(300 * 1024);
+        // git prints back 300 KiB of config values given on its command line, in three
+        // arguments of 100 KiB: Linux refuses any one argument over 128 KiB.
+        let value = format!("gg.big={}", "x".repeat(100 * 1024));
         let out = runner
             .run_with_timeout(
                 dir.path(),
-                &["-c", &format!("gg.big={big}"), "config", "--get", "gg.big"],
+                &[
+                    "-c",
+                    &value,
+                    "-c",
+                    &value,
+                    "-c",
+                    &value,
+                    "config",
+                    "--get-all",
+                    "gg.big",
+                ],
                 CmdKind::Read,
                 TimeLimit::total(Duration::from_secs(20)),
             )

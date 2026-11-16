@@ -951,6 +951,33 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
     assert!(third.op_id > second.op_id);
 }
 
+/// Whether a numbered request that took `elapsed` waited for no earlier number: it took
+/// less than what such a request takes here (`baseline`: on a slow machine git alone takes
+/// longer than the gap wait) plus the 500 ms a missing number is waited for.
+fn waited_for_nothing(elapsed: Duration, baseline: Duration) -> bool {
+    elapsed < baseline + Duration::from_millis(400)
+}
+
+/// How long a branch creation takes here when it waits for nothing: the slower of two, by
+/// clients of their own numbered 1.
+async fn baseline(h: &Harness, id: u32, wt: &std::path::Path, head: &str) -> Duration {
+    let mut slowest = Duration::ZERO;
+    for n in 0..2 {
+        let t = std::time::Instant::now();
+        h.m.run_op_in_order(
+            id,
+            &format!("baseline {n}"),
+            1,
+            in_wt(wt, create_branch(&format!("baseline-{n}"), head)),
+            &[],
+        )
+        .await
+        .expect("runs");
+        slowest = slowest.max(t.elapsed());
+    }
+    slowest
+}
+
 /// R28: a request whose predecessor never arrives waits for it 500 ms, then runs; the gap
 /// is not waited for again, and the late predecessor runs at once when it comes. Numbers
 /// start again when the repository is opened again.
@@ -973,14 +1000,17 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
             t.elapsed()
         }
     };
+    let base = baseline(&h, id, repo.path(), &head).await;
     let waited = timed(2, "b").await;
     assert!(
         waited >= Duration::from_millis(480),
         "waited {waited:?} for number 1"
     );
     assert!(waited < Duration::from_millis(3000), "waited {waited:?}");
-    assert!(timed(3, "c").await < Duration::from_millis(450));
-    assert!(timed(1, "a").await < Duration::from_millis(450), "late");
+    let third = timed(3, "c").await;
+    assert!(waited_for_nothing(third, base), "{third:?} ({base:?})");
+    let late = timed(1, "a").await;
+    assert!(waited_for_nothing(late, base), "late: {late:?} ({base:?})");
 
     h.m.close(id).await.expect("closes");
     let id2 = h.open(repo.path()).await.repo_id;
@@ -995,8 +1025,9 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
     .await
     .expect("runs");
     assert!(
-        t.elapsed() < Duration::from_millis(450),
-        "numbers start again"
+        waited_for_nothing(t.elapsed(), base),
+        "numbers start again: {:?} ({base:?})",
+        t.elapsed()
     );
 }
 
@@ -1019,6 +1050,7 @@ async fn a_refused_numbered_request_lets_the_next_one_in() {
         .await
         .expect_err("bad name");
     assert_eq!(err.code, ErrorCode::BadName);
+    let base = baseline(&h, id, repo.path(), &head).await;
     let t = std::time::Instant::now();
     h.m.run_op_in_order(
         id,
@@ -1029,7 +1061,11 @@ async fn a_refused_numbered_request_lets_the_next_one_in() {
     )
     .await
     .expect("runs");
-    assert!(t.elapsed() < Duration::from_millis(450));
+    assert!(
+        waited_for_nothing(t.elapsed(), base),
+        "{:?} ({base:?})",
+        t.elapsed()
+    );
 }
 
 /// Review item 3a: each page load (a reload, another window) numbers from 1 under a client id
@@ -1051,6 +1087,7 @@ async fn each_client_numbers_its_own_requests() {
         .await
         .expect("runs");
     }
+    let base = baseline(&h, id, repo.path(), &head).await;
     let t = std::time::Instant::now();
     h.m.run_op_in_order(
         id,
@@ -1062,8 +1099,8 @@ async fn each_client_numbers_its_own_requests() {
     .await
     .expect("runs");
     assert!(
-        t.elapsed() < Duration::from_millis(450),
-        "{:?}",
+        waited_for_nothing(t.elapsed(), base),
+        "{:?} ({base:?})",
         t.elapsed()
     );
 }
@@ -1096,6 +1133,21 @@ async fn a_run_op_that_cannot_be_read_lets_the_next_one_in() {
         .await
         .expect_err("refused");
     assert_eq!(err.code, ErrorCode::BadRequest);
+    // What such a request takes here when it waits for nothing (a client of its own).
+    let mut base = Duration::ZERO;
+    for n in 0..2 {
+        let t = std::time::Instant::now();
+        core.dispatch(
+            "run_op",
+            json!({"repoId": id, "clientId": format!("base {n}"), "clientSeq": 1,
+                   "confirmed": [],
+                   "request": {"op": "create_branch", "name": format!("base-{n}"), "at": head,
+                               "checkout": false, "expectWorktree": repo.path()}}),
+        )
+        .await
+        .expect("runs");
+        base = base.max(t.elapsed());
+    }
     let t = std::time::Instant::now();
     let out = core
         .dispatch(
@@ -1108,8 +1160,8 @@ async fn a_run_op_that_cannot_be_read_lets_the_next_one_in() {
         .expect("runs");
     assert_eq!(out["status"], "done", "{out}");
     assert!(
-        t.elapsed() < Duration::from_millis(450),
-        "{:?}",
+        waited_for_nothing(t.elapsed(), base),
+        "{:?} ({base:?})",
         t.elapsed()
     );
 }

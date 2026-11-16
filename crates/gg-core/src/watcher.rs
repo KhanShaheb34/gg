@@ -388,6 +388,15 @@ struct Batch {
     folder_gone: bool,
 }
 
+impl Batch {
+    /// Whether, where folders are watched one by one, the watches must follow this batch:
+    /// what git ignores was read again, changes were lost, or a folder went (a removal-only
+    /// batch too, so the gone folder's watch goes and one made again later counts as new).
+    fn moves_folders(&self) -> bool {
+        self.reread || self.overflow || self.folder_gone
+    }
+}
+
 /// Longest a read of what git ignores may take: one that hangs is given up on (git is
 /// stopped), so the watch goes on.
 const IGNORED_READ_LIMIT: Duration = Duration::from_secs(10);
@@ -709,8 +718,7 @@ pub(crate) async fn watch_worktree_in(
             }
             // Folders came, went or are ignored now: the watches follow (on the blocking
             // pool: the tree is walked and each folder watched).
-            if mode == TreeMode::PerFolder && (batch.reread || batch.overflow || batch.folder_gone)
-            {
+            if mode == TreeMode::PerFolder && batch.moves_folders() {
                 let skip = ignored.read().unwrap_or_else(|e| e.into_inner()).clone();
                 let (at, os) = (root.clone(), task_os.clone());
                 let all = batch.overflow || batch.named_all;
@@ -1051,6 +1059,9 @@ mod tests {
             &mut only_removed,
         );
         assert!(only_removed.folder_gone && !only_removed.reread);
+        // ... and that alone makes the watches follow (Task 13 review minor 3: the sync is
+        // decided by `moves_folders`, which a removal-only batch must turn on).
+        assert!(only_removed.moves_folders());
         let mut a_file = Batch::default();
         note_tree_event(
             &root,
@@ -1062,6 +1073,10 @@ mod tests {
             &mut a_file,
         );
         assert!(!a_file.folder_gone);
+        assert!(
+            !a_file.moves_folders(),
+            "a file's removal leaves the watches as they are"
+        );
     }
 
     /// `new/sub` removed in one batch (`git stash -u`) and made again in a later one (`git

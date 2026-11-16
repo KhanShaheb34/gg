@@ -381,6 +381,26 @@ impl RepoManager {
     /// exactly that host ([`Gh::has_stored_credentials`], asked once per host per run of the
     /// app, through `runner`). Otherwise `None`: no `gh` command runs for it, no `GH_HOST`
     /// names it, and no compare page is made for it.
+    /// The web hosts (`host[:port]`) the browser may be sent to for repository `repo`:
+    /// github.com, and the GitHub host of each of its remotes on GitHub, as
+    /// [`RepoManager::on_github`] resolves it (final boundary review M1).
+    pub(crate) async fn github_web_hosts(&self, repo: &Repo) -> Vec<String> {
+        let mut hosts = vec!["github.com".to_owned()];
+        let Ok(facts) = self.remote_facts(repo, &repo.runner, &repo.root).await else {
+            return hosts;
+        };
+        let names: Vec<String> = facts.remote_names().map(str::to_owned).collect();
+        for name in names {
+            if let Some(on) = self.on_github(repo, &repo.runner, &facts, &name).await {
+                let web = on.web.to_ascii_lowercase();
+                if !hosts.contains(&web) {
+                    hosts.push(web);
+                }
+            }
+        }
+        hosts
+    }
+
     pub(crate) async fn on_github(
         &self,
         repo: &Repo,

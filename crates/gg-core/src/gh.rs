@@ -578,6 +578,11 @@ impl RemoteFacts {
         self.known(remote)
     }
 
+    /// Every remote's name.
+    pub(crate) fn remote_names(&self) -> impl Iterator<Item = &str> {
+        self.urls.keys().map(String::as_str)
+    }
+
     /// The repository `remote` names: the first of its addresses that names one, on the
     /// real host when the address's host is an ssh alias resolved ([`Self::set_real_host`]).
     pub(crate) fn repo_of(&self, remote: &str) -> Option<RemoteRepo> {

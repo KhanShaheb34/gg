@@ -107,12 +107,19 @@ impl RepoManager {
         let os = std::env::consts::OS;
         let bad = |message: &str| CoreError::new(ErrorCode::BadRequest, message.to_owned());
         if target == External::Url {
-            self.get(repo_id)?;
+            let repo = self.get(repo_id)?;
             if path.is_some() {
                 return Err(bad("A web page is opened by its address, not a path."));
             }
-            let url = url.ok_or_else(|| bad("No web address to open."))?;
-            return self.start(url_plan(os, &web_address(url)?), None);
+            let url = web_address(url.ok_or_else(|| bad("No web address to open."))?)?;
+            // Only the repository's GitHub host, or github.com (final boundary review M1).
+            let host = web_host(&url);
+            if !self.github_web_hosts(&repo).await.contains(&host) {
+                return Err(bad(&format!(
+                    "Not opened: {host} is not this repository's GitHub host."
+                )));
+            }
+            return self.start(url_plan(os, &url), None);
         }
         if url.is_some() {
             return Err(bad("A worktree is opened by its path, not a web address."));
@@ -338,6 +345,20 @@ fn web_address(text: &str) -> Result<String> {
         return Err(refused("the web address has a user name or password in it"));
     }
     Ok(url.to_string())
+}
+
+/// The host of web address `url` (as [`web_address`] wrote it) as `host[:port]`, lowercase.
+fn web_host(url: &str) -> String {
+    url::Url::parse(url).map_or_else(
+        |_| String::new(),
+        |u| {
+            let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+            match u.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host,
+            }
+        },
+    )
 }
 
 /// Said when a file was asked for, no editor command is set, and the worktree folder was

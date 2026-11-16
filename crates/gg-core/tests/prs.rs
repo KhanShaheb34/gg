@@ -1565,3 +1565,40 @@ async fn a_suggestion_asks_gh_both_questions_at_once() {
         "one after the other: {a:?} {b:?}"
     );
 }
+
+/// Final boundary review M1: the browser opens only the repository's GitHub web host (as
+/// the pull requests resolve it) or github.com, never another site a future UI path might
+/// turn repository text into.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_the_repositorys_github_host_opens_in_the_browser() {
+    use gg_core::launch::{External, Programs};
+    let s = setup_with("https://ghe.example.ghe.com/octo/cat.git").await;
+    s.h.m.record_launches();
+    let programs = Programs {
+        editor: None,
+        terminal: None,
+    };
+    for url in [
+        "https://ghe.example.ghe.com/octo/cat/pull/3",
+        "https://github.com/octo/cat/pull/3",
+    ] {
+        s.h.m
+            .open_external(s.id, External::Url, None, Some(url), programs)
+            .await
+            .unwrap_or_else(|e| panic!("{url}: {e:?}"));
+    }
+    for url in [
+        "https://evil.example.com/phish",
+        "https://github.com.evil.example/x",
+        "https://ghe.example.ghe.com:8443/octo/cat",
+    ] {
+        let err =
+            s.h.m
+                .open_external(s.id, External::Url, None, Some(url), programs)
+                .await
+                .expect_err(url);
+        assert_eq!(err.code, gg_core::error::ErrorCode::BadRequest, "{url}");
+        assert!(err.message.starts_with("Not opened:"), "{}", err.message);
+    }
+    assert_eq!(s.h.m.launches().len(), 2);
+}

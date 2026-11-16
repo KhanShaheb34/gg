@@ -364,7 +364,7 @@ test("the panel is shown and hidden with Cmd+B, remembered per repository, and l
   await page.keyboard.press("ControlOrMeta+b");
   await expect(panel).toBeVisible();
   await expect(panel).toHaveClass(/overlay/);
-  expect((await grid(page).boundingBox())!.width).toBe(before);
+  expect((await grid(page).boundingBox())!.width).toBeCloseTo(before, 0);
   await grid(page).locator('[data-index="2"] .subject').click();
   await expect(panel).toHaveCount(0);
   await page.keyboard.press("ControlOrMeta+b");

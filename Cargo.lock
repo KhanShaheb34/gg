@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "gg-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "dunce",
  "gg-core",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "gg-desktop"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "gg-core",
  "serde_json",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "gg-devserver"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "gg-core",

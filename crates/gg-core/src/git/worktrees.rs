@@ -79,6 +79,8 @@ fn is_hex(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    use crate::platform::native_path as native;
+
     const C: &str = "cccccccccccccccccccccccccccccccccccccccc";
     const ZERO: &str = "0000000000000000000000000000000000000000";
 
@@ -95,14 +97,14 @@ mod tests {
             list,
             [
                 WorktreeInfo {
-                    path: "/repo/main dir".into(),
+                    path: native("/repo/main dir"),
                     head: Some(C.into()),
                     branch: Some("main".into()),
                     is_main: true,
                     ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
-                    path: "/wt/ünï ✨".into(),
+                    path: native("/wt/ünï ✨"),
                     head: Some(C.into()),
                     branch: Some("feature/x".into()),
                     is_main: false,
@@ -110,7 +112,7 @@ mod tests {
                     ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
-                    path: "/wt/detached".into(),
+                    path: native("/wt/detached"),
                     head: Some(C.into()),
                     branch: None,
                     is_main: false,
@@ -119,7 +121,7 @@ mod tests {
                     ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
-                    path: "/wt/gone".into(),
+                    path: native("/wt/gone"),
                     head: Some(C.into()),
                     branch: Some("gone".into()),
                     is_main: false,
@@ -157,11 +159,11 @@ mod tests {
         let out = format!("worktree /a\0HEAD {C}\0\0worktree /b\0HEAD {C}");
         let list = parse_worktrees(out.as_bytes());
         assert_eq!(list.len(), 2);
-        assert_eq!(list[1].path, "/b");
+        assert_eq!(list[1].path, native("/b"));
         assert!(!list[1].is_main);
         // Unknown attributes are ignored; bad bytes decode lossily.
         let list = parse_worktrees(b"worktree /x\xFF\0future thing\0HEAD zz\0\0");
-        assert_eq!(list[0].path, "/x\u{FFFD}");
+        assert_eq!(list[0].path, native("/x\u{FFFD}"));
         assert_eq!(list[0].head, None);
     }
 }

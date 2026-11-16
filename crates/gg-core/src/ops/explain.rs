@@ -327,7 +327,7 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
         if let Some(rest) = line.strip_prefix("fatal: refusing to fetch into branch 'refs/heads/")
             && let Some((branch, path)) = rest.split_once("' checked out at '")
         {
-            let path = path.strip_suffix('\'').unwrap_or(path);
+            let path = crate::platform::native_path(path.strip_suffix('\'').unwrap_or(path));
             return Some(format!(
                 "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, and \
                  git does not move a checked-out branch by fetching into it: switch to that \
@@ -576,7 +576,8 @@ mod tests {
         let Step::Failed { message, .. } = explain(&["fetch", "origin", "x:y"], &out) else {
             panic!("not failed");
         };
-        assert!(message.contains("/w/topic"), "{message}");
+        let at = crate::platform::native_path("/w/topic");
+        assert!(message.contains(&at), "{message}");
         assert!(message.contains("that worktree"), "{message}");
         assert!(!message.contains("pull it instead"), "{message}");
     }
@@ -607,11 +608,13 @@ mod tests {
                 "fatal: refusing to fetch into branch 'refs/heads/f' checked out at '/w/f'\n",
             ),
         ];
+        // Spelled as the platform spells paths (git for Windows writes `/`).
+        let at = crate::platform::native_path("/w/f");
         for (args, stderr) in cases {
             let Step::Failed { message, hints, .. } = explain(args, &failed(stderr, "")) else {
                 panic!("not failed");
             };
-            assert!(message.contains("/w/f"), "{args:?}: {message}");
+            assert!(message.contains(&at), "{args:?}: {message}");
             assert!(message.contains("\u{201c}f\u{201d}"), "{args:?}: {message}");
             // Worktrees are deleted, in the app's words (P3-R20), never "removed".
             assert!(
@@ -621,7 +624,7 @@ mod tests {
             assert_eq!(
                 hints,
                 [OpHint::MakeActive {
-                    worktree: "/w/f".into()
+                    worktree: at.clone()
                 }],
                 "{args:?}"
             );

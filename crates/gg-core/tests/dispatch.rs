@@ -1601,7 +1601,10 @@ async fn worktree_default_path_and_worktree_ops_via_dispatch() {
         )
         .await;
     let at = path["path"].as_str().unwrap().to_owned();
-    assert_eq!(at, base.join("trees/feature-a@repo").to_string_lossy());
+    assert_eq!(
+        at,
+        base.join("trees").join("feature-a@repo").to_string_lossy()
+    );
     let out = h
         .call(
             "run_op",

@@ -75,6 +75,10 @@ export class GraphProbe {
     const s = this.view.snapshot;
     if (this.started || !mode || !scroller || s.loading || s.totalRows === 0) return;
     this.started = true;
+    // Once per window: a tab opened during the run (the walk's `gg`) has a graph of its own.
+    const w = window as { __GG_PERF_RAN__?: boolean };
+    if (w.__GG_PERF_RAN__) return;
+    w.__GG_PERF_RAN__ = true;
     void this.run(mode, scroller);
   }
 

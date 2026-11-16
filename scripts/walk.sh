@@ -42,7 +42,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 bundle=$root/target/release/bundle/macos/gg.app
 app=$bundle/Contents/MacOS/gg-desktop
 [ -x "$app" ] || { echo "no app at $app: build it with the perf feature first" >&2; exit 1; }
-if pgrep -f "gg-desktop" > /dev/null; then
+if pgrep -f "/Contents/MacOS/gg-desktop" > /dev/null; then
   echo "gg is running; quit every copy of it first" >&2
   exit 1
 fi

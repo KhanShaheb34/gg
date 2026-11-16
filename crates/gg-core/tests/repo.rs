@@ -138,7 +138,7 @@ fn snapshot_from_json(v: Value) -> RepoSnapshot {
 }
 
 fn canonical(p: &Path) -> String {
-    fs::canonicalize(p).unwrap().to_string_lossy().into_owned()
+    dunce::canonicalize(p).unwrap().to_string_lossy().into_owned()
 }
 
 fn all_refs() -> ViewOptions {

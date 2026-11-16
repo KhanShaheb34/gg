@@ -86,7 +86,7 @@ fn executable(file: &Path) {
 }
 
 fn real(path: &Path) -> String {
-    fs::canonicalize(path)
+    dunce::canonicalize(path)
         .unwrap()
         .to_string_lossy()
         .into_owned()

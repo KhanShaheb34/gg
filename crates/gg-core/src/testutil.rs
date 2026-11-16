@@ -96,7 +96,10 @@ impl TestRepo {
             .prefix("gg-test-")
             .tempdir()
             .expect("create temp dir");
-        let root = dir.path().join(name);
+        // Canonical, as the core reports paths: macOS's temp folder is behind a link, and
+        // Windows' may be a short (8.3) name; never with a `\\?\` prefix (dunce).
+        let base = dunce::canonicalize(dir.path()).expect("resolve temp dir");
+        let root = base.join(name);
         fs::create_dir_all(&root).expect("create repo dir");
         let global_config = dir.path().join("empty-gitconfig");
         fs::write(&global_config, "").expect("write empty global git config");

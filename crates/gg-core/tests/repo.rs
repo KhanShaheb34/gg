@@ -1385,7 +1385,14 @@ async fn events_emitted() {
     assert!(loaded >= 1);
     assert_eq!(changed[loaded].total_rows, 1200);
     assert!(changed[loaded..].iter().all(|s| !s.loading));
-    assert!(changed[0].total_rows >= 500);
+    // The view only grows while it loads. (The loader's own progress comes after the first
+    // 500 rows, `loader::tests::progress_waits_for_500_rows_then_throttles`; a worktree read
+    // in the background may emit before that, with fewer rows, on a slow machine.)
+    assert!(
+        changed.windows(2).all(|w| w[0].total_rows <= w[1].total_rows),
+        "{:?}",
+        changed.iter().map(|s| s.total_rows).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

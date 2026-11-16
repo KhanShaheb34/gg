@@ -1018,8 +1018,12 @@ async fn a_file_written_while_main_becomes_active_stops_the_removal() {
     assert_eq!(out.snapshot.active_worktree, real(repo.path()));
 }
 
+/// A worktree with a submodule checked out: git refuses to delete even a clean one, so gg
+/// refuses it before anything runs (no switch, no remove), never forced. Final review M2:
+/// what a forced delete in a terminal would lose is still read and shown (git's
+/// `submodule deinit` does not make the delete possible, so it is not suggested).
 #[tokio::test]
-async fn an_active_worktree_that_git_will_not_remove_says_main_is_active_now() {
+async fn a_worktree_with_submodules_is_refused_with_what_a_forced_delete_would_lose() {
     // A submodule checked out there: git refuses even a clean one.
     let sub = TestRepo::new();
     sub.commit("sub one");
@@ -1038,53 +1042,44 @@ async fn an_active_worktree_that_git_will_not_remove_says_main_is_active_now() {
     );
     git_in(&wt, &["commit", "-q", "-m", "add the submodule"]);
     git_in(&wt, &["push", "-q", "origin", "feature"]);
-    // Work that would otherwise need --force: still never offered, never forced.
+    // Work that would otherwise need --force: listed, never offered, never forced.
     fs::write(wt.join("untracked.txt"), "x").unwrap();
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
     h.m.set_active_worktree(id, &wt).await.unwrap();
-    let out = h.run(id, remove(&wt, false)).await;
+    let out = h.run(id, remove(&wt, true)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(out.dangers.is_empty(), "no confirmation offered");
     assert!(
-        out.message
-            .starts_with("git does not delete a worktree that contains submodules"),
+        out.message.starts_with(
+            "Nothing was deleted: git does not delete a worktree that contains submodules"
+        ),
         "{}",
         out.message
     );
     assert!(
-        out.message.ends_with(&format!(
-            "The main worktree, {}, is active now.",
-            real(repo.path())
+        out.message.contains("git worktree remove --force"),
+        "{}",
+        out.message
+    );
+    assert!(!out.message.contains("deinit"), "{}", out.message);
+    assert!(
+        out.message.contains(&format!(
+            "The worktree at {} has 1 untracked file.",
+            real(&wt)
         )),
         "{}",
         out.message
     );
-    assert!(
-        out.detail
-            .as_deref()
-            .unwrap()
-            .contains("working trees containing submodules cannot be moved or removed")
+    assert_eq!(
+        out.detail.as_deref(),
+        Some("Untracked files (1):\n  untracked.txt")
     );
-    assert_eq!(out.snapshot.active_worktree, real(repo.path()));
+    assert_eq!(out.snapshot.active_worktree, real(&wt), "not switched");
     assert!(wt.join("lib/.git").exists(), "nothing removed");
     assert!(wt.join("untracked.txt").exists());
-    assert_eq!(
-        worktree_writes(&h, &out),
-        [vec![
-            "worktree".to_owned(),
-            "remove".into(),
-            "--".into(),
-            real(&wt)
-        ]],
-        "a plain remove ran (git refused it)"
-    );
-    assert!(
-        worktree_writes(&h, &out)
-            .iter()
-            .all(|args| !args.contains(&"--force".to_owned())),
-        "never forced"
-    );
+    assert!(worktree_writes(&h, &out).is_empty(), "nothing ran");
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/feature"]));
 }
 
 #[tokio::test]

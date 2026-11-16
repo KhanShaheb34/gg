@@ -28,12 +28,14 @@ use crate::repo::{RepoManager, canonical, canonical_paths};
 /// Most numbered folders (`-2`, `-3`…) tried for a default location.
 const MAX_SUFFIX: u32 = 1000;
 
-/// Said when git refuses to remove a worktree that holds submodules (it does so even for a
-/// clean one).
-const SUBMODULES: &str = "git does not delete a worktree that contains submodules, even a \
-                          clean one (git's message is below), so nothing was deleted. \
-                          Deinitialize them there first (git submodule deinit --all), then \
-                          delete the worktree again.";
+/// Said when a worktree holds submodules: git refuses to remove it, even a clean one, and
+/// still does after `git submodule deinit` (final review M2), so nothing is suggested that
+/// would not work; only a forced delete does, and it skips every check.
+const SUBMODULES: &str = "Nothing was deleted: git does not delete a worktree that contains \
+                          submodules, even a clean one, so gg does not either. Only a forced \
+                          delete in a terminal (git worktree remove --force) deletes it, and \
+                          that also loses anything uncommitted inside its submodules, which gg \
+                          does not look at.";
 
 /// `path` (absolute, or relative to the main worktree `root`) with `.` and `..` worked out,
 /// without looking at the disk.
@@ -832,8 +834,8 @@ fn top_level(entries: &[String]) -> Vec<String> {
 
 /// The dangers of removing the worktree at `path` (and with `delete_branch`, its branch),
 /// worked out from a fresh read in the operation's turn. None for a clean, pushed worktree
-/// with no ignored files. A worktree with submodules carries none: it is removed without
-/// `--force`, which git refuses (its message is passed on).
+/// with no ignored files. A worktree with submodules carries none: git refuses to delete it,
+/// and so does [`remove`], saying what a forced delete would lose.
 pub(crate) async fn removal_dangers(
     ctx: &OpCtx<'_>,
     path: &str,
@@ -842,6 +844,10 @@ pub(crate) async fn removal_dangers(
     let (Some(wt), list) = find(ctx, path).await? else {
         return Ok(Vec::new());
     };
+    // git refuses it: nothing to confirm; the body says what a forced delete would lose.
+    if has_submodules(ctx, &wt).await? {
+        return Ok(Vec::new());
+    }
     let mut dangers = Vec::new();
     if delete_branch
         && let Some(branch) = &wt.branch
@@ -886,11 +892,9 @@ pub(crate) async fn removal_dangers(
         dangers.push(danger);
     }
     // The files last, so the dialog shows them as late as can be.
-    if !has_submodules(ctx, &wt).await? {
-        let work = read_work(ctx, &wt, true).await?;
-        if let Some(danger) = work_danger(&work, &wt, delete_branch) {
-            dangers.insert(0, danger);
-        }
+    let work = read_work(ctx, &wt, true).await?;
+    if let Some(danger) = work_danger(&work, &wt, delete_branch) {
+        dangers.insert(0, danger);
     }
     Ok(dangers)
 }
@@ -1127,6 +1131,23 @@ pub(crate) async fn remove(
         });
     };
     let shown = wt.path.clone();
+    // git refuses a worktree with submodules: refused before anything runs, with what a
+    // forced delete would lose (final review M2).
+    if has_submodules(ctx, &wt).await? {
+        let work = read_work(ctx, &wt, true).await?;
+        let mut message = SUBMODULES.to_owned();
+        let mut detail = String::new();
+        if let Some(danger) = work_danger(&work, &wt, delete_branch) {
+            message.push(' ');
+            message.push_str(&danger.message);
+            detail = danger.detail.unwrap_or_default();
+        }
+        return Ok(Step::Failed {
+            message,
+            detail,
+            hints: Vec::new(),
+        });
+    }
     let left = Path::new(&shown) == ctx.repo.worktree();
     if left {
         ctx.manager.make_main_active(ctx.repo).await?;
@@ -1171,10 +1192,8 @@ pub(crate) async fn remove(
         || match (confirmed, work_danger(&now, &now_wt, delete_branch)) {
             (Some(seen), Some(danger)) => seen.kind != danger.kind || seen.token != danger.token,
             (Some(_), None) => true,
-            // Nothing was confirmed: it held nothing to lose, and must hold nothing now, on the
-            // same HEAD. (With submodules nothing is asked: git refuses the plain remove itself,
-            // and says why.)
-            (None, Some(_)) => !has_submodules(ctx, &now_wt).await?,
+            // Nothing was confirmed: it held nothing to lose, and must hold nothing now.
+            (None, Some(_)) => true,
             (None, None) => false,
         };
     if changed {

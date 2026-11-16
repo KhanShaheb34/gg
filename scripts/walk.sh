@@ -160,10 +160,29 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         "walk-need dirty") echo "dirty $(date +%s%N)" >> "$work/notes.txt" ;;
         "walk-need resolve app.txt") echo "resolved" > "$work/app.txt" ;;
         "walk-need edit worktree walk-wt")
-          wt=$W/work.worktrees/walk-wt
+          # Where the walk's settings put new worktrees (../{repo}-trees/{branch}).
+          wt=$W/work-trees/walk-wt
           echo "changed in the worktree" >> "$wt/app.txt"
           echo "new" > "$wt/new.txt"
           echo "scratch" > "$wt/scratch.txt"
+          ;;
+        "walk-need mark walk-marked")
+          # An edit git status does not show: the file marked assume-unchanged.
+          wt=$W/work-trees/walk-marked
+          echo "a local tweak" >> "$wt/app.txt"
+          git -C "$wt" update-index --assume-unchanged app.txt
+          ;;
+        "walk-need nest walk-marked")
+          # Clean again, then a repository two levels inside an ignored folder.
+          wt=$W/work-trees/walk-marked
+          git -C "$wt" update-index --no-assume-unchanged app.txt
+          git -C "$wt" checkout -q -- app.txt
+          printf 'tmp/\n' >> "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+          mkdir -p "$wt/tmp/refs"
+          git init -q "$wt/tmp/refs/nested"
+          echo mine > "$wt/tmp/refs/nested/mine.txt"
+          git -C "$wt/tmp/refs/nested" add mine.txt
+          git -C "$wt/tmp/refs/nested" -c user.name=Ada -c user.email=ada@example.invalid commit -q -m "nested work"
           ;;
         "walk-need list pr 21")
           printf '[{"number":21,"title":"Walk: a change in a worktree","url":"https://github.com/octo/cat/pull/21","isDraft":false,"headRefName":"walk/wt","baseRefName":"main","headRepositoryOwner":{"id":"X","login":"octo"},"isCrossRepository":false}]\n' \

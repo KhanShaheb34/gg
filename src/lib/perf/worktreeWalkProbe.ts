@@ -86,6 +86,40 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
     return `theme ${document.documentElement.dataset.theme}; first date ${text(scroller.querySelector('[role="row"] .date'))}`;
   });
 
+  await step("settings: fetch interval, editor and terminal commands, worktree location", async () => {
+    key(",", { command: true });
+    const s = await until("the settings sheet", sheet);
+    const radio = (group: string, name: string) =>
+      [...(byTestId(group, s)?.querySelectorAll<HTMLElement>('[role="radio"]') ?? [])].find((r) => text(r) === name);
+    (await until("15 min", () => radio("settings-fetch", "15 min"))).click();
+    // Recorded by the perf build, never started (GG_PERF_LAUNCHES).
+    const field = (id: string) => byTestId(id, s) as HTMLInputElement | null;
+    type(await until("the editor field", () => field("settings-editor")), "/usr/bin/open -a TextEdit {path}");
+    field("settings-editor")!.dispatchEvent(new Event("blur"));
+    type(await until("the terminal field", () => field("settings-terminal")), "/usr/bin/open -a Terminal {path}");
+    field("settings-terminal")!.dispatchEvent(new Event("blur"));
+    const runs = await until("what the editor runs", () => text(byTestId("settings-editor-runs", s)) || null);
+    type(await until("the pattern field", () => field("settings-pattern")), "../{repo}-trees/{branch}");
+    field("settings-pattern")!.dispatchEvent(new Event("blur"));
+    const where = await until("the location preview", () => {
+      const t = text(byTestId("settings-pattern-preview", s));
+      return /work-trees\/feature-login/.test(t) ? t : null;
+    });
+    (await until("Test (editor)", () => {
+      const b = byTestId("settings-editor-test", s) as HTMLButtonElement | null;
+      return b && !b.disabled ? b : null;
+    })).click();
+    const tested = await until("the test said", () => text(byTestId("settings-editor-tested", s)) || null);
+    await shot(`settings-tools-${theme}`);
+    s.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await until("the sheet closed", () => !sheet());
+    const saved = (await api.getAppState()).settings;
+    if (saved.fetchIntervalSecs !== 900) throw new Error(`fetch interval saved as ${saved.fetchIntervalSecs}`);
+    if (saved.worktreePattern !== "../{repo}-trees/{branch}") throw new Error(`pattern saved as ${saved.worktreePattern}`);
+    if (!saved.editorCommand || !saved.terminalCommand) throw new Error("a command was not saved");
+    return `fetch ${saved.fetchIntervalSecs} s; editor runs "${runs}"; test: ${tested}; ${where}`;
+  });
+
   // --- The staging routine (plan 2) still works ----------------------------------------------
   await stagingRoutine(k);
 
@@ -102,7 +136,8 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
     await until("the Create worktree dialog", () => /Create worktree/.test(text(dialog())));
     type(await until("the branch name field", () => inputNamed(/New branch name/)), "walk/wt");
     const location = await until("the location", () => byTestId("worktree-location", dialog()!) as HTMLInputElement | null);
-    await until("the location follows the name", () => location.value.endsWith("work.worktrees/walk-wt"));
+    // Where the settings' pattern puts it (set above).
+    await until("the location follows the pattern", () => location.value.endsWith("work-trees/walk-wt"));
     const activeBox = await until("Make it active", () => inputNamed(/Make it the active worktree/));
     if (!activeBox.checked) activeBox.click();
     await frame();
@@ -199,6 +234,67 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
     await until("its row gone, main active", () => !row("walk-wt") && rows().length === 1 && activeRow()?.dataset.path === rows()[0].dataset.path, 15000);
     return note;
   });
+
+  // --- The two ways work could be lost, fixed in the final wave --------------------------------
+  await step("open a worktree in the editor and in the terminal (recorded, not started)", async () => {
+    await dismissAll();
+    rightClick(await until("the main worktree's row", () => rows()[0]));
+    await pick(/^Open in editor$/);
+    await sleep(300);
+    rightClick(rows()[0]);
+    await pick(/^Open in terminal$/);
+    await sleep(300);
+    return "see the driver's recorded launches";
+  });
+  await step("an edit git status hides (assume-unchanged) is red when its worktree is deleted", async () => {
+    (await until("Worktree actions", () => document.querySelector<HTMLButtonElement>('button[aria-label="Worktree actions"]'))).click();
+    await pick(/^Add worktree…$/);
+    await until("the Create worktree dialog", () => /Create worktree/.test(text(dialog())));
+    type(await until("the branch name field", () => inputNamed(/New branch name/)), "walk/marked");
+    const activeBox = await until("Make it active", () => inputNamed(/Make it the active worktree/));
+    if (activeBox.checked) activeBox.click();
+    await primary(/^Create worktree$/);
+    await until("its row", () => row("walk-marked"), 15000);
+    await needOnly("mark walk-marked");
+    await sleep(1500);
+    rightClick(await until("its row", () => row("walk-marked")));
+    await pick(/^Delete…$/);
+    await until("the delete dialog", () => /Delete worktree walk-marked/.test(text(dialog())));
+    await shot("dialog-delete-marked");
+    await primary(/^Delete worktree$/);
+    const red = await until("the red confirmation", () => document.querySelector<HTMLElement>('[role="alertdialog"]'));
+    const listed = await until("app.txt listed with its mark", () => {
+      const t = text(byTestId("dangers", red));
+      return /app\.txt \(assume-unchanged\)/.test(t) && /git status does not show/.test(text(red)) ? t : null;
+    });
+    await shot("dialog-delete-marked-red");
+    (await until("Cancel", () => buttonIn(red, /^Cancel$/))).click();
+    await until("closed, the worktree kept", () => !document.querySelector('[role="alertdialog"]') && row("walk-marked"));
+    return listed.slice(0, 160);
+  });
+  await step("a repository two levels inside an ignored folder: deleting is refused", async () => {
+    await dismissAll();
+    await needOnly("nest walk-marked");
+    await sleep(1500);
+    rightClick(await until("its row", () => row("walk-marked")));
+    await pick(/^Delete…$/);
+    await until("the delete dialog", () => /Delete worktree walk-marked/.test(text(dialog())));
+    await primary(/^Delete worktree$/);
+    // Asked about the ignored folder first, in the same dialog, or refused by the core at once.
+    const refusal = /contains another repository, at/;
+    const noticeSays = () => [...document.querySelectorAll<HTMLElement>("[data-notices] .toast")].some((n) => refusal.test(text(n)));
+    const asked = await until("asked, or refused", () =>
+      dialog() && byTestId("dangers", dialog()!) ? "asked" : noticeSays() ? "refused" : null,
+    );
+    if (asked === "asked") {
+      await shot("dialog-delete-nested-asked");
+      await primary(/^Delete worktree$/);
+    }
+    const n = await notice(/contains another repository, at tmp\/refs\/nested inside it/, 15000);
+    await shot("notice-nested-refused");
+    await until("the worktree kept", () => row("walk-marked"));
+    return text(n).slice(0, 200);
+  }, { keepNotices: true });
 
   // --- `gg` from a terminal into the running app -----------------------------------------------
   await step("gg in a terminal opens another repository in the running app", async () => {

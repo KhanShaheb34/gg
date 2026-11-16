@@ -40,14 +40,16 @@ jobs:
           persist-credentials: false
 
       # Tauri 2's system libraries (WebKitGTK 4.1, GTK 3, the tray, SVG icons, D-Bus for
-      # the single-instance lock) and patchelf for the AppImage.
+      # the single-instance lock) and patchelf for the AppImage; xterm so that a terminal is
+      # found where the end-to-end tests open one (the launch is recorded, never started).
       - name: Linux packages
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config file libssl-dev libxdo-dev libdbus-1-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            xterm
 
       # The release and components rust-toolchain.toml names.
       - name: Rust

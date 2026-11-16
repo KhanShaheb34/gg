@@ -269,7 +269,14 @@ test("the worktree menu opens a worktree in the editor, a terminal and the file 
   const [editor, terminal, reveal] = gg.launches();
   // No editor command: the folder with the platform's opener; Terminal; the folder shown.
   expect(editor.at(-1)).toBe(topic);
-  expect(terminal.at(-1)).toBe(topic);
+  if (process.platform === "linux") {
+    // The first terminal found, started in the folder (the record keeps the program and its
+    // arguments, not the folder it starts in).
+    expect(terminal).toHaveLength(1);
+    expect(["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]).toContain(path.basename(terminal[0]));
+  } else {
+    expect(terminal.at(-1)).toBe(topic);
+  }
   expect(reveal.at(-1)).toBe(process.platform === "linux" ? path.dirname(topic) : topic);
   if (process.platform === "darwin") {
     expect(terminal).toEqual(["/usr/bin/open", "-a", "Terminal", topic]);

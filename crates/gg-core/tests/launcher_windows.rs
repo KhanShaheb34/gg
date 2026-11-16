@@ -150,18 +150,29 @@ fn run_with_stub(script: &Path, cwd: &Path, args: &[&str], stub: &Path) -> Outpu
     }
 }
 
-/// A stub in `dir` that writes the folder it is given to `record` (in `dir`): what the app
-/// would have been asked to open. `start` runs a batch file in a cmd that stays open (`/K`),
-/// holding the launcher's output pipes: the stub ends that cmd itself.
+/// A recording stand-in for the app in `dir`, a program (gg.cmd starts a program; a batch
+/// file would go through `start`'s own cmd): built here with `rustc`, it writes the folder it
+/// is given to `record` beside it, what the app would have been asked to open.
 fn recording_stub(dir: &Path) -> (PathBuf, PathBuf) {
-    let stub = dir.join("stub.cmd");
-    let record = dir.join("record.txt");
+    let source = dir.join("stub.rs");
     fs::write(
-        &stub,
-        "@echo off\r\n>\"%~dp0record.txt\" echo(%~1\r\nexit\r\n",
+        &source,
+        "fn main() {\n\
+         let exe = std::env::current_exe().unwrap();\n\
+         let args: Vec<String> = std::env::args().skip(1).collect();\n\
+         std::fs::write(exe.with_file_name(\"record.txt\"), args.join(\"\\n\") + \"\\n\").unwrap();\n\
+         }\n",
     )
     .unwrap();
-    (stub, record)
+    let stub = dir.join("stub.exe");
+    let built = Command::new("rustc")
+        .arg("-o")
+        .arg(&stub)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{built:?}");
+    (stub, dir.join("record.txt"))
 }
 
 /// What the stub recorded, once it has (`start` returns before the stub has run).

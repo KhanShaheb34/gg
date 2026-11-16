@@ -15,7 +15,7 @@ export type ProbeSlot = { readonly index: number; readonly row: unknown; skeleto
 /** Rows at least partly in view. */
 export type VisibleRows = { readonly visibleFirst: number; readonly visibleLast: number };
 
-type PerfScroll = boolean | "still" | "smooth" | "pages" | "jump3" | "actions" | "walk";
+type PerfScroll = boolean | "still" | "smooth" | "pages" | "jump3" | "actions" | "walk" | "walk3" | "walk3-dark" | "worktrees";
 
 export class GraphProbe {
   private scrolledSinceFrame = false;
@@ -80,13 +80,38 @@ export class GraphProbe {
 
   private async run(mode: PerfScroll, scroller: HTMLElement): Promise<void> {
     const view = this.view;
-    // "walk": the app used through its menus, dialogs, banner and log (walkProbe.ts).
-    if (mode === "walk") {
-      const { runWalk } = await import("./walkProbe");
-      await runWalk(view, scroller);
+    // "walk": the app used through its menus, dialogs, banner and log (walkProbe.ts); "walk3",
+    // "walk3-dark": its worktrees, commit panel, pull requests and settings (worktreeWalkProbe.ts).
+    if (mode === "walk" || mode === "walk3" || mode === "walk3-dark") {
+      // The page's storage is the installed app's too (same bundle id; GG_CONFIG_DIR does not
+      // reach WebKit's): what the walk changes there (the cached theme, panel sizes) is put back.
+      const kept = keepStorage();
+      try {
+        if (mode === "walk") {
+          const { runWalk } = await import("./walkProbe");
+          await runWalk(view, scroller);
+        } else {
+          const { runWorktreeWalk } = await import("./worktreeWalkProbe");
+          await runWorktreeWalk(view, scroller, mode === "walk3-dark" ? "dark" : "light");
+        }
+      } finally {
+        kept.restore();
+      }
       const errors = (window as { __GG_PAGE_ERRORS__?: string[] }).__GG_PAGE_ERRORS__ ?? [];
       await api.perfMark("page-errors", errors.length).catch(() => {});
       for (const text of errors) await api.perfMark(`page-error ${text}`, 0).catch(() => {});
+      await api.perfMark("scroll-done", performance.now()).catch(() => {});
+      return;
+    }
+    // "worktrees": opening the side panel and switching worktrees, timed (worktreesProbe.ts).
+    if (mode === "worktrees") {
+      const kept = keepStorage();
+      const { runWorktreesProbe } = await import("./worktreesProbe");
+      const marks = await runWorktreesProbe(view).finally(() => kept.restore());
+      const errors = (window as { __GG_PAGE_ERRORS__?: string[] }).__GG_PAGE_ERRORS__ ?? [];
+      marks.push(["page-errors", errors.length]);
+      for (const text of errors) marks.push([`page-error ${text}`, 0]);
+      for (const [name, value] of marks) await api.perfMark(name, value).catch(() => {});
       await api.perfMark("scroll-done", performance.now()).catch(() => {});
       return;
     }
@@ -150,4 +175,24 @@ export class GraphProbe {
     for (const [name, value] of marks) await api.perfMark(name, value).catch(() => {});
     await api.perfMark("scroll-done", performance.now()).catch(() => {});
   }
+}
+
+/** A copy of the page's localStorage, to put back after a run that changes it. */
+function keepStorage(): { restore: () => void } {
+  let saved: [string, string][] = [];
+  try {
+    saved = Object.keys(localStorage).map((k) => [k, localStorage.getItem(k) ?? ""]);
+  } catch {
+    // No storage: nothing to put back.
+  }
+  return {
+    restore() {
+      try {
+        localStorage.clear();
+        for (const [k, v] of saved) localStorage.setItem(k, v);
+      } catch {
+        // As above.
+      }
+    },
+  };
 }

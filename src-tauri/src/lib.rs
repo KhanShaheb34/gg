@@ -312,7 +312,9 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// it times right-click, menu, dialog and operation feedback (`actionsProbe.ts`; it creates
 /// branches, so only on a throwaway repository); with `GG_PERF_SCROLL=walk` it uses the app
 /// through its menus, dialogs, banner and log (`walkProbe.ts`; a throwaway repository made by
-/// its driver only). Every mode also records the page's errors, unhandled rejections, CSP
+/// its driver only); `walk3` and `walk3-dark` use the worktree, commit, pull-request and
+/// settings features the same way (the second in the dark theme, set through the settings);
+/// `worktrees` times opening the side panel and switching worktrees. Every mode also records the page's errors, unhandled rejections, CSP
 /// violations and console errors and warnings in `window.__GG_PAGE_ERRORS__`, which the
 /// probe reports as `page-error` marks. `None` otherwise.
 #[cfg(any(test, feature = "perf"))]
@@ -325,11 +327,24 @@ fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<String> {
         "jump3" => "\"jump3\"",
         "actions" => "\"actions\"",
         "walk" => "\"walk\"",
+        "walk3" => "\"walk3\"",
+        "walk3-dark" => "\"walk3-dark\"",
+        "worktrees" => "\"worktrees\"",
         _ => return None,
     };
     Some(format!(
         "window.__GG_PROBE__ = {{}}; window.__GG_PERF_SCROLL__ = {mode};\n{PAGE_ERRORS_SCRIPT}"
     ))
+}
+
+/// The window's size for a performance run, from `GG_PERF_WINDOW` (`900x560`: logical
+/// pixels), so the walk can use the app in the smallest window too. `None` otherwise.
+#[cfg(any(test, feature = "perf"))]
+fn perf_window_size(gg_perf_window: Option<OsString>) -> Option<(f64, f64)> {
+    let value = gg_perf_window?;
+    let (w, h) = value.to_str()?.split_once('x')?;
+    let (w, h) = (w.parse::<u32>().ok()?, h.parse::<u32>().ok()?);
+    (w > 0 && h > 0).then_some((f64::from(w), f64::from(h)))
 }
 
 /// Records what goes wrong on the page (see `perf_scroll_script`).
@@ -396,6 +411,14 @@ pub fn run() {
             // set-up, having run nothing). The core starts after the window and webview are
             // created; the login shell it asks for git's PATH can run meanwhile.
             gg_core::git::runner::prefetch_login_path();
+            // Performance runs only: the window at the size the run asks for.
+            #[cfg(feature = "perf")]
+            if let (Some((w, h)), Some(window)) = (
+                perf_window_size(std::env::var_os("GG_PERF_WINDOW")),
+                app.get_webview_window("main"),
+            ) {
+                let _ = window.set_size(tauri::LogicalSize::new(w, h));
+            }
             let slot = Arc::new(CoreSlot {
                 app: app.handle().clone(),
                 core: OnceCell::new(),
@@ -517,10 +540,33 @@ mod tests {
         assert!(actions.contains("__GG_PERF_SCROLL__ = \"actions\""));
         let walk = perf_scroll_script(Some("walk".into())).unwrap();
         assert!(walk.contains("__GG_PERF_SCROLL__ = \"walk\""));
+        for mode in ["walk3", "walk3-dark", "worktrees"] {
+            let script = perf_scroll_script(Some(mode.into())).unwrap();
+            assert!(
+                script.contains(&format!("__GG_PERF_SCROLL__ = \"{mode}\"")),
+                "{mode}"
+            );
+        }
         let pages = perf_scroll_script(Some("pages".into())).unwrap();
         assert!(pages.contains("__GG_PERF_SCROLL__ = \"pages\""));
         assert_eq!(perf_scroll_script(None), None);
         assert_eq!(perf_scroll_script(Some("0".into())), None);
         assert_eq!(perf_scroll_script(Some("".into())), None);
+    }
+
+    #[test]
+    fn perf_window_size_reads_width_x_height() {
+        assert_eq!(
+            perf_window_size(Some("900x560".into())),
+            Some((900.0, 560.0))
+        );
+        assert_eq!(
+            perf_window_size(Some("1280x800".into())),
+            Some((1280.0, 800.0))
+        );
+        for bad in ["", "900", "x560", "900x", "0x560", "900x-1", "big"] {
+            assert_eq!(perf_window_size(Some(bad.into())), None, "{bad}");
+        }
+        assert_eq!(perf_window_size(None), None);
     }
 }

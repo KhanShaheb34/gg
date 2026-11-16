@@ -63,6 +63,10 @@ are **compiled, not run**. This page says what was verified where, as of Novembe
   `GIT_SSH_COMMAND` or `GIT_SSH` set in the environment, or `core.sshCommand` set for the
   repository (read when the repository is opened). Their choice is left alone, and if it asks
   in a console, it waits there as above.
+- **Very many changes at once can go unseen until the window gets the focus**: Windows
+  reports a burst that overflows the watcher's buffer as nothing at all (the `notify` crate
+  gets an empty buffer and passes nothing on), so gg cannot tell that it missed changes; it
+  reads the working tree again when the window gains the focus, as everywhere.
 - **`PATH` is the app's own**: started from the Start menu, gg sees the user's `PATH` as it was
   when Windows started the session; a `PATH` changed since needs the app restarted.
 - **What else is `gg`** is found as `where gg` finds it; a doskey macro or a PowerShell alias

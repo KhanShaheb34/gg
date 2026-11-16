@@ -232,6 +232,12 @@ impl Core {
             })
     }
 
+    /// The repository manager (tests only: what it recorded, such as a request's turn wait).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn manager(&self) -> Result<&Arc<RepoManager>> {
+        self.repos()
+    }
+
     /// The repository manager, or `git_not_found`.
     fn repos(&self) -> Result<&Arc<RepoManager>> {
         self.repos.as_ref().map_err(Clone::clone)

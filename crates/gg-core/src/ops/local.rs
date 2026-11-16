@@ -424,13 +424,24 @@ async fn squash_failed(ctx: &OpCtx<'_>, step: Step) -> Result<Step> {
     })
 }
 
+/// Whether git's output says that the changes it auto-stashed conflicted as they were put
+/// back. git 2.54 says "Applying autostash resulted in conflicts."; newer ones (2.56 at least)
+/// "Your local changes are stashed, however applying them resulted in conflicts.", broken
+/// over lines (the runner runs git with `LC_ALL=C`, so the text is English).
+fn autostash_conflicted(output: &str) -> bool {
+    let words = output.split_whitespace().collect::<Vec<_>>().join(" ");
+    words.contains("Applying autostash resulted in conflicts")
+        || words
+            .contains("Your local changes are stashed, however applying them resulted in conflicts")
+}
+
 /// `step` (done), saying so if git's output `out` shows that the changes it auto-stashed
 /// (`rebase.autoStash`, `merge.autoStash`) conflicted as they were put back: git exits 0,
 /// keeps them in the stash and leaves its attempt in the working tree. git's text becomes
 /// the detail.
 pub(crate) fn autostash_note(step: Step, out: &GitOutput) -> Step {
     let all = format!("{}\n{}", out.stderr, out.text());
-    if !all.contains("Applying autostash resulted in conflicts") {
+    if !autostash_conflicted(&all) {
         return step;
     }
     let (message, hints) = match step {
@@ -626,4 +637,26 @@ pub(crate) async fn delete_tag(ctx: &OpCtx<'_>, name: &str) -> Result<Step> {
         format!("Deleted tag {name}."),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::autostash_conflicted;
+
+    #[test]
+    fn an_autostash_that_conflicted_is_recognised_in_old_and_new_words() {
+        // git 2.54 and earlier.
+        assert!(autostash_conflicted(
+            "Successfully rebased and updated refs/heads/main.\nApplying autostash resulted in \
+             conflicts.\nYour changes are safe in the stash.\n"
+        ));
+        // git 2.56, as it prints it.
+        assert!(autostash_conflicted(
+            "Your local changes are stashed, however applying them\nresulted in conflicts.  You \
+             can either resolve the conflicts\nand then discard the stash with \"git stash drop\"\n"
+        ));
+        assert!(!autostash_conflicted(
+            "Applied autostash.\nSuccessfully rebased."
+        ));
+    }
 }

@@ -775,7 +775,7 @@ async fn autostash_that_cannot_be_reapplied_is_said() {
         );
         let detail = out.detail.as_deref().unwrap_or_default();
         assert!(
-            detail.contains("Applying autostash resulted in conflicts"),
+            detail.contains("resulted in conflicts"),
             "{config}: {detail}"
         );
         assert!(repo.git(&["stash", "list"]).contains("autostash"));

@@ -817,7 +817,7 @@ async fn pull_whose_autostash_conflicts_says_so() {
             out.detail
                 .as_deref()
                 .unwrap_or_default()
-                .contains("Applying autostash resulted in conflicts"),
+                .contains("resulted in conflicts"),
             "{config}: {out:?}"
         );
         assert!(repo.git(&["stash", "list"]).contains("autostash"));

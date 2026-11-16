@@ -736,6 +736,94 @@ async fn abort_restores_the_branch() {
     }
 }
 
+/// `main` and `feature` both change `clash.txt` after `base`, and `feature` changes
+/// `other.txt`; on `main`, `other.txt` and `notes.txt` are changed and not committed. HEAD on
+/// `main`.
+fn clashing_with_changes(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.write("other.txt", "base\n");
+    repo.write("notes.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.write("other.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+    repo.write("other.txt", "mine\n");
+    repo.write("notes.txt", "mine\n");
+}
+
+/// A rebase with `rebase.autoStash` stops on a conflict; once it is continued or the commit
+/// skipped, git puts the auto-stashed changes back, they conflict with the result (`other.txt`),
+/// and git keeps them in the stash and exits 0: the outcome says so (Task 12 review I2). With
+/// git's words ignored, the stash's state alone tells it (review minor 2).
+#[tokio::test]
+async fn continue_and_skip_say_when_auto_stashed_changes_stay_in_the_stash() {
+    for (how, by_state) in [("continue", false), ("skip", false), ("continue", true)] {
+        let repo = TestRepo::new();
+        clashing_with_changes(&repo);
+        repo.git(&["config", "rebase.autoStash", "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+        let main_side = repo.git(&["rev-parse", "main"]);
+        let out = h.run(id, rebase("feature")).await;
+        assert_eq!(out.status, OpStatus::Stopped, "{how}: {out:?}");
+
+        gg_core::testutil::AUTOSTASH_BY_STATE_ONLY
+            .store(by_state, std::sync::atomic::Ordering::Relaxed);
+        let out = if how == "continue" {
+            repo.write("clash.txt", "resolved\n");
+            h.run(id, continue_op(false)).await
+        } else {
+            h.run(id, skip(&main_side)).await
+        };
+        gg_core::testutil::AUTOSTASH_BY_STATE_ONLY
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(out.status, OpStatus::Done, "{how}: {out:?}");
+        assert!(out.snapshot.in_progress.is_none(), "{how}");
+        assert!(
+            out.message.contains("kept in the stash"),
+            "{how} ({by_state}): {}",
+            out.message
+        );
+        assert!(repo.git(&["stash", "list"]).contains("autostash"), "{how}");
+    }
+}
+
+/// `merge --abort` puts auto-stashed changes back too: when a file they change was edited
+/// meanwhile, git cannot, keeps them in the stash, and the abort says so instead of "back as
+/// it was" (Task 12 review I2). An abort whose auto-stash comes back cleanly says nothing of it.
+#[tokio::test]
+async fn abort_says_when_auto_stashed_changes_stay_in_the_stash() {
+    for edited_meanwhile in [true, false] {
+        let repo = TestRepo::new();
+        clashing_with_changes(&repo);
+        repo.git(&["config", "merge.autoStash", "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+        let out = h.run(id, merge_branch("feature")).await;
+        assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+        if edited_meanwhile {
+            repo.write("notes.txt", "edited while stopped\n");
+        }
+        let out = h.run_confirmed(id, abort(), &[DangerKind::Abort]).await;
+        assert_eq!(out.status, OpStatus::Done, "{edited_meanwhile}: {out:?}");
+        assert_eq!(
+            out.message.contains("kept in the stash"),
+            edited_meanwhile,
+            "{edited_meanwhile}: {}",
+            out.message
+        );
+        assert_eq!(
+            repo.git(&["stash", "list"]).contains("autostash"),
+            edited_meanwhile
+        );
+    }
+}
+
 // ---- Other operations meanwhile ----
 
 #[tokio::test]

@@ -20,6 +20,12 @@ use tokio::sync::watch;
 
 use crate::EventSink;
 
+/// Tests only: while set, an op does not look at git's words for auto-stashed changes it
+/// could not put back (see `ops::local::autostash_note`), so the stash's state alone must
+/// tell, as it must for a git that words it differently.
+pub static AUTOSTASH_BY_STATE_ONLY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Date of the first commit in every `TestRepo` (unix seconds).
 const FIRST_COMMIT_TIME: i64 = 1_700_000_000;
 /// Seconds between consecutive commits.

@@ -469,7 +469,16 @@ pub(crate) async fn autostash_note(
         return Ok(step);
     }
     let all = format!("{}\n{}", out.stderr, out.text());
-    if !autostash_conflicted(&all) && !autostash_kept(ctx, stash_before).await? {
+    // git has run by now: a stash that cannot be read must not turn what it did into an
+    // error, so it counts as nothing kept (the text has been looked at). `refs/stash` is shared
+    // by every worktree: an auto-stash a terminal's rebase kept in another worktree during
+    // this op would be taken for this op's (rare: both would have to end at once).
+    #[cfg(any(test, feature = "testutil"))]
+    let said = autostash_conflicted(&all)
+        && !crate::testutil::AUTOSTASH_BY_STATE_ONLY.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(any(test, feature = "testutil")))]
+    let said = autostash_conflicted(&all);
+    if !said && !autostash_kept(ctx, stash_before).await.unwrap_or(false) {
         return Ok(step);
     }
     let (message, hints) = match step {

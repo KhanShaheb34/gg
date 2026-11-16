@@ -371,9 +371,6 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
     })
 }
 
-/// Most paths given to one `git ls-files`, so the command line stays short.
-const PATHS_CHUNK: usize = 100;
-
 /// The untracked files a hard reset to `target` overwrites (read-only): paths the target
 /// tracks and HEAD does not (all its paths before the first commit), that are a file or a
 /// link in the worktree, and that are not in the index either (a staged new file counts as
@@ -408,7 +405,8 @@ async fn overwritten_untracked(ctx: &OpCtx<'_>, target: &str) -> Result<Vec<Stri
         })
         .collect();
     let mut indexed = std::collections::HashSet::new();
-    for chunk in present.chunks(PATHS_CHUNK) {
+    // In runs that fit one command line: by count and by bytes (long names).
+    for chunk in crate::ops::commit::path_chunks(&present) {
         let mut args = vec!["--literal-pathspecs", "ls-files", "-z", "--"];
         args.extend(chunk.iter().copied());
         let listed = ctx.read(&args).await?;

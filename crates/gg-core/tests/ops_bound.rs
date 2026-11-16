@@ -384,6 +384,33 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
     }
 }
 
+/// Many untracked files with long names, all overwritten: listed whole (the paths are read
+/// in runs that fit a command line, on Windows' 32 KiB too).
+#[tokio::test]
+async fn a_hard_reset_counts_many_long_named_files_it_overwrites() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    let long = "n".repeat(180);
+    let names: Vec<String> = (0..150).map(|i| format!("{long}-{i:03}.txt")).collect();
+    for name in &names {
+        repo.write(name, "the commit's\n");
+    }
+    let later = repo.commit_all("adds many");
+    repo.git(&["reset", "-q", "--hard", &first]);
+    for name in &names {
+        repo.write(name, "mine\n");
+    }
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let asked = h.run(id, reset_hard(&later, here())).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:?}");
+    let message = &asked.dangers[0].message;
+    assert!(
+        message.contains("150 untracked files will be overwritten by"),
+        "{message}"
+    );
+}
+
 /// O1: a hard reset overwrites an untracked file at a path the target commit tracks. The
 /// confirmation names it as overwritten (and the other untracked files as kept), and a file
 /// made there after the confirmation was shown makes the core ask again.

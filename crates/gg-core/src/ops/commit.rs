@@ -85,7 +85,7 @@ fn chunks_by<T>(items: &[T], cost: impl Fn(&T) -> usize) -> Vec<&[T]> {
 }
 
 /// `paths` in runs that fit one command line (see [`chunks_by`]).
-fn path_chunks<'a>(paths: &'a [&'a str]) -> Vec<&'a [&'a str]> {
+pub(crate) fn path_chunks<'a>(paths: &'a [&'a str]) -> Vec<&'a [&'a str]> {
     chunks_by(paths, |p| p.len() + 1)
 }
 

@@ -31,6 +31,12 @@ export const TEXT_DELAY_MS = 500;
 export type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 /**
+ * Why the settings file could not be written by the last save that tried (null: the last save
+ * worked): said once, at the top of the sheet, not as a fault of the field changed.
+ */
+export const saving = $state({ problem: null as string | null });
+
+/**
  * One setting as the screen edits it: `set` saves a new value (after `delayMs`, the last one
  * wins), `flush` saves a pending one now. `status` and `error` say how the last save went;
  * `error` is the core's own message, and the value it refused is not applied.
@@ -79,6 +85,7 @@ export class SettingField<K extends keyof Settings> {
       app.settings = saved;
       this.error = null;
       this.status = "saved";
+      saving.problem = null;
       if (this.#savedTimer !== null) clearTimeout(this.#savedTimer);
       this.#savedTimer = setTimeout(() => {
         if (this.status === "saved") this.status = "idle";
@@ -88,6 +95,8 @@ export class SettingField<K extends keyof Settings> {
       if (seq !== this.#seq) return false;
       this.status = "error";
       this.error = e instanceof CoreError || e instanceof Error ? e.message : String(e);
+      // The file, not the value: the core refuses values as bad requests.
+      if (e instanceof CoreError && e.code === "io") saving.problem = e.detail ? `${e.message}: ${e.detail}` : e.message;
       return false;
     }
   }

@@ -20,6 +20,7 @@
     FETCH_CHOICES,
     intervalName,
     SettingField,
+    saving,
     TEXT_DELAY_MS,
     type SaveStatus,
   } from "../state/settings.svelte";
@@ -297,6 +298,12 @@
     {/each}
   </nav>
   <div class="body" bind:this={scroller} onscroll={onScroll}>
+    {#if saving.problem}
+      <div class="unsaved" role="alert" data-testid="settings-save-problem">
+        <strong>The last change was not saved.</strong>
+        {saving.problem}
+      </div>
+    {/if}
     {#if app.settingsProblem}
       <div class="unsaved" role="alert" data-testid="settings-problem">
         <strong>Settings are not being saved.</strong>

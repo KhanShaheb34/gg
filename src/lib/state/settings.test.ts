@@ -67,6 +67,31 @@ describe("saving a setting", () => {
     expect(app.settings.terminalCommand).toBe("wezterm start --cwd {path}");
   });
 
+  it("a settings file that cannot be written is said once, for the whole sheet; a save that works clears it (Task 10 review minor 11)", async () => {
+    const { CoreError } = ipc;
+    const cannot = () =>
+      new CoreError({ code: "io", message: "Could not save settings to /cfg", detail: "Permission denied (os error 13)" });
+    vi.mocked(ipc.api.updateSettings).mockRejectedValueOnce(cannot()).mockRejectedValueOnce(cannot());
+    const theme = new s.SettingField("theme", s.TEXT_DELAY_MS);
+    const dates = new s.SettingField("dateFormat", s.TEXT_DELAY_MS);
+    theme.set("dark");
+    dates.set("iso");
+    expect(await theme.flush()).toBe(false);
+    expect(await dates.flush()).toBe(false);
+    expect(s.saving.problem).toBe("Could not save settings to /cfg: Permission denied (os error 13)");
+    // A refusal of a value is the field's own, not the file's.
+    vi.mocked(ipc.api.updateSettings).mockRejectedValueOnce(
+      new CoreError({ code: "bad_request", message: "Write {path} as a separate word.", detail: null }),
+    );
+    const terminal = new s.SettingField("terminalCommand", s.TEXT_DELAY_MS);
+    terminal.set("x --cwd={path}");
+    await terminal.flush();
+    expect(s.saving.problem).toBe("Could not save settings to /cfg: Permission denied (os error 13)");
+    dates.set("iso");
+    expect(await dates.flush()).toBe(true);
+    expect(s.saving.problem).toBeNull();
+  });
+
   it("an answer to an earlier value never undoes a later one", async () => {
     const answers: (() => void)[] = [];
     vi.mocked(ipc.api.updateSettings).mockImplementation(

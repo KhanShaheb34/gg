@@ -109,6 +109,9 @@ pub struct RepoManager {
     /// Tests only: how long every operation waits after its git commands, in milliseconds.
     #[cfg(any(test, feature = "testutil"))]
     op_delay_ms: AtomicU64,
+    /// Tests only: how long every operation waits after its turn, before its body runs.
+    #[cfg(any(test, feature = "testutil"))]
+    body_delay_ms: AtomicU64,
     /// Tests only: the next operation's body panics after running.
     #[cfg(any(test, feature = "testutil"))]
     op_panic: AtomicBool,
@@ -707,6 +710,8 @@ impl RepoManager {
             last_op_id: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             op_delay_ms: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testutil"))]
+            body_delay_ms: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             op_panic: AtomicBool::new(false),
             #[cfg(any(test, feature = "testutil"))]
@@ -2074,6 +2079,26 @@ impl RepoManager {
     pub fn set_op_delay(&self, delay: Duration) {
         self.op_delay_ms
             .store(duration_ms(delay), Ordering::Relaxed);
+    }
+
+    /// Makes every operation wait this long after its turn's checks, before its body runs
+    /// (tests only): what changes in that moment is what the body must notice.
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn set_body_delay(&self, delay: Duration) {
+        self.body_delay_ms
+            .store(duration_ms(delay), Ordering::Relaxed);
+    }
+
+    /// The test delay of [`RepoManager::set_body_delay`]; zero outside tests.
+    pub(crate) fn body_delay(&self) -> Duration {
+        #[cfg(any(test, feature = "testutil"))]
+        {
+            Duration::from_millis(self.body_delay_ms.load(Ordering::Relaxed))
+        }
+        #[cfg(not(any(test, feature = "testutil")))]
+        {
+            Duration::ZERO
+        }
     }
 
     /// Makes the next operation's body panic once it has run, after its test delay (tests

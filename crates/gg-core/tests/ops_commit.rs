@@ -1773,3 +1773,93 @@ async fn the_merge_message_loses_the_lines_of_the_repositorys_comment_character(
         Some("Merge branch 'feature'")
     );
 }
+
+// ---- Final review fixes ----
+
+/// Final review M5: concluding a merge stages the ticked files into the user's own index
+/// before `git commit`; when a hook refuses the commit, that index is put back as it was
+/// (an untracked file ticked is not left staged).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_refused_merge_conclusion_leaves_the_users_index_as_it_was() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    repo.write("clash.txt", "both\n");
+    repo.git(&["add", "clash.txt"]);
+    repo.write("new.txt", "untracked, ticked\n");
+    hook(
+        &repo,
+        "pre-commit",
+        "echo 'refused by the hook' >&2\nexit 1",
+    );
+    let index = index_state(repo.path());
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h
+        .run(
+            id,
+            commit(&["clash.txt", "new.txt"], "Merge feature", false),
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(out.committed, None);
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(
+        in_git_dir(&repo, "MERGE_HEAD"),
+        "the merge is still in progress"
+    );
+    assert_eq!(
+        index_state(repo.path()),
+        index,
+        "the user's index is as it was"
+    );
+    assert!(porcelain(repo.path()).contains(&"?? new.txt".to_owned()));
+    assert!(!in_git_dir(&repo, "index.lock"));
+}
+
+/// Final review M6: what is in progress is read once, in the turn; a merge that starts
+/// between the turn and the body (a terminal) stops the commit instead of concluding a
+/// merge the user did not ask to conclude with files they never ticked.
+#[tokio::test]
+async fn a_merge_started_after_the_turn_stops_the_commit() {
+    let repo = three_files();
+    repo.branch("other");
+    repo.checkout("other");
+    repo.write("c.txt", "from other\n");
+    repo.commit_all("other");
+    repo.checkout("main");
+    repo.write("a.txt", "edited\n");
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_body_delay(Duration::from_millis(1500));
+    let request = h.at_head(id, commit(&["a.txt"], "only a", false)).await;
+    let run = tokio::spawn({
+        let m = h.m.clone();
+        async move { m.run_op(id, request, &[]).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the commit runs");
+    repo.git(&["merge", "-q", "--no-commit", "--no-ff", "other"]);
+    let out = tokio::time::timeout(TIMEOUT, run)
+        .await
+        .expect("ends")
+        .unwrap()
+        .unwrap();
+    h.m.set_body_delay(Duration::ZERO);
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message
+            .starts_with("Nothing was committed: a merge started"),
+        "{}",
+        out.message
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
+}

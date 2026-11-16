@@ -88,6 +88,8 @@ pub(crate) struct OpCtx<'a> {
     pub(crate) created: Arc<std::sync::Mutex<Option<String>>>,
     /// The commit the operation made (its full hash), once made.
     pub(crate) committed: Arc<std::sync::Mutex<Option<String>>>,
+    /// What git was stopped in when the operation's turn read it (final review M6).
+    pub(crate) turn_in_progress: std::sync::OnceLock<Option<InProgressKind>>,
 }
 
 /// Fewest milliseconds between two `op-progress` events of one operation.
@@ -1098,6 +1100,7 @@ impl RepoManager {
             held_read: std::sync::Mutex::new(None),
             created: made.0.clone(),
             committed: made.1.clone(),
+            turn_in_progress: std::sync::OnceLock::new(),
         };
         // A request runs only in the worktree it was asked for: switching worktrees never
         // redirects one already asked for. Checked before anything is read there.
@@ -1117,6 +1120,7 @@ impl RepoManager {
         }
         let head = local::current_branch(&ctx).await?;
         let in_progress = read_kind(&ctx.runner, &ctx.cwd).await?;
+        let _ = ctx.turn_in_progress.set(in_progress);
         let title = title(&TurnFacts {
             head: head.as_deref().unwrap_or("detached HEAD"),
             in_progress,
@@ -1221,6 +1225,10 @@ impl RepoManager {
         self.start_op(&repo, op_id, &title).await?;
         started.store(true, Ordering::SeqCst);
         *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some((op_id, stop.clone()));
+        let delay = self.body_delay();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         let step = body(&ctx, &dangers).await;
         *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // Stopped by the user (R41): whatever the body made of it, the operation failed, with
@@ -1681,6 +1689,7 @@ mod tests {
             held_read: std::sync::Mutex::new(None),
             created: Arc::default(),
             committed: Arc::default(),
+            turn_in_progress: std::sync::OnceLock::new(),
         };
         let mark = log.since(0).last().map_or(0, |c| c.id);
 

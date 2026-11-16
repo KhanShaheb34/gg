@@ -15,7 +15,10 @@
 //! fails or is stopped.
 //!
 //! git allows no partial commit while a merge is in progress: a merge with no conflicts
-//! left is concluded with all its files, in the user's index.
+//! left is concluded with all its files, in the user's index. That index is saved first and
+//! put back when no commit is made (a hook refused it), so a failure leaves it as it was
+//! there too (final review M5). What is in progress is the turn's read: one that changed
+//! since (a merge started in a terminal) stops the commit (final review M6).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -29,7 +32,7 @@ use crate::git::runner::{CmdKind, GitOutput, GitRunner};
 use crate::git::status::{STATUS_ARGS, parse_files, read_files};
 use crate::git::worktrees::read_worktrees;
 use crate::ops::explain::{file_list, recognised};
-use crate::ops::local::{current_branch, head_commit, short};
+use crate::ops::local::{current_branch, head_commit, kind_name, short};
 use crate::ops::{OpCtx, Step, network};
 use crate::repo::{RepoManager, canonical, canonical_paths};
 
@@ -338,6 +341,8 @@ async fn push_remote(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<String>> {
 /// it when dropped, however the commit ended.
 struct Scratch {
     dir: PathBuf,
+    /// The user's own index (git's `--git-path index`).
+    real_index: PathBuf,
 }
 
 impl Scratch {
@@ -360,7 +365,12 @@ impl Scratch {
                 beside.join(format!("{base}-{n}"))
             };
             match fs::create_dir(&dir) {
-                Ok(()) => return Ok(Self { dir }),
+                Ok(()) => {
+                    return Ok(Self {
+                        dir,
+                        real_index: index,
+                    });
+                }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(io_error(&dir, &e)),
             }
@@ -374,6 +384,40 @@ impl Scratch {
     /// The temporary index (git makes it).
     fn index(&self) -> PathBuf {
         self.dir.join("index")
+    }
+
+    /// The user's own index as it is now, to put back with [`Scratch::put_back`].
+    fn save_index(&self) -> Result<Vec<u8>> {
+        fs::read(&self.real_index).map_err(|e| {
+            CoreError::new(
+                ErrorCode::Io,
+                format!("Could not read {}.", self.real_index.display()),
+            )
+            .with_detail(e.to_string())
+        })
+    }
+
+    /// Puts `saved` back as the user's index, through its lock file as git does: never over
+    /// a lock another program holds. Said in `step`'s message when it cannot.
+    fn put_back(&self, saved: Option<&[u8]>, step: Step) -> Step {
+        let Some(saved) = saved else {
+            return step;
+        };
+        let Err(e) = restore_index(&self.real_index, saved) else {
+            return step;
+        };
+        match step {
+            Step::Failed {
+                message,
+                detail,
+                hints,
+            } => Step::Failed {
+                message: format!("{message} {}", not_put_back(&e)),
+                detail,
+                hints,
+            },
+            other => other,
+        }
     }
 
     /// Writes `message` as it is; returns the file's path, for `-F`.
@@ -419,6 +463,34 @@ fn older_than_a_day(made: &Path) -> bool {
         .ok()
         .and_then(|t| t.elapsed().ok())
         .is_some_and(|age| age > std::time::Duration::from_secs(24 * 3600))
+}
+
+/// Said when the staging area could not be put back after a refused merge conclusion.
+fn not_put_back(e: &io::Error) -> String {
+    format!(
+        "The staging area could not be put back as it was ({e}): the ticked files stay staged \
+         for the merge."
+    )
+}
+
+/// Writes `saved` as the index at `index`: into `index.lock` (made new, so never one another
+/// program holds), then renamed over it.
+fn restore_index(index: &Path, saved: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut lock_name = index.as_os_str().to_owned();
+    lock_name.push(".lock");
+    let lock = PathBuf::from(lock_name);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)?;
+    let written = file.write_all(saved).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written.and_then(|()| fs::rename(&lock, index)) {
+        let _ = fs::remove_file(&lock);
+        return Err(e);
+    }
+    Ok(())
 }
 
 impl Drop for Scratch {
@@ -864,7 +936,27 @@ pub(crate) async fn commit(
     message: &str,
     push: bool,
 ) -> Result<Step> {
-    let in_merge = read_kind(&ctx.runner, &ctx.cwd).await? == Some(InProgressKind::Merge);
+    // What is in progress is the turn's read (final review M6): one that changed since stops
+    // the commit, never turns a partial commit into a merge's conclusion or back.
+    let in_progress = read_kind(&ctx.runner, &ctx.cwd).await?;
+    if let Some(&seen) = ctx.turn_in_progress.get()
+        && seen != in_progress
+    {
+        let what = match (seen, in_progress) {
+            (_, Some(kind)) => format!("a {} started", kind_name(kind)),
+            (Some(kind), None) => format!("the {} ended", kind_name(kind)),
+            (None, None) => unreachable!("they differ"),
+        };
+        return Ok(Step::Failed {
+            message: format!(
+                "Nothing was committed: {what} while gg was getting ready. Look at the files \
+                 again, then commit."
+            ),
+            detail: String::new(),
+            hints: Vec::new(),
+        });
+    }
+    let in_merge = in_progress == Some(InProgressKind::Merge);
     let entries = changed_files(ctx).await?;
     let ticked: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
     let mine: Vec<&FileEntry> = entries.iter().filter(|e| is_ticked(e, &ticked)).collect();
@@ -883,8 +975,14 @@ pub(crate) async fn commit(
     };
     let commit_args = ["commit", cleanup, "-F", message_file.as_str()];
 
+    // A merge is committed whole, in the user's index: saved first, put back if no commit is
+    // made (final review M5).
+    let saved = if in_merge {
+        Some(scratch.save_index()?)
+    } else {
+        None
+    };
     let runner = if in_merge {
-        // The user's index: a merge is committed whole.
         ctx.runner.clone()
     } else {
         if let Some(parent) = &parent {
@@ -899,8 +997,20 @@ pub(crate) async fn commit(
         }
         ctx.runner.with_index_file(&scratch.index())
     };
-    if let Some(failed) = stage(ctx, &runner, &mine).await? {
-        return Ok(failed);
+    match stage(ctx, &runner, &mine).await {
+        Ok(None) => {}
+        Ok(Some(failed)) => return Ok(scratch.put_back(saved.as_deref(), failed)),
+        Err(e) => {
+            if let Some(saved) = &saved
+                && let Err(why) = restore_index(&scratch.real_index, saved)
+            {
+                return Err(CoreError {
+                    message: format!("{} {}", e.message, not_put_back(&why)),
+                    ..e
+                });
+            }
+            return Err(e);
+        }
     }
     let stale = if in_merge {
         Vec::new()
@@ -957,12 +1067,25 @@ pub(crate) async fn commit(
     let made = now.is_some() && now != parent;
     let trouble = match ran {
         Ok(out) if out.code == 0 => None,
-        Ok(out) if !made => return commit_failed(&commit_args, &out),
+        Ok(out) if !made => {
+            return commit_failed(&commit_args, &out)
+                .map(|step| scratch.put_back(saved.as_deref(), step));
+        }
         Ok(out) => Some((
             "git reported a problem after the commit was made (below).".to_owned(),
             output(&out),
         )),
-        Err(e) if !made => return Err(e),
+        Err(e) if !made => {
+            if let Some(saved) = &saved
+                && let Err(why) = restore_index(&scratch.real_index, saved)
+            {
+                return Err(CoreError {
+                    message: format!("{} {}", e.message, not_put_back(&why)),
+                    ..e
+                });
+            }
+            return Err(e);
+        }
         Err(e) if ctx.runner.is_stopped() => Some((
             "Stopped while git finished it (a post-commit hook, say).".to_owned(),
             e.detail.unwrap_or_default(),

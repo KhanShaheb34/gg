@@ -434,10 +434,16 @@ async fn the_active_worktree_in_another_case_is_itself_where_case_is_ignored() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
     h.m.set_active_worktree(id, &feature).await.unwrap();
-    let name = feature.file_name().unwrap().to_string_lossy().to_uppercase();
+    let name = feature
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_uppercase();
     let shouted = feature.with_file_name(&name);
     let ignores_case = shouted.exists();
-    let out = h.run(id, in_wt(&shouted, create_branch("cased", &head))).await;
+    let out = h
+        .run(id, in_wt(&shouted, create_branch("cased", &head)))
+        .await;
     let expected = if ignores_case {
         OpStatus::Done
     } else {

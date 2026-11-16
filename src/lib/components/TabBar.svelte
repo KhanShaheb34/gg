@@ -1,7 +1,8 @@
 <!--
   The window's top bar: one tab per open repository, a button to open another, the settings
   and the theme toggle. On macOS in the app it doubles as the title bar: empty space drags the window and
-  the traffic lights sit in the left inset.
+  the traffic lights sit in the left inset. On Windows and Linux the window has its system's own
+  title bar above it, which drags the window: this bar is only the tabs.
 -->
 <script lang="ts">
   import { tick } from "svelte";
@@ -12,6 +13,8 @@
   import { findRepoView } from "../state/repo.svelte";
 
   const trafficLights = isTauri() && isMac();
+  /** Empty space drags the window only where this bar is the title bar (macOS's overlay). */
+  const dragRegion = trafficLights ? "" : undefined;
   const openLabel = `Open repository (${isMac() ? "⌘O" : "Ctrl+O"})`;
 
   const themeName = $derived(
@@ -67,7 +70,7 @@
   }
 </script>
 
-<header class="bar" class:traffic-lights={trafficLights} data-tauri-drag-region>
+<header class="bar" class:traffic-lights={trafficLights} data-tauri-drag-region={dragRegion}>
   {#if app.tabs.length > 0}
     <div class="tabs" role="tablist" aria-label="Open repositories" bind:this={list}>
       {#each app.tabs as tab, i (tab.repoId)}
@@ -112,7 +115,7 @@
     </svg>
   </button>
 
-  <div class="drag" data-tauri-drag-region></div>
+  <div class="drag" data-tauri-drag-region={dragRegion}></div>
 
   <button
     class="icon-btn"

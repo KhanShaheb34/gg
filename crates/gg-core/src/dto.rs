@@ -1491,9 +1491,9 @@ mod tests {
             json!({"op": "commit", "paths": ["a b", "-x"], "message": "m", "push": true,
                    "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
             json!({"op": "pr_create", "branch": "b", "base": "main", "baseRemote": "up",
-                   "title": "t", "body": "x\ny", "draft": true}),
+                   "title": "t", "body": "x\ny", "draft": true, "comparePage": false}),
             json!({"op": "pr_create", "branch": "b", "base": "main", "baseRemote": null,
-                   "title": "t", "body": "x\ny", "draft": true}),
+                   "title": "t", "body": "x\ny", "draft": true, "comparePage": true}),
         ];
         for case in cases {
             let request: OpRequest =

@@ -42,12 +42,12 @@ function readWidth(): number {
   return SIDE_DEFAULT_W;
 }
 
-/** `width` kept between the panel's least and greatest widths. */
 /** The worktrees of `snap` in the side panel's order: the main one first, then as git lists them. */
 export function listedWorktrees(snap: RepoSnapshot): RepoSnapshot["worktrees"] {
   return [...snap.worktrees].sort((a, b) => Number(b.isMain) - Number(a.isMain));
 }
 
+/** `width` kept between the panel's least and greatest widths. */
 export function clampWidth(width: number): number {
   return Math.round(Math.min(SIDE_MAX_W, Math.max(SIDE_MIN_W, width)));
 }

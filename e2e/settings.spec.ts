@@ -205,3 +205,26 @@ test("a dialog over the settings gives the focus back, and Tab never leaves the 
   // The window behind takes no input at all while the sheet is open.
   await expect(page.locator('[data-testid="app-root"] > .behind').first()).toHaveAttribute("inert", "");
 });
+
+// Task 10 review minor 10: a Test button that cannot be pressed says why, in words on the
+// sheet that the button is described by (not only in a tooltip).
+test("a disabled Test button says why, visibly", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await page.getByTestId("open-settings").click();
+  for (const kind of ["editor", "terminal"]) {
+    const button = sheet(page).getByTestId(`settings-${kind}-test`);
+    await expect(button).toBeDisabled();
+    const why = sheet(page).getByTestId(`settings-${kind}-test-why`);
+    await expect(why).toBeVisible();
+    await expect(why).toHaveText("Open a repository to try it on.");
+    const described = (await button.getAttribute("aria-describedby")) ?? "";
+    expect(described.split(" ")).toContain(await why.getAttribute("id"));
+  }
+  // A repository open: pressable, and nothing said.
+  await page.keyboard.press("Escape");
+  await open(page, gg.repoPath("small"));
+  await page.getByTestId("open-settings").click();
+  await expect(sheet(page).getByTestId("settings-editor-test")).toBeEnabled();
+  await expect(sheet(page).getByTestId("settings-editor-test-why")).toHaveCount(0);
+});

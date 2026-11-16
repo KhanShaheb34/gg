@@ -110,6 +110,14 @@
 
   // --- Test ---------------------------------------------------------------------------
 
+  /** Why `kind`'s Test button cannot be pressed (said beside it, not only in its tooltip). */
+  function testWhy(kind: "editor" | "terminal"): string | null {
+    if (repoId === null) return "Open a repository to try it on.";
+    const field = kind === "editor" ? fields.editor : fields.terminal;
+    if (field.status === "error") return "Fix the command first: the one above was not saved.";
+    return null;
+  }
+
   let tested = $state<{ tool: "editor" | "terminal"; ok: boolean; text: string } | null>(null);
 
   async function test(tool: "editor" | "terminal") {
@@ -258,11 +266,15 @@
           class="button"
           disabled={repoId === null || field.status === "error"}
           title={repoId === null ? "Open a repository to try it on" : `Open ${shownFolder} with it`}
+          aria-describedby={testWhy(kind) === null ? undefined : `settings-${kind}-test-why`}
           data-testid="settings-{kind}-test"
           onclick={() => void test(kind)}>Test</button
         >
       </div>
       <div class="note" id="settings-{kind}-note">
+        {#if testWhy(kind) !== null}
+          <p class="hint" id="settings-{kind}-test-why" data-testid="settings-{kind}-test-why">{testWhy(kind)}</p>
+        {/if}
         {#if field.status === "error" && field.error}
           <p class="problem" role="alert">{field.error}</p>
         {:else if runs !== null}

@@ -150,7 +150,7 @@ test("stash_untracked_option: untracked files go into the stash only when asked"
   expect(gg.git("small", "show", "--name-only", "--format=", "stash@{0}^3").trim()).toBe("scratch.txt");
 });
 
-// A stale index.lock (M5), here in the way of applying a stash: the failure names it, and
+// A stale index.lock (M5), here in the way of checking out a commit: the failure names it, and
 // "Remove the lock file…" removes it after a red confirmation; a fresh one is not offered.
 test("a stale index.lock is named, and removed only through a red confirmation", async ({ gg }) => {
   const { page } = gg;

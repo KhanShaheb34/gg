@@ -383,6 +383,9 @@ struct Batch {
     named: HashSet<PathBuf>,
     /// More such folders than that: every folder is watched again.
     named_all: bool,
+    /// A folder went: where folders are watched one by one, the watches follow, so a folder
+    /// made again later counts as new (Task 12 review I1).
+    folder_gone: bool,
 }
 
 /// Longest a read of what git ignores may take: one that hangs is given up on (git is
@@ -471,10 +474,11 @@ type Watched = HashSet<PathBuf>;
 /// Which of the folders already watched are watched again by [`sync_folders`].
 #[derive(Debug, Clone, Copy)]
 enum Renew<'a> {
-    /// Those named in a batch of changes (made, removed or renamed): one removed and made
-    /// again under the same name is another folder, whose watch the platform has not got
-    /// (Linux drops a removed folder's watch; the new folder may even have the old one's
-    /// inode, so it cannot be told apart by its identity).
+    /// Those named in a batch of changes (made, removed or renamed), and the folders inside
+    /// them: one removed and made again under the same name is another folder, whose watch the
+    /// platform has not got (Linux drops a removed folder's watch; the new folder may even have
+    /// the old one's inode, so it cannot be told apart by its identity), and so are the folders
+    /// made inside it before it was watched, which no event names.
     Named(&'a HashSet<PathBuf>),
     /// Every one: changes were lost, so which folders were made again is not known.
     All,
@@ -506,7 +510,7 @@ fn sync_folders<W: Watcher>(
     for dir in wanted {
         let again = match renew {
             Renew::All => true,
-            Renew::Named(named) => named.contains(&dir),
+            Renew::Named(named) => dir.ancestors().any(|d| named.contains(d)),
         };
         if watched.contains(&dir) && !again {
             continue;
@@ -553,6 +557,7 @@ fn note_tree_event(root: &Path, ignored: &Ignored, event: &Event, batch: &mut Ba
         // A removed path cannot be looked at; only a file's removal is known to be one.
         let folder_removed = matches!(event.kind, EventKind::Remove(kind)
             if kind != notify::event::RemoveKind::File);
+        batch.folder_gone |= folder_removed;
         if folder_appeared || folder_removed {
             if batch.named.len() < MAX_BATCH {
                 batch.named.insert(path.clone());
@@ -704,7 +709,8 @@ pub(crate) async fn watch_worktree_in(
             }
             // Folders came, went or are ignored now: the watches follow (on the blocking
             // pool: the tree is walked and each folder watched).
-            if mode == TreeMode::PerFolder && (batch.reread || batch.overflow) {
+            if mode == TreeMode::PerFolder && (batch.reread || batch.overflow || batch.folder_gone)
+            {
                 let skip = ignored.read().unwrap_or_else(|e| e.into_inner()).clone();
                 let (at, os) = (root.clone(), task_os.clone());
                 let all = batch.overflow || batch.named_all;
@@ -1031,6 +1037,68 @@ mod tests {
         assert_eq!(batch.named, HashSet::from([removed, made]));
         assert!(!batch.named_all);
         assert!(batch.reread);
+        assert!(batch.folder_gone);
+
+        // A batch that only removes a folder still has the watches follow.
+        let mut only_removed = Batch::default();
+        note_tree_event(
+            &root,
+            &ignored,
+            &event(
+                EventKind::Remove(notify::event::RemoveKind::Any),
+                &root.join("gone"),
+            ),
+            &mut only_removed,
+        );
+        assert!(only_removed.folder_gone && !only_removed.reread);
+        let mut a_file = Batch::default();
+        note_tree_event(
+            &root,
+            &ignored,
+            &event(
+                EventKind::Remove(notify::event::RemoveKind::File),
+                &root.join("old-file"),
+            ),
+            &mut a_file,
+        );
+        assert!(!a_file.folder_gone);
+    }
+
+    /// `new/sub` removed in one batch (`git stash -u`) and made again in a later one (`git
+    /// stash pop`): only `new` is named then, `sub` having been made before `new` was watched;
+    /// both are watched again (Task 12 review I1).
+    #[test]
+    fn folders_inside_a_named_one_are_watched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let (new, sub) = (root.join("new"), root.join("new").join("sub"));
+        std::fs::create_dir_all(&sub).unwrap();
+        let mut os = Recorder::default();
+        let mut watched = Watched::new();
+        let all = vec![root.clone(), new.clone(), sub.clone()];
+        sync_folders(&mut os, &mut watched, all.clone(), Renew::All).unwrap();
+        assert_eq!(os.watches.len(), 3);
+        // Removed: the watches follow.
+        std::fs::remove_dir_all(&new).unwrap();
+        let named = HashSet::from([new.clone()]);
+        sync_folders(
+            &mut os,
+            &mut watched,
+            vec![root.clone()],
+            Renew::Named(&named),
+        )
+        .unwrap();
+        assert_eq!(watched.len(), 1);
+        // Made again, only `new` named: `sub` too is watched.
+        std::fs::create_dir_all(&sub).unwrap();
+        sync_folders(&mut os, &mut watched, all.clone(), Renew::Named(&named)).unwrap();
+        assert_eq!(os.watches.len(), 5);
+        assert!(os.watches[3..].iter().any(|(d, _)| *d == sub));
+        // Even had the removal gone unseen (both still in `watched`), naming `new` renews
+        // `sub` with it.
+        sync_folders(&mut os, &mut watched, all, Renew::Named(&named)).unwrap();
+        assert_eq!(os.watches.len(), 7);
+        assert!(os.watches[5..].iter().any(|(d, _)| *d == sub));
     }
 
     #[test]

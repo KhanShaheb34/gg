@@ -665,7 +665,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         }
         OpRequest::WorktreePrune {} => (
             fixed("Prune stale worktree entries".to_owned()),
-            body(move |ctx, _| Box::pin(async move { worktree::prune(ctx).await })),
+            body(move |ctx, dangers| Box::pin(async move { worktree::prune(ctx, dangers).await })),
         ),
         OpRequest::Commit {
             paths,

@@ -116,6 +116,7 @@ pub(crate) async fn refused(
         } => Ok(remove_refused(ctx, path, *delete_branch)
             .await?
             .map(|why| (why, None))),
+        OpRequest::WorktreePrune {} => Ok(prune_refused(ctx).await?.map(|why| (why, None))),
         _ => Ok(None),
     }
 }
@@ -1282,14 +1283,69 @@ pub(crate) async fn remove(
     })
 }
 
-/// Said with every prune confirmation.
-/// Said with a prune: a folder that is only out of reach for now.
+/// Said with every prune confirmation: a folder that is only out of reach for now, or one
+/// that was moved (git calls it prunable too; once pruned, `git worktree repair` can no
+/// longer reconnect it, final review M4).
 fn disconnected(n: usize) -> &'static str {
     if n == 1 {
-        "If it is on a disconnected drive, reconnect it or lock the worktree instead."
+        "If it is on a disconnected drive, reconnect it or lock the worktree instead. If its \
+         folder was moved, do not prune: run git worktree repair <its new path> instead (once \
+         pruned, the moved folder can no longer be reconnected)."
     } else {
-        "If one of these is on a disconnected drive, reconnect it or lock the worktree instead."
+        "If one of these is on a disconnected drive, reconnect it or lock the worktree instead. \
+         If one of these folders was moved, do not prune: run git worktree repair <its new \
+         path> instead (once pruned, the moved folder can no longer be reconnected)."
     }
+}
+
+/// Why pruning cannot run as asked, if it cannot (final review M4): `git worktree prune`
+/// would remove an entry `worktree list` does not show as prunable (one whose `gitdir` file
+/// is missing or unreadable, which `list` leaves out), whose HEAD gg cannot check. Read from
+/// git's own dry run, so it is exactly what git would remove.
+async fn prune_refused(ctx: &OpCtx<'_>) -> Result<Option<String>> {
+    let out = ctx
+        .read(&["worktree", "prune", "--dry-run", "--verbose"])
+        .await?;
+    if out.code != 0 {
+        return Ok(Some(format!(
+            "Nothing was pruned: git could not say what it would prune ({}).",
+            out.stderr.trim()
+        )));
+    }
+    let listed: Vec<PathBuf> = listed(ctx)
+        .await?
+        .into_iter()
+        .filter(|w| w.prunable && !w.locked && !w.is_main)
+        .map(|w| PathBuf::from(w.path))
+        .collect();
+    let admin = canonical(&ctx.repo.common_dir).join("worktrees");
+    let mut unknown = Vec::new();
+    for line in format!("{}\n{}", out.text(), out.stderr).lines() {
+        let Some(rest) = line.strip_prefix("Removing ") else {
+            continue;
+        };
+        let known = rest
+            .strip_prefix("worktrees/")
+            .and_then(|r| r.split_once(": "))
+            .and_then(|(id, _)| fs::read_to_string(admin.join(id).join("gitdir")).ok())
+            .map(|gitdir| {
+                let gitdir = PathBuf::from(gitdir.trim());
+                real(gitdir.parent().unwrap_or(&gitdir))
+            })
+            .is_some_and(|folder| listed.contains(&folder));
+        if !known {
+            unknown.push(rest.to_owned());
+        }
+    }
+    Ok((!unknown.is_empty()).then(|| {
+        format!(
+            "Nothing was pruned: git would also remove {} it does not list ({}), whose HEAD gg \
+             cannot check for commits only it has. Look at {} first, or prune in a terminal.",
+            count(unknown.len(), "worktree entry", "worktree entries"),
+            unknown.join("; "),
+            admin.display()
+        )
+    }))
 }
 
 /// The danger of pruning: none when no entry is prunable; else `prune_worktrees` listing
@@ -1404,7 +1460,22 @@ pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
 
 /// `git worktree prune`: git forgets the worktrees whose folders are gone (not locked
 /// ones), once confirmed (see [`prune_dangers`]). The message names the entries it removed.
-pub(crate) async fn prune(ctx: &OpCtx<'_>) -> Result<Step> {
+pub(crate) async fn prune(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> {
+    // What git forgets must be what was confirmed, as it is now.
+    let seen = dangers.iter().find(|d| {
+        matches!(
+            d.kind,
+            DangerKind::PruneWorktrees | DangerKind::PruneWorktreesLosesCommits
+        )
+    });
+    let now = prune_dangers(ctx).await?;
+    if now.as_ref().map(|d| (d.kind, &d.token)) != seen.map(|d| (d.kind, &d.token)) {
+        return Ok(Step::Failed {
+            message: "It changed since you confirmed; nothing was pruned.".to_owned(),
+            detail: String::new(),
+            hints: Vec::new(),
+        });
+    }
     let before = listed(ctx).await?;
     let args = ["worktree", "prune"];
     let out = ctx.git(&args).await?;

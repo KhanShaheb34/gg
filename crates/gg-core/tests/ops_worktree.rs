@@ -1497,7 +1497,9 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     assert_eq!(
         danger.message,
         "Pruning makes git forget 1 worktree entry whose folder is gone (listed below). If it \
-         is on a disconnected drive, reconnect it or lock the worktree instead."
+         is on a disconnected drive, reconnect it or lock the worktree instead. If its folder \
+         was moved, do not prune: run git worktree repair <its new path> instead (once pruned, \
+         the moved folder can no longer be reconnected)."
     );
     assert_eq!(
         danger.detail.as_deref(),
@@ -1532,6 +1534,51 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
         "{}",
         again.message
     );
+}
+
+/// Final review M4: `git worktree prune` also removes entries `worktree list` does not show
+/// (a `gitdir` file missing), whose HEAD gg cannot check: then nothing is pruned, and the
+/// refusal names them.
+#[tokio::test]
+async fn prune_refuses_when_git_would_also_remove_entries_it_does_not_list() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let gone = repo.add_worktree("gone");
+    let hidden = repo.add_worktree("hidden");
+    fs::remove_dir_all(&gone).unwrap();
+    let admin = PathBuf::from(git_in(&hidden, &["rev-parse", "--absolute-git-dir"]));
+    let id = admin.file_name().unwrap().to_string_lossy().into_owned();
+    fs::remove_file(admin.join("gitdir")).unwrap();
+    let h = harness().await;
+    let repo_id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+    let out = h
+        .run_confirmed(
+            repo_id,
+            OpRequest::WorktreePrune {},
+            &[
+                DangerKind::PruneWorktrees,
+                DangerKind::PruneWorktreesLosesCommits,
+            ],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message.starts_with(
+            "Nothing was pruned: git would also remove 1 worktree entry it does not list"
+        ),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message.contains(&format!("worktrees/{id}")),
+        "{}",
+        out.message
+    );
+    assert!(h.writes_since(mark).is_empty(), "nothing ran");
+    assert!(admin.is_dir(), "kept");
+    assert!(hidden.is_dir());
+    assert_eq!(listed(&repo).len(), 2, "the gone entry is still listed too");
 }
 
 /// A stale detached entry whose commits are on no branch, tag or remote: pruning loses

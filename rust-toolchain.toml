@@ -1,0 +1,6 @@
+# The Rust release gg is built and checked with, here and in CI: a new release cannot turn
+# clippy's -D warnings red by itself. Moving to a newer one is a commit of its own.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

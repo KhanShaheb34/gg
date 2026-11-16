@@ -575,6 +575,8 @@ struct Work {
     commits: Vec<String>,
     commit_count: usize,
     commits_hash: u64,
+    /// Detached only: git could not list them (final review M3), so they may be lost.
+    commits_unknown: bool,
     /// On a branch: its commits on no remote, which the branch keeps (removing a worktree
     /// never deletes its branch), said in a line, never a danger of their own.
     unpushed: usize,
@@ -589,6 +591,7 @@ impl Work {
         !self.changed.is_empty()
             || !self.untracked.is_empty()
             || self.commit_count > 0
+            || self.commits_unknown
             || self.in_progress.is_some()
     }
 }
@@ -601,12 +604,15 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
     let dir = Path::new(&wt.path);
     let in_progress = read_kind(&ctx.runner, dir).await?;
     let (mut commit_count, mut commits_hash, mut commits) = (0, 0, Vec::new());
-    let mut unpushed = 0;
+    let (mut unpushed, mut commits_unknown) = (0, false);
     if let (Some(head), Some(_)) = (&wt.head, &wt.branch) {
+        // Only a line (its branch keeps them, P3-R13): not said when git cannot count them.
         let out = ctx
             .read(&["rev-list", "--count", head, "--not", "--remotes"])
             .await?;
-        unpushed = out.text().trim().parse().unwrap_or(0);
+        if out.code == 0 {
+            unpushed = out.text().trim().parse().unwrap_or(0);
+        }
     } else if let Some(head) = &wt.head {
         let only_here = [head.as_str(), "--not", "--branches", "--tags", "--remotes"];
         let mut list = vec!["rev-list"];
@@ -615,6 +621,10 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
         if out.code == 0 {
             commit_count = out.text().lines().filter(|l| !l.is_empty()).count();
             commits_hash = fnv1a(&out.stdout);
+        } else {
+            // Not "none": they may be lost (final review M3).
+            commits_unknown = true;
+            commits_hash = fnv1a(b"unknown");
         }
         if commit_count > 0 {
             let limit = MAX_LOST_LISTED.to_string();
@@ -635,6 +645,7 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
         commit_count,
         commits_hash,
         commits,
+        commits_unknown,
         ..read_files_held(ctx, wt, true).await?
     })
 }
@@ -864,13 +875,20 @@ pub(crate) async fn removal_dangers(
                 "--remotes",
             ])
             .await?;
-        match out.text().trim().parse::<u64>().unwrap_or(0) {
-            0 => {}
-            1 => danger.message.push_str(
+        match (out.code == 0)
+            .then(|| out.text().trim().parse::<u64>().ok())
+            .flatten()
+        {
+            None => danger.message.push_str(
+                " gg could not count how many of its commits are on no other branch, tag or \
+                 remote.",
+            ),
+            Some(0) => {}
+            Some(1) => danger.message.push_str(
                 " 1 of its commits is not pushed anywhere (it is on no other branch, tag or \
                  remote).",
             ),
-            n => danger.message.push_str(&format!(
+            Some(n) => danger.message.push_str(&format!(
                 " {n} of its commits are not pushed anywhere (they are on no other branch, tag \
                  or remote)."
             )),
@@ -1032,6 +1050,12 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
         (false, true) => message.push_str(" Deleting it loses the uncommitted changes for good."),
         (true, false) => message.push_str(" Deleting it loses the untracked files for good."),
         (true, true) => {}
+    }
+    if work.commits_unknown {
+        message.push_str(
+            " gg could not tell whether commits on no branch would be lost with it (git could \
+             not list them); count on losing any that only this worktree has.",
+        );
     }
     if work.commit_count > 0 {
         let them = if work.commit_count == 1 { "it" } else { "them" };
@@ -1273,6 +1297,7 @@ pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
     let mut entries = Vec::new();
     let mut lost: Vec<String> = Vec::new();
     let mut lost_count = 0;
+    let mut unknown = 0;
     for wt in &stale {
         let head = wt.head.as_deref().unwrap_or("");
         token.push_str(&format!("{}\0{head}\n", wt.path));
@@ -1285,13 +1310,16 @@ pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
             let only_here = [head, "--not", "--branches", "--tags", "--remotes"];
             let mut count_args = vec!["rev-list", "--count"];
             count_args.extend(only_here);
-            let n: usize = ctx
-                .read(&count_args)
-                .await?
-                .text()
-                .trim()
-                .parse()
-                .unwrap_or(0);
+            let out = ctx.read(&count_args).await?;
+            let Some(n) = (out.code == 0)
+                .then(|| out.text().trim().parse::<usize>().ok())
+                .flatten()
+            else {
+                // Not "none": they may be lost (final review M3).
+                unknown += 1;
+                token.push_str("unknown\n");
+                continue;
+            };
             if n > 0 {
                 lost_count += n;
                 let limit = MAX_LOST_LISTED.to_string();
@@ -1322,7 +1350,22 @@ pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
         format!("{} worktree entries whose folders are gone", stale.len())
     };
     let disconnected = disconnected(stale.len());
-    let (kind, message) = if lost_count == 0 {
+    let unknown_line = match unknown {
+        0 => String::new(),
+        1 => " gg could not tell whether commits on no branch would be lost with one of them \
+               (git could not list them); count on losing any that only it has."
+            .to_owned(),
+        n => format!(
+            " gg could not tell whether commits on no branch would be lost with {n} of them \
+             (git could not list them); count on losing any that only they have."
+        ),
+    };
+    let (kind, message) = if lost_count == 0 && unknown > 0 {
+        (
+            DangerKind::PruneWorktreesLosesCommits,
+            format!("Pruning makes git forget {them} (listed below).{unknown_line} {disconnected}"),
+        )
+    } else if lost_count == 0 {
         (
             DangerKind::PruneWorktrees,
             format!("Pruning makes git forget {them} (listed below). {disconnected}"),
@@ -1332,7 +1375,7 @@ pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
             DangerKind::PruneWorktreesLosesCommits,
             format!(
                 "Pruning makes git forget {them} (listed below), and with {} {} on no branch, \
-                 tag or remote, which {} lost. {disconnected}",
+                 tag or remote, which {} lost.{unknown_line} {disconnected}",
                 if stale.len() == 1 { "it" } else { "them" },
                 count(lost_count, "commit", "commits"),
                 if lost_count == 1 { "is" } else { "are" }

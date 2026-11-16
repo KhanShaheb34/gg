@@ -539,6 +539,60 @@ async fn an_ignored_file_that_appears_after_the_dialog_asks_again() {
     let _ = repo;
 }
 
+/// A remote-tracking ref to an object that is not there: `rev-list … --not --remotes` fails.
+fn break_rev_list(repo: &TestRepo) {
+    let common = repo.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    let refs = Path::new(&common).join("refs/remotes/origin");
+    fs::create_dir_all(&refs).unwrap();
+    fs::write(
+        refs.join("broken"),
+        "0123456789012345678901234567890123456789\n",
+    )
+    .unwrap();
+}
+
+/// Final review M3: when git cannot list the commits a detached worktree would lose, that
+/// is not "none": the delete is red and says gg could not tell.
+#[tokio::test]
+async fn commits_that_cannot_be_counted_on_delete_are_red() {
+    let (repo, _origin, wt) = pushed_worktree();
+    git_in(&wt, &["checkout", "-q", "--detach"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    // After opening: the app's own ref reads refuse such a repository.
+    break_rev_list(&repo);
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    assert!(
+        danger
+            .message
+            .contains("gg could not tell whether commits on no branch would be lost with it"),
+        "{}",
+        danger.message
+    );
+}
+
+/// Final review M3, prune: an entry whose lost commits cannot be counted is red too.
+#[tokio::test]
+async fn commits_that_cannot_be_counted_on_prune_are_red() {
+    let (repo, _origin, wt) = pushed_worktree();
+    git_in(&wt, &["checkout", "-q", "--detach"]);
+    fs::remove_dir_all(&wt).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    // After opening: the app's own ref reads refuse such a repository.
+    break_rev_list(&repo);
+    let out = h.run(id, OpRequest::WorktreePrune {}).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:#?}");
+    assert_eq!(out.dangers[0].kind, DangerKind::PruneWorktreesLosesCommits);
+    assert!(
+        out.dangers[0]
+            .message
+            .contains("gg could not tell whether commits on no branch would be lost"),
+        "{}",
+        out.dangers[0].message
+    );
+}
+
 /// Final review M9: a worktree's danger is bound to the worktree: its token names the path,
 /// so one worktree's confirmation is never taken for another's in the same state.
 #[tokio::test]

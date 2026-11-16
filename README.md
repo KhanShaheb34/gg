@@ -71,13 +71,22 @@ Documents or Desktop.
 - **Add worktree…** (the panel's + or menu, or a branch or commit menu) makes a folder for a
   new or existing branch, by default beside the repository in `<repo>.worktrees/<branch>`
   (set the pattern in Settings).
-- **Delete…** removes a worktree. A clean one goes after one plain question; one with
-  uncommitted changes or untracked files needs a red confirmation listing them, and one
-  holding another worktree or repository inside it is refused. Its branch is deleted only if
-  you tick that.
+- **Delete…** removes a worktree. A clean one goes after one plain question (files git
+  ignores, if any, are listed in it); one with uncommitted changes (edits to files marked
+  `assume-unchanged` or `skip-worktree` included, which `git status` does not show), untracked
+  files or commits on no branch needs a red confirmation listing them. One holding another
+  worktree or repository inside it, at any depth, is refused, and so is one with submodules
+  (git does not delete it; the notice says what a forced delete in a terminal would lose).
+  Its branch is deleted only if you tick that. **Prune** forgets worktrees whose folder is
+  gone, after a confirmation naming them; if you moved a worktree's folder, run
+  `git worktree repair <new path>` instead.
 - The **commit panel** (⌘K, or a worktree's change count) commits the files you tick, with
   **Commit & Push** to the branch's upstream; when a merge is being concluded, its message is
-  filled in. The notice after a commit offers the push.
+  filled in. The notice after a commit offers the push. Known limit: if the app quits or
+  crashes between making a commit and updating the staging area (during a slow
+  `post-commit` hook, say), the staging area still holds the committed files as they were
+  before the commit, so `git status` shows staged changes that would undo it; `git reset`
+  puts the staging area back as HEAD has it (your files are not touched).
 - **Create pull request…** (a branch's or worktree's menu) needs `gh`, signed in: it suggests a
   title and description from the commits, pushes the branch first when it needs to, and
   says so on its button. Without `gh`, it pushes and opens GitHub's compare page. Open pull

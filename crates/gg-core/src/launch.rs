@@ -819,6 +819,47 @@ fn resolve_program(program: &OsStr, path: Option<&OsString>) -> Lookup {
     crate::platform::find_program(&program.to_string_lossy(), path.map(OsString::as_os_str))
 }
 
+/// Where the program an editor's command-line script on Windows starts may be, where it is
+/// known: VS Code's `<folder>\bin\code.cmd` starts `<folder>\Code.exe` (likewise
+/// `code-insiders.cmd`, `Code - Insiders.exe`), and Cursor's `cursor.cmd`, in
+/// `<folder>\resources\app\bin` or `<folder>\bin`, starts `<folder>\Cursor.exe`. The same
+/// program, run by gg itself instead of through cmd.exe. Most likely first.
+fn programs_beside_script(script: &Path) -> Vec<PathBuf> {
+    let Some(name) = script.file_name() else {
+        return Vec::new();
+    };
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    let program = match name.as_str() {
+        "code.cmd" => "Code.exe",
+        "code-insiders.cmd" => "Code - Insiders.exe",
+        "cursor.cmd" => "Cursor.exe",
+        _ => return Vec::new(),
+    };
+    let named = |p: &Path, n: &str| p.file_name().is_some_and(|f| f.eq_ignore_ascii_case(n));
+    let Some(bin) = script.parent().filter(|b| named(b, "bin")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(app) = bin.parent() {
+        // Electron apps' resources\app\bin: the program is the install folder's.
+        if named(app, "app")
+            && let Some(resources) = app.parent().filter(|r| named(r, "resources"))
+            && let Some(folder) = resources.parent()
+        {
+            out.push(folder.join(program));
+        }
+        out.push(app.join(program));
+    }
+    out
+}
+
+/// The program an editor's script starts ([`programs_beside_script`]) that is there.
+fn program_beside_script(script: &Path) -> Option<PathBuf> {
+    programs_beside_script(script)
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
 /// Whether Windows would run file `name` through another program: a `.cmd`, `.bat` (or any
 /// other extension than a program's).
 fn windows_script(name: &str) -> bool {
@@ -865,9 +906,20 @@ fn launch(
     };
     let resolved = match resolve_program(program, path.as_ref()) {
         Lookup::Program(found) => found,
+        // An editor's script whose program is known and there: that program.
+        Lookup::ScriptOnly(script) if program_beside_script(&script).is_some() => {
+            program_beside_script(&script).unwrap_or(script)
+        }
         Lookup::ScriptOnly(script) => {
+            let exe = programs_beside_script(&script)
+                .into_iter()
+                .next()
+                .map_or_else(
+                    || "the program itself (its .exe)".to_owned(),
+                    |exe| exe.display().to_string(),
+                );
             let fix = setting.map_or(String::new(), |s| {
-                format!(" Set the {s} command in Settings to the program itself (its .exe).")
+                format!(" Set the {s} command in Settings to {exe}.")
             });
             return Err(CoreError::new(
                 ErrorCode::Io,
@@ -986,6 +1038,45 @@ vim",
         ] {
             assert!(!windows_script(program), "{program}");
         }
+    }
+
+    /// VS Code's and Cursor's command-line scripts on Windows start a program beside them,
+    /// which gg runs itself; other scripts have none.
+    #[test]
+    fn an_editors_script_names_its_program() {
+        let base = Path::new("C:/Users/me/AppData/Local/Programs");
+        let beside = |rel: &str| programs_beside_script(&base.join(rel));
+        assert_eq!(
+            beside("Microsoft VS Code/bin/code.cmd"),
+            [base.join("Microsoft VS Code/Code.exe")]
+        );
+        assert_eq!(
+            beside("Microsoft VS Code Insiders/bin/code-insiders.cmd"),
+            [base.join("Microsoft VS Code Insiders/Code - Insiders.exe")]
+        );
+        assert_eq!(
+            beside("cursor/resources/app/BIN/Cursor.CMD"),
+            [
+                base.join("cursor/Cursor.exe"),
+                base.join("cursor/resources/app/Cursor.exe")
+            ]
+        );
+        assert!(
+            beside("Microsoft VS Code/code.cmd").is_empty(),
+            "not in bin"
+        );
+        assert!(beside("tools/bin/subl.cmd").is_empty());
+        assert!(beside("tools/bin/code.bat").is_empty());
+        // Only one that is there is run.
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("VS Code/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(program_beside_script(&bin.join("code.cmd")), None);
+        std::fs::write(dir.path().join("VS Code/Code.exe"), "").unwrap();
+        assert_eq!(
+            program_beside_script(&bin.join("code.cmd")),
+            Some(dir.path().join("VS Code/Code.exe"))
+        );
     }
 
     #[test]

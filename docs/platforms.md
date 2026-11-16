@@ -50,7 +50,12 @@ are **compiled, not run**. This page says what was verified where, as of Novembe
 - **Only programs are run.** git, gh, ssh, the editor and the terminal must be `.exe` (or `.com`)
   files: a `.cmd` or `.bat` would run through `cmd.exe`, which parses its arguments (a path
   among them) again (R19). When only a `git.cmd` shim is found, gg says so and names it. VS
-  Code's `code` on `PATH` is `code.cmd`: set the editor to `Code.exe` itself.
+  Code's `code` on `PATH` is `code.cmd` (Cursor's `cursor.cmd`): gg runs the `Code.exe`
+  (`Cursor.exe`) it starts, found beside it, instead; when that is not there, the message
+  names the `.exe` to set as the editor.
+- **Stop can leave locks behind**: git is ended at once, so besides `index.lock` a ref lock
+  (`refs/heads/<branch>.lock`, `packed-refs.lock`) may stay; gg offers to remove only a stale
+  `index.lock`, and git's own message names any other lock.
 - **No terminal for children** is `CREATE_NO_WINDOW`: nothing flashes a console, but a program
   that insists on asking in a console waits there until the time limit or Stop, where on Unix
   it fails at once. For ssh, gg runs git with `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`, so a

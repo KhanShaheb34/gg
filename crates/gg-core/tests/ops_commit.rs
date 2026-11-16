@@ -227,7 +227,8 @@ async fn only_the_ticked_files_are_committed_and_staged_unticked_ones_stay_stage
     let w = writes(&h, &out);
     assert_eq!(w[0][..2], ["read-tree", "--reset"], "{w:?}");
     assert!(
-        w[0][2].starts_with("--index-output=") && w[0][2].ends_with("/index"),
+        w[0][2].starts_with("--index-output=")
+            && std::path::Path::new(&w[0][2]).file_name() == Some("index".as_ref()),
         "{w:?}"
     );
     assert_eq!(w[0][3], before);
@@ -310,12 +311,11 @@ async fn odd_paths_are_committed_literally() {
         "with space.txt",
         "\u{fc}n\u{ef}c\u{f6}d\u{e9}.txt",
         "-leading.txt",
-        "star*.txt",
         "dir/[x].txt",
-        ":(glob)magic.txt",
     ];
+    // Names Windows does not allow in a file name (`*`, `:`, a line break).
     if cfg!(unix) {
-        ticked.push("new\nline.txt");
+        ticked.extend(["star*.txt", ":(glob)magic.txt", "new\nline.txt"]);
     }
     for p in &ticked {
         repo.write(p, "x\n");

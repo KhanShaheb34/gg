@@ -35,7 +35,10 @@ fn all_refs() -> ViewOptions {
 }
 
 fn canonical(p: &Path) -> String {
-    dunce::canonicalize(p).unwrap().to_string_lossy().into_owned()
+    dunce::canonicalize(p)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Runs `read_log` and returns the batches it delivered.

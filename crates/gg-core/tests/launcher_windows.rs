@@ -128,11 +128,16 @@ fn run_with_stub(script: &Path, cwd: &Path, args: &[&str], stub: &Path) -> Outpu
 }
 
 /// A stub in `dir` that writes the folder it is given to `record` (in `dir`): what the app
-/// would have been asked to open.
+/// would have been asked to open. `start` runs a batch file in a cmd that stays open (`/K`),
+/// holding the launcher's output pipes: the stub ends that cmd itself.
 fn recording_stub(dir: &Path) -> (PathBuf, PathBuf) {
     let stub = dir.join("stub.cmd");
     let record = dir.join("record.txt");
-    fs::write(&stub, "@echo off\r\n>\"%~dp0record.txt\" echo(%~1\r\n").unwrap();
+    fs::write(
+        &stub,
+        "@echo off\r\n>\"%~dp0record.txt\" echo(%~1\r\nexit\r\n",
+    )
+    .unwrap();
     (stub, record)
 }
 

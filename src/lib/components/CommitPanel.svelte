@@ -22,6 +22,7 @@
   import { tick, untrack } from "svelte";
   import { visibleText } from "../format";
   import { api } from "../ipc";
+  import { makeActiveReason } from "../menus/worktreeMenu";
   import { isMac } from "../platform";
   import { runOp } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
@@ -401,11 +402,16 @@
   }}
 >
   {#if !active}
+    <!-- Why it cannot be made active now, as the worktree row says (final review M11). -->
+    {@const why = wt ? makeActiveReason(wt, snap) : undefined}
     <div class="elsewhere" data-testid="commit-elsewhere">
       <p>Commits run in the active worktree. Make this one active to commit its changes.</p>
-      <button class="button primary small" disabled={switching || wt?.prunable} onclick={() => void activate()}
+      <button class="button primary small" disabled={switching || why !== undefined} onclick={() => void activate()}
         >{switching ? "Switching…" : "Make it active"}</button
       >
+      {#if why !== undefined && !switching}
+        <p class="why" data-testid="commit-elsewhere-why">{why}.</p>
+      {/if}
     </div>
   {:else if merging}
     <p class="banner" data-testid="commit-merge">
@@ -581,6 +587,10 @@
     border-radius: var(--radius);
     font-size: var(--fs-sm);
     line-height: 1.45;
+  }
+
+  .elsewhere .why {
+    font-size: var(--fs-xs);
   }
 
   .elsewhere {

@@ -394,6 +394,8 @@ test("only the worktree shown commits, and only while it is active: elsewhere, a
   await expect(page.getByTestId("active-worktree")).toContainText("main");
   await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
   await expect(page.getByRole("button", { name: "Make it active" })).toBeDisabled();
+  // Said why, as the worktree row says it (final review M11).
+  await expect(page.getByTestId("commit-elsewhere-why")).toHaveText("Its folder is missing.");
   await message(page).press("ControlOrMeta+Enter");
   await page.waitForTimeout(500);
   expect(gg.git("commit", "rev-parse", "HEAD").trim()).toBe(before[0]);

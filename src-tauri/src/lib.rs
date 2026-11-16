@@ -158,15 +158,69 @@ async fn invoke_core(
 
 /// The app menu item that opens the UI's "Install ‘gg’ Command" dialog (the UI listens for
 /// the `menu-install-cli` event).
-#[cfg(target_os = "macos")]
 const MENU_INSTALL_CLI: &str = "install-cli";
 
 /// The app menu's "Settings…" (Cmd+,) and Help's "Keyboard Shortcuts": the UI opens them on
 /// the `menu-settings` and `menu-shortcuts` events.
-#[cfg(target_os = "macos")]
 const MENU_SETTINGS: &str = "settings";
-#[cfg(target_os = "macos")]
 const MENU_SHORTCUTS: &str = "shortcuts";
+
+/// Windows and Linux: the File menu's "Quit".
+#[cfg(not(target_os = "macos"))]
+const MENU_QUIT: &str = "quit";
+
+/// The window's menu on Windows and Linux, which have no app menu bar: File with "Settings…"
+/// (Ctrl+,), "Install ‘gg’ Command…" and "Quit"; Help with "Keyboard Shortcuts" and "About
+/// gg". No item takes Ctrl+W (the UI closes the active tab with it) nor F1 (the UI's own
+/// shortcut for the shortcuts sheet).
+#[cfg(not(target_os = "macos"))]
+fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as Item, Submenu};
+
+    let name = app.package_info().name.clone();
+    let about = AboutMetadata {
+        name: Some(name.clone()),
+        version: Some(app.package_info().version.to_string()),
+        ..Default::default()
+    };
+    let settings = MenuItem::with_id(app, MENU_SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let install_cli = MenuItem::with_id(
+        app,
+        MENU_INSTALL_CLI,
+        "Install ‘gg’ Command…",
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>)?;
+    let shortcuts = MenuItem::with_id(
+        app,
+        MENU_SHORTCUTS,
+        "Keyboard Shortcuts",
+        true,
+        None::<&str>,
+    )?;
+    Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(
+                app,
+                "File",
+                true,
+                &[&settings, &install_cli, &Item::separator(app)?, &quit],
+            )?,
+            &Submenu::with_items(
+                app,
+                "Help",
+                true,
+                &[
+                    &shortcuts,
+                    &Item::separator(app)?,
+                    &Item::about(app, Some(&format!("About {name}")), Some(about))?,
+                ],
+            )?,
+        ],
+    )
+}
 
 /// The macOS menu bar: Tauri's default with "Settings…" and "Install ‘gg’ Command…" in the
 /// app menu and a Help menu with "Keyboard Shortcuts", minus
@@ -310,7 +364,7 @@ pub fn run() {
             }
             bring_forward(app);
         }));
-    #[cfg(target_os = "macos")]
+    // macOS: the menu bar; Windows and Linux: the window's menu (the same items reach the UI).
     let builder = builder.menu(app_menu).on_menu_event(|app, event| {
         let id = event.id();
         if id == MENU_INSTALL_CLI {
@@ -319,6 +373,10 @@ pub fn run() {
             let _ = app.emit("menu-settings", ());
         } else if id == MENU_SHORTCUTS {
             let _ = app.emit("menu-shortcuts", ());
+        }
+        #[cfg(not(target_os = "macos"))]
+        if id == MENU_QUIT {
+            app.exit(0);
         }
     });
     // Performance runs only (`--features perf`, see scripts/perf.sh).

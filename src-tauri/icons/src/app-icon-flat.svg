@@ -1,0 +1,28 @@
+<!--
+  gg's app icon for Windows and Linux, 1024 x 1024: the same tile and mark as app-icon.svg,
+  without the macOS icon grid's margin and shadow (those systems draw icons as they are, so
+  the padded artwork looked small there). Rendered to icons/flat/, the icons
+  tauri.windows.conf.json and tauri.linux.conf.json name.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262830"/>
+      <stop offset="1" stop-color="#131418"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.04"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="976" height="976" rx="220" fill="url(#tile)"/>
+  <rect x="27" y="27" width="970" height="970" rx="217" fill="none" stroke="url(#edge)" stroke-width="5"/>
+  <!-- The favicon's 32-unit mark, scaled to the tile. -->
+  <g transform="translate(24 24) scale(30.5)">
+    <path d="M11 7v18" stroke="#6b9bff" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+    <path d="M21 10.5c0 6-10 4.5-10 11" stroke="#fb8a4e" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+    <circle cx="11" cy="8" r="3.2" fill="#6b9bff"/>
+    <circle cx="21" cy="10.5" r="3.2" fill="#fb8a4e"/>
+    <circle cx="11" cy="24" r="3.2" fill="#6b9bff"/>
+  </g>
+</svg>

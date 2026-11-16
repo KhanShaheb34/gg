@@ -479,7 +479,7 @@ fn windows_shadowed_by(
 
 /// The shell's answer to `command -V gg` (zsh's, bash's or a POSIX sh's), in a few words;
 /// `None` when it is not found, is a launcher the app wrote, or the answer is not understood.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg(unix)]
 fn describe(answer: &str) -> Option<String> {
     let line = answer.lines().map(str::trim).find(|l| !l.is_empty())?;
     let what = line.strip_prefix("gg is ")?.trim();
@@ -850,6 +850,8 @@ mod tests {
         assert!(!has_marker(&dir.path().join("missing")));
     }
 
+    // Unix only: the answer of a POSIX shell, which only Unix asks (Windows looks itself).
+    #[cfg(unix)]
     #[test]
     fn describes_what_the_shell_says() {
         let zsh_alias = "gg is an alias for git log --graph";
@@ -969,6 +971,9 @@ mod tests {
         }
     }
 
+    // Unix only: the usual folders here are outside home, which Windows never offers (its
+    // own are tested in `windows_offers_the_users_own_folders_first`).
+    #[cfg(unix)]
     #[test]
     fn the_usual_folders_come_first_in_their_order() {
         let root = tempfile::tempdir().unwrap();

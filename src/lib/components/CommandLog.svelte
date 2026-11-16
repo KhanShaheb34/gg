@@ -75,6 +75,19 @@
   const items = $derived(commandLog.items);
   const hidden = $derived(Math.max(0, items.length - limit));
   const shownItems = $derived(hidden > 0 ? items.slice(hidden) : items);
+  /** The time column, as wide as its longest text in the format set ("13 days ago",
+   * "10:05:07 PM"), in the monospace font's characters, 8 to 14 of them (cut past that). */
+  const timeChars = $derived.by(() => {
+    let longest = 8;
+    for (const item of shownItems) {
+      const records = item.kind === "op" ? item.records : [item.record];
+      for (const r of records) {
+        longest = Math.max(longest, formatClock(r.startedAtMs, app.settings.dateFormat, clock.now).length);
+        if (longest >= 14) return 14;
+      }
+    }
+    return longest;
+  });
 
   // --- Size --------------------------------------------------------------------------------
 
@@ -383,6 +396,7 @@
   aria-label="Command log"
   data-testid="command-log"
   style:height="{height}px"
+  style:--time-w="{timeChars}ch"
   bind:this={panel}
   onfocusin={onFocusIn}
   onkeydown={onKeydown}
@@ -598,7 +612,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 12px 58px minmax(0, 1fr) auto 52px;
+    grid-template-columns: 12px calc(var(--time-w, 8ch) + 2px) minmax(0, 1fr) auto 52px;
     align-items: center;
     column-gap: 8px;
     width: 100%;
@@ -613,7 +627,7 @@
   }
 
   .op-head {
-    grid-template-columns: 12px 58px minmax(0, 1fr) auto auto 52px;
+    grid-template-columns: 12px calc(var(--time-w, 8ch) + 2px) minmax(0, 1fr) auto auto 52px;
     height: 26px;
   }
 
@@ -660,6 +674,10 @@
   }
 
   .time {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     color: var(--text-faint);
     font-family: var(--font-mono);
     font-size: var(--fs-xs);

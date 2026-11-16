@@ -685,6 +685,16 @@ for (const theme of ["light", "dark"] as const) {
       await park(page);
       await shot("log-open");
 
+      // Task 10 review minor 6: the time column in the Relative and System date formats.
+      for (const [name, label] of [["relative", "Relative"], ["locale", "System"], ["standard", "Standard"]]) {
+        await page.getByTestId("open-settings").click();
+        await page.getByTestId("settings-dates").getByRole("radio", { name: label }).click();
+        await page.keyboard.press("Escape");
+        if (name === "standard") break;
+        await park(page);
+        await shot(`log-time-${name}`);
+      }
+
       // A failed checkout: its notice's Show log goes to it, highlighted, its output open.
       const differing = gg.git("branchy", "diff", "--name-only", "main", "develop").trim().split("\n")[0];
       writeFileSync(path.join(dir, differing), "in the way\n");

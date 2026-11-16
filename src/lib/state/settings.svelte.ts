@@ -94,9 +94,14 @@ export class SettingField<K extends keyof Settings> {
     } catch (e) {
       if (seq !== this.#seq) return false;
       this.status = "error";
-      this.error = e instanceof CoreError || e instanceof Error ? e.message : String(e);
-      // The file, not the value: the core refuses values as bad requests.
-      if (e instanceof CoreError && e.code === "io") saving.problem = e.detail ? `${e.message}: ${e.detail}` : e.message;
+      // The file, not the value (the core refuses values as bad requests): said once, at the
+      // top of the sheet, not again beside the field.
+      if (e instanceof CoreError && e.code === "io") {
+        saving.problem = e.detail ? `${e.message}: ${e.detail}` : e.message;
+        this.error = null;
+      } else {
+        this.error = e instanceof CoreError || e instanceof Error ? e.message : String(e);
+      }
       return false;
     }
   }

@@ -79,6 +79,9 @@ describe("saving a setting", () => {
     expect(await theme.flush()).toBe(false);
     expect(await dates.flush()).toBe(false);
     expect(s.saving.problem).toBe("Could not save settings to /cfg: Permission denied (os error 13)");
+    // Said at the top of the sheet only: the fields carry no message of their own.
+    expect([theme.error, dates.error]).toEqual([null, null]);
+    expect([theme.status, dates.status]).toEqual(["error", "error"]);
     // A refusal of a value is the field's own, not the file's.
     vi.mocked(ipc.api.updateSettings).mockRejectedValueOnce(
       new CoreError({ code: "bad_request", message: "Write {path} as a separate word.", detail: null }),
@@ -86,6 +89,7 @@ describe("saving a setting", () => {
     const terminal = new s.SettingField("terminalCommand", s.TEXT_DELAY_MS);
     terminal.set("x --cwd={path}");
     await terminal.flush();
+    expect(terminal.error).toBe("Write {path} as a separate word.");
     expect(s.saving.problem).toBe("Could not save settings to /cfg: Permission denied (os error 13)");
     dates.set("iso");
     expect(await dates.flush()).toBe(true);

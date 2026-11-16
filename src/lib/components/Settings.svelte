@@ -250,7 +250,7 @@
           autocomplete="off"
           {placeholder}
           {value}
-          aria-invalid={field.status === "error"}
+          aria-invalid={field.status === "error" && field.error !== null}
           aria-describedby="settings-{kind}-note"
           data-testid="settings-{kind}"
           oninput={(e) => {
@@ -418,7 +418,7 @@
             autocomplete="off"
             placeholder="../{'{repo}'}.worktrees/{'{branch}'}"
             value={pattern}
-            aria-invalid={fields.pattern.status === "error"}
+            aria-invalid={fields.pattern.status === "error" && fields.pattern.error !== null}
             data-testid="settings-pattern"
             oninput={(e) => {
               pattern = e.currentTarget.value;

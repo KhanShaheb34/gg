@@ -3,8 +3,9 @@
 //! through a relative entry, never inside the repository), run as an argument array through
 //! the runner (no terminal, stdin null or the bytes given, 60 s, logged and masked) with
 //! `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `NO_COLOR=1`, and `GH_HOST` only for a
-//! host other than github.com. It runs in the main worktree and finds the repository from
-//! the remotes there itself (no `--repo`). `gh` runs `git` there itself: that git gets the
+//! host other than github.com. It runs in the main worktree, and every call names the
+//! repository the app chose with `--repo` (`GH_REPO` removed), so the app and `gh` never pick
+//! different ones (P3-R26). `gh` runs `git` there itself: that git gets the
 //! protection the app's own git children have, through the environment
 //! ([`crate::git::runner::git_protection_env`]).
 //!

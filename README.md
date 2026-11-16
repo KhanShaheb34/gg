@@ -91,7 +91,12 @@ Documents or Desktop.
   title and description from the commits, pushes the branch first when it needs to, and
   says so on its button. Without `gh`, it pushes and opens GitHub's compare page. Open pull
   requests show as markers beside their branches and worktrees, loaded with each fetch (at
-  most once a minute). The app never reads or stores a GitHub token.
+  most once a minute). The app never reads or stores a GitHub token. Note that `gh`, by its
+  own design, sends a token it finds in your environment (`GH_TOKEN`, `GITHUB_TOKEN`) to
+  github.com and to any `*.ghe.com` host (GitHub's own enterprise cloud): a repository whose
+  remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
+  token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
+  than github.com, but leaves these two to gh.
 - **Settings** (⌘,): theme, date format, background fetch, the editor and terminal the
   worktree menu opens, and the worktree location pattern. **?** lists the keyboard
   shortcuts.

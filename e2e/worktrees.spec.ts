@@ -452,6 +452,27 @@ test("the toolbar is never cut off, down to the least window width", async ({ gg
   }
 });
 
+test("squeezed ref labels keep what does not fit inside their own pill, never over the next one", async ({ gg }) => {
+  const { page } = gg;
+  // The main row: `main | origin`, `docs` with its folder mark, `+2`, in the narrow
+  // description column a 900 px window leaves beside the side panel.
+  await page.setViewportSize({ width: 900, height: 560 });
+  await page.goto("/");
+  await open(page, gg.repoPath("worktrees"));
+  const row = grid(page).locator('[role="row"]', { has: page.locator('.ref[data-ref="main"]') });
+  const spills = await row.locator(".ref:not([hidden])").evaluateAll((pills) =>
+    pills
+      .filter((p) => p.scrollWidth > p.clientWidth + 1 && getComputedStyle(p).overflowX === "visible")
+      .map((p) => p.textContent?.trim()),
+  );
+  expect(spills).toEqual([]);
+  // And the pills themselves never overlap.
+  const boxes = await row.locator(".ref:not([hidden]), .pr-chip:not([hidden])").evaluateAll((els) =>
+    els.map((e) => e.getBoundingClientRect()).map((r) => [r.left, r.right]),
+  );
+  for (let i = 1; i < boxes.length; i++) expect(boxes[i][0]).toBeGreaterThanOrEqual(boxes[i - 1][1] - 0.5);
+});
+
 test("the keyboard reaches the panel: F6, arrows, Enter and the menu key", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

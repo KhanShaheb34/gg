@@ -153,6 +153,9 @@
        the cell, once the subject beside it has none left (Task 9 review minor 5). */
     flex: 0 1 auto;
     min-width: 0;
+    /* Squeezed below what it holds (a narrow description column), it cuts its own end rather
+       than drawing it over the next pill. */
+    overflow: hidden;
     height: 18px;
     padding: 0 6px 0 5px;
     border: 1px solid color-mix(in srgb, var(--c) 34%, transparent);

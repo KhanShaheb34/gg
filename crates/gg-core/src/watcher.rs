@@ -570,6 +570,13 @@ fn note_tree_event(root: &Path, ignored: &Ignored, event: &Event, batch: &mut Ba
             // what git ignores read again first.
             batch.reread = true;
             let dir = rel.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
+            // A folder at the top changed itself (Windows says a folder changed whenever a
+            // file in it does): judged by the folder.
+            let dir = if dir.is_empty() && path.is_dir() {
+                rel.clone()
+            } else {
+                dir
+            };
             if dir.is_empty() || (batch.dirs.len() >= MAX_BATCH && !batch.dirs.contains(&dir)) {
                 batch.overflow = true;
             } else {
@@ -1185,6 +1192,28 @@ mod tests {
         let top = Event::new(write).add_path(root.join("loose.txt"));
         note_tree_event(root, &ignored, &top, &mut batch);
         assert!(batch.overflow);
+    }
+
+    /// Past the limit, a folder at the top that changed itself (as Windows reports a folder
+    /// whose files change) is judged by that folder, not taken as a change that cannot be
+    /// placed.
+    #[test]
+    fn a_top_folder_that_changed_is_kept_by_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(root.join("gen")).unwrap();
+        let ignored = Ignored::default();
+        let mut batch = Batch::default();
+        for i in 0..MAX_BATCH {
+            let event = Event::new(EventKind::Create(CreateKind::File))
+                .add_path(root.join(format!("gen/f{i}")));
+            note_tree_event(&root, &ignored, &event, &mut batch);
+        }
+        let changed = Event::new(EventKind::Modify(ModifyKind::Any)).add_path(root.join("gen"));
+        note_tree_event(&root, &ignored, &changed, &mut batch);
+        assert!(!batch.overflow);
+        assert!(batch.dirs.contains("gen"), "{:?}", batch.dirs);
+        assert!(Ignored::parse(b"gen/\0").covers("gen"));
     }
 
     /// The per-folder mode end to end (the OS's own watcher, folder by folder): an edit in a

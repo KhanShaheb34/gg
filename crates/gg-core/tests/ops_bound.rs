@@ -384,8 +384,11 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
     }
 }
 
-/// Many untracked files with long names, all overwritten: listed whole (the paths are read
-/// in runs that fit a command line, on Windows' 32 KiB too).
+/// Many untracked files with long names, all overwritten: listed whole across the runs the
+/// paths are read in (150: more than one run of 100). That a run also stays under Windows'
+/// 32 KiB command line is pinned by `ops::commit`'s unit test
+/// `paths_go_in_runs_short_by_count_and_by_length`: here, 100 paths cannot pass 32 KiB on
+/// Windows, whose paths stop at 260 characters (Task 12 review minor 8).
 #[tokio::test]
 async fn a_hard_reset_counts_many_long_named_files_it_overwrites() {
     let repo = TestRepo::new();

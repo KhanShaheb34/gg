@@ -306,7 +306,13 @@ export type OpRequest =
   // path: absolute or relative to the main worktree; a new or empty folder; the new worktree is not made active
   | { op: "worktree_add"; path: string; branch: WorktreeBranch }
   // path: a linked worktree git lists (re-checked in its turn); its work is confirmed first; the active one: main becomes active first
-  | { op: "worktree_remove"; path: string; deleteBranch: boolean }
+  | {
+      op: "worktree_remove";
+      path: string;
+      deleteBranch: boolean;
+      /** The branch and commit the dialog showed: the core deletes nothing if the worktree there is on others now. */
+      expectHead: HeadInfo;
+    }
   | { op: "worktree_prune" }
   // Commits exactly `paths` (as worktree_files lists them; either side of a rename stands for both) as they
   // are in the working tree in its turn, in a fresh temporary index: other changes, staged or not, stay as

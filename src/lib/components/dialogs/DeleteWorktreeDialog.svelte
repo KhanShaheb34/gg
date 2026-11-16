@@ -70,7 +70,10 @@
     }
     pending = true;
     try {
-      await runOp(repoId, { op: "worktree_remove", path: wt.path, deleteBranch }, { confirmWith: confirmHere });
+      // What the dialog showed (final review M6): another worktree at that path by now, or
+      // another branch there, is not deleted.
+      const expectHead = { branch: wt.branch, hash: wt.head };
+      await runOp(repoId, { op: "worktree_remove", path: wt.path, deleteBranch, expectHead }, { confirmWith: confirmHere });
     } catch {
       // Reported by runOp.
     }

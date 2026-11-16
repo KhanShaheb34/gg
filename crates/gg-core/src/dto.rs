@@ -875,6 +875,10 @@ pub enum OpRequest {
     WorktreeRemove {
         path: String,
         delete_branch: bool,
+        /// The branch and commit the dialog showed for it: the worktree there must still be
+        /// on them, else nothing is deleted (final boundary review M6).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_head: Option<HeadInfo>,
     },
     /// Forgets the worktrees git calls prunable (their folders are gone):
     /// `git worktree prune`. (No fields; braced, so that unknown fields are refused.)
@@ -1487,6 +1491,8 @@ mod tests {
             json!({"op": "worktree_add", "path": "../w", "branch": {"create": "b", "at": "h"}}),
             json!({"op": "worktree_add", "path": "/w", "branch": {"detach": "h"}}),
             json!({"op": "worktree_remove", "path": "/w", "deleteBranch": true}),
+            json!({"op": "worktree_remove", "path": "/w", "deleteBranch": false,
+                   "expectHead": {"branch": null, "hash": "abc"}}),
             json!({"op": "worktree_prune"}),
             json!({"op": "commit", "paths": ["a b", "-x"], "message": "m", "push": true,
                    "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),

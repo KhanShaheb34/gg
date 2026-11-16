@@ -12,8 +12,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::dto::{
-    DEFAULT_WORKTREE_PATTERN, Danger, DangerKind, InProgressKind, InputField, OpHint, OpRequest,
-    WorktreeBranch, WorktreeInfo, WorktreePath,
+    DEFAULT_WORKTREE_PATTERN, Danger, DangerKind, HeadInfo, InProgressKind, InputField, OpHint,
+    OpRequest, WorktreeBranch, WorktreeInfo, WorktreePath,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::branch_slug;
@@ -113,9 +113,12 @@ pub(crate) async fn refused(
         OpRequest::WorktreeRemove {
             path,
             delete_branch,
-        } => Ok(remove_refused(ctx, path, *delete_branch)
-            .await?
-            .map(|why| (why, None))),
+            expect_head,
+        } => Ok(
+            remove_refused(ctx, path, *delete_branch, expect_head.as_ref())
+                .await?
+                .map(|why| (why, None)),
+        ),
         OpRequest::WorktreePrune {} => Ok(prune_refused(ctx).await?.map(|why| (why, None))),
         _ => Ok(None),
     }
@@ -309,6 +312,7 @@ async fn remove_refused(
     ctx: &OpCtx<'_>,
     path: &str,
     delete_branch: bool,
+    expect_head: Option<&HeadInfo>,
 ) -> Result<Option<String>> {
     let (found, list) = find(ctx, path).await?;
     let Some(wt) = found else {
@@ -318,6 +322,23 @@ async fn remove_refused(
         )));
     };
     let shown = &wt.path;
+    // The worktree the dialog showed, not another one at that path by now (final boundary
+    // review M6).
+    if let Some(seen) = expect_head
+        && (seen.branch != wt.branch || seen.hash != wt.head)
+    {
+        let said = |branch: &Option<String>, hash: &Option<String>| match (branch, hash) {
+            (Some(branch), _) => format!("on branch {branch}"),
+            (None, Some(hash)) => format!("detached at {}", short(hash)),
+            (None, None) => "on no commit".to_owned(),
+        };
+        return Ok(Some(format!(
+            "Nothing was deleted: the worktree at {shown} is not as the dialog showed it (it \
+             is {} now; the dialog showed it {}). Look at it again before deleting it.",
+            said(&wt.branch, &wt.head),
+            said(&seen.branch, &seen.hash)
+        )));
+    }
     // The folder must be that worktree's own, by the path git keeps: not a link to another
     // folder, and not one two entries lead to.
     let raw = read_worktrees(&ctx.runner, &ctx.repo.root).await?;

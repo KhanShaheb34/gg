@@ -48,6 +48,19 @@ fn remove(path: &Path, delete_branch: bool) -> OpRequest {
     OpRequest::WorktreeRemove {
         path: path.to_string_lossy().into_owned(),
         delete_branch,
+        expect_head: None,
+    }
+}
+
+/// `remove`, naming the branch and commit the dialog showed for the worktree.
+fn remove_seen(path: &Path, delete_branch: bool, branch: Option<&str>, hash: &str) -> OpRequest {
+    OpRequest::WorktreeRemove {
+        path: path.to_string_lossy().into_owned(),
+        delete_branch,
+        expect_head: Some(gg_core::dto::HeadInfo {
+            branch: branch.map(str::to_owned),
+            hash: Some(hash.to_owned()),
+        }),
     }
 }
 
@@ -1236,6 +1249,43 @@ async fn a_repository_at_any_depth_inside_an_ignored_folder_is_never_removed_wit
     fs::create_dir_all(&inner).unwrap();
     git_in(&inner, &["init", "-q"]);
     refused_for(&h, id, &wt, &inner, "contains another repository at").await;
+}
+
+/// Final boundary review M6: the dialog names the branch and commit it showed; a worktree
+/// that is another one by now (removed and made again at that path, or another branch
+/// checked out there) is not deleted, and neither is that other branch.
+#[tokio::test]
+async fn a_worktree_that_is_not_what_the_dialog_showed_is_not_deleted() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let head = git_in(&wt, &["rev-parse", "HEAD"]);
+    repo.branch("other");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    // Another branch checked out there since the dialog opened.
+    git_in(&wt, &["switch", "-q", "other"]);
+    let mark = h.last_log_id();
+    let out = h
+        .run(id, remove_seen(&wt, true, Some("feature"), &head))
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message.starts_with(&format!(
+            "Nothing was deleted: the worktree at {} is not as the dialog showed it",
+            real(&wt)
+        )),
+        "{}",
+        out.message
+    );
+    assert!(h.writes_since(mark).is_empty(), "nothing ran");
+    assert!(wt.is_dir());
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/other"]));
+    // As the dialog showed it: deleted.
+    git_in(&wt, &["switch", "-q", "feature"]);
+    let out = h
+        .run(id, remove_seen(&wt, false, Some("feature"), &head))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(!wt.exists());
 }
 
 // ---- Removing with the branch ----

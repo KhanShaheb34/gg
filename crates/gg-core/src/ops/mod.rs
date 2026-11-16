@@ -649,6 +649,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::WorktreeRemove {
             path,
             delete_branch,
+            ..
         } => {
             check_path(&path)?;
             let title = if delete_branch {

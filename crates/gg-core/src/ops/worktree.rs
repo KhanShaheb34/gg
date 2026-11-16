@@ -367,13 +367,13 @@ async fn remove_refused(
         )));
     }
     let raw = status_with_ignored(ctx, &wt, true).await?;
-    Ok(nested_refusal(&list, &wt, &raw))
+    Ok(nested_refusal(&list, &wt, &raw).await)
 }
 
 /// Why removing `wt` would take another worktree or repository with it, if it would: one git
 /// lists inside it (`list`), or a repository its status read `raw` shows inside it.
 /// `git worktree remove` deletes the whole folder, whatever is inside.
-fn nested_refusal(list: &[WorktreeInfo], wt: &WorktreeInfo, raw: &[u8]) -> Option<String> {
+async fn nested_refusal(list: &[WorktreeInfo], wt: &WorktreeInfo, raw: &[u8]) -> Option<String> {
     let shown = &wt.path;
     if let Some(inner) = list
         .iter()
@@ -392,12 +392,23 @@ fn nested_refusal(list: &[WorktreeInfo], wt: &WorktreeInfo, raw: &[u8]) -> Optio
             )
         });
     }
-    nested_repository(Path::new(shown), raw).map(|inner| {
-        format!(
+    let (dir, raw) = (PathBuf::from(shown), raw.to_vec());
+    let inside =
+        tokio::task::spawn_blocking(move || nested_repository(&dir, &raw, MAX_WALKED, WALK_TIME))
+            .await
+            .unwrap_or_else(|e| Some(Inside::Unchecked(PathBuf::from(&wt.path), e.to_string())));
+    inside.map(|inside| match inside {
+        Inside::Repository(inner) => format!(
             "{shown} contains another repository at {}, which git would delete with it. Move \
              or delete it first.",
             inner.display()
-        )
+        ),
+        Inside::Unchecked(folder, why) => format!(
+            "Nothing was deleted: gg could not make sure that {} holds no other repository \
+             ({why}), and git would delete one with the worktree. Delete that folder first, \
+             or delete the worktree from a terminal once you have checked it.",
+            folder.display()
+        ),
     })
 }
 
@@ -430,16 +441,37 @@ async fn status_with_ignored(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) ->
     Ok(out.stdout)
 }
 
-/// Most entries of an ignored folder looked into for a repository one level down.
-const MAX_LOOKED_INTO: usize = 200;
+/// Most entries looked at inside a worktree's ignored folders for another repository, and
+/// for how long: beyond either, removal is refused (what was not looked at could hold one).
+const MAX_WALKED: usize = 200_000;
+const WALK_TIME: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A repository (a folder with a `.git` file or folder) inside the worktree `wt`, if one is
-/// found: an untracked or ignored folder git lists that is one (git does not go into
-/// another repository, and lists an ignored folder as one entry), or a folder directly
-/// inside an ignored one that is ([`MAX_LOOKED_INTO`] entries at most). A repository deeper
-/// inside an ignored folder is not found.
-fn nested_repository(dir: &Path, raw: &[u8]) -> Option<PathBuf> {
+/// What looking inside a worktree's untracked and ignored folders found.
+#[derive(Debug, PartialEq, Eq)]
+enum Inside {
+    /// Another repository (a folder with a `.git` file or folder) at this path.
+    Repository(PathBuf),
+    /// This folder could not be looked through in full (too many entries, too long, or a
+    /// folder in it could not be read), so it may hold one.
+    Unchecked(PathBuf, String),
+}
+
+/// A repository inside the worktree at `dir`, if one is found, from its status read `raw`:
+/// an untracked or ignored folder git lists that is one (git does not go into another
+/// repository, and stops at one inside an untracked folder), or one at any depth inside an
+/// ignored folder (git lists an ignored folder as one entry and does not go in), found by
+/// walking it without following links (git deletes a link, not what it points to). The walk
+/// is bounded by `max` entries and `time` in all; when it stops short, the folder is
+/// [`Inside::Unchecked`].
+fn nested_repository(
+    dir: &Path,
+    raw: &[u8],
+    max: usize,
+    time: std::time::Duration,
+) -> Option<Inside> {
     let is_repo = |p: &Path| fs::symlink_metadata(p.join(".git")).is_ok();
+    let deadline = std::time::Instant::now() + time;
+    let mut walked = 0;
     let mut fields = raw.split(|&b| b == 0);
     while let Some(entry) = fields.next() {
         if entry.starts_with(b"2 ") {
@@ -456,13 +488,53 @@ fn nested_repository(dir: &Path, raw: &[u8]) -> Option<PathBuf> {
         }
         let folder = dir.join(String::from_utf8_lossy(rest).trim_end_matches('/'));
         if is_repo(&folder) {
-            return Some(folder);
+            return Some(Inside::Repository(folder));
         }
-        if ignored && let Ok(entries) = fs::read_dir(&folder) {
-            for child in entries.flatten().take(MAX_LOOKED_INTO) {
-                let child = child.path();
-                if child.is_dir() && is_repo(&child) {
-                    return Some(child);
+        if !ignored {
+            continue;
+        }
+        let mut pending = vec![folder.clone()];
+        while let Some(at) = pending.pop() {
+            let entries = match fs::read_dir(&at) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Some(Inside::Unchecked(
+                        folder,
+                        format!("{} could not be read ({e})", at.display()),
+                    ));
+                }
+            };
+            for child in entries {
+                let Ok(child) = child else {
+                    return Some(Inside::Unchecked(
+                        folder,
+                        format!("{} could not be read in full", at.display()),
+                    ));
+                };
+                walked += 1;
+                if walked > max {
+                    return Some(Inside::Unchecked(
+                        folder,
+                        format!("there are more than {max} entries in its ignored folders"),
+                    ));
+                }
+                if walked % 1024 == 0 && std::time::Instant::now() > deadline {
+                    return Some(Inside::Unchecked(
+                        folder,
+                        format!(
+                            "looking through its ignored folders took longer than {} seconds",
+                            time.as_secs()
+                        ),
+                    ));
+                }
+                // No link is followed: `file_type` does not.
+                if child.file_type().is_ok_and(|t| t.is_dir()) {
+                    let path = child.path();
+                    if is_repo(&path) {
+                        return Some(Inside::Repository(path));
+                    }
+                    pending.push(path);
                 }
             }
         }
@@ -1067,7 +1139,7 @@ pub(crate) async fn remove(
         })
     };
     // Never another worktree or repository with it, as it is now.
-    if let Some(why) = nested_refusal(&list, &wt, &now.raw) {
+    if let Some(why) = nested_refusal(&list, &wt, &now.raw).await {
         return refuse(why);
     }
     let changed = match confirmed.and_then(|d| d.token.as_deref()) {
@@ -1434,6 +1506,67 @@ mod tests {
         let again = parse_status(&more);
         assert_eq!(again.status_hash, work.status_hash);
         assert_ne!(again.ignored_hash, work.ignored_hash);
+    }
+
+    /// A worktree folder with an ignored `build/` holding `n` empty files and a repository
+    /// at `build/deep/x/y/repo`.
+    fn ignored_tree(n: usize) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let build = dir.path().join("build");
+        fs::create_dir_all(build.join("deep/x/y/repo/.git")).unwrap();
+        for i in 0..n {
+            fs::write(build.join(format!("f{i}")), "").unwrap();
+        }
+        let repo = build.join("deep/x/y/repo");
+        (dir, repo)
+    }
+
+    #[test]
+    fn a_repository_at_any_depth_in_an_ignored_folder_is_found() {
+        let (dir, repo) = ignored_tree(3);
+        let time = std::time::Duration::from_secs(5);
+        assert_eq!(
+            nested_repository(dir.path(), b"! build/\0", 100, time),
+            Some(Inside::Repository(repo))
+        );
+        // An ignored file is not walked into, nor an untracked folder git went through.
+        assert_eq!(
+            nested_repository(dir.path(), b"! x.log\0? build/f0\0", 100, time),
+            None
+        );
+    }
+
+    #[test]
+    fn an_ignored_folder_too_big_to_look_through_is_unchecked() {
+        let (dir, _repo) = ignored_tree(20);
+        let time = std::time::Duration::from_secs(5);
+        // 20 files and 4 folders: 24 entries. At the bound it still looks; one under it, not.
+        assert!(matches!(
+            nested_repository(dir.path(), b"! build/\0", 24, time),
+            Some(Inside::Repository(_))
+        ));
+        match nested_repository(dir.path(), b"! build/\0", 10, time) {
+            Some(Inside::Unchecked(folder, why)) => {
+                assert_eq!(folder, dir.path().join("build"));
+                assert_eq!(why, "there are more than 10 entries in its ignored folders");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_an_ignored_folder_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::create_dir_all(elsewhere.path().join("repo/.git")).unwrap();
+        fs::create_dir(dir.path().join("build")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("build/link")).unwrap();
+        let time = std::time::Duration::from_secs(5);
+        assert_eq!(
+            nested_repository(dir.path(), b"! build/\0", 100, time),
+            None
+        );
     }
 
     #[test]

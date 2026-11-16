@@ -1051,6 +1051,44 @@ async fn another_repository_inside_is_never_removed_with_it() {
     refused_for(&h, id, &wt, &plain, "contains another repository at").await;
 }
 
+/// Final review I1 (P3-R12): git lists an ignored folder as one entry, so a repository two
+/// or more levels inside it (`tmp/refs/nested`) was deleted under the ordinary dialog for
+/// ignored files. Found at any depth now, in an ignored folder and in an untracked one.
+#[tokio::test]
+async fn a_repository_at_any_depth_inside_an_ignored_folder_is_never_removed_with_it() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    for depth in ["build/one", "build/refs/nested", "build/a/b/c/nested"] {
+        let inner = wt.join(depth);
+        fs::create_dir_all(&inner).unwrap();
+        git_in(&inner, &["init", "-q"]);
+        fs::write(inner.join("mine.txt"), "x").unwrap();
+        // Something beside it, so the folder is not only the repository.
+        fs::write(wt.join("build/out.o"), "built").unwrap();
+        let says = format!(
+            "{} contains another repository at {}, which git would delete with it.",
+            real(&wt),
+            real(&inner)
+        );
+        refused_for(&h, id, &wt, &inner, &says).await;
+        fs::remove_dir_all(wt.join("build")).unwrap();
+    }
+    // Ignored inside an untracked folder (git lists `! new/cache/`), two levels down.
+    let inner = wt.join("new/cache/x/nested");
+    fs::create_dir_all(&inner).unwrap();
+    fs::write(wt.join("new/keep.txt"), "x").unwrap();
+    fs::write(wt.join("new/.gitignore"), "cache/\n").unwrap();
+    git_in(&inner, &["init", "-q"]);
+    refused_for(&h, id, &wt, &inner, "contains another repository at").await;
+    // An untracked folder, four levels down (git itself stops at the repository).
+    fs::remove_dir_all(wt.join("new")).unwrap();
+    let inner = wt.join("plain/a/b/c");
+    fs::create_dir_all(&inner).unwrap();
+    git_in(&inner, &["init", "-q"]);
+    refused_for(&h, id, &wt, &inner, "contains another repository at").await;
+}
+
 // ---- Removing with the branch ----
 
 #[tokio::test]

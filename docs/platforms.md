@@ -24,7 +24,7 @@ are **compiled, not run**. This page says what was verified where, as of Novembe
 | The `gg` command: the launcher | Built and tested (`tests/launcher.rs`) | Same script; CI | `gg.cmd`: static checks and fill-in tests on the Mac; run through cmd only in CI (`tests/launcher_windows.rs`) |
 | The `gg` command: install / uninstall / what else is `gg` | Built and tested | Compiled; CI | Unit-tested logic (folders of the user's own on `PATH`, `where`-style lookup); compiled |
 | Working-tree watch | Built and tested (one recursive FSEvents watch) | Folder-by-folder mode built and tested on the Mac (FSEvents, non-recursive); inotify itself only in CI | Compiled (one recursive watch); CI |
-| A stale `index.lock`: is a git working there? | Built and tested (libproc) | Compiled (`/proc`); CI | Not available: gg says it could not check, and still asks |
+| A stale `index.lock`: does a git process on this computer have the worktree (or its git folder) as its working folder? | Built and tested (libproc) | Compiled (`/proc`); CI | Not available: gg says it could not check, and still asks |
 | File identity (conflict judging), process liveness (commit temp folders) | Built and tested | Compiled; CI | Compiled (`GetFileInformationByHandle`, `OpenProcess`); CI unit tests |
 | The app (`src-tauri`) | Built (overlay title bar, macOS menu bar) | Not compiled here: the GTK/WebKit/D-Bus system libraries cannot be cross-compiled from a Mac; CI | Compiled (`cargo check` and clippy, with `llvm-rc` for the resource file); CI build |
 | Window chrome and menus | Overlay title bar, traffic lights; app menu with Settings, Install ‘gg’ Command, Keyboard Shortcuts | Native title bar (`tauri.linux.conf.json`); File/Help window menu with the same items; CI build only | Native title bar (`tauri.windows.conf.json`); File/Help window menu; CI build only |
@@ -43,7 +43,10 @@ are **compiled, not run**. This page says what was verified where, as of Novembe
   behind; gg names it and offers to remove it once it is ten minutes old.
 - **gg cannot tell whether another git is working in a repository** (a `git commit` waiting in a
   terminal's editor holds `index.lock`). Before removing a stale lock it says it could not
-  check, and the confirmation is red as everywhere.
+  check, and the confirmation is red as everywhere. (On macOS and Linux the check covers git
+  processes whose working folder is the worktree or its git folder; a git started with
+  `--git-dir` from elsewhere, another user's or a container's git, and other programs that
+  lock the staging area are not seen, and the confirmation says so.)
 - **Only programs are run.** git, gh, ssh, the editor and the terminal must be `.exe` (or `.com`)
   files: a `.cmd` or `.bat` would run through `cmd.exe`, which parses its arguments (a path
   among them) again (R19). When only a `git.cmd` shim is found, gg says so and names it. VS

@@ -5,7 +5,8 @@
 //!
 //! An operation that failed so has the lock named in its failure, with how long ago it was
 //! made. When it is older than [`STALE_AFTER`], no git child of the app's is running for
-//! the repository and no other git process is found working in it (a `git commit` waiting
+//! the repository and no other git process on this computer has the worktree or the git
+//! folder as its working folder (a `git commit` waiting
 //! in a terminal's editor holds the lock for as long as the editor is open; see
 //! [`crate::platform::git_running_in`]; where that cannot be looked at, the messages say
 //! so), it is offered for removal (`remove_index_lock`): a red confirmation names
@@ -31,22 +32,32 @@ pub(crate) const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 /// judged: a read running beside the operation is over in a moment.
 const IDLE_WAIT: Duration = Duration::from_millis(1500);
 
-/// The lock file as seen: where, when it was last changed, how big.
+/// The lock file as seen: where, when it was last changed, how big, and which file it is
+/// (another file made under its name is another lock).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LockFile {
     pub path: PathBuf,
     pub modified: SystemTime,
     pub size: u64,
+    pub identity: Option<u128>,
 }
 
 impl LockFile {
-    /// What a confirmation is bound to: the file, its time and its size (R39).
+    /// What a confirmation is bound to: the file (its path and identity), its time and its
+    /// size (R39).
     pub fn token(&self) -> String {
         let nanos = self
             .modified
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        format!("{}\n{nanos}\n{}", self.path.display(), self.size)
+        let identity = self
+            .identity
+            .map_or_else(String::new, |id| format!("{id:x}"));
+        format!(
+            "{}\n{nanos}\n{}\n{identity}",
+            self.path.display(),
+            self.size
+        )
     }
 
     /// How long ago it was last changed (zero if it is in the future).
@@ -74,6 +85,7 @@ fn look(path: &Path) -> std::result::Result<Option<LockFile>, &'static str> {
         path: path.to_owned(),
         modified: meta.modified().unwrap_or(UNIX_EPOCH),
         size: meta.len(),
+        identity: crate::platform::file_identity(path, &meta),
     }))
 }
 
@@ -241,6 +253,9 @@ pub(crate) async fn explain_failure(ctx: &OpCtx<'_>, step: Step) -> Result<Step>
         });
     };
     let path = lock_path(ctx).await?;
+    if let Some(path) = &path {
+        remove_leftovers(path);
+    }
     if path
         .as_deref()
         .is_some_and(|path| !same_file(git_named, &ctx.cwd, path))
@@ -282,9 +297,10 @@ pub(crate) async fn explain_failure(ctx: &OpCtx<'_>, step: Step) -> Result<Step>
             });
             if checked {
                 format!(
-                    "git found a lock file, {shown}, made {age} ago, and no git process is \
-                     running here: it was probably left behind by a git that crashed. Another \
-                     program (an editor) may still be using it; if none is, remove it."
+                    "git found a lock file, {shown}, made {age} ago, and no git process on this \
+                     computer has this folder as its working folder: it was probably left \
+                     behind by a git that crashed. Another program may still be using it; if \
+                     none is, remove it."
                 )
             } else {
                 format!(
@@ -311,6 +327,7 @@ pub(crate) async fn refused(ctx: &OpCtx<'_>) -> Result<Option<String>> {
             "Nothing was removed: git could not say where the lock file is.".to_owned(),
         ));
     };
+    remove_leftovers(&path);
     let shown = named(&path, &ctx.cwd);
     let lock = match look(&path) {
         Ok(Some(lock)) => lock,
@@ -363,7 +380,9 @@ pub(crate) async fn danger(ctx: &OpCtx<'_>) -> Result<Vec<Danger>> {
         message: format!(
             "Remove the lock file {}, made {} ago? If another git process or an editor is \
              still working in this repository, removing its lock can damage the staging area. \
-             Make sure none is.{unchecked}",
+             Make sure none is: gg cannot see a git started with --git-dir from another \
+             folder, another user's or a container's git, or other programs that lock the \
+             staging area.{unchecked}",
             named(&lock.path, &ctx.cwd),
             age_text(lock.age())
         ),
@@ -421,14 +440,19 @@ fn remove_if_still(path: &Path, token: &str) -> std::io::Result<bool> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let aside = path.with_file_name(format!(
-        "index.lock.gg-removing-{}-{nanos}",
-        std::process::id()
-    ));
+    let aside = path.with_file_name(format!("{ASIDE_PREFIX}{}-{nanos}", std::process::id()));
     std::fs::rename(path, &aside)?;
     let same = matches!(look(&aside), Ok(Some(moved)) if LockFile { path: path.to_owned(), ..moved }.token() == token);
     if same {
-        std::fs::remove_file(&aside)?;
+        std::fs::remove_file(&aside).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "the lock file was moved aside but could not be removed ({e}); it is at {}",
+                    aside.display()
+                ),
+            )
+        })?;
         return Ok(true);
     }
     if let Err(e) = crate::store::move_no_overwrite(&aside, path) {
@@ -441,6 +465,44 @@ fn remove_if_still(path: &Path, token: &str) -> std::io::Result<bool> {
         ));
     }
     Ok(false)
+}
+
+/// The name a lock file moved aside for its removal starts with.
+const ASIDE_PREFIX: &str = "index.lock.gg-removing-";
+
+/// Moved-aside lock files older than this are left over from a removal that failed (or an
+/// app that stopped midway) and are removed at the next lock check.
+const LEFTOVER_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Removes the moved-aside lock files ([`ASIDE_PREFIX`]) older than [`LEFTOVER_AFTER`] in
+/// the folder of `lock`: plain files only. Best effort.
+fn remove_leftovers(lock: &Path) {
+    let Some(dir) = lock.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(ASIDE_PREFIX)
+        {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| SystemTime::now().duration_since(m).ok())
+            .is_some_and(|age| age >= LEFTOVER_AFTER);
+        if meta.is_file() && old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// A failure with nothing to show beside its line.
@@ -497,6 +559,49 @@ mod tests {
         assert!(remove_if_still(&path, &token).unwrap());
         assert!(!path.exists());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// Another file made under the lock's name, with the same size and time, is another
+    /// lock: the token names the file itself.
+    #[test]
+    fn another_file_of_the_same_size_and_time_is_another_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.lock");
+        std::fs::write(&path, "").unwrap();
+        let first = look(&path).unwrap().unwrap();
+        // The first one kept aside, so the new one cannot reuse its identity.
+        std::fs::rename(&path, dir.path().join("first")).unwrap();
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_modified(first.modified).unwrap();
+        drop(file);
+        let second = look(&path).unwrap().unwrap();
+        assert_eq!((second.modified, second.size), (first.modified, first.size));
+        assert!(first.identity.is_some());
+        assert_ne!(second.token(), first.token());
+        assert!(!remove_if_still(&path, &first.token()).unwrap());
+        assert!(path.exists());
+    }
+
+    /// Lock files moved aside by a removal that did not finish are removed once a day old;
+    /// nothing else is touched.
+    #[test]
+    fn leftovers_of_a_removal_go_after_a_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("index.lock");
+        let old = dir.path().join(format!("{ASIDE_PREFIX}1-2"));
+        let new = dir.path().join(format!("{ASIDE_PREFIX}3-4"));
+        let other = dir.path().join("index.lock.other");
+        for f in [&lock, &old, &new, &other] {
+            std::fs::write(f, "").unwrap();
+        }
+        let day_ago = SystemTime::now() - LEFTOVER_AFTER - Duration::from_secs(60);
+        for f in [&old, &other] {
+            let file = std::fs::File::options().write(true).open(f).unwrap();
+            file.set_modified(day_ago).unwrap();
+        }
+        remove_leftovers(&lock);
+        assert!(!old.exists());
+        assert!(new.exists() && other.exists() && lock.exists());
     }
 
     #[cfg(unix)]

@@ -883,10 +883,12 @@ mod tests {
     }
 
     /// `dirs` joined as a `PATH` value.
+    #[cfg(unix)]
     fn path_of(dirs: &[&Path]) -> OsString {
         std::env::join_paths(dirs).unwrap()
     }
 
+    #[cfg(unix)]
     fn mkdir(path: &Path) -> PathBuf {
         fs::create_dir_all(path).unwrap();
         path.to_path_buf()

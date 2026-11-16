@@ -371,14 +371,26 @@ pub fn run() {
     // the running app and exits here, during plugin set-up, before the app's own set-up, so
     // it never reads or writes the config folder or migrates anything. The running app opens
     // the folders (or shows their tabs) and comes to the front.
-    let builder =
-        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             let paths = forwarded_paths(&args, &cwd);
             if !paths.is_empty() {
                 tauri::async_runtime::spawn(async move { deliver_opened(paths) });
             }
             bring_forward(app);
-        }));
+        }))
+        // Plugins are set up in order, before the window is made: a second launch has exited
+        // in the one above, so only the instance that stays starts the login shell it asks for
+        // git's PATH, and it runs while the window and webview are created (started later, in
+        // the app's own set-up, it held the first rows back by 100-250 ms).
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("gg-login-path")
+                .setup(|_, _| {
+                    gg_core::git::runner::prefetch_login_path();
+                    Ok(())
+                })
+                .build(),
+        );
     // macOS: the menu bar; Windows and Linux: the window's menu (the same items reach the UI).
     let builder = builder.menu(app_menu).on_menu_event(|app, event| {
         let id = event.id();
@@ -409,8 +421,7 @@ pub fn run() {
         .setup(|app| {
             // Only the instance that stays gets here (a second one has exited during plugin
             // set-up, having run nothing). The core starts after the window and webview are
-            // created; the login shell it asks for git's PATH can run meanwhile.
-            gg_core::git::runner::prefetch_login_path();
+            // created; the login shell it asks for git's PATH is running already (above).
             // Performance runs only: the window at the size the run asks for.
             #[cfg(feature = "perf")]
             if let (Some((w, h)), Some(window)) = (

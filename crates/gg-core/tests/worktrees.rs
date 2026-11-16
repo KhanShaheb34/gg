@@ -500,12 +500,13 @@ async fn other_worktrees_are_read_in_the_background_four_at_a_time() {
         fs::write(wt.join("new.txt"), "x").unwrap();
     }
     let h = harness().await;
-    h.m.set_worktree_read_delay(Duration::from_millis(400));
+    // Each read takes 1.5 s more: longer than the open itself, even where git is slow.
+    h.m.set_worktree_read_delay(Duration::from_millis(1500));
     // Opening does not wait for them.
     let started = Instant::now();
     let snap = h.m.open(repo.path()).await.unwrap();
     assert!(
-        started.elapsed() < Duration::from_millis(400),
+        started.elapsed() < Duration::from_millis(1500),
         "{:?}",
         started.elapsed()
     );

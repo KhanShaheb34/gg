@@ -388,6 +388,63 @@ fn case_insensitive_at(path: &Path) -> bool {
     }
 }
 
+/// Gives `from` the name `to` in one step unless something has that name already (then an
+/// error, `AlreadyExists` where the platform says so): never replaces `to`, not even one
+/// made a moment before. Windows `MoveFileExW` without replacing, macOS `renamex_np` with
+/// `RENAME_EXCL`, Linux `renameat2` with `RENAME_NOREPLACE`; where the file system cannot do
+/// that, a check and a rename.
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        job::move_no_replace(from, to)
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| {
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        };
+        let (cfrom, cto) = (c(from)?, c(to)?);
+        // SAFETY: both are NUL-terminated paths that live through the call.
+        #[cfg(target_os = "macos")]
+        let done = unsafe { libc::renamex_np(cfrom.as_ptr(), cto.as_ptr(), libc::RENAME_EXCL) };
+        // SAFETY: as above; AT_FDCWD makes both paths relative to the current folder.
+        #[cfg(target_os = "linux")]
+        let done = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                cfrom.as_ptr(),
+                libc::AT_FDCWD,
+                cto.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if done == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        let unsupported = matches!(
+            e.raw_os_error(),
+            Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS)
+        );
+        if !unsupported {
+            return Err(e);
+        }
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+        std::fs::rename(from, to)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+        std::fs::rename(from, to)
+    }
+}
+
 /// What tells file `path` (with metadata `meta`) from another file that took its name: the
 /// device and inode on Unix, the volume and file index on Windows. `None` where it cannot
 /// be read (then size and time alone tell versions apart).
@@ -569,7 +626,7 @@ mod job {
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle, MoveFileExW,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
@@ -718,6 +775,18 @@ mod job {
     }
 
     /// The volume serial number and file index of `path`.
+    /// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`: fails when `to` exists.
+    pub(super) fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+        use std::os::windows::ffi::OsStrExt as _;
+        let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() };
+        let (from, to) = (wide(from), wide(to));
+        // SAFETY: both are NUL-terminated wide strings that live through the call.
+        if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     pub(super) fn file_identity(path: &Path) -> Option<u128> {
         let file = std::fs::File::open(path).ok()?;
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
@@ -739,6 +808,22 @@ mod tests {
     /// Paths are compared as the file system does: a folder spelled in another case is the
     /// same folder where names ignore case (macOS by default, Windows), whether it exists
     /// or not (a worktree removed outside the app).
+    /// A rename that must not replace never does, and works when the name is free.
+    #[test]
+    fn a_rename_without_replacing_never_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        assert!(rename_no_replace(&a, &b).is_err());
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a");
+        std::fs::remove_file(&b).unwrap();
+        rename_no_replace(&a, &b).unwrap();
+        assert!(!a.exists());
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "a");
+    }
+
     #[test]
     fn paths_are_compared_as_the_file_system_does() {
         let dir = tempfile::tempdir().unwrap();

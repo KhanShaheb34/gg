@@ -829,9 +829,10 @@ pub(crate) fn create_new_file(path: &Path, mode: u32) -> io::Result<fs::File> {
     options.open(path)
 }
 
-/// Gives file `from` the name `to` unless `to` exists (then `AlreadyExists`): a hard link,
-/// which never replaces anything, then `from` is removed. Where hard links are not
-/// supported, a rename, only when `to` is absent. `from` may be left behind on failure.
+/// Gives file `from` the name `to` unless `to` exists (then an error, `AlreadyExists`): a
+/// hard link, which never replaces anything, then `from` is removed. Where hard links are
+/// not supported, a rename that never replaces either
+/// ([`crate::platform::rename_no_replace`]). `from` may be left behind on failure.
 pub(crate) fn move_no_overwrite(from: &Path, to: &Path) -> io::Result<()> {
     match fs::hard_link(from, to) {
         Ok(()) => {
@@ -840,7 +841,7 @@ pub(crate) fn move_no_overwrite(from: &Path, to: &Path) -> io::Result<()> {
         }
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
         Err(_) if fs::symlink_metadata(to).is_ok() => Err(io::ErrorKind::AlreadyExists.into()),
-        Err(_) => fs::rename(from, to),
+        Err(_) => crate::platform::rename_no_replace(from, to),
     }
 }
 

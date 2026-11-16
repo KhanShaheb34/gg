@@ -539,6 +539,93 @@ async fn an_ignored_file_that_appears_after_the_dialog_asks_again() {
     let _ = repo;
 }
 
+/// Runs the removal of the active worktree `wt` (with `confirmed`) while the switch to main
+/// is slowed, runs `during` once the removal has started, and returns its outcome.
+async fn remove_during_switch(
+    h: &Harness,
+    id: u32,
+    wt: &Path,
+    confirmed: Vec<Confirmed>,
+    during: impl FnOnce(),
+) -> OpOutcome {
+    h.m.set_active_worktree(id, wt).await.unwrap();
+    h.m.set_status_delay(std::time::Duration::from_millis(1500));
+    let run = tokio::spawn({
+        let (m, request) = (h.m.clone(), remove(wt, false));
+        async move { m.run_op(id, request, &confirmed).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the removal runs");
+    during();
+    let out = tokio::time::timeout(TIMEOUT, run)
+        .await
+        .expect("ends")
+        .unwrap()
+        .unwrap();
+    h.m.set_status_delay(std::time::Duration::ZERO);
+    out
+}
+
+/// Final review M1: the re-read before removing covers the whole of what was confirmed, not
+/// only the files. A commit made in a clean detached worktree during the switch would be
+/// lost with it: the removal stops.
+#[tokio::test]
+async fn a_commit_made_in_a_clean_detached_worktree_during_the_switch_stops_the_removal() {
+    let (repo, _origin, wt) = pushed_worktree();
+    git_in(&wt, &["checkout", "-q", "--detach"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = remove_during_switch(&h, id, &wt, Vec::new(), || {
+        git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "wip"]);
+    })
+    .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message
+            .starts_with("It changed while gg was getting ready; nothing was deleted."),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message.ends_with(&format!(
+            "The main worktree, {}, is active now.",
+            real(repo.path())
+        )),
+        "{}",
+        out.message
+    );
+    assert!(worktree_writes(&h, &out).is_empty(), "no remove ran");
+    assert!(wt.is_dir());
+}
+
+/// Final review M1, confirmed: HEAD moving during the switch (a commit, an amend, a reset)
+/// is not what was confirmed.
+#[tokio::test]
+async fn head_moving_during_the_switch_after_a_confirmation_stops_the_removal() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("notes.txt"), "x").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    let out = remove_during_switch(&h, id, &wt, confirmed(&[danger]), || {
+        git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "moved"]);
+    })
+    .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message
+            .starts_with("It changed since you confirmed; nothing was deleted."),
+        "{}",
+        out.message
+    );
+    assert!(worktree_writes(&h, &out).is_empty(), "no remove ran");
+    assert!(wt.join("notes.txt").exists());
+}
+
 /// A remote-tracking ref to an object that is not there: `rev-list … --not --remotes` fails.
 fn break_rev_list(repo: &TestRepo) {
     let common = repo.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);

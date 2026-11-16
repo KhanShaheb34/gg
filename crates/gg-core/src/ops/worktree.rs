@@ -600,7 +600,7 @@ impl Work {
 /// those on no branch, tag or remote, lost with it; on a branch: how many are on no remote),
 /// counted from the main worktree, and, read last, its files ([`read_files_held`]). Stashes are shared by all worktrees and not lost
 /// with one.
-async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
+async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Result<Work> {
     let dir = Path::new(&wt.path);
     let in_progress = read_kind(&ctx.runner, dir).await?;
     let (mut commit_count, mut commits_hash, mut commits) = (0, 0, Vec::new());
@@ -646,7 +646,7 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Work> {
         commits_hash,
         commits,
         commits_unknown,
-        ..read_files_held(ctx, wt, true).await?
+        ..read_files_held(ctx, wt, reuse).await?
     })
 }
 
@@ -770,16 +770,6 @@ async fn marked_changes(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Vec<(Strin
     Ok(changed)
 }
 
-/// The status and ignored-file hashes in a `remove_worktree_*` danger's `token`, as
-/// [`work_danger`] wrote them.
-fn token_hashes(token: &str) -> Option<(&str, &str)> {
-    let parts: Vec<&str> = token.split('\n').collect();
-    match parts.as_slice() {
-        [_, _, _, status, _, ignored] => Some((status, ignored)),
-        _ => None,
-    }
-}
-
 /// The paths of `status --porcelain=v2 -z` output (`1`, `2` with its original path, `u`,
 /// `?`, `!`), sorted into changed, untracked and ignored, with hashes of the records.
 fn parse_status(out: &[u8]) -> Work {
@@ -897,7 +887,7 @@ pub(crate) async fn removal_dangers(
     }
     // The files last, so the dialog shows them as late as can be.
     if !has_submodules(ctx, &wt).await? {
-        let work = read_work(ctx, &wt).await?;
+        let work = read_work(ctx, &wt, true).await?;
         if let Some(danger) = work_danger(&work, &wt, delete_branch) {
             dangers.insert(0, danger);
         }
@@ -1115,8 +1105,10 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
 /// `git worktree remove -- <path>` for the worktree git lists at `path`, with `--force`
 /// only when changed or untracked files were confirmed (`remove_worktree_with_work` among
 /// `dangers`; ignored files, commits and something in progress git removes without it). The
-/// active worktree is left first: the main one becomes active. Its files are then read again
-/// and must be as confirmed (the danger's token), else nothing is removed. Then, with `delete_branch`, its branch goes (`branch -d`, or `-D` when
+/// active worktree is left first: the main one becomes active. Then all of it is read again
+/// (HEAD, what is in progress, the commits lost with it, its files) and must be as confirmed
+/// (the danger's whole token), or still need no confirmation when none was asked, else
+/// nothing is removed. Then, with `delete_branch`, its branch goes (`branch -d`, or `-D` when
 /// `delete_unmerged_branch_with_worktree` was confirmed), unless another worktree has it
 /// checked out.
 pub(crate) async fn remove(
@@ -1125,7 +1117,7 @@ pub(crate) async fn remove(
     path: &str,
     delete_branch: bool,
 ) -> Result<Step> {
-    let (Some(wt), list) = find(ctx, path).await? else {
+    let (Some(wt), _) = find(ctx, path).await? else {
         return Ok(Step::Failed {
             message: format!(
                 "Nothing was deleted: {path} is no longer a worktree of this repository."
@@ -1143,15 +1135,12 @@ pub(crate) async fn remove(
         " The main worktree, {}, is active now.",
         ctx.repo.root.display()
     );
-    // Read again now (after the switch, for the active one): what is removed must be what
-    // was confirmed.
     let confirmed = dangers.iter().find(|d| {
         matches!(
             d.kind,
             DangerKind::RemoveWorktreeWithWork | DangerKind::RemoveWorktreeIgnoredFiles
         )
     });
-    let now = read_files_held(ctx, &wt, false).await?;
     let refuse = |why: String| {
         let mut message = why;
         if left {
@@ -1163,27 +1152,31 @@ pub(crate) async fn remove(
             hints: Vec::new(),
         })
     };
+    // Read all of it again now (after the switch, for the active one), as the turn did: what
+    // is removed must be what was confirmed (final review M1: HEAD, what is in progress and
+    // the commits lost too, not only the files).
+    let (Some(now_wt), list) = find(ctx, path).await? else {
+        return refuse(format!(
+            "Nothing was deleted: {path} is no longer a worktree of this repository."
+        ));
+    };
+    let now = read_work(ctx, &now_wt, false).await?;
     // Never another worktree or repository with it, as it is now.
-    if let Some(why) = nested_refusal(&list, &wt, &now.raw).await {
+    if let Some(why) = nested_refusal(&list, &now_wt, &now.raw).await {
         return refuse(why);
     }
-    let changed = match confirmed.and_then(|d| d.token.as_deref()) {
-        Some(token) => {
-            let (status, ignored) = (
-                format!("{:016x}", now.status_hash),
-                format!("{:016x}", now.ignored_hash),
-            );
-            token_hashes(token) != Some((status.as_str(), ignored.as_str()))
-        }
-        // Nothing was confirmed: it held nothing to lose, and must hold nothing now. (With
-        // submodules nothing is asked: git refuses the plain remove itself, and says why.)
-        None => {
-            (!now.changed.is_empty()
-                || !now.untracked.is_empty()
-                || !now.ignored_entries.is_empty())
-                && !has_submodules(ctx, &wt).await?
-        }
-    };
+    // Another commit or branch checked out there since the body began: never what was seen.
+    let moved = now_wt.head != wt.head || now_wt.branch != wt.branch;
+    let changed = moved
+        || match (confirmed, work_danger(&now, &now_wt, delete_branch)) {
+            (Some(seen), Some(danger)) => seen.kind != danger.kind || seen.token != danger.token,
+            (Some(_), None) => true,
+            // Nothing was confirmed: it held nothing to lose, and must hold nothing now, on the
+            // same HEAD. (With submodules nothing is asked: git refuses the plain remove itself,
+            // and says why.)
+            (None, Some(_)) => !has_submodules(ctx, &now_wt).await?,
+            (None, None) => false,
+        };
     if changed {
         return refuse(if confirmed.is_some() {
             "It changed since you confirmed; nothing was deleted.".to_owned()

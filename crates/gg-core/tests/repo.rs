@@ -1389,7 +1389,9 @@ async fn events_emitted() {
     // 500 rows, `loader::tests::progress_waits_for_500_rows_then_throttles`; a worktree read
     // in the background may emit before that, with fewer rows, on a slow machine.)
     assert!(
-        changed.windows(2).all(|w| w[0].total_rows <= w[1].total_rows),
+        changed
+            .windows(2)
+            .all(|w| w[0].total_rows <= w[1].total_rows),
         "{:?}",
         changed.iter().map(|s| s.total_rows).collect::<Vec<_>>()
     );

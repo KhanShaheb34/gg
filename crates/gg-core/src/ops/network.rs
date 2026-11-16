@@ -402,7 +402,7 @@ async fn fetch_into_failed(
     let Some((branch, path)) = refused else {
         return Ok(step);
     };
-    if dunce::canonicalize(&path).ok() != dunce::canonicalize(&ctx.cwd).ok() {
+    if !crate::platform::same_path(std::path::Path::new(&path), &ctx.cwd) {
         return Ok(step);
     }
     let stopped = stopped_kind(ctx).await;

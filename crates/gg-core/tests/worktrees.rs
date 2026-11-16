@@ -424,6 +424,28 @@ async fn a_request_asked_for_in_another_worktree_is_refused() {
     assert_eq!(h.run(id, request).await.status, OpStatus::Done);
 }
 
+/// Where names ignore case (macOS by default, Windows), the active worktree's path spelled
+/// in another case is the active worktree; where they do not, it is another folder.
+#[tokio::test]
+async fn the_active_worktree_in_another_case_is_itself_where_case_is_ignored() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let feature = repo.add_worktree("feature");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_active_worktree(id, &feature).await.unwrap();
+    let name = feature.file_name().unwrap().to_string_lossy().to_uppercase();
+    let shouted = feature.with_file_name(&name);
+    let ignores_case = shouted.exists();
+    let out = h.run(id, in_wt(&shouted, create_branch("cased", &head))).await;
+    let expected = if ignores_case {
+        OpStatus::Done
+    } else {
+        OpStatus::Failed
+    };
+    assert_eq!(out.status, expected, "{out:?}");
+}
+
 #[tokio::test]
 async fn the_active_worktree_removed_in_a_terminal_falls_back_to_main_once() {
     let repo = TestRepo::new();

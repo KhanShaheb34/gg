@@ -324,6 +324,70 @@ pub(crate) fn process_gone(pid: u32) -> bool {
     }
 }
 
+/// Whether `a` and `b` name the same file or folder. When both exist, compared with links
+/// resolved (which also gives each the case it has on disk, on macOS and Windows); when
+/// neither exists, their nearest existing folders resolved and the rest compared as written,
+/// ignoring case where the file system does (Windows; a macOS volume that says it is
+/// case-insensitive). One that exists and one that does not are different.
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (dunce::canonicalize(a), dunce::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        (Err(_), Err(_)) => {
+            let (a, b) = (resolved_as_far_as_exists(a), resolved_as_far_as_exists(b));
+            a == b
+                || (case_insensitive_at(&a)
+                    && a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase())
+        }
+        _ => false,
+    }
+}
+
+/// `path` with its nearest existing folder resolved and the rest as written.
+fn resolved_as_far_as_exists(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = dunce::canonicalize(at) {
+            return rest.iter().rev().fold(real, |p, name| p.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                at = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Whether names that differ only in case are one name where `path` (or its nearest
+/// existing folder) is: always on Windows; on macOS as the volume says; never elsewhere.
+fn case_insensitive_at(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        true
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let existing = path.ancestors().find(|p| p.exists()).unwrap_or(path);
+        let Ok(c) = std::ffi::CString::new(existing.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: a NUL-terminated path; pathconf only reads it.
+        unsafe { libc::pathconf(c.as_ptr(), libc::_PC_CASE_SENSITIVE) == 0 }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// What tells file `path` (with metadata `meta`) from another file that took its name: the
 /// device and inode on Unix, the volume and file index on Windows. `None` where it cannot
 /// be read (then size and time alone tell versions apart).
@@ -671,6 +735,36 @@ mod job {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Paths are compared as the file system does: a folder spelled in another case is the
+    /// same folder where names ignore case (macOS by default, Windows), whether it exists
+    /// or not (a worktree removed outside the app).
+    #[test]
+    fn paths_are_compared_as_the_file_system_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("Probe"), "").unwrap();
+        let ignores_case = root.join("probe").exists();
+
+        let there = root.join("Worktree");
+        std::fs::create_dir(&there).unwrap();
+        assert!(same_path(&there, &root.join("Worktree")));
+        std::fs::create_dir(root.join("x")).unwrap();
+        assert!(same_path(
+            &there,
+            &root.join("x").join("..").join("Worktree")
+        ));
+        assert_eq!(same_path(&there, &root.join("worktree")), ignores_case);
+
+        let gone = root.join("Gone").join("Wt");
+        assert!(same_path(&gone, &root.join("Gone/Wt")));
+        assert_eq!(
+            same_path(&gone, &root.join("gone").join("wt")),
+            ignores_case
+        );
+        assert!(!same_path(&gone, &root.join("Gone").join("Other")));
+        assert!(!same_path(&gone, &there));
+    }
 
     /// The files that "exist" in a lookup test.
     fn on_disk(files: &'static [&'static str]) -> impl Fn(&str) -> bool {

@@ -217,8 +217,7 @@ fn same_file(named: &str, cwd: &Path, lock: &Path) -> bool {
     } else {
         cwd.join(named)
     };
-    let canonical = |p: &Path| crate::repo::canonical(p);
-    canonical(&named) == canonical(lock)
+    crate::platform::same_path(&named, lock)
 }
 
 /// `step`, when it failed because the staging area's lock exists, with the failure saying

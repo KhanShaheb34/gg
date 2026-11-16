@@ -1357,10 +1357,7 @@ fn head_moved(expected: &HeadInfo, now: &HeadInfo, strict: bool) -> Option<Strin
 /// Why a request asked for in the worktree `expected` must not run with `active` (a path with
 /// symlinks resolved) the active worktree, if it must not.
 fn worktree_moved(expected: &str, active: &std::path::Path) -> Option<String> {
-    let same = dunce::canonicalize(expected).map_or_else(
-        |_| std::path::Path::new(expected) == active,
-        |p| p == active,
-    );
+    let same = crate::platform::same_path(std::path::Path::new(expected), active);
     (!same).then(|| {
         format!(
             "That was asked for in {expected}, but {} is the active worktree now.",
@@ -1379,7 +1376,8 @@ async fn no_longer_a_worktree(ctx: &OpCtx<'_>, expected: &str) -> Option<String>
         .ok()
         .filter(|out| out.code == 0)
         .map(|out| out.text().trim().to_owned());
-    let same = top.is_some_and(|top| dunce::canonicalize(&top).is_ok_and(|top| top == ctx.cwd));
+    let same =
+        top.is_some_and(|top| crate::platform::same_path(std::path::Path::new(&top), &ctx.cwd));
     (!same).then(|| {
         format!(
             "That was asked for in {expected}, but {} is no longer a worktree.",

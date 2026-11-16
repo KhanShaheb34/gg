@@ -98,6 +98,12 @@
         () => {},
       );
     }
+    await suggest();
+  })();
+
+  /** Asks the core what to offer; a failure is said with Try again (final review M9). */
+  async function suggest() {
+    suggestFailed = null;
     try {
       const s = await api.prSuggest(repoId, branch);
       if (!open) return;
@@ -109,7 +115,7 @@
     } catch (e) {
       if (open) suggestFailed = e instanceof Error ? e.message : String(e);
     }
-  })();
+  }
 
   const loading = $derived(suggestion === null && suggestFailed === null);
   const existing: PullRequest | null = $derived(suggestion?.existing ?? null);
@@ -443,7 +449,10 @@
   {/if}
 
   {#if suggestFailed}
-    <p class="problem-text" role="alert">{suggestFailed}</p>
+    <p class="problem-text" role="alert" data-testid="pr-suggest-failed">
+      {suggestFailed}
+      <button class="link-btn" type="button" onclick={() => void suggest()}>Try again</button>
+    </p>
   {/if}
 
   {#if pending}

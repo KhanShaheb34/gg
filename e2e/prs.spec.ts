@@ -288,6 +288,26 @@ test("the compare page the dialog promised is what happens, even if gh is instal
   expect(gg.gh.calls().filter((c) => c[1] === "create")).toEqual([]);
 });
 
+test("a suggestion that failed offers Try again, and the form can then be sent (final review M9)", async ({ gg }) => {
+  const { page } = gg;
+  listing(gg, []);
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await refresh(page);
+  const tip = gg.git("prs", "rev-parse", "fix/typo").trim();
+  await label(page, "fix/typo").locator(".name").click({ button: "right" });
+  // The branch goes while the menu is open: the suggestion fails.
+  gg.git("prs", "branch", "-D", "fix/typo");
+  await item(page, "Create pull request…").click();
+  const failed = dialog(page).getByTestId("pr-suggest-failed");
+  await expect(failed).toContainText("There is no local branch named");
+  // Back again: Try again asks once more, and the form is complete.
+  gg.git("prs", "branch", "fix/typo", tip);
+  await failed.getByRole("button", { name: "Try again" }).click();
+  await expect(failed).toHaveCount(0);
+  await expect(dialog(page).getByRole("button", { name: /and create pull request$/ })).toBeEnabled();
+});
+
 test("the button names where the branch really goes: remote.pushDefault sends it to the fork (Task 9 review I3)", async ({ gg }) => {
   const { page } = gg;
   listing(gg, []);

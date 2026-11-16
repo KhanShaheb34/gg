@@ -127,8 +127,11 @@ pub(crate) async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Opt
         kind: DangerKind::DeleteUnmergedBranch,
         message,
         detail: None,
-        // The tip the count was made from: a branch that grew since is asked about again.
-        token: ref_commit(ctx, &full).await?,
+        // The branch and the tip the count was made from: a branch that grew since is asked
+        // about again, and another branch at the same tip is never taken for it.
+        token: ref_commit(ctx, &full)
+            .await?
+            .map(|tip| format!("{full}\n{tip}")),
     }))
 }
 

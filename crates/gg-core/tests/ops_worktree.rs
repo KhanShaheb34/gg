@@ -539,6 +539,19 @@ async fn an_ignored_file_that_appears_after_the_dialog_asks_again() {
     let _ = repo;
 }
 
+/// Final review M9: a worktree's danger is bound to the worktree: its token names the path,
+/// so one worktree's confirmation is never taken for another's in the same state.
+#[tokio::test]
+async fn a_worktree_danger_names_its_worktree() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("one.txt"), "x").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    let token = danger.token.unwrap();
+    assert_eq!(token.lines().next(), Some(real(&wt).as_str()), "{token}");
+}
+
 /// Final review C1: git's `status` (and git's own check before a plain `worktree remove`)
 /// skips files marked assume-unchanged or skip-worktree, so edits to them were deleted
 /// without a word. They are uncommitted changes: red, listed with why git hides them, and
@@ -1147,8 +1160,14 @@ async fn an_unmerged_unpushed_branch_and_the_work_are_asked_about_together() {
     );
     assert_eq!(
         branch.token.as_deref(),
-        Some(git_in(&wt, &["rev-parse", "HEAD"]).as_str()),
-        "R9: the branch's tip"
+        Some(
+            format!(
+                "refs/heads/feature\n{}",
+                git_in(&wt, &["rev-parse", "HEAD"])
+            )
+            .as_str()
+        ),
+        "R9: the branch's tip, and (final review M9) the branch it is"
     );
     assert!(
         !out.dangers[0].message.contains("not pushed"),

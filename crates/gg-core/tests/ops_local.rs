@@ -267,6 +267,31 @@ async fn delete_merged_branch_runs_without_confirmation() {
     );
 }
 
+/// Final review M9: the confirmation of one unmerged branch is not taken for another at the
+/// same tip (`git branch b2 b1`): the token names the branch.
+#[tokio::test]
+async fn a_confirmation_for_one_branch_is_not_taken_for_another_at_the_same_tip() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("b1");
+    repo.checkout("b1");
+    repo.commit("two");
+    repo.checkout("main");
+    repo.git(&["branch", "b2", "b1"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let asked = h.run(id, delete_branch("b1")).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:?}");
+    let seen: Vec<gg_core::dto::Confirmed> = asked
+        .dangers
+        .iter()
+        .map(gg_core::dto::Confirmed::from)
+        .collect();
+    let out = h.run_with(id, delete_branch("b2"), &seen).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/b2"]));
+}
+
 #[tokio::test]
 async fn delete_unmerged_branch_needs_confirmation() {
     let repo = TestRepo::new();

@@ -764,7 +764,7 @@ async fn marked_changes(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Vec<(Strin
 fn token_hashes(token: &str) -> Option<(&str, &str)> {
     let parts: Vec<&str> = token.split('\n').collect();
     match parts.as_slice() {
-        [_, _, status, _, ignored] => Some((status, ignored)),
+        [_, _, _, status, _, ignored] => Some((status, ignored)),
         _ => None,
     }
 }
@@ -953,7 +953,7 @@ fn section(lines: &mut Vec<String>, title: &str, items: &[String], total: usize)
 /// deletes them without asking, P3-R6); else the red `remove_worktree_with_work`, with the
 /// ignored files as a line of it. Commits its branch keeps are no danger (removing a worktree
 /// never deletes its branch): a line in either, unless the branch goes too (`delete_branch`:
-/// its own danger says what is lost). Its token is the worktree's HEAD, what is in progress
+/// its own danger says what is lost). Its token is the worktree's path and HEAD, what is in progress
 /// there, and hashes of its status, its lost commits and its ignored files.
 fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Danger> {
     if !work.holds_work() && work.ignored.is_empty() {
@@ -972,7 +972,8 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
         _ => String::new(),
     };
     let token = Some(format!(
-        "{}\n{}\n{:016x}\n{:016x}\n{:016x}",
+        "{}\n{}\n{}\n{:016x}\n{:016x}\n{:016x}",
+        wt.path,
         wt.head.as_deref().unwrap_or(""),
         work.in_progress.map_or("", kind_name),
         work.status_hash,

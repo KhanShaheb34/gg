@@ -1,0 +1,35 @@
+repo: /Users/shakirulhkhan/.cache/gitgraph-perf/r20k (20000 commits)
+machine: Apple M1 Pro, 8 cores, 16 GB, macOS 27.2
+bundle: 8.0M (/Users/shakirulhkhan/Dev/experiments/git-graph/target/release/bundle/macos/gg.app)
+
+run	mode	load (1/5/15 min)	spawn->first-rows	spawn->fully-loaded	nav->first-rows	nav->fully-loaded	idle CPU %	footprint MB	RSS MB
+1	idle	9.41 7.29 6.72	1458 ms	1477 ms	276 ms	297 ms	0.00	155.6	238.2
+    footprint MB: gg-desktop=52.3 WebKit.GPU=16.2 WebKit.WebContent=81.3 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+2	idle	9.21 7.63 6.88	991 ms	1014 ms	573 ms	595 ms	0.00	153.5	236.3
+    footprint MB: gg-desktop=50.8 WebKit.GPU=16.1 WebKit.WebContent=81.1 WebKit.Networking=5.5
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+3	idle	10.16 8.22 7.13	670 ms	685 ms	160 ms	180 ms	0.10	151	235.6
+    footprint MB: gg-desktop=48.5 WebKit.GPU=16.2 WebKit.WebContent=80.5 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.10% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+4	idle	8.26 8.01 7.10	664 ms	683 ms	159 ms	180 ms	0.10	152.7	235.3
+    footprint MB: gg-desktop=49.8 WebKit.GPU=16.1 WebKit.WebContent=81.0 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.10% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+5	idle	6.50 7.61 6.99	655 ms	680 ms	253 ms	279 ms	0.00	153.7	236.7
+    footprint MB: gg-desktop=51.7 WebKit.GPU=15.8 WebKit.WebContent=80.3 WebKit.Networking=5.9
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+6	idle	5.56 7.26 6.88	656 ms	681 ms	260 ms	286 ms	0.00	155	237.3
+    footprint MB: gg-desktop=52.5 WebKit.GPU=16.2 WebKit.WebContent=80.6 WebKit.Networking=5.7
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+
+launches 2-6, per mode: median / min / max
+  idle:
+    cpu                                  0.00       0.00       0.10   (5)
+    first                              664.00     655.00     991.00   (5)
+    foot                               153.50     151.00     155.00   (5)
+    foot-gg-desktop                     50.80      48.50      52.50   (5)
+    foot-WebKit.GPU                     16.10      15.80      16.20   (5)
+    foot-WebKit.Networking               5.80       5.50       5.90   (5)
+    foot-WebKit.WebContent              80.60      80.30      81.10   (5)
+    loaded                             683.00     680.00    1014.00   (5)
+    rss                                236.30     235.30     237.30   (5)

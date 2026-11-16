@@ -4,6 +4,7 @@
 // It follows `repo-changed` events, and when the rows change under it, keeps the visible
 // commit and the selection where they were.
 
+import { startMark } from "../perf/startMarks";
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
@@ -497,6 +498,9 @@ export class RepoView {
     this.onNotice?.(message, detail ? `${text}\n${detail}` : text);
   }
 
+  /** The first page of rows was asked for (performance runs mark it). */
+  private askedRows = false;
+
   /** Records first paint of real rows, once (`first-rows`). */
   markFirstRows(): void {
     if (this.markedFirstRows) return;
@@ -727,7 +731,12 @@ export class RepoView {
    */
   private async fetchPage(generation: number, start: number, count: number): Promise<RowsPage> {
     try {
-      return await api.getRows(this.repoId, generation, start, count);
+      const first = !this.askedRows;
+      this.askedRows = true;
+      if (first) startMark("rows-asked");
+      const page = await api.getRows(this.repoId, generation, start, count);
+      if (first) startMark("rows-answered");
+      return page;
     } catch (e) {
       if (!(e instanceof CoreError && e.code === "stale_generation")) throw e;
       void this.refreshSnapshot();

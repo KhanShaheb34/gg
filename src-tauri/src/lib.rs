@@ -23,6 +23,14 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::OnceCell;
 
+/// A native start-up mark in performance builds (see `gg_core::native_mark`); nothing else.
+macro_rules! perf_mark {
+    ($name:literal) => {
+        #[cfg(feature = "perf")]
+        gg_core::native_mark($name);
+    };
+}
+
 /// Forwards core events to the webview.
 struct TauriSink(AppHandle);
 
@@ -182,6 +190,7 @@ const MENU_QUIT: &str = "quit";
 #[cfg(not(target_os = "macos"))]
 fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as Item, Submenu};
+    perf_mark!("native-menu");
 
     let name = app.package_info().name.clone();
     let about = AboutMetadata {
@@ -235,6 +244,7 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 #[cfg(target_os = "macos")]
 fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem as Item, Submenu};
+    perf_mark!("native-menu");
 
     let name = app.package_info().name.clone();
     let about = AboutMetadata {
@@ -373,6 +383,7 @@ const PAGE_ERRORS_SCRIPT: &str = r#"(() => {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    perf_mark!("native-run");
     // First of all: a second launch (`gg <path>` starts a new instance) hands its folders to
     // the running app and exits here, during plugin set-up, before the app's own set-up, so
     // it never reads or writes the config folder or migrates anything. The running app opens
@@ -392,6 +403,7 @@ pub fn run() {
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("gg-login-path")
                 .setup(|_, _| {
+                    perf_mark!("native-plugins");
                     gg_core::git::runner::prefetch_login_path();
                     Ok(())
                 })
@@ -436,7 +448,16 @@ pub fn run() {
     };
     builder
         .plugin(tauri_plugin_dialog::init())
+        .on_page_load(|_, payload| match payload.event() {
+            tauri::webview::PageLoadEvent::Started => {
+                perf_mark!("native-page-load-started");
+            }
+            tauri::webview::PageLoadEvent::Finished => {
+                perf_mark!("native-page-load-finished");
+            }
+        })
         .setup(|app| {
+            perf_mark!("native-setup");
             // Only the instance that stays gets here (a second one has exited during plugin
             // set-up, having run nothing). The core starts after the window and webview are
             // created; the login shell it asks for git's PATH is running already (above).
@@ -455,13 +476,18 @@ pub fn run() {
             app.manage(slot.clone());
             tauri::async_runtime::spawn(async move {
                 let _ = slot.get().await;
+                perf_mark!("native-core-started");
             });
+            perf_mark!("native-setup-done");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![invoke_core])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            if let tauri::RunEvent::Ready = event {
+                perf_mark!("native-ready");
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = event {
                 let paths = opened_dirs(&urls);

@@ -492,6 +492,7 @@ export async function init(): Promise<void> {
   app.ready = true;
   const opened = (path: string, snapshot: RepoSnapshot, rank?: number) => {
     addTab(snapshot, rank);
+    startMark("tab-added");
     if (restoreTarget === path) {
       show(snapshot.repoId);
       app.restoring = false;

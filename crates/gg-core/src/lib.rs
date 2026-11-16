@@ -231,6 +231,9 @@ impl Core {
                 "login-shell-start\t-1\t{start:.0}\nlogin-shell-done\t-1\t{end:.0}\n"
             ));
         }
+        for (native, at) in lock_ignoring_poison(&NATIVE_MARKS).drain(..) {
+            lines.push_str(&format!("{native}\t-1\t{at}\n"));
+        }
         OpenOptions::new()
             .create(true)
             .append(true)
@@ -295,6 +298,19 @@ pub(crate) fn lock_ignoring_poison<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Milliseconds since the unix epoch (0 if the clock is before it).
+/// Start-up marks of the native side (wall clock), waiting for the perf log (performance runs).
+static NATIVE_MARKS: Mutex<Vec<(&'static str, u128)>> = Mutex::new(Vec::new());
+
+/// Records native start-up mark `name` at this moment (wall clock): written to the perf log
+/// with the page's next mark, as `name<TAB>-1<TAB>unix ms`. For performance runs (the perf
+/// build calls it); a few entries otherwise, never written.
+pub fn native_mark(name: &'static str) {
+    let mut marks = lock_ignoring_poison(&NATIVE_MARKS);
+    if marks.len() < 64 {
+        marks.push((name, unix_ms()));
+    }
+}
+
 fn unix_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

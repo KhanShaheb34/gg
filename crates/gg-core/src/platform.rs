@@ -348,6 +348,7 @@ pub(crate) fn file_identity(path: &Path, meta: &std::fs::Metadata) -> Option<u12
 
 /// What a look for git processes working in a repository found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) enum GitScan {
     /// One is running there (its pid).
     Running(u32),
@@ -359,6 +360,7 @@ pub(crate) enum GitScan {
 
 /// Whether a program called `name` (a file name, as a process list gives it) is git on
 /// `os` (`std::env::consts::OS`).
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) fn is_git_program(os: &str, name: &str) -> bool {
     if os == "windows" {
         name.eq_ignore_ascii_case("git.exe") || name.eq_ignore_ascii_case("git")
@@ -849,6 +851,36 @@ mod tests {
         } else {
             assert_eq!(scan, GitScan::Unknown);
         }
+    }
+
+    /// Killing the tree ends what the child started too: `ping`, started by `cmd`, holds the
+    /// output pipe; the read ends at once only if it was ended with `cmd`.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_whole_tree_ends_with_the_job() {
+        use tokio::io::AsyncReadExt as _;
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.args(["/d", "/c", "ping -n 30 127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        child_flags(&mut cmd);
+        let (mut child, tree) = spawn(&mut cmd).unwrap();
+        let mut out = child.stdout.take().unwrap();
+        let mut first = [0u8; 1];
+        out.read_exact(&mut first).await.unwrap();
+        let started = std::time::Instant::now();
+        tree.kill();
+        let mut rest = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            out.read_to_end(&mut rest),
+        )
+        .await
+        .expect("the pipe closed: ping ended with the tree")
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let _ = child.wait().await;
     }
 
     #[test]

@@ -5,7 +5,6 @@ rem gg [path]: opens the git repository that holds path (default: the current fo
 rem the gg app, and returns at once. Written by the app's "Install 'gg' Command"; the app
 rem replaces or removes it only while the marker line above is there. The app is the
 rem program it was installed from (below); if it moves, install the command again.
-rem (Installing it on Windows comes with the Windows release.)
 rem
 rem Paths may hold & ( ) ! and spaces. So every value is set with delayed expansion off
 rem (a ! in it stays as it is), always inside quotes, and every later use is !VAR! with
@@ -14,6 +13,9 @@ rem No command's output is captured: capturing runs the command through another 
 rem Whoever fills in @GG_APP@ must double every % in the path: the line below is parsed
 rem with % expansion on.
 setlocal DisableDelayedExpansion
+rem cmd looks for a program in the current folder before PATH: never here, where the folder
+rem may be a repository with a git.exe or git.cmd of its own.
+set "NoDefaultCurrentDirectoryInExePath=1"
 set "GG_APP=@GG_APP@"
 
 if "%~1"=="-h" goto help
@@ -27,7 +29,8 @@ if not defined TARGET set "TARGET=."
 for %%I in ("%TARGET%") do set "TARGET=%%~fI"
 if not exist "%TARGET%\" goto nofolder
 
-where git >nul 2>nul || goto nogit
+rem Whether git runs at all (where would also look in the current folder).
+git --version >nul 2>nul || goto nogit
 setlocal EnableDelayedExpansion
 rem A drive or share root (C:\) ends with \, which would escape the closing quote of the
 rem argument: the trailing \ is taken off, keeping the root (C:\.).

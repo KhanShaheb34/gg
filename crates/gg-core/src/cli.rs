@@ -4,8 +4,14 @@
 //!
 //! The installed launcher is a copy, not a link, carrying a marker line ([`MARKER`]): the app
 //! only ever replaces or removes a `gg` that has it. It never needs administrator rights and
-//! never edits shell files; when the user's shell already has a `gg` (an alias, a function,
-//! another program earlier on `PATH`), the app says so ([`shadowed_by`]).
+//! never edits shell files, the `PATH` or the registry; when the user's shell already has a
+//! `gg` (an alias, a function, another program earlier on `PATH`), the app says so
+//! ([`shadowed_by`]).
+//!
+//! On Windows the launcher is `gg.cmd` (`src-tauri/resources/gg.cmd`), written into a folder
+//! of the user's own already on their `PATH` (`%LOCALAPPDATA%\Microsoft\WindowsApps`, which
+//! Windows puts there for every user, `%USERPROFILE%\bin`, …), and what else is `gg` is found
+//! as `where gg` would, by the app itself ([`windows_shadowed_by`]): no shell is asked.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -19,16 +25,17 @@ use crate::dto::CliState;
 use crate::error::{CoreError, ErrorCode, Result};
 
 /// The launcher, with `@GG_VERSION@` and `@GG_APP@` to fill in (see [`launcher_script`]).
-/// (The Windows one, `gg.cmd`, is filled in with the Windows release: every `%` in the app's
-/// path must be doubled there.)
 const TEMPLATE: &str = include_str!("../../../src-tauri/resources/gg");
+
+/// The Windows launcher, filled in by [`windows_launcher_script`].
+const WINDOWS_TEMPLATE: &str = include_str!("../../../src-tauri/resources/gg.cmd");
 
 /// What the marker line says after its comment sign (`#`; `rem` in the Windows launcher),
 /// followed by the version that wrote it.
 pub const MARKER: &str = "gg launcher, installed by gg ";
 
 /// The launcher's file name.
-pub const COMMAND: &str = "gg";
+pub const COMMAND: &str = if cfg!(windows) { "gg.cmd" } else { "gg" };
 
 /// How long the login shell gets to say what `gg` is.
 const SHELL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -36,6 +43,41 @@ const SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 /// Brackets the shell's answer, so profile output around it cannot be taken for it.
 #[cfg(unix)]
 const WHICH_MARKER: &[u8] = b"__GG_WHICH__";
+
+/// The launcher this platform's `gg` command is (see [`launcher_script`],
+/// [`windows_launcher_script`]).
+fn platform_launcher(version: &str, app: Option<&Path>) -> Result<String> {
+    if !cfg!(windows) {
+        return Ok(launcher_script(version, app));
+    }
+    let app = app.ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::Io,
+            "The gg command could not be written: gg could not tell where its own program is.",
+        )
+    })?;
+    windows_launcher_script(version, &app.to_string_lossy())
+}
+
+/// The Windows launcher (`gg.cmd`) as it is written: the marker line naming `version`, and the
+/// program to start, `app` (a full path). Its line ends are CRLF (cmd reads labels wrongly in
+/// a file of bare LFs). The app's path is written into a `set "GG_APP=…"` line that cmd reads
+/// with `%` expansion on and delayed expansion off: every `%` is doubled, and a path that
+/// cmd would still read otherwise (a `"`, a line break, no Windows path has them) is refused.
+pub fn windows_launcher_script(version: &str, app: &str) -> Result<String> {
+    if app.contains(['"', '\r', '\n', '\0']) {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!(
+                "The gg command cannot start a program at {app}: the path has a character cmd would misread."
+            ),
+        ));
+    }
+    let filled = WINDOWS_TEMPLATE
+        .replace("@GG_VERSION@", version)
+        .replace("@GG_APP@", &app.replace('%', "%%"));
+    Ok(filled.replace("\r\n", "\n").replace('\n', "\r\n"))
+}
 
 /// The launcher as it is written: the marker line naming `version`, and the program to start
 /// (`app`, used where there is no bundle identifier to find the app by: not macOS).
@@ -68,15 +110,41 @@ pub fn has_marker(file: &Path) -> bool {
         })
 }
 
-/// The absolute folders of `search_path` (a `PATH` value), in order, once each.
+/// The absolute folders of `search_path` (a `PATH` value), in order, once each (on Windows,
+/// spelt the same but for case or a trailing separator, they are the same folder).
 fn path_dirs(search_path: &OsStr) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     for dir in std::env::split_paths(search_path) {
-        if dir.is_absolute() && !dirs.contains(&dir) {
+        let dir = if cfg!(windows) {
+            PathBuf::from(
+                dir.to_string_lossy()
+                    .trim_end_matches(['\\', '/'])
+                    .to_owned(),
+            )
+        } else {
+            dir
+        };
+        if dir.is_absolute() && !dirs.iter().any(|d| same_dir(d, &dir)) {
             dirs.push(dir);
         }
     }
     dirs
+}
+
+/// Whether folders `a` and `b` are spelt the same: on Windows whatever the case (its file
+/// systems are case-insensitive) and the separators.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        same_windows_dir(&a.to_string_lossy(), &b.to_string_lossy())
+    } else {
+        a == b
+    }
+}
+
+/// [`same_dir`] on Windows, as text.
+fn same_windows_dir(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    norm(a) == norm(b)
 }
 
 /// The folders the launcher can be written to, best first: those of `search_path` (the login
@@ -89,12 +157,39 @@ fn path_dirs(search_path: &OsStr) -> Vec<PathBuf> {
 /// gone when that shell ends). A folder elsewhere on `PATH` that happens to be writable is
 /// not offered.
 pub fn candidates(search_path: &OsStr, home: Option<&Path>) -> Vec<PathBuf> {
+    let preferred = if cfg!(windows) {
+        windows_preferred(
+            home,
+            std::env::var_os("LOCALAPPDATA")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .as_deref(),
+        )
+    } else {
+        let mut preferred = Vec::new();
+        if let Some(home) = home {
+            preferred.push(home.join(".local").join("bin"));
+        }
+        preferred.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+        preferred
+    };
+    candidates_with(search_path, home, &preferred)
+}
+
+/// On Windows, the folders of the user's own the command goes in first, when they are on the
+/// `PATH`: `%LOCALAPPDATA%\Microsoft\WindowsApps` (on every user's `PATH` from the start),
+/// then `%USERPROFILE%\bin` and `%USERPROFILE%\.local\bin`. Never a folder outside the
+/// user's own (`Program Files`, `Windows`), whatever its permissions say.
+fn windows_preferred(home: Option<&Path>, local_app_data: Option<&Path>) -> Vec<PathBuf> {
     let mut preferred = Vec::new();
+    if let Some(local) = local_app_data {
+        preferred.push(local.join("Microsoft").join("WindowsApps"));
+    }
     if let Some(home) = home {
+        preferred.push(home.join("bin"));
         preferred.push(home.join(".local").join("bin"));
     }
-    preferred.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
-    candidates_with(search_path, home, &preferred)
+    preferred
 }
 
 fn candidates_with(
@@ -103,15 +198,37 @@ fn candidates_with(
     preferred: &[PathBuf],
 ) -> Vec<PathBuf> {
     let on_path = path_dirs(search_path);
-    let under_home = |dir: &Path| home.is_some_and(|h| dir.starts_with(h));
-    let usable = |dir: &PathBuf| {
-        on_path.contains(dir) && is_writable_dir(dir) && !(under_home(dir) && in_repository(dir))
+    let under_home = |dir: &Path| {
+        home.is_some_and(|h| {
+            if cfg!(windows) {
+                let (d, h) = (
+                    dir.to_string_lossy().to_lowercase(),
+                    h.to_string_lossy().to_lowercase(),
+                );
+                let h = h.trim_end_matches(['\\', '/']);
+                d.strip_prefix(h)
+                    .is_some_and(|rest| rest.starts_with(['\\', '/']))
+            } else {
+                dir.starts_with(h)
+            }
+        })
     };
-    let mut out: Vec<PathBuf> = preferred.iter().filter(|d| usable(d)).cloned().collect();
+    // As the PATH spells it (on Windows its case may differ from the preferred one's).
+    let listed = |dir: &Path| on_path.iter().find(|d| same_dir(d, dir)).cloned();
+    let usable = |dir: &PathBuf| {
+        is_writable_dir(dir)
+            && !(under_home(dir) && in_repository(dir))
+            && (!cfg!(windows) || under_home(dir))
+    };
+    let mut out: Vec<PathBuf> = preferred
+        .iter()
+        .filter_map(|d| listed(d))
+        .filter(|d| usable(d))
+        .collect();
     for dir in &on_path {
         let rewritten = dir.file_name().is_some_and(|n| n == "shims")
             || home.is_some_and(|h| through_a_link(h, dir));
-        if under_home(dir) && !out.contains(dir) && !rewritten && usable(dir) {
+        if under_home(dir) && !out.iter().any(|o| same_dir(o, dir)) && !rewritten && usable(dir) {
             out.push(dir.clone());
         }
     }
@@ -169,13 +286,10 @@ pub fn installed(search_path: &OsStr) -> Option<PathBuf> {
         .find(|f| fs::symlink_metadata(f).is_ok_and(|m| m.is_file()) && has_marker(f))
 }
 
-/// Writes `script` as `gg` (mode 0755) in `dir` and returns its path. A `gg` the app wrote
-/// before is replaced; anything else there is left alone and the error says what it is.
-/// Not available on Windows yet.
+/// Writes `script` as `gg` (mode 0755; `gg.cmd` on Windows) in `dir` and returns its path. A
+/// launcher the app wrote before is replaced; anything else there is left alone and the error
+/// says what it is.
 pub fn install(dir: &Path, script: &str) -> Result<PathBuf> {
-    if cfg!(windows) {
-        return Err(not_on_this_platform());
-    }
     let target = dir.join(COMMAND);
     let failed = |e: io::Error| {
         CoreError::new(
@@ -251,11 +365,8 @@ fn not_ours(dir: &Path, target: &Path, meta: &fs::Metadata) -> CoreError {
 }
 
 /// Removes every launcher the app wrote in the folders of `search_path` and returns their
-/// paths; any other `gg` is left alone. Not available on Windows yet.
+/// paths; any other `gg` is left alone.
 pub fn uninstall(search_path: &OsStr) -> Result<Vec<PathBuf>> {
-    if cfg!(windows) {
-        return Err(not_on_this_platform());
-    }
     let mut removed = Vec::new();
     for dir in path_dirs(search_path) {
         let file = dir.join(COMMAND);
@@ -273,13 +384,6 @@ pub fn uninstall(search_path: &OsStr) -> Result<Vec<PathBuf>> {
         removed.push(file);
     }
     Ok(removed)
-}
-
-fn not_on_this_platform() -> CoreError {
-    CoreError::new(
-        ErrorCode::Io,
-        "Installing the gg command is not available yet on this platform.",
-    )
 }
 
 /// A few words on what file `path` (with metadata `meta`) is.
@@ -344,8 +448,38 @@ fn shadowed_by_within(shell: &Path, timeout: Duration) -> Option<String> {
     }
 }
 
+/// On Windows, what else is `gg` for cmd and PowerShell, found as `where gg` would find it
+/// but by the app itself: the first file called `gg` with an extension of `pathext`
+/// (`PATHEXT`) in a folder of `search_path`, unless it is a launcher the app wrote
+/// (`ours`). `None` when there is none, or ours comes first. (A doskey macro or a PowerShell
+/// alias cannot be seen from outside the shell.)
+fn windows_shadowed_by(
+    search_path: &str,
+    pathext: Option<&str>,
+    exists: &dyn Fn(&str) -> bool,
+    ours: &dyn Fn(&str) -> bool,
+) -> Option<String> {
+    let exts = pathext
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or(".COM;.EXE;.BAT;.CMD");
+    for dir in crate::platform::windows_path_dirs(search_path) {
+        for ext in exts.split(';').map(str::trim).filter(|e| !e.is_empty()) {
+            let file = format!(
+                "{}\\gg{}",
+                dir.trim_end_matches(['\\', '/']),
+                ext.to_ascii_lowercase()
+            );
+            if exists(&file) {
+                return (!ours(&file)).then(|| format!("the program {file}"));
+            }
+        }
+    }
+    None
+}
+
 /// The shell's answer to `command -V gg` (zsh's, bash's or a POSIX sh's), in a few words;
 /// `None` when it is not found, is a launcher the app wrote, or the answer is not understood.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn describe(answer: &str) -> Option<String> {
     let line = answer.lines().map(str::trim).find(|l| !l.is_empty())?;
     let what = line.strip_prefix("gg is ")?.trim();
@@ -456,15 +590,25 @@ impl Core {
     /// state), since the UI may have read the state before it came. Blocks for up to
     /// [`SHELL_TIMEOUT`].
     fn check_shadow(&self) {
-        let (shell, number) = {
+        let (shell, number, search_path) = {
             let mut cli = crate::lock_ignoring_poison(&self.cli);
             cli.checks += 1;
-            (cli.shell.clone(), cli.checks)
+            (cli.shell.clone(), cli.checks, cli.search_path.clone())
         };
-        let Some(shell) = shell else {
-            return;
+        let answer = if cfg!(windows) {
+            // No login shell to ask: the app looks itself.
+            windows_shadowed_by(
+                &search_path.to_string_lossy(),
+                std::env::var("PATHEXT").ok().as_deref(),
+                &|f| Path::new(f).is_file(),
+                &|f| has_marker(Path::new(f)),
+            )
+        } else {
+            let Some(shell) = shell else {
+                return;
+            };
+            shadowed_by(&shell)
         };
-        let answer = shadowed_by(&shell);
         let changed = {
             let mut cli = crate::lock_ignoring_poison(&self.cli);
             let newest = number > cli.checked;
@@ -501,10 +645,7 @@ impl Core {
             let allowed = candidates(&cli.search_path, cli.home.as_deref());
             (allowed, cli.app.clone())
         };
-        if cfg!(windows) {
-            return Err(not_on_this_platform());
-        }
-        if !allowed.iter().any(|c| c == dir) {
+        if !allowed.iter().any(|c| same_dir(c, dir)) {
             return Err(CoreError::new(
                 ErrorCode::BadRequest,
                 format!(
@@ -513,7 +654,7 @@ impl Core {
                 ),
             ));
         }
-        let script = launcher_script(env!("CARGO_PKG_VERSION"), app.as_deref());
+        let script = platform_launcher(env!("CARGO_PKG_VERSION"), app.as_deref())?;
         install(dir, &script)?;
         self.check_shadow();
         Ok(self.cli_state())
@@ -585,6 +726,9 @@ mod tests {
             }
         }
         assert!(echoed >= 3, "the messages name the paths");
+        // No program is looked for in the current folder (a repository's git.cmd).
+        assert!(CMD.contains(r#"set "NoDefaultCurrentDirectoryInExePath=1""#));
+        assert!(!CMD.contains("where git"));
         assert!(CMD.contains("setlocal DisableDelayedExpansion"));
         // No output is captured: `for /f` runs its command through another cmd, which
         // parses the path again.
@@ -598,6 +742,93 @@ mod tests {
         // A root's trailing backslash would escape the argument's closing quote.
         assert!(CMD.contains(r#"if "!TARGET:~-1!"=="\" set "TARGET=!TARGET!.""#));
         assert!(CMD.contains(r#"start "" "!GG_APP!" "!TARGET!""#));
+    }
+
+    #[test]
+    fn the_windows_launcher_is_filled_in_for_cmd() {
+        let app = r"C:\Users\a%b%\AppData\Local\gg (x86) & co!\gg-desktop.exe";
+        let script = windows_launcher_script("1.2.3", app).unwrap();
+        assert!(script.starts_with("@echo off\r\nrem gg launcher, installed by gg 1.2.3\r\n"));
+        // Every % doubled: cmd reads the line with % expansion on.
+        assert!(script.contains(
+            "set \"GG_APP=C:\\Users\\a%%b%%\\AppData\\Local\\gg (x86) & co!\\gg-desktop.exe\"\r\n"
+        ));
+        assert!(!script.contains("@GG_"), "every placeholder is filled");
+        // CRLF throughout, no bare LF.
+        assert!(!script.replace("\r\n", "").contains('\n'));
+        assert!(script.contains("NoDefaultCurrentDirectoryInExePath=1"));
+        for bad in ["C:\\a\"b.exe", "C:\\a\nb.exe"] {
+            assert_eq!(
+                windows_launcher_script("1", bad).unwrap_err().code,
+                ErrorCode::BadRequest
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gg.cmd");
+        fs::write(&file, &script).unwrap();
+        assert!(has_marker(&file));
+    }
+
+    #[test]
+    fn windows_offers_the_users_own_folders_first() {
+        let home = Path::new("/Users/ada");
+        let local = Path::new("/Users/ada/AppData/Local");
+        assert_eq!(
+            windows_preferred(Some(home), Some(local)),
+            [
+                local.join("Microsoft").join("WindowsApps"),
+                home.join("bin"),
+                home.join(".local").join("bin"),
+            ]
+        );
+        assert!(windows_preferred(None, None).is_empty());
+        assert!(same_windows_dir(r"C:\Users\Ada\bin\", "c:/users/ada/BIN"));
+        assert!(!same_windows_dir(r"C:\Users\Ada\bin", r"C:\Users\Ada\bin2"));
+    }
+
+    #[test]
+    fn windows_finds_what_else_is_gg_as_where_does() {
+        let disk = |files: &'static [&'static str]| {
+            move |f: &str| files.iter().any(|x| x.eq_ignore_ascii_case(f))
+        };
+        let ours = |f: &str| f.eq_ignore_ascii_case(r"C:\Users\ada\bin\gg.cmd");
+        let path = r"C:\Tools;C:\Users\ada\bin";
+        // Another gg earlier on PATH.
+        assert_eq!(
+            windows_shadowed_by(
+                path,
+                None,
+                &disk(&[r"C:\Tools\gg.exe", r"C:\Users\ada\bin\gg.cmd"]),
+                &ours
+            ),
+            Some(r"the program C:\Tools\gg.exe".to_owned())
+        );
+        // PATHEXT order within a folder: gg.bat before gg.cmd.
+        assert_eq!(
+            windows_shadowed_by(
+                path,
+                Some(".BAT;.CMD"),
+                &disk(&[r"C:\Tools\gg.cmd", r"C:\Tools\gg.bat"]),
+                &ours
+            ),
+            Some(r"the program C:\Tools\gg.bat".to_owned())
+        );
+        // Ours first, or nothing at all: nothing else is gg.
+        assert_eq!(
+            windows_shadowed_by(path, None, &disk(&[r"C:\Users\ada\bin\gg.cmd"]), &ours),
+            None
+        );
+        assert_eq!(windows_shadowed_by(path, None, &disk(&[]), &ours), None);
+        // A relative PATH entry is never looked in.
+        assert_eq!(
+            windows_shadowed_by(
+                r".;tools",
+                None,
+                &disk(&[r".\gg.exe", r"tools\gg.exe"]),
+                &ours
+            ),
+            None
+        );
     }
 
     #[test]

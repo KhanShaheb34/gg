@@ -1267,7 +1267,7 @@ impl ToolRunner {
     }
 
     /// The environment it sets, beside `PATH` (tests).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn env(&self) -> &[(String, String)] {
         &self.env
     }
@@ -2239,6 +2239,7 @@ mod tests {
         assert_eq!(base.children_running(7), 0, "counted down once it ended");
     }
 
+    #[cfg(unix)]
     fn plain_runner() -> GitRunner {
         GitRunner {
             log: CommandLog::new(),
@@ -2253,6 +2254,7 @@ mod tests {
     }
 
     /// Runs the shell `script` (as a git alias, so as the runner runs git) with `limit`.
+    #[cfg(unix)]
     async fn run_script(
         script: &str,
         limit: TimeLimit,

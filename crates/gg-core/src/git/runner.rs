@@ -1728,6 +1728,13 @@ pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Op
 
     let deadline = Instant::now() + timeout;
     let mut cmd = std::process::Command::new(shell);
+    // In the home folder, as a new terminal starts (final boundary review M4): never in the
+    // folder the app was started in (the repository `gg .` was run in), where the user's
+    // interactive start-up files (directory-env plugins, prompt helpers) would act on it.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute() && h.is_dir());
+    cmd.current_dir(home.as_deref().unwrap_or(Path::new("/")));
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2916,6 +2923,25 @@ mod tests {
             );
         }
 
+        /// Final boundary review M4: the login shell starts in the home folder (or `/`),
+        /// never in the folder the app inherited (the repository `gg .` was run in), so the
+        /// user's interactive start-up files run where a new terminal's would.
+        #[test]
+        fn the_login_shell_runs_in_the_home_folder() {
+            let dir = tempfile::tempdir().unwrap();
+            let shell = script(&dir, "shell", "pwd");
+            let out = shell_output(&shell, &[], Duration::from_secs(5)).expect("it ran");
+            let ran_in = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim());
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let expected = home
+                .filter(|h| h.is_dir())
+                .unwrap_or_else(|| std::path::PathBuf::from("/"));
+            assert_eq!(
+                ran_in.canonicalize().unwrap(),
+                expected.canonicalize().unwrap()
+            );
+        }
+
         /// Given up on, the shell is ended with what its profile started (its process
         /// group), not only the shell itself.
         #[test]
@@ -2927,7 +2953,9 @@ mod tests {
                 "shell",
                 &format!("sleep 30 & echo $! > '{}'; wait", pidfile.display()),
             );
-            assert_eq!(shell_output(&shell, &[], Duration::from_millis(500)), None);
+            // Long enough for the shell to start its child under a loaded test run (it
+            // could not write the pid file within 500 ms once), short of the child's 30 s.
+            assert_eq!(shell_output(&shell, &[], Duration::from_secs(2)), None);
             let pid: i32 = std::fs::read_to_string(&pidfile)
                 .unwrap()
                 .trim()

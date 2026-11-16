@@ -2803,20 +2803,21 @@ mod tests {
         fn slow_shell() -> Option<OsString> {
             CALLS.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(300));
-            Some(OsString::from("/usr/bin:/bin"))
+            // The test's own PATH, where git is found on every platform.
+            std::env::var_os("PATH")
         }
 
         let started = Instant::now();
         SLOT.prefetch(slow_shell);
         let runner = GitRunner::detect_from(CommandLog::new(), || SLOT.get(slow_shell))
             .await
-            .expect("git runs with /usr/bin:/bin");
+            .expect("git runs with the test's PATH");
         assert!(
             started.elapsed() >= Duration::from_millis(250),
             "detect did not wait for the prefetch ({:?})",
             started.elapsed()
         );
-        assert_eq!(runner.path, Some(OsString::from("/usr/bin:/bin")));
+        assert_eq!(runner.path, std::env::var_os("PATH"));
         assert_eq!(CALLS.load(Ordering::SeqCst), 1, "the shell ran twice");
         SLOT.prefetch(slow_shell);
         assert_eq!(

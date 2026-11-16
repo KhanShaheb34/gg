@@ -225,6 +225,9 @@ pub struct WorktreeFiles {
     /// While a merge is stopped there: the message git prepared for it (`MERGE_MSG`, its
     /// `#` comment lines removed, trimmed), which the panel offers; else `None`.
     pub merge_message: Option<String>,
+    /// The remote Commit & Push sends the branch checked out there to (its namesake there),
+    /// by git's own rule, as `pr_create` pushes it too; `None` when detached or not clear.
+    pub push_remote: Option<String>,
 }
 
 /// Most files `worktree_files` lists.
@@ -1824,6 +1827,7 @@ mod tests {
             }],
             truncated: true,
             merge_message: Some("Merge branch 'x'".into()),
+            push_remote: Some("fork".into()),
         };
         let v = serde_json::to_value(&files).unwrap();
         assert_eq!(
@@ -1831,7 +1835,7 @@ mod tests {
             json!({"files": [{"path": "new name", "origPath": "old", "status": "R",
                               "staged": true, "unstaged": false, "committable": false,
                               "reason": "why"}],
-                   "truncated": true, "mergeMessage": "Merge branch 'x'"})
+                   "truncated": true, "mergeMessage": "Merge branch 'x'", "pushRemote": "fork"})
         );
         assert_eq!(serde_json::from_value::<WorktreeFiles>(v).unwrap(), files);
         let letters = [

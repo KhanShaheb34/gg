@@ -126,6 +126,23 @@ test("Commit & Push names where it goes and sends the branch there; with nothing
   await expect(pushButton(page)).toHaveCount(0);
 });
 
+test("Commit & Push goes where git pushes the branch, as Create pull request does: remote.pushDefault sends it to the fork (final review M7)", async ({ gg }) => {
+  const { page } = gg;
+  const repo = gg.repoPath("commit");
+  const fork = path.join(path.dirname(repo), "commit-fork.git");
+  gg.git("commit", "init", "-q", "--bare", "-b", "main", fork);
+  gg.git("commit", "remote", "add", "fork", fork);
+  gg.git("commit", "config", "remote.pushDefault", "fork");
+  await page.goto("/");
+  await open(page, repo);
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(pushButton(page)).toHaveText("Commit & Push to fork/main");
+  await message(page).fill("Everything");
+  await pushButton(page).click();
+  await expect(notice(page, /Pushed main to fork\/main/)).toBeVisible();
+  expect(gg.gitAt(fork, "rev-parse", "main").trim()).toBe(gg.git("commit", "rev-parse", "HEAD").trim());
+});
+
 test("a failing hook: nothing committed, its output in the notice with Show log, the message kept", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

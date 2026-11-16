@@ -318,22 +318,21 @@ pub(crate) async fn refused(
     Ok(None)
 }
 
-/// The remote a commit's push goes to (R38: the branch of the same name there): the
-/// remote of `branch`'s upstream, else origin, else the only remote.
+/// The remote a commit's push goes to (R38: the branch of the same name there): where git
+/// pushes `branch` (its `pushRemote`, `remote.pushDefault`, its upstream's remote, origin,
+/// the only one), the rule `pr_create` uses too (final boundary review M7).
 async fn push_remote(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<String>> {
-    let remotes = network::remotes(ctx).await?;
-    if let Some(up) = network::upstream(ctx, branch).await?
-        && remotes.contains(&up.remote)
-    {
-        return Ok(Some(up.remote));
-    }
-    if remotes.iter().any(|r| r == "origin") {
-        return Ok(Some("origin".to_owned()));
-    }
-    Ok(match remotes.as_slice() {
-        [only] => Some(only.clone()),
-        _ => None,
-    })
+    branch_push_remote(&ctx.runner, &ctx.cwd, branch).await
+}
+
+/// Where git pushes `branch` from worktree `cwd` (see [`push_remote`]).
+async fn branch_push_remote(
+    runner: &GitRunner,
+    cwd: &Path,
+    branch: &str,
+) -> Result<Option<String>> {
+    let facts = crate::gh::RemoteFacts::read(runner, cwd).await?;
+    Ok(facts.push_remote(branch).map(str::to_owned))
 }
 
 /// A folder of the commit's temporary files (its index, the list of paths, the message)
@@ -1314,7 +1313,11 @@ impl RepoManager {
                 ),
             ));
         }
-        read_files(&repo.runner, &target).await
+        let mut files = read_files(&repo.runner, &target).await?;
+        if let Some(branch) = &wt.branch {
+            files.push_remote = branch_push_remote(&repo.runner, &target, branch).await?;
+        }
+        Ok(files)
     }
 }
 

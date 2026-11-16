@@ -52,6 +52,8 @@
   /** HEAD as the snapshot showed it when the list was asked for: what the ticks belong to. */
   let filesHead = $state.raw<HeadInfo | null>(null);
   let truncated = $state(false);
+  /** The remote the core pushes this branch to (git's rule, as pull requests do); null until read. */
+  let pushRemote = $state<string | null>(null);
   let readError: string | null = $state(null);
   /** The paths ticked. */
   let ticked = $state.raw<Set<string>>(new Set());
@@ -97,6 +99,7 @@
       files = got.files;
       filesHead = head;
       truncated = got.truncated;
+      pushRemote = got.pushRemote;
       readError = null;
       // Ticks follow the list: gone files go; new ones come ticked while everything is.
       const known = new Set((before ?? []).map((f) => f.path));
@@ -258,17 +261,16 @@
 
   // ---- Committing ----
 
-  /** Where Commit & Push sends the branch (R38: its namesake), or why it cannot say. */
+  /**
+   * Where Commit & Push sends the branch (R38: its namesake), or why it cannot say: the remote
+   * the core named with the file list (git's push rule, the one Create pull request uses too:
+   * final review M7).
+   */
   const pushTo = $derived.by((): { remote: string; branch: string } | { why: string } | null => {
     const branch = snap.head.branch;
-    if (!active || branch === null || snap.remotes.length === 0) return null;
-    const upstream = snap.worktrees.find((w) => w.path === path)?.upstream?.name ?? null;
-    const byUpstream = upstream
-      ? [...snap.remotes].sort((a, b) => b.length - a.length).find((r) => upstream.startsWith(`${r}/`))
-      : undefined;
-    const remote = byUpstream ?? (snap.remotes.includes("origin") ? "origin" : snap.remotes.length === 1 ? snap.remotes[0] : null);
-    if (remote === null) return { why: `It is not clear which remote to push ${branch} to: commit, then push from the branch's menu.` };
-    return { remote, branch };
+    if (!active || branch === null || snap.remotes.length === 0 || files === null) return null;
+    if (pushRemote === null) return { why: `It is not clear which remote to push ${branch} to: commit, then push from the branch's menu.` };
+    return { remote: pushRemote, branch };
   });
 
   const subject = $derived(message.split("\n", 1)[0]);

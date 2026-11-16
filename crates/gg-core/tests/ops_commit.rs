@@ -1863,3 +1863,44 @@ async fn a_merge_started_after_the_turn_stops_the_commit() {
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
 }
+
+/// Final boundary review M7: Commit & Push and Create pull request push a branch to the
+/// same remote, by git's own rule (`branch.<b>.pushRemote`, then `remote.pushDefault`, then
+/// its upstream's remote): in a triangular workflow, the fork. The panel is told it with
+/// the file list, so its button names it.
+#[tokio::test]
+async fn commit_and_push_goes_where_git_pushes_the_branch() {
+    let repo = three_files();
+    let origin = repo.clone_as_remote();
+    let fork = repo.clone_as_remote_named("fork");
+    repo.git(&["branch", "-q", "--set-upstream-to=origin/main", "main"]);
+    repo.git(&["config", "remote.pushDefault", "fork"]);
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(
+        files_of(&h, id, repo.path()).await.push_remote.as_deref(),
+        Some("fork")
+    );
+    let before = origin.git(&["rev-parse", "refs/heads/main"]);
+    let out = h.run(id, commit(&["a.txt"], "and push", true)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert!(
+        out.message.contains("Pushed main to fork/main"),
+        "{}",
+        out.message
+    );
+    assert_eq!(fork.git(&["rev-parse", "refs/heads/main"]), new);
+    assert_eq!(
+        origin.git(&["rev-parse", "refs/heads/main"]),
+        before,
+        "not to origin"
+    );
+    // branch.<b>.pushRemote wins over remote.pushDefault.
+    repo.git(&["config", "branch.main.pushRemote", "origin"]);
+    assert_eq!(
+        files_of(&h, id, repo.path()).await.push_remote.as_deref(),
+        Some("origin")
+    );
+}

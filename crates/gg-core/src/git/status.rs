@@ -85,6 +85,7 @@ pub async fn read_files(r: &GitRunner, worktree: &Path) -> Result<WorktreeFiles>
         files,
         truncated,
         merge_message,
+        push_remote: None,
     })
 }
 

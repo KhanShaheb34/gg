@@ -1834,7 +1834,7 @@ async fn a_merge_started_after_the_turn_stops_the_commit() {
     let before = repo.git(&["rev-parse", "HEAD"]);
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    h.m.set_body_delay(Duration::from_millis(1500));
+    h.m.set_body_delay(std::time::Duration::from_millis(1500));
     let request = h.at_head(id, commit(&["a.txt"], "only a", false)).await;
     let run = tokio::spawn({
         let m = h.m.clone();
@@ -1852,7 +1852,7 @@ async fn a_merge_started_after_the_turn_stops_the_commit() {
         .expect("ends")
         .unwrap()
         .unwrap();
-    h.m.set_body_delay(Duration::ZERO);
+    h.m.set_body_delay(std::time::Duration::ZERO);
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message

@@ -572,6 +572,9 @@ test("a row's tooltip goes when its commit changes under a still pointer", async
 });
 
 test("scrolling creates no elements: ref labels use fixed slots, with +k for the rest", async ({ gg }) => {
+  // 1,200 scroll positions, a frame each: 20 s at 60 frames a second, more where a CI
+  // machine's headless browser draws fewer.
+  test.setTimeout(120_000);
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("labelled"));

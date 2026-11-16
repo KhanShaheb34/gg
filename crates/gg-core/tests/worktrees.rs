@@ -1011,7 +1011,19 @@ async fn thousands_of_files_in_a_new_ignored_folder_read_no_status() {
     }
     tokio::time::sleep(Duration::from_secs(3)).await;
     let reads = status_reads(&h, mark, None);
-    assert!(reads.is_empty(), "no status read: {} reads", reads.len());
+    // On failure, every git command since, to tell what asked for the read.
+    let since: Vec<String> = h
+        .log
+        .since(mark)
+        .iter()
+        .map(|r| format!("{} {:?} (+{} ms)", r.id, r.args, r.started_at_ms))
+        .collect();
+    assert!(
+        reads.is_empty(),
+        "no status read: {} reads\n{}",
+        reads.len(),
+        since.join("\n")
+    );
     repo.write("seen.txt", "x");
     until(&h, id, "a file that is not ignored shows", |s| {
         s.status.untracked == 1

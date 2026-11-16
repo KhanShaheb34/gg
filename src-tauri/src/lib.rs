@@ -422,6 +422,18 @@ pub fn run() {
         ),
         None => builder,
     };
+    // Performance runs only: with a perf log, the page marks its start-up phases too
+    // (`src/lib/perf/startMarks.ts`), so a launch's time after navigation can be split.
+    #[cfg(feature = "perf")]
+    let builder = if std::env::var_os("GG_PERF_LOG").is_some_and(|v| !v.is_empty()) {
+        builder.plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("perf-start")
+                .js_init_script("window.__GG_PERF_START__ = true;")
+                .build(),
+        )
+    } else {
+        builder
+    };
     builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {

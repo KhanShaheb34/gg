@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Measures the release app (macOS) on one repository and prints a table.
 #
-#   scripts/perf.sh [--no-build] [--runs N] [--scroll | --still | --smooth | --mixed | --modes "M..."] <repo>
+#   scripts/perf.sh [--no-build] [--runs N] [--logs DIR] [--login-shell]
+#                   [--scroll | --still | --smooth | --mixed | --modes "M..."] <repo>
+#
+# --logs DIR: each launch's raw perf log is kept there (perf-<run>.log), with the printed
+#   table (the run's own folder is removed at the end).
+# --login-shell: the app reads git's PATH from the user's own login shell ($SHELL -ilc), as
+#   an installed app does, instead of the stand-in (the stubs are then not on its PATH). For
+#   launch timing: the shell runs while the window is made. Only on a repository the run
+#   does not change (no walk, no actions).
 #
 # Builds the bundle with its measurement hooks (`pnpm tauri build --bundles app --features
 # perf`, skipped with --no-build), then launches it N times (default 6), one at a time, with
@@ -65,9 +73,13 @@ set -euo pipefail
 build=1
 runs=6
 modes="0"
+logs=""
+login_shell=0
 while [ $# -gt 0 ]; do
   case $1 in
     --no-build) build=0; shift ;;
+    --logs) logs=$(mkdir -p "$2" && cd "$2" && pwd); shift 2 ;;
+    --login-shell) login_shell=1; shift ;;
     --runs) runs=$2; shift 2 ;;
     --scroll) modes="1"; shift ;;
     --still) modes="still"; shift ;;
@@ -88,7 +100,11 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 # origin): only on a throwaway one scripts/walk-fixture.sh made, never on the user's (R43).
 for mode in $modes; do
   case $mode in
-    walk | actions)
+    walk | actions | walk3 | walk3-dark)
+      if [ "$login_shell" = 1 ]; then
+        echo "--login-shell is for runs that change nothing; not with --modes $mode" >&2
+        exit 2
+      fi
       if [ "$(cat "$repo/.git/gg-perf-fixture" 2>/dev/null)" != "$repo" ]; then
         echo "--modes $mode changes the repository: it runs only on a fixture made by" \
           "scripts/walk-fixture.sh, and $repo is not one" >&2
@@ -145,6 +161,10 @@ done
 git_dir=$(dirname "$(command -v git)")
 printf '#!/bin/sh\nPATH=%s:%s:/usr/bin:/bin\nexport PATH\neval "$2"\n' "$tools" "$git_dir" > "$tools/fake-shell"
 chmod +x "$tools/fake-shell"
+shell=$tools/fake-shell
+if [ "$login_shell" = 1 ]; then
+  shell=${SHELL:?SHELL is not set}
+fi
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1000'; }
 load() { uptime | sed 's/.*load averages*: *//'; }
@@ -196,8 +216,12 @@ footprints() {
   printf '%s\t%s\n' "$total" "$detail"
 }
 mode_name() { case $1 in 0) echo idle ;; 1) echo scroll ;; *) echo "$1" ;; esac; }
-# Quits the launch under measurement and lets it and its WebKit helpers exit.
+# Quits the launch under measurement and lets it and its WebKit helpers exit; with --logs,
+# its perf log (and when `open` ran, as "spawn") is kept first.
 stop_app() {
+  if [ -n "$logs" ] && [ -f "${log:-}" ]; then
+    { printf 'spawn\t-1\t%s\n' "$spawn"; cat "$log"; } > "$logs/perf-$run.log"
+  fi
   kill "$pid" 2>/dev/null || true
   for _ in $(seq 1 40); do
     kill -0 "$pid" 2>/dev/null || [ -n "$(helpers_of "$pid")" ] || break
@@ -227,7 +251,7 @@ for _ in $(seq 1 "$runs"); do
     spawn=$(now_ms)
     open -n -a "$bundle" --env GG_OPEN="$repo" --env GG_PERF_LOG="$log" \
       --env GG_PERF_SCROLL="$mode" --env GG_CONFIG_DIR="$work/config-$run" \
-      --env GG_PERF_LAUNCHES="$work/launches.jsonl" --env SHELL="$tools/fake-shell" \
+      --env GG_PERF_LAUNCHES="$work/launches.jsonl" --env SHELL="$shell" \
       --env GIT_CONFIG_GLOBAL="$work/gitconfig-empty" --env GIT_CONFIG_NOSYSTEM=1
     pid=$(pgrep -n -f "^$app" || true)
     [ -n "$pid" ] || { echo "run $run: the app did not start" >&2; exit 1; }

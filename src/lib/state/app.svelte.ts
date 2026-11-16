@@ -1,6 +1,7 @@
 // The app shell's state: open tabs, recents, settings and toasts, and the actions on them.
 // Every change to the tabs (or the active one) is saved as the session.
 
+import { startMark } from "../perf/startMarks";
 import { shortenPath } from "../format";
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
@@ -455,7 +456,9 @@ export async function init(): Promise<void> {
 
   let state;
   try {
+    startMark("state-asked");
     state = await api.getAppState();
+    startMark("state-answered");
   } catch (e) {
     reportError(e);
     app.ready = true;
@@ -510,7 +513,9 @@ export async function init(): Promise<void> {
   const launchRank = launch === null ? -1 : tabs.indexOf(launch);
   const openLaunch = async (path: string) => {
     try {
+      startMark("open-asked");
       const snapshot = await api.openRepo(path);
+      startMark("open-answered");
       opened(path, snapshot, launchRank >= 0 ? launchRank : undefined);
       noteWorktreeNotMadeActive(snapshot);
     } catch (e) {

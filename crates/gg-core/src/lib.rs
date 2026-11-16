@@ -77,6 +77,8 @@ struct Perf {
     /// File each mark is appended to, if any.
     log: Option<PathBuf>,
     marks: Vec<(String, f64)>,
+    /// The login shell's start and end are in the log already.
+    login_logged: bool,
 }
 
 impl Core {
@@ -215,14 +217,25 @@ impl Core {
             perf.marks.drain(..excess);
         }
         perf.marks.push((name.clone(), ms));
-        let Some(path) = &perf.log else {
+        let Some(path) = perf.log.clone() else {
             return Ok(());
         };
+        let mut lines = format!("{name}\t{ms}\t{}\n", unix_ms());
+        // Once known: when the login shell for git's PATH ran, by the wall clock (no time
+        // since navigation: -1), so a launch's marks can be set against it.
+        if !perf.login_logged
+            && let Some((start, end)) = crate::git::runner::login_path_times()
+        {
+            perf.login_logged = true;
+            lines.push_str(&format!(
+                "login-shell-start\t-1\t{start:.0}\nlogin-shell-done\t-1\t{end:.0}\n"
+            ));
+        }
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
-            .and_then(|mut f| f.write_all(format!("{name}\t{ms}\t{}\n", unix_ms()).as_bytes()))
+            .open(&path)
+            .and_then(|mut f| f.write_all(lines.as_bytes()))
             .map_err(|e| {
                 CoreError::new(
                     ErrorCode::Io,

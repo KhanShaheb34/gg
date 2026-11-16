@@ -1672,11 +1672,33 @@ impl LoginPath {
     /// Starts reading the `PATH` on a background thread, unless it has been read.
     fn prefetch(&'static self, resolve: fn() -> Option<OsString>) {
         if self.0.get().is_none() {
+            let started = epoch_ms();
             std::thread::spawn(move || {
                 self.0.get_or_init(resolve);
+                *LOGIN_PATH_TIMES
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some((started, epoch_ms()));
             });
         }
     }
+}
+
+/// When the prefetched login shell started and ended (unix ms), for the perf log.
+static LOGIN_PATH_TIMES: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+
+fn epoch_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+}
+
+/// When the login shell [`prefetch_login_path`] started ran (unix ms, start and end), once
+/// it has ended: what a launch's timing marks set against the window's.
+pub fn login_path_times() -> Option<(f64, f64)> {
+    *LOGIN_PATH_TIMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The process's login shell `PATH`.

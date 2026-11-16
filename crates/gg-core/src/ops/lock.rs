@@ -196,12 +196,6 @@ pub(crate) fn age_text(d: Duration) -> String {
     }
 }
 
-/// Whether git's output `detail` says it could not take the staging area's lock because
-/// `index.lock` exists.
-fn index_lock_exists(detail: &str) -> bool {
-    lock_named(detail).is_some()
-}
-
 /// The `index.lock` git's output `detail` says it could not create because it exists, as
 /// git names it.
 fn lock_named(detail: &str) -> Option<&str> {
@@ -474,12 +468,18 @@ mod tests {
 
     #[test]
     fn only_the_staging_areas_lock_is_recognised() {
-        assert!(index_lock_exists(
-            "fatal: Unable to create '/r/.git/index.lock': File exists.\n\nAnother git process…"
-        ));
-        assert!(!index_lock_exists(
-            "error: cannot lock ref 'refs/heads/x': Unable to create '/r/.git/refs/heads/x.lock': File exists."
-        ));
+        assert!(
+            lock_named(
+                "fatal: Unable to create '/r/.git/index.lock': File exists.\n\nAnother git process…"
+            )
+            .is_some()
+        );
+        assert!(
+            lock_named(
+                "error: cannot lock ref 'refs/heads/x': Unable to create '/r/.git/refs/heads/x.lock': File exists."
+            )
+            .is_none()
+        );
     }
 
     #[test]

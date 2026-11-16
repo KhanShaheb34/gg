@@ -4,10 +4,13 @@
 # published here (release.yml does releases).
 name: CI
 
+# A branch with a pull request is tested by the pull_request run alone (a push to it would
+# otherwise start a second, identical run); main is tested on every push.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

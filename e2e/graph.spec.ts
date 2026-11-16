@@ -528,8 +528,10 @@ test("lanes stay level with their rows after scrolling: each commit's dot is at 
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
   for (const top of [1500 * 26 + 7, 333 * 26 + 19, 41]) {
     await scrollTo(page, top);
-    await page.waitForTimeout(200);
-    expect(await visibleSkeletons(page)).toBe(0);
+    // The rows there loaded (on a slow CI runner a page of rows can take longer than a fixed
+    // wait; how fast they come is the scroll tests' and the perf runs' to say, not this one's).
+    await expect.poll(() => visibleSkeletons(page)).toBe(0);
+    await page.waitForTimeout(200); // the lanes are drawn for them
     const misses = await grid(page).evaluate((el) => {
       const c = el.querySelector<HTMLCanvasElement>('[data-testid="graph-canvas"]')!;
       const ratio = c.width / c.getBoundingClientRect().width;

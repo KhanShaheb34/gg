@@ -342,15 +342,12 @@
     }
   }
 
-  // Asked to (Cmd+K, opening): the focus goes to the message.
-  let seenFocus = untrack(() => panel.commitFocus);
+  // Asked to (Cmd+K, opening): the focus goes to the message, once per request. Shown again
+  // (back to its tab) it leaves the focus where it is (final review M10).
   $effect(() => {
     const request = panel.commitFocus;
-    if (request === seenFocus) return;
-    seenFocus = request;
-    void tick().then(() => field?.focus());
-  });
-  $effect(() => {
+    if (request === panel.commitFocusDone) return;
+    panel.commitFocusDone = request;
     void tick().then(() => field?.focus());
   });
 

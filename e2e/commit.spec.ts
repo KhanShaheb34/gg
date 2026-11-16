@@ -143,6 +143,29 @@ test("Commit & Push goes where git pushes the branch, as Create pull request doe
   expect(gg.gitAt(fork, "rev-parse", "main").trim()).toBe(gg.git("commit", "rev-parse", "HEAD").trim());
 });
 
+test("back to a tab whose commit panel is open, the focus stays where it was (final review M10)", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("commit"));
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(message(page)).toBeFocused();
+  await open(page, gg.repoPath("small"));
+  // Back with the keyboard (⌘1), from the graph of the other tab (⌘2 there and back).
+  await page.keyboard.press("ControlOrMeta+1");
+  await expect(panel(page)).toBeVisible();
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+2");
+  await expect(panel(page)).toHaveCount(0);
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+1");
+  await expect(panel(page)).toBeVisible();
+  await page.waitForTimeout(300);
+  await expect(message(page)).not.toBeFocused();
+  // Asked for again (Cmd+K), it does take the focus.
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(message(page)).toBeFocused();
+});
+
 test("a failing hook: nothing committed, its output in the notice with Show log, the message kept", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

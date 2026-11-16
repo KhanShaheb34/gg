@@ -19,7 +19,18 @@
 # Every run's programs come from <outdir>/…/tools first: the app is given a stand-in login
 # shell whose PATH is that folder, /usr/bin and /bin (SHELL), so the real `gh` (and anything
 # else the user's profile adds) is never found; the fake `gh` answers from files the driver
-# writes. Editors, terminals and the browser are never started: the walk does not use them.
+# writes, and `ssh` and `open` there fail loudly (and say so in <repo>/blocked.log), so no
+# network host is reached even by a git that would use ssh. git, in the fixture and in the
+# app, runs without the user's global and system config (GIT_CONFIG_GLOBAL is an empty file,
+# GIT_CONFIG_NOSYSTEM=1), and origin has an explicit local push URL. Editors, terminals and
+# the browser are never started: the perf build records them (GG_PERF_LAUNCHES) instead.
+#
+# The app is the perf build (scripts/perf.sh builds it) under its own bundle identifier,
+# com.shakirul.gg.perf: it shares no WebKit storage, single-instance identity or
+# LaunchServices registration with an installed gg (com.shakirul.gg), which the walk never
+# starts, reads or changes. `gg` into the running app goes through the real launcher path
+# (`open -n -b com.shakirul.gg.perf`); --via-gg (not running) uses its GG_APP_BIN hook, since
+# a LaunchServices launch gets none of the run's environment.
 #
 # macOS only. Keep the screen unlocked and the window uncovered: a covered window gets no
 # animation frames and the walk stalls; the marks then say how far it got. Screenshots need
@@ -41,7 +52,13 @@ out=$(mkdir -p "$1" && cd "$1" && pwd)
 root=$(cd "$(dirname "$0")/.." && pwd)
 bundle=$root/target/release/bundle/macos/gg.app
 app=$bundle/Contents/MacOS/gg-desktop
-[ -x "$app" ] || { echo "no app at $app: build it with the perf feature first" >&2; exit 1; }
+perf_id=com.shakirul.gg.perf
+[ -x "$app" ] || { echo "no app at $app: build it with scripts/perf.sh first" >&2; exit 1; }
+id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$bundle/Contents/Info.plist" 2> /dev/null)
+if [ "$id" != "$perf_id" ]; then
+  echo "the app at $bundle is $id, not the perf build ($perf_id): build it with scripts/perf.sh" >&2
+  exit 1
+fi
 if pgrep -f "/Contents/MacOS/gg-desktop" > /dev/null; then
   echo "gg is running; quit every copy of it first" >&2
   exit 1
@@ -55,10 +72,23 @@ else
   work=$("$root/scripts/walk-fixture.sh" --github "$out")
 fi
 W=$(dirname "$work")
+# git without the user's global and system config, as the fixture was made.
+export GIT_CONFIG_GLOBAL="$W/gitconfig-empty" GIT_CONFIG_NOSYSTEM=1
+unset GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 
 # The stand-in login shell and the fake gh (as e2e/fixtures.ts has them).
 tools=$W/tools
 mkdir -p "$tools" "$W/gh/calls" "$W/gh/replies"
+# ssh and open must never run: they fail, and say so.
+for blocked in ssh open; do
+  printf '#!/bin/sh
+echo "%s $*" >> "%s/blocked.log"
+echo "walk: %s must not run here" >&2
+exit 97
+' \
+    "$blocked" "$W" "$blocked" > "$tools/$blocked"
+  chmod +x "$tools/$blocked"
+done
 printf '#!/bin/sh\nPATH=%s:/usr/bin:/bin\nexport PATH\neval "$2"\n' "$tools" > "$tools/fake-shell"
 cat > "$tools/gh" <<'EOF'
 #!/bin/sh
@@ -82,16 +112,31 @@ echo '[]' > "$W/gh/replies/pr-list.out"
 echo '[]' > "$W/gh/replies/pr-list-head.out"
 echo '{"defaultBranchRef":{"name":"main"}}' > "$W/gh/replies/repo-view.out"
 echo 'https://github.com/octo/cat/pull/21' > "$W/gh/replies/pr-create.out"
-# The `gg` command as the app installs it, pointed at this build.
-sed -e "s|@GG_VERSION@|test|" -e "s|@GG_APP@|''|" "$root/src-tauri/resources/gg" > "$tools/gg"
-chmod +x "$tools/gg"
+# The `gg` command as the app installs it, finding this build by its own bundle identifier.
+sed -e "s|@GG_VERSION@|test|" -e "s|@GG_APP@|''|" \
+  -e "s|^GG_BUNDLE_ID='com.shakirul.gg'\$|GG_BUNDLE_ID='$perf_id'|" \
+  "$root/src-tauri/resources/gg" > "$W/gg"
+chmod +x "$W/gg"
+grep -q "^GG_BUNDLE_ID='$perf_id'\$" "$W/gg" || { echo "could not point gg at $perf_id" >&2; exit 1; }
 run_env=(GG_PERF_LOG="$W/perf.log" GG_PERF_SCROLL="$mode" GG_CONFIG_DIR="$W/config"
-  SHELL="$tools/fake-shell" PATH="$tools:/usr/bin:/bin")
+  GG_PERF_LAUNCHES="$W/launches.jsonl" SHELL="$tools/fake-shell" PATH="$tools:/usr/bin:/bin"
+  GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" GIT_CONFIG_NOSYSTEM=1)
 [ -n "$size" ] && run_env+=(GG_PERF_WINDOW="$size")
 
 log=$W/perf.log
+pid=""
+# Whatever ends the driver (done, Ctrl-C, the deadline), the app it started is quit.
+cleanup() {
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2> /dev/null
+  for _ in $(seq 1 50); do kill -0 "$pid" 2> /dev/null || break; sleep 0.1; done
+  if kill -0 "$pid" 2> /dev/null; then kill -9 "$pid" 2> /dev/null; fi
+  pid=""
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
 if [ "$via_gg" = 1 ]; then
-  (cd "$work" && env "${run_env[@]}" GG_APP_BIN="$app" "$tools/gg") || { echo "gg failed" >&2; exit 1; }
+  (cd "$work" && env "${run_env[@]}" GG_APP_BIN="$app" "$W/gg") || { echo "gg failed" >&2; exit 1; }
   echo "started by gg: $(date +%s)"
 else
   env_args=()
@@ -122,9 +167,15 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
             > "$W/gh/replies/pr-list.out"
           ;;
         "walk-need gg other")
-          # A second launch hands the folder to the running app and exits.
-          (cd "$W" && env PATH="$tools:/usr/bin:/bin" GG_APP_BIN="$app" "$tools/gg" other) ||
-            echo "gg other failed" >&2
+          # A second launch hands the folder to the running app and exits: the real
+          # launcher path, `open -n -b com.shakirul.gg.perf` (Task 13 review minor 1: only
+          # while the first is still there, so this launch never becomes the app).
+          if kill -0 "$pid" 2> /dev/null; then
+            (cd "$W" && env -i HOME="$HOME" PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" \
+              GIT_CONFIG_NOSYSTEM=1 "$W/gg" other) || echo "gg other failed" >&2
+          else
+            echo "the app is gone: gg other not run" >&2
+          fi
           ;;
         walk-shot\ *)
           id=""
@@ -141,7 +192,13 @@ done
 grep -E "^(first-rows|fully-loaded|walk|page-error)" "$log" | cut -f1,2
 echo "gh calls:"
 for c in "$W"/gh/calls/*/argv; do [ -f "$c" ] && tr '\0' ' ' < "$c" && echo; done
-kill "$pid" 2>/dev/null
-sleep 3
+echo "launches recorded (never started):"
+[ -f "$W/launches.jsonl" ] && cat "$W/launches.jsonl"
+if [ -f "$W/blocked.log" ]; then
+  echo "BLOCKED (must not run):"
+  cat "$W/blocked.log"
+fi
+cleanup
+sleep 1
 pgrep -f "^$app" > /dev/null && echo "warning: the app is still running" >&2
 echo "repo: $W"

@@ -70,6 +70,12 @@ async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
     // Performance runs only (`--features perf`, see scripts/perf.sh).
     #[cfg(feature = "perf")]
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
+    // Performance runs only: editors, terminals and the browser are recorded to this file,
+    // never started (the walks must reach no program and no web page; Task 13 review I1).
+    #[cfg(feature = "perf")]
+    if let Some(file) = std::env::var_os("GG_PERF_LAUNCHES").filter(|v| !v.is_empty()) {
+        core.record_launches_to(Some(PathBuf::from(file)));
+    }
     core.open_startup_repos();
     // Folders the system asked to open before the core was there go to it now; later ones
     // go straight to it (see `deliver_opened`).

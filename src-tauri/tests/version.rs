@@ -68,3 +68,51 @@ fn every_crate_takes_the_workspace_version() {
         );
     }
 }
+
+/// The shipped identifier is com.shakirul.gg, in normal and release builds alike (Task 13
+/// review I2): only the perf/walk build (scripts/perf.sh) is made under its own,
+/// com.shakirul.gg.perf, through a `--config` overlay on the command line. No config file
+/// and no release or CI build names another, and the `gg` launcher finds the shipped one.
+#[test]
+fn the_shipped_identifier_is_com_shakirul_gg() {
+    const SHIPPED: &str = "com.shakirul.gg";
+    const PERF: &str = "com.shakirul.gg.perf";
+    assert_eq!(
+        json("src-tauri/tauri.conf.json")["identifier"].as_str(),
+        Some(SHIPPED)
+    );
+    for rel in [
+        "src-tauri/tauri.linux.conf.json",
+        "src-tauri/tauri.windows.conf.json",
+    ] {
+        assert!(
+            json(rel).get("identifier").is_none(),
+            "{rel} names an identifier of its own"
+        );
+    }
+    let read = |rel: &str| {
+        let path = root().join(rel);
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    };
+    for rel in [
+        "scripts/release-macos.sh",
+        ".github/workflows/release.yml",
+        ".github/workflows/ci.yml",
+        "package.json",
+    ] {
+        let text = read(rel);
+        assert!(!text.contains(PERF), "{rel} builds the perf identifier");
+        assert!(
+            !text.contains("\"identifier\""),
+            "{rel} overrides the identifier"
+        );
+    }
+    assert!(
+        read("src-tauri/resources/gg").contains(&format!("GG_BUNDLE_ID='{SHIPPED}'\n")),
+        "the launcher finds the shipped app"
+    );
+    // The perf build's identifier is its own, given on the command line only.
+    let perf = read("scripts/perf.sh");
+    assert!(perf.contains(&format!("bundle_id={PERF}\n")));
+    assert!(perf.contains("--config \"{\\\"identifier\\\":\\\"$bundle_id\\\"}\""));
+}

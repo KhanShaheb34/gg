@@ -10,8 +10,14 @@
 # its `origin`; other/ is a second clone that pushed to it. Auto-maintenance is off.
 #
 # --github: `origin` is https://github.com/octo/cat.git to the app, which git's `insteadOf`
-# sends to origin.git (pushes stay on disk), so the app offers pull requests. Only for a run
-# whose `gh` is a fake (scripts/walk.sh --mode walk3): the app would otherwise ask the real one.
+# sends to origin.git, and its `pushurl` is origin.git itself (an explicit push URL: no
+# `pushInsteadOf` of anyone's config can send a push elsewhere), so the app offers pull
+# requests and pushes stay on disk. Only for a run whose `gh` is a fake (scripts/walk.sh
+# --mode walk3): the app would otherwise ask the real one.
+#
+# git runs here without the user's global and system config (GIT_CONFIG_GLOBAL is an empty
+# file beside the repository, GIT_CONFIG_NOSYSTEM=1): no URL rewrite, hook path, signing or
+# credential helper of theirs applies. scripts/walk.sh runs the app the same way.
 #
 # The work tree's git dir gets `gg-perf-fixture`, holding the work tree's path: scripts/perf.sh
 # runs the probes that change a repository (walk, actions) only on a repository marked so,
@@ -21,6 +27,9 @@ github=0
 if [ "${1-}" = --github ]; then github=1; shift; fi
 parent=$(cd "$1" && pwd)
 W=$(mktemp -d "$parent/walkrepo.XXXX")
+: > "$W/gitconfig-empty"
+export GIT_CONFIG_GLOBAL="$W/gitconfig-empty" GIT_CONFIG_NOSYSTEM=1
+unset GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 g() { git -C "$W/work" -c user.name="Ada Lovelace" -c user.email=ada@example.invalid -c commit.gpgsign=false "$@"; }
 o() { git -C "$W/other" -c user.name="Grace Hopper" -c user.email=grace@example.invalid -c commit.gpgsign=false "$@"; }
 c() { g add -A && g commit -q -m "$1"; }
@@ -33,6 +42,7 @@ g tag v1
 if [ "$github" = 1 ]; then
   g remote add origin https://github.com/octo/cat.git
   g config "url.$W/origin.git.insteadOf" https://github.com/octo/cat.git
+  g config remote.origin.pushurl "$W/origin.git"
 else
   g remote add origin "$W/origin.git"
 fi

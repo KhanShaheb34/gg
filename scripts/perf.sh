@@ -7,8 +7,17 @@
 # perf`, skipped with --no-build), then launches it N times (default 6), one at a time, with
 # `open -n -a gg.app --env ...`, the way a user's launch goes through LaunchServices.
 # Every launch gets its own empty config folder (GG_CONFIG_DIR), so the user's own app state
-# is never read or changed and no saved session adds tabs. The script refuses to run while
-# any copy of the app (bundle id com.shakirul.gg) is running.
+# is never read or changed and no saved session adds tabs. The bundle is built under its own
+# identifier, com.shakirul.gg.perf (Task 13 review I2): it shares no WebKit storage,
+# single-instance identity or LaunchServices registration with an installed gg
+# (com.shakirul.gg, whose shipped identifier this never changes). The script refuses to run
+# while any copy of either is running, and refuses a bundle that is not the perf one.
+#
+# The app runs git without the user's global and system config (GIT_CONFIG_GLOBAL is an
+# empty file, GIT_CONFIG_NOSYSTEM=1) and gets a stand-in login shell (SHELL) whose PATH is a
+# folder of stubs first (`ssh`, `open`, `gh`: they fail, and say so in the output), then the
+# folder of the git the user's shell finds, then /usr/bin and /bin. Editors, terminals and
+# the browser are recorded (GG_PERF_LAUNCHES), never started.
 #
 # - Launch: the wall-clock time (unix ms) is taken right before `open` runs ("spawn"). The app
 #   appends `name<TAB>ms since navigation start<TAB>unix ms` to the perf log for each mark,
@@ -90,24 +99,52 @@ for mode in $modes; do
 done
 bundle=$root/target/release/bundle/macos/gg.app
 app=$bundle/Contents/MacOS/gg-desktop
-bundle_id=com.shakirul.gg
+bundle_id=com.shakirul.gg.perf
 
-if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "/gg.app/Contents/MacOS/gg-desktop" > /dev/null; then
-  echo "gg ($bundle_id) is running; quit every copy of it first" >&2
+for id in com.shakirul.gg "$bundle_id"; do
+  if [ -n "$(lsappinfo find bundleid=$id)" ]; then
+    echo "gg ($id) is running; quit every copy of it first" >&2
+    exit 1
+  fi
+done
+if pgrep -f "/Contents/MacOS/gg-desktop" > /dev/null; then
+  echo "gg is running; quit every copy of it first" >&2
   exit 1
 fi
 if [ "$build" = 1 ]; then
-  (cd "$root" && CARGO_INCREMENTAL=0 pnpm tauri build --bundles app --features perf >&2)
+  (cd "$root" && CARGO_INCREMENTAL=0 pnpm tauri build --bundles app --features perf \
+    --config "{\"identifier\":\"$bundle_id\"}" >&2)
 fi
 [ -x "$app" ] || { echo "no app at $app (build it first)" >&2; exit 1; }
+built_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$bundle/Contents/Info.plist" 2> /dev/null)
+if [ "$built_id" != "$bundle_id" ]; then
+  echo "the app at $bundle is $built_id, not the perf build ($bundle_id): build it again" >&2
+  exit 1
+fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/gg-perf.XXXXXX")
 pid=""
 cleanup() {
   if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+  if [ -f "$work/blocked.log" ]; then
+    echo "BLOCKED (must not run):" >&2
+    cat "$work/blocked.log" >&2
+  fi
   rm -rf "$work"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+# git without the user's config, and a PATH whose first folder holds failing stubs.
+: > "$work/gitconfig-empty"
+tools=$work/tools
+mkdir -p "$tools"
+for blocked in ssh open gh; do
+  printf '#!/bin/sh\necho "%s $*" >> "%s/blocked.log"\nexit 97\n' "$blocked" "$work" > "$tools/$blocked"
+  chmod +x "$tools/$blocked"
+done
+git_dir=$(dirname "$(command -v git)")
+printf '#!/bin/sh\nPATH=%s:%s:/usr/bin:/bin\nexport PATH\neval "$2"\n' "$tools" "$git_dir" > "$tools/fake-shell"
+chmod +x "$tools/fake-shell"
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1000'; }
 load() { uptime | sed 's/.*load averages*: *//'; }
@@ -189,7 +226,9 @@ for _ in $(seq 1 "$runs"); do
     run_load=$(load)
     spawn=$(now_ms)
     open -n -a "$bundle" --env GG_OPEN="$repo" --env GG_PERF_LOG="$log" \
-      --env GG_PERF_SCROLL="$mode" --env GG_CONFIG_DIR="$work/config-$run"
+      --env GG_PERF_SCROLL="$mode" --env GG_CONFIG_DIR="$work/config-$run" \
+      --env GG_PERF_LAUNCHES="$work/launches.jsonl" --env SHELL="$tools/fake-shell" \
+      --env GIT_CONFIG_GLOBAL="$work/gitconfig-empty" --env GIT_CONFIG_NOSYSTEM=1
     pid=$(pgrep -n -f "^$app" || true)
     [ -n "$pid" ] || { echo "run $run: the app did not start" >&2; exit 1; }
     missing=""

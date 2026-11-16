@@ -1724,6 +1724,13 @@ impl RepoManager {
         repo.publish(self.sink.as_ref(), stamped);
     }
 
+    /// How long the last numbered request of client `client` waited for its turn in
+    /// repository `repo_id` (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn last_turn_wait(&self, repo_id: u32, client: &str) -> Result<Duration> {
+        Ok(self.get(repo_id)?.op_order.of(client).last_wait())
+    }
+
     /// The most background worktree reads that have run at once so far (tests only).
     #[cfg(any(test, feature = "testutil"))]
     pub fn most_worktree_reads_at_once(&self) -> u32 {

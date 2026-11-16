@@ -988,49 +988,38 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
 
-    let timed = |n: u64, name: &'static str| {
+    // How long each request waited for its turn (git's own time aside, which on a slow
+    // machine is longer than the gap wait itself).
+    let turn_wait = |id: u32, n: u64, name: &'static str| {
         let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
         async move {
-            let t = std::time::Instant::now();
             let out = m
                 .run_op_in_order(id, "ui", n, in_wt(&wt, create_branch(name, &head)), &[])
                 .await
                 .expect("runs");
             assert_eq!(out.status, OpStatus::Done, "{out:?}");
-            t.elapsed()
+            m.last_turn_wait(id, "ui").expect("open")
         }
     };
-    let waited = timed(2, "b").await;
+    let waited = turn_wait(id, 2, "b").await;
     assert!(
         waited >= Duration::from_millis(480),
         "waited {waited:?} for number 1"
     );
     assert!(waited < Duration::from_millis(3000), "waited {waited:?}");
-    // The same request without the 500 ms wait: well under the one that waited (the op's own
-    // time is in both, whatever the machine).
-    let not_again = |t: Duration| t + Duration::from_millis(300) < waited;
-    let third = timed(3, "c").await;
-    assert!(not_again(third), "{third:?} (waited {waited:?})");
-    let late = timed(1, "a").await;
-    assert!(not_again(late), "late: {late:?} (waited {waited:?})");
+    let at_once = Duration::from_millis(100);
+    let third = turn_wait(id, 3, "c").await;
+    assert!(
+        third < at_once,
+        "the gap is not waited for again: {third:?}"
+    );
+    let late = turn_wait(id, 1, "a").await;
+    assert!(late < at_once, "late: {late:?}");
 
     h.m.close(id).await.expect("closes");
     let id2 = h.open(repo.path()).await.repo_id;
-    let t = std::time::Instant::now();
-    h.m.run_op_in_order(
-        id2,
-        "ui",
-        1,
-        in_wt(repo.path(), create_branch("d", &head)),
-        &[],
-    )
-    .await
-    .expect("runs");
-    assert!(
-        not_again(t.elapsed()),
-        "numbers start again: {:?} (waited {waited:?})",
-        t.elapsed()
-    );
+    let again = turn_wait(id2, 1, "d").await;
+    assert!(again < at_once, "numbers start again: {again:?}");
 }
 
 /// R28: a request refused before it is queued (a bad name) still lets the next number in.

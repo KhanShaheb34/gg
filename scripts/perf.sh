@@ -18,8 +18,9 @@
 # is never read or changed and no saved session adds tabs. The bundle is built under its own
 # identifier, com.shakirul.gg.perf (Task 13 review I2): it shares no WebKit storage,
 # single-instance identity or LaunchServices registration with an installed gg
-# (com.shakirul.gg, whose shipped identifier this never changes). The script refuses to run
-# while any copy of either is running, and refuses a bundle that is not the perf one.
+# (com.shakirul.gg, whose shipped identifier this never changes), which may run meanwhile
+# (P3-R34). The script refuses to run while a copy of the perf build runs, and refuses a
+# bundle that is not the perf one.
 #
 # The app runs git without the user's global and system config (GIT_CONFIG_GLOBAL is an
 # empty file, GIT_CONFIG_NOSYSTEM=1) and gets a stand-in login shell (SHELL) whose PATH is a
@@ -117,14 +118,11 @@ bundle=$root/target/release/bundle/macos/gg.app
 app=$bundle/Contents/MacOS/gg-desktop
 bundle_id=com.shakirul.gg.perf
 
-for id in com.shakirul.gg "$bundle_id"; do
-  if [ -n "$(lsappinfo find bundleid=$id)" ]; then
-    echo "gg ($id) is running; quit every copy of it first" >&2
-    exit 1
-  fi
-done
-if pgrep -f "/Contents/MacOS/gg-desktop" > /dev/null; then
-  echo "gg is running; quit every copy of it first" >&2
+# Only a running copy of this perf build stops the run: an installed gg (com.shakirul.gg)
+# may run beside it (P3-R34) and is never signalled or touched; only pids this script started
+# are killed.
+if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "^$app" > /dev/null; then
+  echo "the perf build ($bundle_id) is running; quit it first" >&2
   exit 1
 fi
 if [ "$build" = 1 ]; then

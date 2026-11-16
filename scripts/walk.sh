@@ -59,8 +59,11 @@ if [ "$id" != "$perf_id" ]; then
   echo "the app at $bundle is $id, not the perf build ($perf_id): build it with scripts/perf.sh" >&2
   exit 1
 fi
-if pgrep -f "/Contents/MacOS/gg-desktop" > /dev/null; then
-  echo "gg is running; quit every copy of it first" >&2
+# Only another copy of this perf build stops the run: an installed gg (com.shakirul.gg) may
+# run beside it (P3-R34) and is never signalled, focused or otherwise touched; the driver
+# kills only the pid it started.
+if pgrep -f "^$app" > /dev/null; then
+  echo "the perf build at $app is running; quit it first" >&2
   exit 1
 fi
 # The window id for screenshots: a small helper, compiled once into <outdir>.

@@ -1107,10 +1107,12 @@ vim",
             }
             for plan in plans {
                 assert_ne!(plan.cwd, root, "{os}");
-                assert!(plan.cwd.is_absolute() || os == "windows", "{os}: {plan:?}");
+                // `has_root`: a macOS or Linux path is absolute when it starts at the root,
+                // whatever the host (on Windows `is_absolute` also wants a drive).
+                assert!(plan.cwd.has_root() || os == "windows", "{os}: {plan:?}");
                 assert!(!plan.cwd.starts_with(root), "{os}");
                 let program = Path::new(&plan.argv[0]);
-                assert!(program.is_absolute() || os != "macos", "{plan:?}");
+                assert!(program.has_root() || os != "macos", "{plan:?}");
             }
             let plan = launch_plan(os, Some("code"), root, None).unwrap();
             assert_eq!(plan.cwd, root);
@@ -1197,7 +1199,8 @@ vim",
         move |name| {
             names
                 .contains(&name)
-                .then(|| Path::new("/usr/bin").join(name))
+                // Spelled out: joined, the separator would be the host's.
+                .then(|| PathBuf::from(format!("/usr/bin/{name}")))
         }
     }
 

@@ -483,8 +483,11 @@ const STATUS_WITH_IGNORED: [&str; 5] = [
 /// What a worktree holds that removing it would lose, read in the operation's turn.
 #[derive(Debug, Default)]
 struct Work {
-    /// Tracked paths with changes, staged or not (conflicted ones too).
+    /// Tracked paths with changes, staged or not (conflicted ones too), and edited files
+    /// marked assume-unchanged or skip-worktree ([`marked_changes`]).
     changed: Vec<String>,
+    /// Those of `changed` that git's status does not show, with the mark that hides them.
+    marked: Vec<(String, &'static str)>,
     /// Untracked files, one by one.
     untracked: Vec<String>,
     /// What git ignores there, as shown: top-level entries only (`build/`, `x.log`, or
@@ -573,6 +576,17 @@ async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Res
     let raw = status_with_ignored(ctx, wt, reuse).await?;
     let mut work = parse_status(&raw);
     work.raw = raw;
+    // Edits git's status does not show (final review C1): in the list, the token and the
+    // re-check before removing, as any other change.
+    work.marked = marked_changes(ctx, wt).await?;
+    let mut names = Vec::new();
+    for (path, why) in &work.marked {
+        work.changed.push(path.clone());
+        names.extend_from_slice(path.as_bytes());
+        names.push(0);
+        names.extend_from_slice(why.as_bytes());
+        names.push(0);
+    }
     // Sizes and times too, so an edit after the dialog asks again.
     let files = work
         .changed
@@ -582,8 +596,9 @@ async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Res
     let ignored = work.ignored_entries.iter().map(|p| p.trim_end_matches('/'));
     work.status_hash = fnv1a(
         &[
-            work.status_hash.to_le_bytes(),
-            stat_hash(dir, files).to_le_bytes(),
+            &work.status_hash.to_le_bytes()[..],
+            &stat_hash(dir, files).to_le_bytes(),
+            &names,
         ]
         .concat(),
     );
@@ -595,6 +610,81 @@ async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Res
         .concat(),
     );
     Ok(work)
+}
+
+/// Most marked files hashed in one `hash-object` (its arguments stay short).
+const HASHED_AT_ONCE: usize = 100;
+
+/// The files of the worktree `wt` marked assume-unchanged or skip-worktree (`ls-files -v`:
+/// a lowercase tag, or `S`) that differ from the index, with the mark: git's `status`, and
+/// git's own check before a plain `worktree remove`, skip them, so edits to them would go
+/// without a word. One that is not on disk is no danger (a sparse checkout leaves
+/// skip-worktree files out; a deleted file loses nothing). One whose content git cannot
+/// compare (a link, a folder, a name that is not UTF-8, a failed hash) counts as changed.
+async fn marked_changes(ctx: &OpCtx<'_>, wt: &WorktreeInfo) -> Result<Vec<(String, &'static str)>> {
+    let dir = Path::new(&wt.path);
+    let out = ctx
+        .runner
+        .run_unchecked(dir, &["ls-files", "-v", "-s", "-z"], CmdKind::Read)
+        .await?;
+    if out.code != 0 {
+        return Err(CoreError::new(
+            ErrorCode::GitFailed,
+            format!(
+                "Could not read what the worktree at {} holds, so nothing was deleted.",
+                wt.path
+            ),
+        )
+        .with_detail(out.stderr));
+    }
+    let mut changed = Vec::new();
+    let mut to_hash: Vec<(String, String, &'static str)> = Vec::new();
+    for entry in out.stdout.split(|&b| b == 0) {
+        // `<tag> <mode> <object> <stage>\t<path>`
+        let Some(tab) = entry.iter().position(|&b| b == b'\t') else {
+            continue;
+        };
+        let meta = String::from_utf8_lossy(&entry[..tab]);
+        let mut fields = meta.split(' ');
+        let (Some(tag), Some(mode), Some(object)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let why = match tag {
+            "S" | "s" => "skip-worktree",
+            t if t.chars().all(|c| c.is_ascii_lowercase()) => "assume-unchanged",
+            _ => continue,
+        };
+        if mode == "160000" {
+            // A submodule: its own repository, not a file.
+            continue;
+        }
+        let Ok(path) = std::str::from_utf8(&entry[tab + 1..]) else {
+            changed.push((String::from_utf8_lossy(&entry[tab + 1..]).into_owned(), why));
+            continue;
+        };
+        match fs::symlink_metadata(dir.join(path)) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Ok(meta) if meta.is_file() && mode != "120000" => {
+                to_hash.push((path.to_owned(), object.to_owned(), why));
+            }
+            _ => changed.push((path.to_owned(), why)),
+        }
+    }
+    for run in to_hash.chunks(HASHED_AT_ONCE) {
+        let mut args = vec!["hash-object", "--"];
+        args.extend(run.iter().map(|(path, _, _)| path.as_str()));
+        let out = ctx.runner.run_unchecked(dir, &args, CmdKind::Read).await?;
+        let text = out.text();
+        let hashes: Vec<&str> = text.lines().collect();
+        let compared = out.code == 0 && hashes.len() == run.len();
+        for (i, (path, object, why)) in run.iter().enumerate() {
+            if !compared || hashes[i].trim() != object {
+                changed.push((path.clone(), *why));
+            }
+        }
+    }
+    Ok(changed)
 }
 
 /// The status and ignored-file hashes in a `remove_worktree_*` danger's `token`, as
@@ -890,12 +980,15 @@ fn work_danger(work: &Work, wt: &WorktreeInfo, delete_branch: bool) -> Option<Da
         ));
     }
     message.push_str(&kept);
-    section(
-        &mut detail,
-        "Uncommitted changes",
-        &work.changed,
-        work.changed.len(),
-    );
+    let changed: Vec<String> = work
+        .changed
+        .iter()
+        .map(|path| match work.marked.iter().find(|(p, _)| p == path) {
+            Some((_, why)) => format!("{path} (marked {why}: git status does not show it)"),
+            None => path.clone(),
+        })
+        .collect();
+    section(&mut detail, "Uncommitted changes", &changed, changed.len());
     section(
         &mut detail,
         "Untracked files",

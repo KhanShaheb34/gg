@@ -539,6 +539,145 @@ async fn an_ignored_file_that_appears_after_the_dialog_asks_again() {
     let _ = repo;
 }
 
+/// Final review C1: git's `status` (and git's own check before a plain `worktree remove`)
+/// skips files marked assume-unchanged or skip-worktree, so edits to them were deleted
+/// without a word. They are uncommitted changes: red, listed with why git hides them, and
+/// removed only with a confirmed `--force`.
+#[tokio::test]
+async fn edits_to_files_marked_assume_unchanged_or_skip_worktree_are_work() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("a.txt"), "a, edited locally\n").unwrap();
+    git_in(&wt, &["update-index", "--assume-unchanged", "a.txt"]);
+    fs::write(wt.join(".gitignore"), "build/\n*.log\n# mine\n").unwrap();
+    git_in(&wt, &["update-index", "--skip-worktree", ".gitignore"]);
+    assert_eq!(
+        git_in(&wt, &["status", "--porcelain"]),
+        "",
+        "git shows nothing"
+    );
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    assert!(
+        danger
+            .message
+            .contains("has uncommitted changes to 2 files."),
+        "{}",
+        danger.message
+    );
+    let detail = danger.detail.as_deref().unwrap();
+    assert!(detail.starts_with("Uncommitted changes (2):\n"), "{detail}");
+    assert!(
+        detail.contains("  a.txt (marked assume-unchanged: git status does not show it)"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("  .gitignore (marked skip-worktree: git status does not show it)"),
+        "{detail}"
+    );
+    let out = h
+        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(!wt.exists());
+    assert_eq!(
+        worktree_writes(&h, &out),
+        [vec![
+            "worktree".to_owned(),
+            "remove".into(),
+            "--force".into(),
+            "--".into(),
+            real_gone(&wt)
+        ]]
+    );
+}
+
+/// A marked file edited after the dialog changes the token (its size and time are in it).
+#[tokio::test]
+async fn a_marked_file_edited_after_the_dialog_asks_again() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("a.txt"), "local\n").unwrap();
+    git_in(&wt, &["update-index", "--skip-worktree", "a.txt"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    fs::write(
+        wt.join("a.txt"),
+        "local, and more written after the dialog\n",
+    )
+    .unwrap();
+    let out = h
+        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
+        .await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:#?}");
+    assert!(wt.join("a.txt").exists());
+}
+
+/// A marked file that is as the index has it is no work, and neither is a skip-worktree
+/// file that is not on disk at all (a sparse checkout leaves them out): nothing is asked,
+/// and the remove is plain.
+#[tokio::test]
+async fn marked_files_unchanged_or_left_out_by_a_sparse_checkout_are_no_danger() {
+    let (repo, _origin, wt) = pushed_worktree();
+    git_in(&wt, &["update-index", "--assume-unchanged", "a.txt"]);
+    git_in(&wt, &["update-index", "--skip-worktree", ".gitignore"]);
+    fs::remove_file(wt.join(".gitignore")).unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, remove(&wt, false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(out.dangers.is_empty());
+    assert!(!wt.exists());
+    assert_eq!(
+        worktree_writes(&h, &out),
+        [vec![
+            "worktree".to_owned(),
+            "remove".into(),
+            "--".into(),
+            real_gone(&wt)
+        ]],
+        "plain remove"
+    );
+}
+
+/// A clean worktree whose marked file is edited while the main worktree becomes active is
+/// not removed: the body's re-read sees marked files too.
+#[tokio::test]
+async fn a_marked_file_edited_during_the_switch_stops_the_removal() {
+    let (repo, _origin, wt) = pushed_worktree();
+    git_in(&wt, &["update-index", "--assume-unchanged", "a.txt"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    h.m.set_active_worktree(id, &wt).await.unwrap();
+    h.m.set_status_delay(std::time::Duration::from_millis(1500));
+    let run = tokio::spawn({
+        let (m, request) = (h.m.clone(), remove(&wt, false));
+        async move { m.run_op(id, request, &[]).await }
+    });
+    h.sink
+        .wait_for(TIMEOUT, |n, v| {
+            n == "repo-changed" && v["repoId"] == id && v["op"].is_object()
+        })
+        .await
+        .expect("the removal runs");
+    fs::write(wt.join("a.txt"), "edited during the switch\n").unwrap();
+    let out = tokio::time::timeout(TIMEOUT, run)
+        .await
+        .expect("ends")
+        .unwrap()
+        .unwrap();
+    h.m.set_status_delay(std::time::Duration::ZERO);
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message
+            .starts_with("It changed while gg was getting ready; nothing was deleted."),
+        "{}",
+        out.message
+    );
+    assert!(worktree_writes(&h, &out).is_empty(), "no remove ran");
+    let _ = repo;
+}
+
 #[tokio::test]
 async fn a_locked_worktree_is_refused_with_its_reason() {
     let (repo, _origin, wt) = pushed_worktree();

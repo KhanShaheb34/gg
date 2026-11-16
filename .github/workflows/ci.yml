@@ -1,0 +1,109 @@
+# Builds and tests gg on macOS, Linux and Windows: formatting, clippy, the Rust tests, the
+# UI's checks and tests, the end-to-end tests (Chromium against the dev server), and the
+# app's own bundles for each platform, kept for a week. No secrets: nothing is signed or
+# published here (release.yml does releases).
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch (or pull request) supersedes a run still going.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Tauri 2's system libraries (WebKitGTK 4.1, GTK 3, the tray, SVG icons, D-Bus for
+      # the single-instance lock) and patchelf for the AppImage.
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config file libssl-dev libxdo-dev libdbus-1-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Rust (stable, with clippy and rustfmt)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # The version is package.json's packageManager.
+      - name: pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install the UI's packages
+        run: pnpm install --frozen-lockfile
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: clippy (perf build)
+        run: cargo clippy -p gg-desktop --all-targets --features perf -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: svelte-check and tsc
+        run: pnpm check
+
+      - name: UI tests
+        run: pnpm test
+
+      # Skipped on Windows: the end-to-end fixtures stand in for gh, ssh and the login shell
+      # with POSIX sh scripts, and the app runs only .exe programs there (see
+      # docs/platforms.md); the Windows paths are covered by the Rust tests.
+      - name: Playwright's Chromium
+        if: runner.os != 'Windows'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        if: runner.os != 'Windows'
+        run: pnpm e2e
+
+      - name: Build the app
+        run: pnpm tauri build
+
+      - name: Keep the bundles
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-${{ runner.os }}
+          path: target/release/bundle/
+          if-no-files-found: error
+          retention-days: 7

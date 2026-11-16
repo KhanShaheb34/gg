@@ -129,10 +129,18 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   {
     group: "Repositories",
     does: "Keyboard shortcuts (this sheet)",
-    keys: [["?"]],
-    where: "when no text field has the focus",
+    // F1 and ⌘/ also while typing, and where ? needs AltGr (Task 10 review minor 13).
+    keys: [["?"], ["F1"]],
+    macKeys: [["?"], ["Mod", "/"]],
+    where: "? when no text field has the focus",
     kind: "help",
-    match: (e, c) => (!c.typing && e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey ? { kind: "help" } : null),
+    match: (e, c) => {
+      const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+      if (!c.typing && e.key === "?" && plain) return { kind: "help" };
+      if (!c.isMac && e.key === "F1" && plain && !e.shiftKey) return { kind: "help" };
+      if (c.isMac && c.command && e.key === "/") return { kind: "help" };
+      return null;
+    },
   },
 
   // --- Graph ----------------------------------------------------------------------------

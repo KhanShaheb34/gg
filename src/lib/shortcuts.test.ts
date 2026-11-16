@@ -131,6 +131,17 @@ describe("Task 10 shortcuts", () => {
     expect(shortcutFor(key("/"), true)).toBeNull();
   });
 
+  it("F1 (Windows, Linux) and Cmd+/ (macOS) show them too, even while typing: ? needs AltGr on some layouts (Task 10 review minor 13)", () => {
+    expect(shortcutFor(key("F1"), false)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("F1"), false, true)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("F1", { ctrlKey: true }), false)).toBeNull();
+    expect(shortcutFor(key("/", { metaKey: true }), true)).toEqual({ kind: "help" });
+    // A layout where / is Shift+7.
+    expect(shortcutFor(key("/", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("/", { metaKey: true }), true, true)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("/", { ctrlKey: true }), false)).toBeNull();
+  });
+
   it("switches worktree with Cmd+Option+1..9 on macOS (Cmd+Shift+3/4/5 are the system's screenshots), Ctrl+Shift+1..9 elsewhere; never a tab", () => {
     const at = (n: number, mods: Parameters<typeof key>[1]) => ({ ...key(String(n), mods), code: `Digit${n}` });
     // Option and Shift change the character, not the key's position.

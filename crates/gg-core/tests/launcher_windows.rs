@@ -113,9 +113,13 @@ fn a_git_in_the_current_folder_is_never_run() {
     assert!(!marker.exists(), "the folder's git.cmd ran");
 }
 
-/// `script` run in `cwd` with `args`, starting the stub `stub` instead of the app.
+/// `script` run in `cwd` with `args`, starting the stub `stub` instead of the app. Its
+/// output goes to files, not pipes: what `start` starts inherits the launcher's handles and
+/// would keep a pipe open after the launcher has ended. Given up on after 60 s.
 fn run_with_stub(script: &Path, cwd: &Path, args: &[&str], stub: &Path) -> Output {
-    Command::new(script)
+    let out_dir = tempfile::tempdir().unwrap();
+    let (out, err) = (out_dir.path().join("out"), out_dir.path().join("err"));
+    let mut child = Command::new(script)
         .args(args)
         .current_dir(cwd)
         .env("GIT_CONFIG_GLOBAL", empty_git_config())
@@ -123,8 +127,27 @@ fn run_with_stub(script: &Path, cwd: &Path, args: &[&str], stub: &Path) -> Outpu
         .env("GG_APP_BIN", stub)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .output()
-        .unwrap()
+        .stdin(std::process::Stdio::null())
+        .stdout(fs::File::create(&out).unwrap())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the launcher did not end within 60 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    Output {
+        status,
+        stdout: fs::read(&out).unwrap(),
+        stderr: fs::read(&err).unwrap(),
+    }
 }
 
 /// A stub in `dir` that writes the folder it is given to `record` (in `dir`): what the app

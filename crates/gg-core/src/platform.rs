@@ -626,7 +626,8 @@ mod job {
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle, MoveFileExW,
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FileIdInfo,
+        GetFileInformationByHandle, GetFileInformationByHandleEx, MoveFileExW,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
@@ -787,12 +788,38 @@ mod job {
         Ok(())
     }
 
+    /// The file's 128-bit id (`FileIdInfo`: unique on ReFS too) mixed with its volume's
+    /// serial number, so on NTFS (where the id's upper half is zero) it is the volume and the
+    /// file index; where `FileIdInfo` cannot be read (FAT), the volume and the 64-bit file
+    /// index. A folder is opened too (`FILE_FLAG_BACKUP_SEMANTICS`).
     pub(super) fn file_identity(path: &Path) -> Option<u128> {
-        let file = std::fs::File::open(path).ok()?;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .ok()?;
+        let handle = file.as_raw_handle() as HANDLE;
+        let mut id = FILE_ID_INFO::default();
+        // SAFETY: the handle is open (held by `file`); `id` is a valid out buffer of the
+        // size given.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileIdInfo,
+                (&raw mut id).cast::<c_void>(),
+                u32::try_from(std::mem::size_of::<FILE_ID_INFO>()).ok()?,
+            )
+        };
+        if ok != 0 {
+            return Some(
+                u128::from_le_bytes(id.FileId.Identifier)
+                    ^ (u128::from(id.VolumeSerialNumber) << 64),
+            );
+        }
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: the file handle is open (held by `file`); `info` is a valid out pointer.
-        let ok =
-            unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &raw mut info) };
+        // SAFETY: as above; `info` is a valid out pointer.
+        let ok = unsafe { GetFileInformationByHandle(handle, &raw mut info) };
         (ok != 0).then(|| {
             (u128::from(info.dwVolumeSerialNumber) << 64)
                 | (u128::from(info.nFileIndexHigh) << 32)

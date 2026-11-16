@@ -196,7 +196,7 @@
       </svg>
       <span class="busy-title">{visibleText(busy.title)}</span>
       {#if progress !== null}
-        <MiddleText class="busy-progress" text={progress} keep={14} title={null} />
+        <MiddleText class="busy-progress" text={progress} keep={14} endFirst title={null} />
       {/if}
       {#if busy.queued > 0}
         <span class="queued" aria-label="{busy.queued} more queued">+{busy.queued}</span>
@@ -377,14 +377,15 @@
     flex: none;
   }
 
-  /* The running operation: a quiet accent pill, its title cut short if it must be. */
+  /* The running operation: a quiet accent pill, its title cut short if it must be. As wide
+     from its start as with git's progress beside the title: nothing moves when that comes. */
   .busy {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    flex: 0 1 220px;
+    flex: 0 1 360px;
     min-width: 0;
-    max-width: 280px;
+    max-width: 360px;
     /* Its title does not widen the toolbar: it takes the room there is. */
     contain: inline-size;
     height: 24px;
@@ -411,12 +412,7 @@
     color: var(--text);
   }
 
-  /* With git's progress beside the title: wider, the progress giving way first. */
-  .busy.with-progress {
-    flex-basis: 360px;
-    max-width: 440px;
-  }
-
+  /* With git's progress beside the title: the progress gives way first (its start). */
   .busy.with-progress .busy-title {
     flex: none;
     max-width: 55%;

@@ -102,12 +102,19 @@ export function worktreeFolders(paths: string[], main: string | null, home?: str
  * `text` cut in the middle to fit `room` (in the units of `width`, which measures a string):
  * its end (up to `keep` characters, at most half) stays and its start gives way, with "…"
  * between ("feature/pay…service-v2"); when even "…" and the end do not fit, the end gives way
- * too. Null when the whole text fits.
+ * too. With `endFirst`, all of the end that fits stays and the start goes first ("…45%
+ * (450/1000)": a progress line's counts). Null when the whole text fits.
  */
-export function cutToFit(text: string, room: number, keep: number, width: (s: string) => number): string | null {
+export function cutToFit(
+  text: string,
+  room: number,
+  keep: number,
+  width: (s: string) => number,
+  endFirst = false,
+): string | null {
   if (width(text) <= room) return null;
   const chars = [...text];
-  let tail = Math.min(keep, Math.floor(chars.length / 2));
+  let tail = endFirst ? chars.length - 1 : Math.min(keep, Math.floor(chars.length / 2));
   const cut = (head: number, tailN: number) => chars.slice(0, head).join("") + "…" + chars.slice(chars.length - tailN).join("");
   const fits = (head: number, tailN: number) => width(cut(head, tailN)) <= room;
   while (tail > 0 && !fits(0, tail)) tail--;

@@ -126,6 +126,10 @@ test("create: the dialog opens at once, suggests from the commits, pushes first 
   await expect(create).toBeEnabled();
   await dialog(page).getByTestId("pr-draft").check();
   await create.click();
+  // Task 10 review minor 12: the busy indicator keeps its width when the step appears in it.
+  const busy = page.getByTestId("busy");
+  await expect(busy).toBeVisible();
+  const before = (await busy.boundingBox())!.width;
 
   // Waiting on the request: Cancel off, the step said.
   await expect(dialog(page).getByRole("button", { name: "Cancel" })).toBeDisabled();
@@ -133,6 +137,7 @@ test("create: the dialog opens at once, suggests from the commits, pushes first 
   await expect(dialog(page).getByRole("button", { name: "Creating…" })).toBeDisabled();
   // The busy indicator says the step too, once the operation has run for a second (op-progress).
   await expect(page.getByTestId("busy")).toContainText("Creating the pull request…");
+  expect((await busy.boundingBox())!.width).toBe(before);
 
   await expect(dialog(page)).toHaveCount(0);
   const done = notice(page, "Opened draft pull request #21 of fix/typo into main");

@@ -48,10 +48,12 @@
     title?: string | null;
     /** What comes up to the last of these characters is quieter (a path's folders). */
     dimThrough?: string;
+    /** Cut at the start instead: all of the end that fits stays (a progress line's counts). */
+    endFirst?: boolean;
     class?: string;
   };
 
-  let { text, keep = 10, title = undefined, dimThrough, class: className = "" }: Props = $props();
+  let { text, keep = 10, title = undefined, dimThrough, endFirst = false, class: className = "" }: Props = $props();
 
   /** `s` split where its quiet part ends. */
   const split = (s: string): [string, string] => {
@@ -74,7 +76,7 @@
       return;
     }
     const width = measurer(getComputedStyle(el).font);
-    const cut = cutToFit(visible, room, keep, width);
+    const cut = cutToFit(visible, room, keep, width, endFirst);
     if (cut === null) {
       shown = null;
       return;
@@ -87,6 +89,7 @@
     if (!el) return;
     void visible;
     void keep;
+    void endFirst;
     fit();
     return observe(el, fit);
   });

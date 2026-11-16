@@ -110,6 +110,14 @@ describe("cutToFit", () => {
     expect(cutToFit("abcdefgh", 7, 10, width)).toBe("ab…efgh");
   });
 
+  it("with the end first, gives up the start before anything of the end (git's progress keeps its counts; Task 10 review minor 12)", () => {
+    const line = "Receiving objects: 45% (450/1000)";
+    expect(cutToFit(line, 20, 14, width, true)).toBe("…cts: 45% (450/1000)");
+    expect(cutToFit(line, 40, 14, width, true)).toBeNull();
+    // Even past half the text.
+    expect(cutToFit("abcdefghij", 8, 2, width, true)).toBe("…defghij");
+  });
+
   it("lets the end give way too when nothing else fits", () => {
     expect(cutToFit("abcdefghij", 3, 4, width)).toBe("…ij");
     expect(cutToFit("abcdefghij", 1, 4, width)).toBe("…");

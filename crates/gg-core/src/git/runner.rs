@@ -630,6 +630,28 @@ pub struct GitRunner {
     /// commit of chosen files builds its tree in a temporary index (see
     /// [`GitRunner::with_index_file`]).
     index_file: Option<PathBuf>,
+    /// `GIT_SSH_COMMAND` for every git child, if the app sets one (see
+    /// [`batch_ssh_command`]).
+    ssh_command: Option<&'static str>,
+}
+
+/// The ssh command that makes ssh fail at once instead of asking (a passphrase, a password,
+/// whether to trust a new host key).
+pub const BATCH_SSH_COMMAND: &str = "ssh -o BatchMode=yes";
+
+/// `GIT_SSH_COMMAND` for the git children of a repository: on Windows, where a child has no
+/// terminal to fail on but a hidden console that ssh would wait on until the time limit,
+/// [`BATCH_SSH_COMMAND`], so a fetch, pull or push that needs an answer fails at once (R41);
+/// `None` when the user chose their ssh already (`GIT_SSH_COMMAND` or `GIT_SSH` in the
+/// environment, `has_env`; `core.sshCommand` set for the repository, `configured`), and
+/// elsewhere (no terminal: ssh fails at once by itself).
+pub fn batch_ssh_command(
+    windows: bool,
+    has_env: impl Fn(&str) -> bool,
+    configured: bool,
+) -> Option<&'static str> {
+    let chosen = configured || has_env("GIT_SSH_COMMAND") || has_env("GIT_SSH");
+    (windows && !chosen).then_some(BATCH_SSH_COMMAND)
 }
 
 impl GitRunner {
@@ -668,6 +690,7 @@ impl GitRunner {
                 stop: None,
                 version: None,
                 index_file: None,
+                ssh_command: None,
                 program,
             };
             if let Ok(version) = runner.check().await {
@@ -683,6 +706,7 @@ impl GitRunner {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: git_program(None)?,
         };
         runner.version = runner.check().await?;
@@ -736,6 +760,27 @@ impl GitRunner {
 
     /// This runner, with git using the index file `index` (an absolute path) instead of the
     /// worktree's own: `GIT_INDEX_FILE` for git and the hooks it runs.
+    /// This runner, setting `GIT_SSH_COMMAND` to `command` for every git child when it is
+    /// `Some` (see [`batch_ssh_command`]).
+    pub(crate) fn with_ssh_command(mut self, command: Option<&'static str>) -> Self {
+        self.ssh_command = command;
+        self
+    }
+
+    /// The ssh command [`batch_ssh_command`] gives for the repository at `root`, whose
+    /// `core.sshCommand` is read for it (only on Windows: elsewhere it is never needed).
+    pub(crate) async fn batch_ssh_command_for(&self, root: &Path) -> Option<&'static str> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let configured = self
+            .run(root, &["config", "--get", "core.sshCommand"], CmdKind::Read)
+            .await
+            .is_ok_and(|out| out.code == 0 && !out.text().trim().is_empty());
+        let has_env = |var: &str| std::env::var_os(var).is_some_and(|v| !v.is_empty());
+        batch_ssh_command(true, has_env, configured)
+    }
+
     pub(crate) fn with_index_file(&self, index: &Path) -> Self {
         let mut runner = self.clone();
         runner.index_file = Some(index.to_path_buf());
@@ -1071,6 +1116,9 @@ impl GitRunner {
         cmd.args(LEADING_ARGS).args(args).envs(GIT_ENV);
         if let Some(index) = &self.index_file {
             cmd.env("GIT_INDEX_FILE", index);
+        }
+        if let Some(ssh) = self.ssh_command {
+            cmd.env("GIT_SSH_COMMAND", ssh);
         }
         // Test builds only (the app refuses `testutil` in a release build): the developer's
         // global and system config must not change what tests see.
@@ -1777,6 +1825,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let dir = tempfile::tempdir().unwrap();
@@ -1823,6 +1872,7 @@ mod tests {
             stop,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         git.for_repo(3).tool(PathBuf::from("/bin/sh"), "gh")
@@ -1841,6 +1891,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let limit = TimeLimit::total(Duration::from_secs(1));
@@ -1916,6 +1967,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         }
         .tool(PathBuf::from("/bin/sh"), "gh")
@@ -2128,6 +2180,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let dir = tempfile::tempdir().unwrap();
@@ -2176,6 +2229,7 @@ mod tests {
             stop: Some(stop.clone()),
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let dir = tempfile::tempdir().unwrap();
@@ -2249,6 +2303,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         }
     }
@@ -2333,6 +2388,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let dir = tempfile::tempdir().unwrap();
@@ -2369,6 +2425,54 @@ mod tests {
         );
     }
 
+    /// ssh is told not to ask on Windows only, and only when the user has not chosen their
+    /// ssh (environment or the repository's `core.sshCommand`).
+    #[test]
+    fn ssh_is_made_to_fail_at_once_on_windows_unless_chosen() {
+        let none = |_: &str| false;
+        assert_eq!(
+            batch_ssh_command(true, none, false),
+            Some("ssh -o BatchMode=yes")
+        );
+        assert_eq!(batch_ssh_command(false, none, false), None);
+        assert_eq!(batch_ssh_command(true, none, true), None);
+        for var in ["GIT_SSH_COMMAND", "GIT_SSH"] {
+            assert_eq!(
+                batch_ssh_command(true, |v: &str| v == var, false),
+                None,
+                "{var}"
+            );
+        }
+        assert_eq!(
+            batch_ssh_command(true, |v: &str| v == "SSH_AUTH_SOCK", false),
+            Some(BATCH_SSH_COMMAND)
+        );
+    }
+
+    /// The ssh command reaches git's children as `GIT_SSH_COMMAND`.
+    #[test]
+    fn the_ssh_command_is_given_to_git() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            live: Arc::default(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
+        }
+        .with_ssh_command(Some(BATCH_SSH_COMMAND));
+        let cmd = runner.command(None, &["fetch"]);
+        let set = cmd
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "GIT_SSH_COMMAND")
+            .and_then(|(_, v)| v);
+        assert_eq!(set, Some(std::ffi::OsStr::new(BATCH_SSH_COMMAND)));
+    }
+
     #[test]
     fn inherited_repo_vars_are_removed() {
         let runner = GitRunner {
@@ -2379,6 +2483,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let cmd = runner.command(None, &["status"]);
@@ -2434,6 +2539,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         runner.log_timed_out(
@@ -2600,6 +2706,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let op = runner.for_repo(4).for_op(9, Stop::new());
@@ -2620,6 +2727,7 @@ mod tests {
             stop: None,
             version: None,
             index_file: None,
+            ssh_command: None,
             program: None,
         };
         let cmd = runner.command(None, &["rebase"]);

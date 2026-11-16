@@ -49,8 +49,12 @@ are **compiled, not run**. This page says what was verified where, as of Novembe
   among them) again (R19). When only a `git.cmd` shim is found, gg says so and names it. VS
   Code's `code` on `PATH` is `code.cmd`: set the editor to `Code.exe` itself.
 - **No terminal for children** is `CREATE_NO_WINDOW`: nothing flashes a console, but a program
-  that insists on asking in a console (an ssh passphrase without an agent) waits there until
-  the time limit or Stop, where on Unix it fails at once.
+  that insists on asking in a console waits there until the time limit or Stop, where on Unix
+  it fails at once. For ssh, gg runs git with `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`, so a
+  passphrase, password or new host key fails at once instead, unless the user chose their ssh:
+  `GIT_SSH_COMMAND` or `GIT_SSH` set in the environment, or `core.sshCommand` set for the
+  repository (read when the repository is opened). Their choice is left alone, and if it asks
+  in a console, it waits there as above.
 - **`PATH` is the app's own**: started from the Start menu, gg sees the user's `PATH` as it was
   when Windows started the session; a `PATH` changed since needs the app restarted.
 - **What else is `gg`** is found as `where gg` finds it; a doskey macro or a PowerShell alias

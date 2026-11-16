@@ -859,6 +859,8 @@ impl RepoManager {
             .find(|w| w.is_main)
             .map_or_else(|| location.worktree.clone(), |w| PathBuf::from(&w.path));
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        // Windows: ssh told not to ask, unless the user chose their ssh (read once, here).
+        let ssh_command = runner.batch_ssh_command_for(&root).await;
         // Watching is a convenience: a repository that cannot be watched still opens (and
         // says so once, with `repo-error`), and refreshes on focus and on request.
         let watch_reported = Arc::new(AtomicBool::new(false));
@@ -887,7 +889,7 @@ impl RepoManager {
             root,
             worktree: Mutex::new(worktree.clone()),
             common_dir: location.common_dir,
-            runner: runner.for_repo(id),
+            runner: runner.for_repo(id).with_ssh_command(ssh_command),
             slot: RwLock::new(Slot {
                 current: RepoState::new(info, view, 1),
                 pending: None,

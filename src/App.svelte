@@ -283,6 +283,8 @@
 <svelte:window onkeydown={onKeydown} bind:innerWidth={sidePanel.windowW} />
 
 <div class="shell" data-testid="app-root">
+  <!-- Behind a modal dialog or sheet, the window takes no input: Tab never reaches it. -->
+  <div class="behind" inert={overlays.dialogs.length > 0}>
   <TabBar />
 
   <main class="content">
@@ -431,6 +433,7 @@
       <Welcome />
     {/if}
   </main>
+  </div>
 
   {#if dragging}
     <div class="drop" aria-hidden="true">
@@ -449,7 +452,8 @@
 </div>
 
 <style>
-  .dialog-layer {
+  .dialog-layer,
+  .behind {
     display: contents;
   }
 

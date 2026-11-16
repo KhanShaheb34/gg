@@ -3,7 +3,7 @@
 // open) goes on top of it; the one below is kept as it is and takes input again once the
 // top one closes. ContextMenu.svelte and the dialog host in App.svelte show what is here.
 
-import type { Component } from "svelte";
+import { type Component, tick } from "svelte";
 import type { MenuItem } from "../menus/types";
 
 export type OpenMenu = {
@@ -31,6 +31,8 @@ export type OpenDialog = {
   // Any dialog component, with the props it was opened with.
   component: Component<any>;
   props: Record<string, unknown>;
+  /** What had the focus when it was opened (a button of the dialog under it, say). */
+  opener: HTMLElement | null;
 };
 
 class Overlays {
@@ -97,13 +99,31 @@ export function closeMenu(restoreFocus = true): void {
 export function openDialog<P extends Record<string, unknown>>(component: Component<P>, props: P): number {
   closeMenu(false);
   const id = nextId++;
-  overlays.dialogs = [...overlays.dialogs, { id, component, props }];
+  // Taken now: once the dialog is shown, what is under it is inert and has lost the focus.
+  const focused = typeof document === "undefined" ? null : document.activeElement;
+  const opener =
+    typeof HTMLElement !== "undefined" && focused instanceof HTMLElement && focused !== document.body ? focused : null;
+  overlays.dialogs = [...overlays.dialogs, { id, component, props, opener }];
   return id;
 }
 
-/** Closes dialog `id`, wherever it is in the stack; nothing if it is closed already. */
+/**
+ * Closes dialog `id`, wherever it is in the stack; nothing if it is closed already. When it
+ * was the top one, the focus goes back to what had it when it opened (once what is under it
+ * takes input again), unless something else has taken it meanwhile.
+ */
 export function closeDialog(id: number): void {
-  if (overlays.dialogs.some((d) => d.id === id)) overlays.dialogs = overlays.dialogs.filter((d) => d.id !== id);
+  const closing = overlays.dialogs.find((d) => d.id === id);
+  if (!closing) return;
+  const wasTop = closing === overlays.dialog;
+  overlays.dialogs = overlays.dialogs.filter((d) => d.id !== id);
+  const opener = closing.opener;
+  if (!wasTop || !opener) return;
+  void tick().then(() => {
+    const now = document.activeElement;
+    const free = now === null || now === document.body;
+    if (free && opener.isConnected && !opener.closest("[inert]")) opener.focus({ preventScroll: true });
+  });
 }
 
 /** Opens `component` as a dialog with `props` and a `close` that closes it. */

@@ -172,3 +172,36 @@ test("the keyboard shortcuts sheet lists every group, opens with ? but not while
   await page.keyboard.press(process.platform === "darwin" ? "Meta+Alt+Digit1" : "Control+Shift+Digit1");
   await expect(page.getByTestId("active-worktree")).toHaveAttribute("title", new RegExp(`${path.basename(repo)}\\b`));
 });
+
+// Task 10 review minor 7: a dialog over the settings sheet (Reset, Install gg) gives the focus
+// back to the control that opened it when it closes, and nothing behind the sheet (the tab
+// bar, the repository) can be reached with Tab while the sheet is open.
+test("a dialog over the settings gives the focus back, and Tab never leaves the sheet", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await page.getByTestId("open-settings").click();
+  await expect(sheet(page)).toBeVisible();
+
+  for (const [control, dialog, cancel] of [
+    ["settings-reset", "Reset all settings?", "Cancel"],
+    ["settings-cli-install", /gg.*command/i, "Cancel"],
+  ] as const) {
+    const opener = sheet(page).getByTestId(control);
+    await opener.click();
+    const box = page.getByRole("dialog", { name: dialog });
+    await expect(box).toBeVisible();
+    await box.getByRole("button", { name: cancel }).click();
+    await expect(box).toHaveCount(0);
+    await expect(opener).toBeFocused();
+  }
+
+  // Around the whole sheet with Tab: never on anything behind it.
+  const inSheet = async () => page.evaluate(() => !!document.activeElement?.closest('[data-testid="settings"]'));
+  for (let i = 0; i < 60; i++) {
+    await page.keyboard.press("Tab");
+    expect(await inSheet(), `Tab ${i + 1}`).toBe(true);
+  }
+  // The window behind takes no input at all while the sheet is open.
+  await expect(page.locator('[data-testid="app-root"] > .behind').first()).toHaveAttribute("inert", "");
+});

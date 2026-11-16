@@ -1000,17 +1000,19 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
             t.elapsed()
         }
     };
-    let base = baseline(&h, id, repo.path(), &head).await;
     let waited = timed(2, "b").await;
     assert!(
         waited >= Duration::from_millis(480),
         "waited {waited:?} for number 1"
     );
     assert!(waited < Duration::from_millis(3000), "waited {waited:?}");
+    // The same request without the 500 ms wait: well under the one that waited (the op's own
+    // time is in both, whatever the machine).
+    let not_again = |t: Duration| t + Duration::from_millis(300) < waited;
     let third = timed(3, "c").await;
-    assert!(waited_for_nothing(third, base), "{third:?} ({base:?})");
+    assert!(not_again(third), "{third:?} (waited {waited:?})");
     let late = timed(1, "a").await;
-    assert!(waited_for_nothing(late, base), "late: {late:?} ({base:?})");
+    assert!(not_again(late), "late: {late:?} (waited {waited:?})");
 
     h.m.close(id).await.expect("closes");
     let id2 = h.open(repo.path()).await.repo_id;
@@ -1025,8 +1027,8 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
     .await
     .expect("runs");
     assert!(
-        waited_for_nothing(t.elapsed(), base),
-        "numbers start again: {:?} ({base:?})",
+        not_again(t.elapsed()),
+        "numbers start again: {:?} (waited {waited:?})",
         t.elapsed()
     );
 }

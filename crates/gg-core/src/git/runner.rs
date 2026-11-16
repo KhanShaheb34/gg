@@ -109,14 +109,31 @@ fn config_quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// Variables an enclosing git process (for example a hook) exports. Inherited, they would
-/// point our commands at that process's repository instead of `cwd`.
-const INHERITED_REPO_VARS: [&str; 5] = [
+/// Variables an enclosing git process (for example a hook) exports, or a shell sets, that
+/// point our commands at another repository, index, object store, namespace or discovery
+/// boundary than `cwd`'s: every variable `git rev-parse --local-env-vars` names except the
+/// config ones (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`: a user's own `-c` settings,
+/// kept on purpose), and the others of that kind. `GIT_INTERNAL_*` go too (see
+/// [`child_command`]).
+const INHERITED_REPO_VARS: [&str; 18] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
     "GIT_INDEX_FILE",
     "GIT_COMMON_DIR",
     "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_GRAFT_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_CONFIG",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_QUARANTINE_PATH",
+    "GIT_QUARANTINE_ENVIRONMENT",
 ];
 
 /// Brackets the `PATH` the login shell prints, so profile output around it cannot be taken
@@ -1191,6 +1208,11 @@ fn child_command(
     for var in INHERITED_REPO_VARS {
         cmd.env_remove(var);
     }
+    for (var, _) in std::env::vars_os() {
+        if var.to_string_lossy().starts_with("GIT_INTERNAL_") {
+            cmd.env_remove(var);
+        }
+    }
     if let Some(path) = path {
         cmd.env("PATH", path);
     }
@@ -1775,6 +1797,38 @@ pub(crate) fn between_markers<'a>(out: &'a [u8], marker: &[u8]) -> Option<&'a [u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review M8: every variable git itself calls local to a repository
+    /// (`rev-parse --local-env-vars`) is removed from every child, except the config ones the
+    /// app keeps on purpose (a user's `-c` settings), and so are the others that point git at
+    /// another namespace, object store or discovery boundary.
+    #[test]
+    fn every_variable_that_points_git_elsewhere_is_removed() {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .expect("git runs");
+        let local = String::from_utf8_lossy(&out.stdout).into_owned();
+        let cmd = child_command(std::ffi::OsStr::new("git"), None, None);
+        let removed: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        let kept = ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
+        for var in local.lines().filter(|v| !kept.contains(v)) {
+            assert!(removed.iter().any(|r| r == var), "{var} is passed on");
+        }
+        for var in [
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            "GIT_QUARANTINE_PATH",
+        ] {
+            assert!(removed.iter().any(|r| r == var), "{var} is passed on");
+        }
+    }
 
     #[test]
     fn truncate_keeps_char_boundaries() {

@@ -244,7 +244,6 @@ function pickWorktree(id: string, view: RepoView, wt: WorktreeInfo, snap: RepoSn
       return;
     case "pr.open":
     case "pr.create":
-    case "pr.compare":
       if (wt.branch !== null) pickPullRequest(id, wt.branch, wt.pr, snap);
       return;
     case "copy.path":

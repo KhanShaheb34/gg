@@ -202,7 +202,6 @@ function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot, row: Commit
       return true;
     case "pr.open":
     case "pr.create":
-    case "pr.compare":
       pickPullRequest(id, branch, label.pr, snap);
       return true;
     case "worktree.create": {
@@ -272,12 +271,10 @@ async function copyMessage(repoId: number, hash: string): Promise<void> {
 }
 
 /**
- * A pull-request item (`pr.open`, `pr.create`, `pr.compare`) of local `branch`, whose open
- * pull request was `pr` when the menu opened (the side panel's worktree menu too).
+ * A pull-request item (`pr.open`, `pr.create`) of local `branch`, whose open pull request was
+ * `pr` when the menu opened (the side panel's worktree menu too).
  */
 export function pickPullRequest(id: string, branch: string, pr: PullRequest | null, snap: RepoSnapshot): void {
   if (id === "pr.open" && pr) openPullRequest(snap.repoId, pr);
   else if (id === "pr.create") openCreatePullRequest(snap, branch);
-  // The same dialog: it pushes first when the branch is not on its remote (Task 9 review I5).
-  else if (id === "pr.compare") openCreatePullRequest(snap, branch);
 }

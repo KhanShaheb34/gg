@@ -50,7 +50,7 @@ export function worktreeMenu(wt: WorktreeInfo, snap: RepoSnapshot): MenuItem[] {
         noRemoteReason(snap),
       ),
     }),
-    pullRequestItem(wt.branch, wt.pr, snap, wt.upstream !== null && wt.upstream.ahead === 0),
+    pullRequestItem(wt.branch, wt.pr, snap),
     SEPARATOR,
   );
   if (wt.locked) {

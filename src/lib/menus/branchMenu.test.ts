@@ -157,15 +157,14 @@ describe("branchMenu, pull requests", () => {
     expect(find(items, "pr.create").disabledReason).toBeUndefined();
   });
 
-  it("gh signed out: the compare page on GitHub instead, through the dialog, which pushes first when needed (Task 9 review I5)", () => {
+  it("gh signed out: still Create pull request…, whose dialog says it pushes and opens the compare page (Task 10 review minor 8)", () => {
     const signedOut = { prs: prs("unavailable", "signed_out") };
-    const items = branchMenu(label(), row(), snap(signedOut));
-    expect(find(items, "pr.compare").label).toBe("Push and open compare page…");
-    expect(ids(items)).not.toContain("pr.create");
-    const pushed = branchMenu(label({ upstream: "origin/feature/x", ahead: 0 }), row(), snap({ ...signedOut, remoteBranches: ["origin/feature/x"] }));
-    expect(find(pushed, "pr.compare").label).toBe("Open compare page…");
-    const ahead = branchMenu(label({ upstream: "origin/feature/x", ahead: 2 }), row(), snap({ ...signedOut, remoteBranches: ["origin/feature/x"] }));
-    expect(find(ahead, "pr.compare").label).toBe("Push and open compare page…");
+    for (const l of [label(), label({ upstream: "origin/feature/x", ahead: 0 }), label({ upstream: "origin/feature/x", ahead: 2 })]) {
+      const items = branchMenu(l, row(), snap({ ...signedOut, remoteBranches: ["origin/feature/x"] }));
+      expect(find(items, "pr.create").label).toBe("Create pull request…");
+      expect(find(items, "pr.create").disabledReason).toBeUndefined();
+      expect(ids(items)).not.toContain("pr.compare");
+    }
   });
 
   it("disabled with the plain reason when nothing can be made: no GitHub remote, no remote at all", () => {

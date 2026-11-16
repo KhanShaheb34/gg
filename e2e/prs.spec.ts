@@ -201,7 +201,8 @@ test("gh signed out: said once, plainly; the branch menu pushes and opens GitHub
   await expect(said).toBeVisible();
   await expect(said).not.toHaveClass(/error/);
   // Task 9 review I5: as without gh, the branch is pushed first, and the menu says so.
-  await menuOn(page, "fix/typo", "Push and open compare page…");
+  // Task 10 review minor 8: the menu promises no more than it knows; the dialog says it.
+  await menuOn(page, "fix/typo", "Create pull request…");
   await expect(dialog(page).getByTestId("pr-no-gh")).toContainText("fix/typo is pushed to origin/fix/typo, then GitHub’s compare page opens");
   await dialog(page).getByRole("button", { name: "Push fix/typo to origin/fix/typo and open the compare page" }).click();
   await expect(dialog(page)).toHaveCount(0);
@@ -211,7 +212,7 @@ test("gh signed out: said once, plainly; the branch menu pushes and opens GitHub
   expect(gg.git("prs", "rev-parse", "refs/remotes/origin/fix/typo").trim()).toBe(gg.git("prs", "rev-parse", "fix/typo").trim());
   expect(gg.gh.calls().filter((c) => c[1] === "create")).toEqual([]);
   // On the remote now: the menu just opens the compare page (through the dialog's button).
-  await menuOn(page, "docs/readme", "Open compare page…");
+  await menuOn(page, "docs/readme", "Create pull request…");
   await dialog(page).getByRole("button", { name: "Open the compare page" }).click();
   await expect
     .poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/compare/main...docs/readme?expand=1")))

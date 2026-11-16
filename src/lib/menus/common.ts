@@ -123,20 +123,16 @@ export const PR_REASONS: Record<Exclude<PrUnavailable, "failed">, string> = {
 /**
  * The pull-request item of local `branch` (null: a detached HEAD) whose open pull request is
  * `pr`: "Open pull request #N" when there is one; else "Create pull request…", whose dialog
- * finds out what it can do when the pull requests are not known yet (or gh is missing or
- * signed out: it pushes, then opens GitHub's compare page); with gh signed out, "Push and
- * open compare page…" (or "Open compare page…" when `pushed`: the branch is on its upstream
- * with nothing to push), which opens that same dialog, where the button says exactly what it
- * does; disabled, with the reason, without a branch, a remote, or a remote on GitHub.
+ * decides what it can do and says so (when the pull requests are not known yet, or gh is
+ * missing or signed out: it pushes first when needed, then opens GitHub's compare page). The
+ * menu promises no more than that (Task 10 review minor 8); disabled, with the reason,
+ * without a branch, a remote, or a remote on GitHub.
  */
-export function pullRequestItem(branch: string | null, pr: PullRequest | null, snap: RepoSnapshot, pushed = false): MenuItem {
+export function pullRequestItem(branch: string | null, pr: PullRequest | null, snap: RepoSnapshot): MenuItem {
   if (pr) return item("pr.open", `Open pull request #${pr.number}`);
   const create = "Create pull request…";
   if (branch === null) return item("pr.create", create, { disabledReason: "HEAD is detached there: there is no branch to propose" });
   if (snap.remotes.length === 0) return item("pr.create", create, { disabledReason: "This repository has no remote" });
-  if (snap.prs.status === "unavailable" && snap.prs.reason === "signed_out") {
-    return item("pr.compare", pushed ? "Open compare page…" : "Push and open compare page…");
-  }
   if (snap.prs.status === "unavailable" && snap.prs.reason === "not_github") {
     return item("pr.create", create, { disabledReason: PR_REASONS.not_github });
   }

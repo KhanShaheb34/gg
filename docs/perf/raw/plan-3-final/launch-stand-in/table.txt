@@ -1,6 +1,6 @@
-repo: /Users/shakirulhkhan/.cache/gitgraph-perf/r20k (20000 commits)
+repo: ~/.cache/gitgraph-perf/r20k (20000 commits)
 machine: Apple M1 Pro, 8 cores, 16 GB, macOS 27.2
-bundle: 8.0M (/Users/shakirulhkhan/Dev/experiments/git-graph/target/release/bundle/macos/gg.app)
+bundle: 8.0M (~/Dev/experiments/git-graph/target/release/bundle/macos/gg.app)
 
 run	mode	load (1/5/15 min)	spawn->first-rows	spawn->fully-loaded	nav->first-rows	nav->fully-loaded	idle CPU %	footprint MB	RSS MB
 1	idle	28.90 11.47 7.51	1249 ms	1272 ms	307 ms	331 ms	0.00	156.2	248.7

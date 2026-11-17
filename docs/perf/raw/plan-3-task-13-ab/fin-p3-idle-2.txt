@@ -1,0 +1,29 @@
+repo: ~/.cache/gitgraph-perf/r20k (20000 commits)
+machine: Apple M1 Pro, 8 cores, 16 GB, macOS 27.2
+bundle: 7.9M (~/Dev/experiments/git-graph/target/release/bundle/macos/gg.app)
+
+run	mode	load (1/5/15 min)	spawn->first-rows	spawn->fully-loaded	nav->first-rows	nav->fully-loaded	idle CPU %	footprint MB	RSS MB
+1	idle	4.29 6.40 6.87	810 ms	766 ms	198 ms	155 ms	0.00	155	249
+    footprint MB: gg-desktop=52.4 WebKit.GPU=16.8 WebKit.WebContent=80.1 WebKit.Networking=5.7
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+2	idle	3.73 6.04 6.72	789 ms	822 ms	422 ms	454 ms	0.00	154.7	230.2
+    footprint MB: gg-desktop=50.6 WebKit.GPU=16.7 WebKit.WebContent=81.1 WebKit.Networking=6.3
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+3	idle	3.63 5.75 6.59	821 ms	858 ms	440 ms	476 ms	0.10	159.2	155.5
+    footprint MB: gg-desktop=51.0 WebKit.GPU=19.2 WebKit.WebContent=82.2 WebKit.Networking=6.8
+    idle CPU: gg-desktop=0.10% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+4	idle	3.46 5.52 6.48	858 ms	895 ms	479 ms	515 ms	0.00	158	180.8
+    footprint MB: gg-desktop=50.4 WebKit.GPU=18.9 WebKit.WebContent=82.2 WebKit.Networking=6.5
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+
+launches 2-4, per mode: median / min / max
+  idle:
+    cpu                                  0.00       0.00       0.10   (3)
+    first                              821.00     789.00     858.00   (3)
+    foot                               158.00     154.70     159.20   (3)
+    foot-gg-desktop                     50.60      50.40      51.00   (3)
+    foot-WebKit.GPU                     18.90      16.70      19.20   (3)
+    foot-WebKit.Networking               6.50       6.30       6.80   (3)
+    foot-WebKit.WebContent              82.20      81.10      82.20   (3)
+    loaded                             858.00     822.00     895.00   (3)
+    rss                                180.80     155.50     230.20   (3)

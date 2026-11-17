@@ -1,0 +1,4 @@
+# Every text file is checked out with LF line ends, on Windows too (where git would otherwise
+# write CRLF): the POSIX launcher and the test fixtures are read byte for byte, and gg.cmd is
+# given CRLF line ends when it is written.
+* text=auto eol=lf

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <!-- Folders can be opened with the app (Finder's Open With, dropped on the Dock icon,
-       `open -a GitGraph <folder>`). Rank Alternate: the app is offered, never made the
+       `open -a gg <folder>`). Rank Alternate: the app is offered, never made the
        default for folders. Tauri merges this into the bundle's Info.plist. -->
   <key>CFBundleDocumentTypes</key>
   <array>

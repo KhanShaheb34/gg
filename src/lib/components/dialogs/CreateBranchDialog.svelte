@@ -16,10 +16,12 @@
     subject: string;
     /** Local branches: their names are taken. */
     branches: string[];
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, hash, subject, branches, close }: Props = $props();
+  let { repoId, hash, subject, branches, worktree, close }: Props = $props();
 
   let name = $state("");
   let checkout = $state(true);
@@ -28,7 +30,7 @@
   const problem = $derived(named.problem(name, refNameProblem(name, branches, "branch")));
 
   function submit() {
-    void named.submit(name, { op: "create_branch", name, at: hash, checkout });
+    void named.submit(name, { op: "create_branch", name, at: hash, checkout, expectWorktree: worktree });
   }
 </script>
 

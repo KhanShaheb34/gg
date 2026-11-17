@@ -1,0 +1,268 @@
+# Builds gg's downloads for a version tag (v0.3.0, matching Cargo.toml's version) and puts
+# them, each with its sha256, on a DRAFT GitHub release: the macOS universal disk image,
+# the Linux AppImage and .deb, the Windows installer. Publishing the draft is done by hand.
+# Nothing is signed beyond macOS's ad hoc signature; no secrets other than the run's token,
+# which may write only in the job that makes the release. No build cache: a release is
+# built from the tag alone.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: The tag matches the version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Reads the CI runs of the tagged commit (below).
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the tag with Cargo.toml
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::Cargo.toml's [workspace.package] has no version."
+            exit 1
+          fi
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag $TAG does not match the version in Cargo.toml ($version). Tag v$version, or set the version in Cargo.toml (and package.json) first."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: CI passed on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The tests ran for this very commit (CI runs on pull requests and pushes to main),
+          # every OS passed: a red or untested commit is not built into a release.
+          runs=$(gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" --limit 20 \
+            --json conclusion --jq '[.[] | select(.conclusion == "success")] | length')
+          if [ "${runs:-0}" -lt 1 ]; then
+            echo "::error::No passing CI run for $SHA, the commit $TAG points at. Tag a commit CI passed on (open a pull request or push it to main first)."
+            exit 1
+          fi
+
+  macos:
+    name: macOS (universal .dmg)
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The release rust-toolchain.toml names, for both Mac architectures.
+      - name: Rust
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustup show active-toolchain
+
+      - name: pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install the UI's packages
+        run: pnpm install --frozen-lockfile
+
+      - name: Build, sign ad hoc, make the disk image
+        run: scripts/release-macos.sh
+
+      - name: Keep the download
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-macos
+          path: |
+            dist-release/gg-macos-universal.dmg
+            dist-release/gg-macos-universal.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Linux (.AppImage, .deb)
+    needs: version
+    # The oldest supported runner: the AppImage then runs on systems with an older glibc.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Linux packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config file libssl-dev libxdo-dev libdbus-1-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      # The release rust-toolchain.toml names.
+      - name: Rust
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - name: pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install the UI's packages
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm tauri build --bundles deb,appimage
+
+      - name: Name the downloads, with their checksums
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir dist-release
+          appimage="target/release/bundle/appimage/gg_${VERSION}_amd64.AppImage"
+          deb="target/release/bundle/deb/gg_${VERSION}_amd64.deb"
+          for f in "$appimage" "$deb"; do
+            [ -f "$f" ] || { echo "::error::$f was not built"; ls -R target/release/bundle; exit 1; }
+          done
+          cp "$appimage" dist-release/gg-linux-x86_64.AppImage
+          cp "$deb" dist-release/gg-linux-amd64.deb
+          cd dist-release
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          cat ./*.sha256
+
+      - name: Keep the downloads
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-linux
+          path: dist-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows (installer)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The release rust-toolchain.toml names.
+      - name: Rust
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - name: pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install the UI's packages
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm tauri build --bundles nsis
+
+      - name: Name the download, with its checksum
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir dist-release
+          setup="target/release/bundle/nsis/gg_${VERSION}_x64-setup.exe"
+          [ -f "$setup" ] || { echo "::error::$setup was not built"; ls -R target/release/bundle; exit 1; }
+          cp "$setup" dist-release/gg-windows-x64-setup.exe
+          cd dist-release
+          sha256sum gg-windows-x64-setup.exe > gg-windows-x64-setup.exe.sha256
+          cat ./*.sha256
+
+      - name: Keep the download
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-windows
+          path: dist-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Draft release
+    needs: [version, macos, linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the downloads
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: gg-*
+          merge-multiple: true
+          path: dist-release
+
+      - name: Check every download against its checksum
+        working-directory: dist-release
+        run: |
+          ls -l
+          for sum in *.sha256; do sha256sum -c "$sum"; done
+          cat ./*.sha256 > SHA256SUMS
+
+      - name: Create the draft release
+        working-directory: dist-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "$TAG" --draft --verify-tag --title "gg $VERSION" --generate-notes \
+            gg-macos-universal.dmg gg-macos-universal.dmg.sha256 \
+            gg-linux-x86_64.AppImage gg-linux-x86_64.AppImage.sha256 \
+            gg-linux-amd64.deb gg-linux-amd64.deb.sha256 \
+            gg-windows-x64-setup.exe gg-windows-x64-setup.exe.sha256 \
+            SHA256SUMS

@@ -35,7 +35,10 @@ fn all_refs() -> ViewOptions {
 }
 
 fn canonical(p: &Path) -> String {
-    fs::canonicalize(p).unwrap().to_string_lossy().into_owned()
+    dunce::canonicalize(p)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Runs `read_log` and returns the batches it delivered.
@@ -1195,30 +1198,37 @@ fn both_changed(repo: &TestRepo, names: &[&str]) {
 async fn resolved_files_are_told_from_ones_with_markers() {
     use ConflictState::{Markers, Resolved};
     let repo = TestRepo::new();
-    let names = ["clash.txt", "a: 1: b.txt", "say \"hi\"\tthere.md"];
+    // Names that need quoting in git's output, as far as the platform allows them (no `:`,
+    // `"` or tab in a Windows file name).
+    let (odd, quoted) = if cfg!(windows) {
+        ("a; 1; b.txt", "say 'hi' there.md")
+    } else {
+        ("a: 1: b.txt", "say \"hi\"\tthere.md")
+    };
+    let names = ["clash.txt", odd, quoted];
     both_changed(&repo, &names);
     let all_marked = vec![
-        st("a: 1: b.txt", Markers),
+        st(odd, Markers),
         st("clash.txt", Markers),
-        st("say \"hi\"\tthere.md", Markers),
+        st(quoted, Markers),
     ];
     assert_eq!(states(&repo).await, all_marked);
 
     repo.write("clash.txt", "resolved\n");
-    repo.write("say \"hi\"\tthere.md", "Title\n=======\n\nText.\n");
+    repo.write(quoted, "Title\n=======\n\nText.\n");
     assert_eq!(
         states(&repo).await,
         [
-            st("a: 1: b.txt", Markers),
+            st(odd, Markers),
             st("clash.txt", Resolved),
-            st("say \"hi\"\tthere.md", Resolved),
+            st(quoted, Resolved),
         ]
     );
 
     // Only the closing marker left: still not resolved. Eight `<` are no marker.
-    repo.write("a: 1: b.txt", "<<<<<<<< not one\nkept\n>>>>>>> feature\n");
-    assert_eq!(states(&repo).await[0], st("a: 1: b.txt", Markers));
-    repo.write("a: 1: b.txt", "<<<<<<<< not one\n");
+    repo.write(odd, "<<<<<<<< not one\nkept\n>>>>>>> feature\n");
+    assert_eq!(states(&repo).await[0], st(odd, Markers));
+    repo.write(odd, "<<<<<<<< not one\n");
     let state = in_progress(&repo).await.expect("a merge");
     assert_eq!(state.file_count, 3, "unmerged until staged");
     assert!(state.files.iter().all(|f| f.state == Resolved), "{state:?}");

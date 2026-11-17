@@ -237,3 +237,11 @@ Each phase ends with something the owner can open and judge.
 - Exact wording of dialogs and warnings.
 - Chunk sizes, debounce intervals, caching strategy — whatever meets section 7.
 - Which keyboard shortcuts beyond the listed ones.
+
+## 11. Additions (2026-11-15, from the owner)
+
+- **Name.** The app is called **gg** (lowercase). The development name "GitGraph" is retired everywhere; it is also the name of the VS Code extension this app replaces, which a public release must not borrow.
+- **`gg` in a terminal.** Running `gg` inside a git repository opens that repository in the app; `gg <path>` opens that path. If the app is already running, the repository opens as a tab in the existing window (one app instance). Outside a repository it says so and exits non-zero. The app offers to install the command; it never needs administrator rights.
+- **Public and open source.** The repository is prepared to be made public (licence, README for strangers, contribution and security notes, no private data, CI). Making it public, pushing and tagging stay the owner's actions.
+- **Landing page** at gg.shakirul.com (Cloudflare): features, download button, link to GitHub, "Built by Shakirul" linking to shakirul.com. Built on its own branch (`site`), outside this plan's tasks.
+- **Downloads.** A universal macOS build as a `.dmg`, with checksum. Not notarized in version one (section 2 non-goal stands); the page and README say how to open it.

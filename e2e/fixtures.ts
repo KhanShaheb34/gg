@@ -14,7 +14,7 @@ import type { OpOutcome, OpRequest } from "../src/lib/types";
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DEVSERVER = path.join(ROOT, "target", "debug", "gg-devserver");
 /** The vite dev server the page is loaded from (playwright.config.ts `baseURL`). */
-const VITE_ORIGIN = "http://127.0.0.1:1420";
+const VITE_ORIGIN = `http://127.0.0.1:${process.env.GG_E2E_PORT ?? 1420}`;
 
 /** Runs git with `args` in the repository; returns its stdout. */
 export type Git = (...args: string[]) => string;
@@ -34,8 +34,12 @@ const EMPTY_CONFIG = (() => {
 
 /** The environment every fixture git (and the devserver) runs with: no user or system config. */
 function isolatedEnv(): NodeJS.ProcessEnv {
+  // No GitHub host, token or repository of the user's reaches anything a test runs.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GH_") && !name.startsWith("GITHUB_")),
+  );
   return {
-    ...process.env,
+    ...env,
     GIT_CONFIG_GLOBAL: EMPTY_CONFIG,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
@@ -337,6 +341,40 @@ const REPOS: Record<string, RepoScript> = {
     advanceClock(dir, clocks.get(other) ?? 0);
     git("fetch", "-q", "origin");
   },
+  /**
+   * Pull requests: `origin` is https://github.com/octo/cat.git for the app, which git's
+   * `insteadOf` sends to a bare repository beside it (`prs-origin.git`), so pushes stay on disk.
+   * `main` ("Initial commit", "Set up the parser"); `feature/login` ("Add login form",
+   * "Validate the login form") and `feature/search-indexing-across-every-workspace-package`
+   * ("Index the search") pushed with upstreams; `docs/readme` ("Explain the parser") pushed;
+   * `fix/typo` ("Fix a typo in the README") not pushed. A worktree on `feature/login` beside it
+   * (`prs.worktrees/login`). `main` is checked out.
+   */
+  prs(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    const commit = (file: string, subject: string) => {
+      write(file, `${subject}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", subject);
+    };
+    commit("README.md", "Initial commit");
+    commit("parser.ts", "Set up the parser");
+    const branch = (name: string, subjects: string[]) => {
+      git("switch", "-q", "-c", name, "main");
+      subjects.forEach((subject, i) => commit(`${name.replaceAll("/", "-")}-${i}.txt`, subject));
+    };
+    branch("feature/login", ["Add login form", "Validate the login form"]);
+    branch("feature/search-indexing-across-every-workspace-package", ["Index the search"]);
+    branch("docs/readme", ["Explain the parser"]);
+    branch("fix/typo", ["Fix a typo in the README"]);
+    git("switch", "-q", "main");
+    const bare = path.join(path.dirname(dir), "prs-origin.git");
+    git("init", "-q", "--bare", "-b", "main", bare);
+    git("remote", "add", "origin", "https://github.com/octo/cat.git");
+    git("config", `url.${bare}.insteadOf`, "https://github.com/octo/cat.git");
+    git("push", "-q", "-u", "origin", "main", "feature/login", "feature/search-indexing-across-every-workspace-package", "docs/readme");
+    git("worktree", "add", "-q", path.join(path.dirname(dir), "prs.worktrees", "login"), "feature/login");
+  },
   /** A shallow clone (depth 2) of three commits, "One" to "Three": "Two" is where its history is cut. */
   shallow(git, _write, dir) {
     const source = makeRepo(
@@ -354,6 +392,122 @@ const REPOS: Record<string, RepoScript> = {
     git("init", "-q", "-b", "main");
     git("fetch", "-q", "--depth", "2", `file://${source}`, "main");
     git("reset", "-q", "--hard", "FETCH_HEAD");
+  },
+  /**
+   * The commit panel's: `main` level with a bare `origin` (`commit-origin.git`), its upstream,
+   * and changes of every kind in the working tree: `src/app.ts` modified, `old.txt` deleted,
+   * `notes/plan.md` renamed to `notes/roadmap.md` (staged), `a file with spaces.txt` modified,
+   * `todo.md` new (untracked), and a file deep in long folder names modified. A linked worktree
+   * `topic` (in `commit.worktrees/topic`, branch `topic`, no upstream) with one new file. An
+   * identity for the commits the app makes.
+   */
+  commit(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const deep = "packages/payments-service/src/components/checkout/summary/LineItemPriceBreakdown.tsx";
+    write("src/app.ts", "export const app = 1;\n");
+    write("old.txt", "old\n");
+    write("notes/plan.md", "# Plan\n\nShip it.\n");
+    write("a file with spaces.txt", "spaces\n");
+    write(deep, "export {};\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Start the app");
+    const origin = path.join(path.dirname(dir), "commit-origin.git");
+    git("init", "-q", "--bare", "-b", "main", origin);
+    git("remote", "add", "origin", origin);
+    git("push", "-q", "-u", "origin", "main");
+    git("worktree", "add", "-q", "-b", "topic", path.join(path.dirname(dir), "commit.worktrees", "topic"));
+    writeFileSync(path.join(path.dirname(dir), "commit.worktrees", "topic", "topic.txt"), "topic\n");
+    write("src/app.ts", "export const app = 2;\n");
+    rmSync(path.join(dir, "old.txt"));
+    git("mv", "notes/plan.md", "notes/roadmap.md");
+    write("a file with spaces.txt", "spaces, changed\n");
+    write("todo.md", "- write the docs\n");
+    write(deep, "export const total = 0;\n");
+  },
+  /**
+   * Worktrees in every state, beside a bare `origin` (`worktrees-origin.git`); the linked ones
+   * in `worktrees.worktrees/` (the default location pattern). `main` (the main worktree): clean,
+   * level with origin/main, a `.gitignore` for `build/`. `feature/login`: 2 ahead and 1 behind
+   * origin/feature/login, one changed and one new file. `fix/typo`: no upstream, 1 commit on no
+   * remote. `detached`: HEAD detached at main~2. `release`: locked ("on a USB drive").
+   * `old-spike`: its folder deleted (prunable). `docs`: clean but for ignored files in
+   * `build/`. `hotfix`: a merge stopped on a conflict in `app.txt`. The repository has an
+   * identity for the commits the app makes.
+   */
+  worktrees(git, _write, dir) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    const commit = (file: string, content: string, subject: string, at: Git = git, base = dir) => {
+      const target = path.join(base, file);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, content);
+      at("add", "-A");
+      at("commit", "-q", "-m", subject);
+    };
+    commit(".gitignore", "build/\n", "Ignore build output");
+    commit("app.txt", "app\n", "Start the app");
+    commit("README.md", "worktrees\n", "Add a readme");
+    commit("docs/guide.md", "guide\n", "Write the guide");
+    // Absolute: the linked worktrees push from their own folders.
+    const origin = path.join(path.dirname(dir), "worktrees-origin.git");
+    git("init", "-q", "--bare", "-b", "main", origin);
+    git("remote", "add", "origin", origin);
+    git("branch", "-q", "feature/login");
+    git("branch", "-q", "fix/typo");
+    git("branch", "-q", "release");
+    git("branch", "-q", "old-spike");
+    git("branch", "-q", "docs");
+    git("branch", "-q", "hotfix");
+    git("push", "-q", "-u", "origin", "main", "feature/login");
+    const base = path.join(path.dirname(dir), "worktrees.worktrees");
+    const add = (folder: string, ...args: string[]) => {
+      const at = path.join(base, folder);
+      git("worktree", "add", "-q", at, ...args);
+      return at;
+    };
+
+    const login = add("feature-login", "feature/login");
+    const inLogin = gitIn(login);
+    advanceClock(login, clocks.get(dir) ?? 0);
+    commit("login/remote.txt", "theirs\n", "Login on the remote", inLogin, login);
+    inLogin("push", "-q", "origin", "feature/login");
+    inLogin("reset", "-q", "--hard", "HEAD~1");
+    commit("login/form.txt", "form\n", "Add the login form", inLogin, login);
+    commit("login/check.txt", "check\n", "Check the password", inLogin, login);
+    inLogin("fetch", "-q", "origin");
+    writeFileSync(path.join(login, "app.txt"), "app with login\n");
+    writeFileSync(path.join(login, "login/notes.txt"), "notes\n");
+
+    const typo = add("fix-typo", "fix/typo");
+    const inTypo = gitIn(typo);
+    advanceClock(typo, clocks.get(login) ?? 0);
+    commit("README.md", "worktrees, fixed\n", "Fix a typo in the readme", inTypo, typo);
+
+    add("detached", "--detach", "main~2");
+    add("release", "release");
+    git("worktree", "lock", "--reason", "on a USB drive", path.join(base, "release"));
+    rmSync(add("old-spike", "old-spike"), { recursive: true, force: true });
+
+    const docs = add("docs", "docs");
+    mkdirSync(path.join(docs, "build"), { recursive: true });
+    writeFileSync(path.join(docs, "build", "site.html"), "<p>built</p>\n");
+
+    const hotfix = add("hotfix", "hotfix");
+    const inHotfix = gitIn(hotfix);
+    advanceClock(hotfix, clocks.get(typo) ?? 0);
+    git("switch", "-q", "-c", "patch");
+    commit("app.txt", "app, patched\n", "Patch the app");
+    git("switch", "-q", "main");
+    commit("app.txt", "app, hotfixed\n", "Hotfix the app", inHotfix, hotfix);
+    try {
+      inHotfix("merge", "-q", "patch");
+    } catch {
+      // Stopped on the conflict in app.txt, as wanted.
+    }
+    advanceClock(dir, clocks.get(hotfix) ?? 0);
   },
   /** A repository without commits. */
   empty(git) {
@@ -502,16 +656,139 @@ function killGroup(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): voi
 }
 
 /** Where the devserver of config folder `configDir` records editor launches (it never starts one). */
-function editorRecord(configDir: string): string {
-  return path.join(path.dirname(configDir), "editor-launches.jsonl");
+function launchRecord(configDir: string): string {
+  return path.join(path.dirname(configDir), "launches.jsonl");
+}
+
+/**
+ * Where the `gg` command may go in a test: `~/.local/bin` and `~/bin` of the test's home
+ * folder, and `extra` more (`~/tools/bin1`…), made here; the `PATH` the devserver looks for it on (`--cli-path`). Never a folder
+ * of the user's own `PATH`.
+ */
+export function cliFolders(home: string, extra = 0): string[] {
+  const dirs = [path.join(home, ".local", "bin"), path.join(home, "bin")];
+  for (let i = 1; i <= extra; i++) dirs.push(path.join(home, "tools", `bin${i}`));
+  for (const dir of dirs) mkdirSync(dir, { recursive: true });
+  return dirs;
+}
+
+/**
+ * A recording stand-in for `gh` (and `ssh` beside it) in `<home>/tools`, the folder the
+ * devserver finds and runs them in (`--tool-path`): the real ones are never run, nothing
+ * reaches GitHub. Each `gh` call's arguments are recorded; it answers with what the test set
+ * for that kind of call (`pr-list`, `pr-list-head` with `--head`, `repo-view`, `pr-create`,
+ * `auth-token`), else prints nothing. `ssh -G` says the host it is asked about is itself.
+ */
+const FAKE_GH = `#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
+d="$(cd "$(dirname "$0")/.." && pwd)/gh"
+i=1
+while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
+for a in "$@"; do printf '%s\\0' "$a"; done > "$d/calls/$i/argv"
+cat > "$d/calls/$i/stdin"
+key="$1-$2"
+case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
+r="$d/replies/$key"
+if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi
+if [ -f "$r.err" ]; then cat "$r.err" >&2; fi
+if [ -f "$r.out" ]; then cat "$r.out"; fi
+if [ -f "$r.code" ]; then exit "$(cat "$r.code")"; fi
+exit 0
+`;
+const FAKE_SSH = `#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
+for a in "$@"; do host="$a"; done
+printf 'hostname %s\\n' "$host"
+`;
+
+/** Writes the fake `gh` and `ssh` into `home`; returns the `PATH` the devserver runs them on. */
+function fakeTools(home: string): string {
+  const tools = path.join(home, "tools");
+  for (const dir of [tools, path.join(home, "gh", "calls"), path.join(home, "gh", "replies")]) mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(tools, "gh"), FAKE_GH, { mode: 0o755 });
+  writeFileSync(path.join(tools, "ssh"), FAKE_SSH, { mode: 0o755 });
+  // The fakes set their own PATH; nothing else is found here (the core takes gh and ssh from
+  // the first folder only).
+  return tools;
+}
+
+/** The fake `gh` of a test (see FAKE_GH). */
+export type FakeGh = {
+  /** Answers calls of `key` (`pr-list`, `pr-list-head`, `repo-view`, `pr-create`, `auth-token`). */
+  reply(key: string, code: number, stdout: string, stderr?: string): void;
+  /** Makes calls of `key` wait `secs` seconds before answering. */
+  slow(key: string, secs: number): void;
+  /** Each call's arguments so far, oldest first. */
+  calls(): string[][];
+  /** What the call `i` (0 = first) read on stdin. */
+  stdin(i: number): string;
+  /** Takes `gh` away: the devserver finds none, as when it is not installed. */
+  uninstall(): void;
+  /** Puts `gh` back, as when the user installs it. */
+  install(): void;
+};
+
+function fakeGh(home: string): FakeGh {
+  const dir = path.join(home, "gh");
+  const callDir = (i: number) => path.join(dir, "calls", String(i + 1));
+  return {
+    reply(key, code, stdout, stderr = "") {
+      const base = path.join(dir, "replies", key);
+      writeFileSync(`${base}.out`, stdout);
+      writeFileSync(`${base}.err`, stderr);
+      writeFileSync(`${base}.code`, String(code));
+    },
+    slow(key, secs) {
+      writeFileSync(path.join(dir, "replies", `${key}.sleep`), String(secs));
+    },
+    calls() {
+      const out: string[][] = [];
+      for (let i = 0; existsSync(path.join(callDir(i), "argv")); i++) {
+        out.push(readFileSync(path.join(callDir(i), "argv"), "utf8").split("\0").filter((a) => a !== ""));
+      }
+      return out;
+    },
+    stdin(i) {
+      return readFileSync(path.join(callDir(i), "stdin"), "utf8");
+    },
+    uninstall() {
+      rmSync(path.join(home, "tools", "gh"));
+    },
+    install() {
+      writeFileSync(path.join(home, "tools", "gh"), FAKE_GH, { mode: 0o755 });
+    },
+  };
+}
+
+/**
+ * A stand-in for the login shell the devserver asks what `gg` is (`--cli-shell`): a POSIX sh
+ * script with a bare `PATH` that runs `setup` (an alias, say) and then the command it is
+ * given. The user's own shell and its files are never run.
+ */
+function fakeShell(home: string, setup: string): string {
+  const file = path.join(home, "fake-shell");
+  writeFileSync(file, `#!/bin/sh\nPATH=/usr/bin:/bin\n${setup}\neval "$2"\n`, { mode: 0o755 });
+  return file;
 }
 
 /**
  * Starts a devserver whose home folder is `home` (so paths under it show as `~/…`); the
- * debug build unless `binary` names another. The debug build records editor launches instead
- * of starting an editor (see `GG.editorLaunches`).
+ * debug build unless `binary` names another. The debug build records launches (editor, terminal, file manager, browser) instead
+ * of starting an editor (see `GG.launches`). The `gg` command is looked for in
+ * `cliFolders(home, extraCliFolders)` only, and the stand-in shell, set up with `shellSetup`, is what is asked
+ * what `gg` is.
  */
-export function startDevserver(configDir: string, home: string, binary = DEVSERVER): Promise<Devserver> {
+export function startDevserver(
+  configDir: string,
+  home: string,
+  binary = DEVSERVER,
+  shellSetup = "",
+  extraCliFolders = 0,
+): Promise<Devserver> {
+  const cliPath = cliFolders(home, extraCliFolders).join(path.delimiter);
+  const shell = fakeShell(home, shellSetup);
   const child = spawn(
     binary,
     [
@@ -523,7 +800,14 @@ export function startDevserver(configDir: string, home: string, binary = DEVSERV
       VITE_ORIGIN,
       "--exit-on-stdin-eof",
       // The perf runs' release build (built on its own) need not know it.
-      ...(binary === DEVSERVER ? ["--record-editor-launches", editorRecord(configDir)] : []),
+      ...(binary === DEVSERVER ? ["--record-launches", launchRecord(configDir)] : []),
+      "--cli-path",
+      cliPath,
+      "--cli-shell",
+      shell,
+      // gh and ssh: the fakes only (see FAKE_GH).
+      "--tool-path",
+      fakeTools(home),
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
@@ -598,12 +882,15 @@ export async function stopDevserver(server: Devserver): Promise<void> {
 
 /** The close button of the tab named `name` (hidden from assistive technology; see TabBar). */
 type Unheaded<R> = R extends { expectHead: unknown } ? Omit<R, "expectHead"> & Partial<Pick<R, "expectHead">> : R;
+type Unplaced<R> = R extends { expectWorktree: unknown }
+  ? Omit<R, "expectWorktree"> & Partial<Pick<R, "expectWorktree">>
+  : R;
 /**
- * A request as a test writes it: one on the current branch may leave out `expectHead`, which
- * `runOp` fills in with HEAD as the active tab shows it when the request is sent, as a menu
- * would (R39).
+ * A request as a test writes it: one on the current branch may leave out `expectHead`, and one
+ * that runs in a worktree `expectWorktree`, which `runOp` fills in with HEAD and the active
+ * worktree as the active tab shows them when the request is sent, as a menu would (R39).
  */
-export type Asked = Unheaded<OpRequest>;
+export type Asked = Unplaced<Unheaded<OpRequest>>;
 
 /** Runs `request` through the app's own runOp (the module the page loaded), in the active tab. */
 export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
@@ -612,8 +899,14 @@ export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
     const { app } = await import("/src/lib/state/app.svelte.ts");
     const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
     const id = app.activeRepoId!;
-    const onHead = ["reset", "merge", "rebase", "cherry_pick", "revert", "pull", "continue", "abort", "skip"];
-    const full = onHead.includes(req.op) && !("expectHead" in req) ? { ...req, expectHead: findRepoView(id)!.snapshot.head } : req;
+    const snap = findRepoView(id)!.snapshot;
+    const onHead = ["reset", "merge", "rebase", "cherry_pick", "revert", "pull", "stash_apply", "stash_pop", "continue", "abort", "skip"];
+    const elsewhere = ["push", "push_tag", "delete_tag", "delete_remote_branch", "fetch_into_local"];
+    const headed = onHead.includes(req.op) && !("expectHead" in req) ? { ...req, expectHead: snap.head } : req;
+    const full =
+      !elsewhere.includes(req.op) && !("expectWorktree" in headed)
+        ? { ...headed, expectWorktree: snap.activeWorktree }
+        : headed;
     return ops.runOp(id, full as OpRequest);
   }, request);
 }
@@ -624,6 +917,8 @@ export function closeButton(page: Page, name: string) {
 
 export type GG = {
   page: Page;
+  /** The test's home folder (`HOME` of its devserver); the `gg` command may go in its `.local/bin` and `bin`. */
+  home: string;
   /** Path of fixture repository `name` (`small`, `empty`, `big`, `branchy`, `details`, `stashes`…), created on first use. */
   repoPath(name: string): string;
   /** Path of a plain (non-repository) folder `name`, created on first use. */
@@ -632,8 +927,12 @@ export type GG = {
   git(name: string, ...args: string[]): string;
   /** Runs git in folder `dir` (a clone beside a fixture, say); returns stdout. */
   gitAt(dir: string, ...args: string[]): string;
-  /** The editor launches asked for so far (program and arguments each), oldest first; none is started. */
-  editorLaunches(): string[][];
+  /** The launches asked for so far (editor, terminal, file manager, browser: program and arguments each), oldest first; none is started. */
+  launches(): string[][];
+  /** The fake `gh` the devserver runs (the real one never runs). */
+  gh: FakeGh;
+  /** The app quit and started again: a new devserver on the same config folder, the page loaded afresh. */
+  relaunch(): Promise<void>;
 };
 
 /**
@@ -655,13 +954,17 @@ export async function buildDevserver(): Promise<void> {
   }
 }
 
-export const test = base.extend<{ gg: GG }>({
-  gg: async ({ page }, use) => {
+export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: number }>({
+  /** What the stand-in login shell defines before it is asked what `gg` is (`alias gg=…`). */
+  ggShellSetup: ["", { option: true }],
+  /** Folders the `gg` command may go in besides `~/.local/bin` and `~/bin`. */
+  ggCliFolders: [0, { option: true }],
+  gg: async ({ page, ggShellSetup, ggCliFolders }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
     let server: Devserver | null = null;
     try {
-      server = await startDevserver(path.join(root, "config"), root);
+      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders);
       await page.addInitScript((url) => {
         (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
       }, server.url);
@@ -696,8 +999,8 @@ export const test = base.extend<{ gg: GG }>({
         return run(...args);
       };
 
-      const editorLaunches = (): string[][] => {
-        const file = editorRecord(path.join(root, "config"));
+      const launches = (): string[][] => {
+        const file = launchRecord(path.join(root, "config"));
         if (!existsSync(file)) return [];
         return readFileSync(file, "utf8")
           .split("\n")
@@ -705,7 +1008,18 @@ export const test = base.extend<{ gg: GG }>({
           .map((l) => JSON.parse(l) as string[]);
       };
 
-      await use({ page, repoPath, folder, git, gitAt, editorLaunches });
+      const relaunch = async () => {
+        if (server) await stopDevserver(server);
+        server = null;
+        server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders);
+        // Run after the first one, so this address wins.
+        await page.addInitScript((url) => {
+          (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
+        }, server.url);
+        await page.reload();
+      };
+
+      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), relaunch });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

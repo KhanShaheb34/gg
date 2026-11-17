@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repeatable, shortcutFor } from "./shortcuts";
+import { repeatable, SHORTCUT_GROUPS, SHORTCUT_KINDS, SHORTCUT_TABLE, shortcutFor, shortcutSheet } from "./shortcuts";
 
 const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "shiftKey" | "altKey", boolean>> = {}) => ({
   key: k,
@@ -81,13 +81,29 @@ describe("shortcutFor elsewhere (Ctrl)", () => {
   });
 });
 
-describe("the notices shortcut", () => {
-  it("F6 alone moves to the newest notice, on every platform", () => {
-    expect(shortcutFor(key("F6"), true)).toEqual({ kind: "notices" });
-    expect(shortcutFor(key("F6"), false)).toEqual({ kind: "notices" });
-    expect(shortcutFor(key("F6", { shiftKey: true }), true)).toBeNull();
+describe("region and panel shortcuts", () => {
+  it("F6 moves to the next region (the graph, the newest notice, the side panel), Shift+F6 back, on every platform", () => {
+    expect(shortcutFor(key("F6"), true)).toEqual({ kind: "regions", delta: 1 });
+    expect(shortcutFor(key("F6"), false)).toEqual({ kind: "regions", delta: 1 });
+    expect(shortcutFor(key("F6", { shiftKey: true }), true)).toEqual({ kind: "regions", delta: -1 });
     expect(shortcutFor(key("F6", { metaKey: true }), true)).toBeNull();
-    expect(repeatable({ kind: "notices" })).toBe(false);
+    expect(repeatable({ kind: "regions", delta: 1 })).toBe(false);
+  });
+
+  it("Cmd+B shows or hides the side panel (Ctrl+B elsewhere)", () => {
+    expect(shortcutFor(key("b", { metaKey: true }), true)).toEqual({ kind: "sidePanel" });
+    expect(shortcutFor(key("B", { ctrlKey: true }), false)).toEqual({ kind: "sidePanel" });
+    expect(shortcutFor(key("b", { ctrlKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("b", { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "sidePanel" })).toBe(false);
+  });
+
+  it("Cmd+K opens the commit panel (Ctrl+K elsewhere), once per press", () => {
+    expect(shortcutFor(key("k", { metaKey: true }), true)).toEqual({ kind: "commit" });
+    expect(shortcutFor(key("K", { ctrlKey: true }), false)).toEqual({ kind: "commit" });
+    expect(shortcutFor(key("k", { ctrlKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("k", { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "commit" })).toBe(false);
   });
 
   it("Cmd+Shift+L shows or hides the command log (Ctrl+Shift+L elsewhere)", () => {
@@ -96,5 +112,103 @@ describe("the notices shortcut", () => {
     expect(shortcutFor(key("l", { metaKey: true }), true)).toBeNull();
     expect(shortcutFor(key("l", { ctrlKey: true, shiftKey: true }), true)).toBeNull();
     expect(repeatable({ kind: "log" })).toBe(false);
+  });
+});
+
+describe("Task 10 shortcuts", () => {
+  it("Cmd+, opens the settings (Ctrl+, elsewhere)", () => {
+    expect(shortcutFor(key(",", { metaKey: true }), true)).toEqual({ kind: "settings" });
+    expect(shortcutFor(key(",", { ctrlKey: true }), false)).toEqual({ kind: "settings" });
+    expect(shortcutFor(key(",", { ctrlKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "settings" })).toBe(false);
+  });
+
+  it("? shows the keyboard shortcuts, unless a text field has the focus", () => {
+    expect(shortcutFor(key("?", { shiftKey: true }), true)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("?", { shiftKey: true }), false)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("?", { shiftKey: true }), true, true)).toBeNull();
+    expect(shortcutFor(key("?", { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("/"), true)).toBeNull();
+  });
+
+  it("F1 (Windows, Linux) and Cmd+/ (macOS) show them too, even while typing: ? needs AltGr on some layouts (Task 10 review minor 13)", () => {
+    expect(shortcutFor(key("F1"), false)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("F1"), false, true)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("F1", { ctrlKey: true }), false)).toBeNull();
+    expect(shortcutFor(key("/", { metaKey: true }), true)).toEqual({ kind: "help" });
+    // A layout where / is Shift+7.
+    expect(shortcutFor(key("/", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("/", { metaKey: true }), true, true)).toEqual({ kind: "help" });
+    expect(shortcutFor(key("/", { ctrlKey: true }), false)).toBeNull();
+  });
+
+  it("switches worktree with Cmd+Option+1..9 on macOS (Cmd+Shift+3/4/5 are the system's screenshots), Ctrl+Shift+1..9 elsewhere; never a tab", () => {
+    const at = (n: number, mods: Parameters<typeof key>[1]) => ({ ...key(String(n), mods), code: `Digit${n}` });
+    // Option and Shift change the character, not the key's position.
+    expect(shortcutFor({ ...at(3, { metaKey: true, altKey: true }), key: "£" }, true)).toEqual({ kind: "worktree", index: 2 });
+    expect(shortcutFor(at(1, { metaKey: true, altKey: true }), true)).toEqual({ kind: "worktree", index: 0 });
+    expect(shortcutFor({ ...at(2, { ctrlKey: true, shiftKey: true }), key: "@" }, false)).toEqual({ kind: "worktree", index: 1 });
+    expect(shortcutFor(at(9, { ctrlKey: true, shiftKey: true }), false)).toEqual({ kind: "worktree", index: 8 });
+    // Cmd+Shift+digit on macOS is not taken: the system has some of them.
+    expect(shortcutFor({ ...at(1, { metaKey: true, shiftKey: true }), key: "!" }, true)).toBeNull();
+    // Without the second modifier it is a tab, as before.
+    expect(shortcutFor(at(2, { metaKey: true }), true)).toEqual({ kind: "jump", index: 1 });
+    expect(shortcutFor(at(2, { ctrlKey: true }), false)).toEqual({ kind: "jump", index: 1 });
+    expect(shortcutFor(at(0, { metaKey: true, altKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "worktree", index: 0 })).toBe(false);
+  });
+});
+
+/** The key press the sheet's `tokens` stand for, on `isMac` ("1…8" as its first key). */
+function pressOf(tokens: string[], isMac: boolean) {
+  const mods = { metaKey: false, ctrlKey: false, shiftKey: false, altKey: false };
+  let k = "";
+  for (const t of tokens) {
+    if (t === "Mod") mods[isMac ? "metaKey" : "ctrlKey"] = true;
+    else if (t === "Ctrl") mods.ctrlKey = true;
+    else if (t === "Shift") mods.shiftKey = true;
+    else if (t === "Alt") mods.altKey = true;
+    else k = t.replace(/….*$/, "");
+  }
+  const digit = /^[0-9]$/.test(k) ? { code: `Digit${k}` } : {};
+  return { key: k.length === 1 ? k.toLowerCase() : k, ...mods, ...digit };
+}
+
+describe("the table", () => {
+  it("has a row for every shortcut the window handles, and each row's keys do what it says (the sheet cannot drift)", () => {
+    const kinds = new Set(SHORTCUT_TABLE.filter((r) => r.match).map((r) => r.kind));
+    expect([...kinds].sort()).toEqual([...SHORTCUT_KINDS].sort());
+    for (const isMac of [true, false]) {
+      for (const row of SHORTCUT_TABLE.filter((r) => r.match)) {
+        for (const tokens of (isMac && row.macKeys) || row.keys) {
+          expect(shortcutFor(pressOf(tokens, isMac), isMac)?.kind, `${row.does} ${tokens.join("+")}`).toBe(row.kind);
+        }
+      }
+    }
+  });
+
+  it("no two rows of the window's own take the same keys", () => {
+    for (const isMac of [true, false]) {
+      const seen = new Map<string, string>();
+      for (const row of SHORTCUT_TABLE.filter((r) => r.match)) {
+        for (const tokens of (isMac && row.macKeys) || row.keys) {
+          const id = tokens.join("+");
+          expect(seen.get(id), `${id}: ${row.does}`).toBeUndefined();
+          seen.set(id, row.does);
+        }
+      }
+    }
+  });
+
+  it("the sheet lists every row, by group, in the platform's own key names", () => {
+    const mac = shortcutSheet(true);
+    expect(mac.map((g) => g.group)).toEqual([...SHORTCUT_GROUPS]);
+    expect(mac.flatMap((g) => g.rows)).toHaveLength(SHORTCUT_TABLE.length);
+    const settings = mac.flatMap((g) => g.rows).find((r) => r.does === "Settings")!;
+    expect(settings.keys).toEqual([["⌘", ","]]);
+    const pc = shortcutSheet(false).flatMap((g) => g.rows);
+    expect(pc.find((r) => r.does === "Settings")!.keys).toEqual([["Ctrl", ","]]);
+    expect(pc.find((r) => r.does.startsWith("Make worktree"))!.keys).toEqual([["Ctrl", "Shift", "1…9"]]);
+    expect(mac.flatMap((g) => g.rows).find((r) => r.does.startsWith("Make worktree"))!.keys).toEqual([["⌘", "⌥", "1…9"]]);
   });
 });

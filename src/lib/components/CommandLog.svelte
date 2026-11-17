@@ -20,7 +20,8 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { LOG_MIN_H, panelHeight } from "../detailsLayout";
-  import { clockTime, commandLine, formatDuration, outputLines, shortenPath, visibleText } from "../format";
+  import { clock } from "../state/prs.svelte";
+  import { commandLine, formatClock, formatDuration, outputLines, shortenPath, visibleText } from "../format";
   import { isMac } from "../platform";
   import { app, toast } from "../state/app.svelte";
   import {
@@ -74,6 +75,19 @@
   const items = $derived(commandLog.items);
   const hidden = $derived(Math.max(0, items.length - limit));
   const shownItems = $derived(hidden > 0 ? items.slice(hidden) : items);
+  /** The time column, as wide as its longest text in the format set ("13 days ago",
+   * "10:05:07 PM"), in the monospace font's characters, 8 to 14 of them (cut past that). */
+  const timeChars = $derived.by(() => {
+    let longest = 8;
+    for (const item of shownItems) {
+      const records = item.kind === "op" ? item.records : [item.record];
+      for (const r of records) {
+        longest = Math.max(longest, formatClock(r.startedAtMs, app.settings.dateFormat, clock.now).length);
+        if (longest >= 14) return 14;
+      }
+    }
+    return longest;
+  });
 
   // --- Size --------------------------------------------------------------------------------
 
@@ -285,7 +299,7 @@
   // --- Copy ----------------------------------------------------------------------------------
 
   function copy(r: CommandRecord) {
-    navigator.clipboard.writeText(commandLine(r.args)).then(
+    navigator.clipboard.writeText(commandLine(r.args, r.program)).then(
       () => toast("info", "Copied the command line."),
       () => toast("error", "Could not copy the command line."),
     );
@@ -319,7 +333,7 @@
 
 {#snippet command(r: CommandRecord, inOp: boolean)}
   {@const open = !!opened[r.id]}
-  {@const line = commandLine(r.args)}
+  {@const line = commandLine(r.args, r.program)}
   <div class="cmd" class:in-op={inOp} class:read={r.kind === "read"} data-key={inOp ? undefined : `c${r.id}`}>
     <button
       class="row"
@@ -332,7 +346,7 @@
       onclick={() => hasOutput(r) && (opened[r.id] = !open)}
     >
       <span class="chev" class:open class:none={!hasOutput(r)} aria-hidden="true"></span>
-      <span class="time">{clockTime(r.startedAtMs)}</span>
+      <span class="time">{formatClock(r.startedAtMs, app.settings.dateFormat, clock.now)}</span>
       <span class="line"><bdi>{visibleText(line)}</bdi></span>
       <span class="dur">{formatDuration(r.durationMs)}</span>
       <span class="exit" class:bad={failed(r) && !stopped(r.opId)}>{failed(r) ? `exit ${r.exitCode}` : "ok"}</span>
@@ -382,6 +396,7 @@
   aria-label="Command log"
   data-testid="command-log"
   style:height="{height}px"
+  style:--time-w="{timeChars}ch"
   bind:this={panel}
   onfocusin={onFocusIn}
   onkeydown={onKeydown}
@@ -436,7 +451,7 @@
                 onclick={() => (folded[item.opId] = open)}
               >
                 <span class="chev" class:open aria-hidden="true"></span>
-                <span class="time">{clockTime(item.records[0].startedAtMs)}</span>
+                <span class="time">{formatClock(item.records[0].startedAtMs, app.settings.dateFormat, clock.now)}</span>
                 <span class="op-title"><bdi>{visibleText(item.title ?? "Operation")}</bdi></span>
                 <span class="meta">{commands(item.records.length)}</span>
                 <span class="dur">{formatDuration(opSpan(item))}</span>
@@ -597,7 +612,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 12px 58px minmax(0, 1fr) auto 52px;
+    grid-template-columns: 12px calc(var(--time-w, 8ch) + 2px) minmax(0, 1fr) auto 52px;
     align-items: center;
     column-gap: 8px;
     width: 100%;
@@ -612,7 +627,7 @@
   }
 
   .op-head {
-    grid-template-columns: 12px 58px minmax(0, 1fr) auto auto 52px;
+    grid-template-columns: 12px calc(var(--time-w, 8ch) + 2px) minmax(0, 1fr) auto auto 52px;
     height: 26px;
   }
 
@@ -659,6 +674,10 @@
   }
 
   .time {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     color: var(--text-faint);
     font-family: var(--font-mono);
     font-size: var(--fs-xs);

@@ -9,3 +9,13 @@ export function isTauri(): boolean {
 export function isMac(): boolean {
   return typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
 }
+
+/** On Windows (the file manager is File Explorer). */
+export function isWindows(): boolean {
+  return typeof navigator !== "undefined" && /Win/i.test(navigator.platform || navigator.userAgent);
+}
+
+/** What showing a folder in the file manager is called here. */
+export function revealLabel(): string {
+  return isMac() ? "Reveal in Finder" : isWindows() ? "Show in File Explorer" : "Open containing folder";
+}

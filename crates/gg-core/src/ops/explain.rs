@@ -67,8 +67,15 @@ pub fn explain(args: &[&str], out: &GitOutput) -> Step {
     } else {
         out.stderr.clone()
     };
-    let hints: Vec<OpHint> = Vec::new();
     let all = format!("{}\n{}", out.stderr, out.text());
+    // The branch is checked out in another worktree (spec §5.4): offer to make that one
+    // active.
+    let hints: Vec<OpHint> = checked_out_elsewhere(&all)
+        .map(|(_, worktree)| OpHint::MakeActive {
+            worktree: crate::platform::native_path(worktree),
+        })
+        .into_iter()
+        .collect();
     let message =
         known_failure(args, &all).unwrap_or_else(|| git_failed(args, out.code, &detail).message);
     Step::Failed {
@@ -148,6 +155,7 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
     }
     for line in all.lines().map(str::trim) {
         if let Some((branch, path)) = held_by_worktree(line) {
+            let path = crate::platform::native_path(path);
             return Some(format!(
                 "Branch \u{201c}{branch}\u{201d} is checked out in another worktree, at \
                  {path}. Switch to that worktree, or check out another branch here."
@@ -161,6 +169,14 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
         if let Some(name) = between(line, "fatal: tag '", "' already exists") {
             return Some(format!(
                 "A tag named \u{201c}{name}\u{201d} already exists."
+            ));
+        }
+        if let Some((branch, path)) = delete_refused_by_worktree(line) {
+            let path = crate::platform::native_path(path);
+            return Some(format!(
+                "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, so \
+                 it cannot be deleted. Check out another branch there, or delete that worktree, \
+                 first."
             ));
         }
         if let Some(name) = between(line, "error: the branch '", "' is not fully merged") {
@@ -242,9 +258,15 @@ pub(crate) fn push_rejected(all: &str) -> Option<Rejected> {
 }
 
 /// Whether a pull failed because the branches diverged and no way to reconcile them is
-/// configured (`pull.rebase`, `pull.ff`).
+/// configured (`pull.rebase`, `pull.ff`), or only fast-forwards are allowed (`pull.ff=only`,
+/// `merge.ff=only`, `--ff-only`): either way merging or rebasing is the user's choice.
 pub(crate) fn needs_pull_mode(all: &str) -> bool {
-    all.contains("Need to specify how to reconcile divergent branches")
+    all.contains("Need to specify how to reconcile divergent branches") || fast_forward_only(all)
+}
+
+/// Whether git refused because only a fast-forward was allowed and none was possible.
+fn fast_forward_only(all: &str) -> bool {
+    all.contains("Not possible to fast-forward")
 }
 
 /// Whether git run with `args` talks to a remote. Only then do words like "Connection
@@ -305,7 +327,7 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
         if let Some(rest) = line.strip_prefix("fatal: refusing to fetch into branch 'refs/heads/")
             && let Some((branch, path)) = rest.split_once("' checked out at '")
         {
-            let path = path.strip_suffix('\'').unwrap_or(path);
+            let path = crate::platform::native_path(path.strip_suffix('\'').unwrap_or(path));
             return Some(format!(
                 "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, and \
                  git does not move a checked-out branch by fetching into it: switch to that \
@@ -319,6 +341,14 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
                     .to_owned(),
             );
         }
+    }
+    if args.first() == Some(&"pull") && fast_forward_only(all) {
+        return Some(
+            "This branch and its upstream have diverged, and git is set to pull by \
+             fast-forward only (pull.ff), which is not possible here: choose whether to pull \
+             by merging or by rebasing."
+                .to_owned(),
+        );
     }
     if needs_pull_mode(all) {
         return Some(
@@ -382,6 +412,36 @@ pub(crate) fn file_list(files: &[&str]) -> String {
         ),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
+}
+
+/// The branch and the worktree holding it, when git refused because a branch is checked
+/// out in a worktree: a checkout or a new worktree ([`held_by_worktree`]), a delete
+/// ([`delete_refused_by_worktree`]), a fetch into it.
+pub(crate) fn checked_out_elsewhere(all: &str) -> Option<(&str, &str)> {
+    all.lines().map(str::trim).find_map(|line| {
+        held_by_worktree(line)
+            .or_else(|| delete_refused_by_worktree(line))
+            .or_else(|| {
+                let rest =
+                    line.strip_prefix("fatal: refusing to fetch into branch 'refs/heads/")?;
+                let (branch, path) = rest.split_once("' checked out at '")?;
+                Some((branch, path.strip_suffix('\'').unwrap_or(path)))
+            })
+    })
+}
+
+/// The branch and the worktree path in git's "error: cannot delete branch 'x' used by
+/// worktree at '/p'" (older git: "error: Cannot delete branch 'x' checked out at '/p'").
+fn delete_refused_by_worktree(line: &str) -> Option<(&str, &str)> {
+    let rest = line
+        .strip_prefix("error: cannot delete branch '")
+        .or_else(|| line.strip_prefix("error: Cannot delete branch '"))?;
+    for middle in ["' used by worktree at '", "' checked out at '"] {
+        if let Some((branch, path)) = rest.split_once(middle) {
+            return Some((branch, path.strip_suffix('\'').unwrap_or(path)));
+        }
+    }
+    None
 }
 
 /// The branch and the worktree path in git's "'x' is already used by worktree at '/p'"
@@ -516,9 +576,63 @@ mod tests {
         let Step::Failed { message, .. } = explain(&["fetch", "origin", "x:y"], &out) else {
             panic!("not failed");
         };
-        assert!(message.contains("/w/topic"), "{message}");
+        let at = crate::platform::native_path("/w/topic");
+        assert!(message.contains(&at), "{message}");
         assert!(message.contains("that worktree"), "{message}");
         assert!(!message.contains("pull it instead"), "{message}");
+    }
+
+    /// Every refusal over a branch checked out in another worktree says which one, and offers
+    /// to make it active (spec §5.4).
+    #[test]
+    fn a_branch_checked_out_elsewhere_offers_its_worktree() {
+        let cases: [(&[&str], &str); 5] = [
+            (
+                &["checkout", "--no-guess", "f", "--"],
+                "fatal: 'f' is already used by worktree at '/w/f'\n",
+            ),
+            (
+                &["worktree", "add", "--", "/w/g", "f"],
+                "Preparing worktree (checking out 'f')\nfatal: 'f' is already used by worktree at '/w/f'\n",
+            ),
+            (
+                &["branch", "-d", "--", "f"],
+                "error: cannot delete branch 'f' used by worktree at '/w/f'\n",
+            ),
+            (
+                &["branch", "-D", "--", "f"],
+                "error: Cannot delete branch 'f' checked out at '/w/f'\n",
+            ),
+            (
+                &["fetch", "origin", "x:f"],
+                "fatal: refusing to fetch into branch 'refs/heads/f' checked out at '/w/f'\n",
+            ),
+        ];
+        // Spelled as the platform spells paths (git for Windows writes `/`).
+        let at = crate::platform::native_path("/w/f");
+        for (args, stderr) in cases {
+            let Step::Failed { message, hints, .. } = explain(args, &failed(stderr, "")) else {
+                panic!("not failed");
+            };
+            assert!(message.contains(&at), "{args:?}: {message}");
+            assert!(message.contains("\u{201c}f\u{201d}"), "{args:?}: {message}");
+            // Worktrees are deleted, in the app's words (P3-R20), never "removed".
+            assert!(
+                !message.to_lowercase().contains("remove"),
+                "{args:?}: {message}"
+            );
+            assert_eq!(
+                hints,
+                [OpHint::MakeActive {
+                    worktree: at.clone()
+                }],
+                "{args:?}"
+            );
+        }
+        let Step::Failed { hints, .. } = explain(&["merge"], &failed("fatal: other\n", "")) else {
+            panic!("not failed");
+        };
+        assert!(hints.is_empty());
     }
 
     #[test]

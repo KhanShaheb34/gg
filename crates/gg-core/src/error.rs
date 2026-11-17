@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::dto::InputField;
+
 /// Machine-readable error category. Serialized as a snake_case string (`"not_a_repo"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +34,10 @@ pub struct CoreError {
     pub code: ErrorCode,
     pub message: String,
     pub detail: Option<String>,
+    /// The field of the form the request came from that the error is about, when the core
+    /// knows (a create-worktree dialog's location or new branch name). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<InputField>,
 }
 
 impl CoreError {
@@ -40,6 +46,15 @@ impl CoreError {
             code,
             message: message.into(),
             detail: None,
+            field: None,
+        }
+    }
+
+    /// This error, about form field `field`.
+    pub fn about(self, field: InputField) -> Self {
+        Self {
+            field: Some(field),
+            ..self
         }
     }
 

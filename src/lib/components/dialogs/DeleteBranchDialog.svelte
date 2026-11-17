@@ -13,16 +13,18 @@
     branch: string;
     /** Its upstream ("origin/x"), which stays, or null. */
     upstream: string | null;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, branch, upstream, close }: Props = $props();
+  let { repoId, branch, upstream, worktree, close }: Props = $props();
 </script>
 
 <Dialog
   title="Delete branch {shown(branch)}"
   primary="Delete branch"
-  onSubmit={() => closeAndRun(close, repoId, { op: "delete_branch", branch })}
+  onSubmit={() => closeAndRun(close, repoId, { op: "delete_branch", branch, expectWorktree: worktree })}
   onCancel={close}
 >
   <p class="dialog-text">

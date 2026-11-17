@@ -25,6 +25,38 @@ fn check_name(what: &str, name: &str) -> Result<()> {
     }
 }
 
+/// Names Windows keeps for devices, whatever the extension: no folder can have them.
+const RESERVED_ON_WINDOWS: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// `branch` as a folder name, for a worktree's default location: `/` becomes `-`; letters,
+/// digits, `-`, `_` and `.` are kept and everything else is dropped; leading dots and
+/// hyphens go (no hidden folder, nothing option-like). `worktree` if nothing is left. A name
+/// Windows reserves (`con`, `nul`, `com1`…, also before an extension) gets a `-` after it.
+pub fn branch_slug(branch: &str) -> String {
+    let slug: String = branch
+        .chars()
+        .filter_map(|c| match c {
+            '/' => Some('-'),
+            '-' | '_' | '.' => Some(c),
+            c if c.is_alphanumeric() => Some(c),
+            _ => None,
+        })
+        .collect();
+    let slug = slug.trim_start_matches(['.', '-']);
+    if slug.is_empty() {
+        return "worktree".to_owned();
+    }
+    let (stem, rest) = slug.split_at(slug.find('.').unwrap_or(slug.len()));
+    if RESERVED_ON_WINDOWS.contains(&stem.to_lowercase().as_str()) {
+        format!("{stem}-{rest}")
+    } else {
+        slug.to_owned()
+    }
+}
+
 /// `name` quoted for a message; an empty one is said as such.
 fn shown(name: &str) -> String {
     if name.is_empty() {
@@ -154,6 +186,27 @@ mod tests {
                 .message
                 .contains("tag name")
         );
+    }
+
+    #[test]
+    fn branch_slugs_are_folder_names() {
+        assert_eq!(branch_slug("main"), "main");
+        assert_eq!(branch_slug("feature/x"), "feature-x");
+        assert_eq!(branch_slug("deep/er/path"), "deep-er-path");
+        assert_eq!(branch_slug("feature/émoji-🚀"), "feature-émoji-");
+        assert_eq!(branch_slug("a@b:c*d?e\"f<g>h|i\\j"), "abcdefghij");
+        assert_eq!(branch_slug("v1.2_x"), "v1.2_x");
+        assert_eq!(branch_slug("..hidden"), "hidden");
+        assert_eq!(branch_slug("-x"), "x");
+        assert_eq!(branch_slug("@@"), "worktree");
+        assert_eq!(branch_slug(""), "worktree");
+        // Names Windows keeps for devices.
+        assert_eq!(branch_slug("con"), "con-");
+        assert_eq!(branch_slug("NUL"), "NUL-");
+        assert_eq!(branch_slug("com7"), "com7-");
+        assert_eq!(branch_slug("lpt1.x"), "lpt1-.x");
+        assert_eq!(branch_slug("feature/con"), "feature-con");
+        assert_eq!(branch_slug("com10"), "com10");
     }
 
     /// The rules agree with git's own: every name accepted here is accepted by

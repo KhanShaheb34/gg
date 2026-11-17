@@ -4,7 +4,8 @@
 mod fetch;
 mod loader;
 mod manager;
+pub(crate) mod prs;
 pub mod state;
 
-pub use manager::RepoManager;
-pub(crate) use manager::{Repo, unknown_repo};
+pub(crate) use manager::{Repo, canonical, canonical_paths, unknown_repo};
+pub use manager::{RepoManager, WorktreeMemory};

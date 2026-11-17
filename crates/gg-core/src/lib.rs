@@ -1,16 +1,20 @@
-//! Git graph core: everything that talks to git and shapes data for the UI.
+//! gg core: everything that talks to git and shapes data for the UI.
 //!
 //! [`Core`] is the one entry point the transports (the Tauri app and the dev server) use:
 //! [`Core::dispatch`] takes a command name and JSON arguments and returns JSON.
 
+pub mod cli;
 mod dispatch;
 pub mod dto;
-mod editor;
 pub mod error;
+pub mod gh;
 pub mod git;
 pub mod graph;
+pub mod hosts;
+pub mod launch;
 mod mask;
 pub mod ops;
+mod platform;
 pub mod repo;
 pub mod store;
 #[cfg(any(test, feature = "testutil"))]
@@ -28,6 +32,10 @@ pub use error::{CoreError, ErrorCode, Result};
 /// repositories, operation delays, a body that panics on request). The app refuses to be
 /// built for release with them.
 pub const TEST_HOOKS: bool = cfg!(feature = "testutil");
+
+/// Whether this build can be told where to find `gh` and `ssh` (`tool-path`: the devserver
+/// and tests only; never the app).
+pub const TOOL_PATH_HOOK: bool = cfg!(feature = "tool-path");
 
 use git::runner::{CommandLog, GitRunner};
 use repo::RepoManager;
@@ -47,7 +55,7 @@ pub struct Core {
     /// The repository manager, or why there is none (git was not found).
     repos: std::result::Result<Arc<RepoManager>, CoreError>,
     log: Arc<CommandLog>,
-    store: Store,
+    store: Arc<Store>,
     launch_path: Option<String>,
     perf: Mutex<Perf>,
     /// Store and perf-log writes take turns here, first come first served, so they land in
@@ -55,6 +63,8 @@ pub struct Core {
     io_turn: tokio::sync::Mutex<()>,
     /// Folders the operating system asked the app to open, not yet taken by the UI.
     opened: Mutex<Vec<String>>,
+    /// The `gg` terminal command: where it is looked for, and what the shell said of it.
+    cli: Mutex<cli::CliContext>,
     sink: Arc<dyn EventSink>,
 }
 
@@ -67,6 +77,8 @@ struct Perf {
     /// File each mark is appended to, if any.
     log: Option<PathBuf>,
     marks: Vec<(String, f64)>,
+    /// The login shell's start and end are in the log already.
+    login_logged: bool,
 }
 
 impl Core {
@@ -94,14 +106,16 @@ impl Core {
         log: Arc<CommandLog>,
         runner: Result<GitRunner>,
     ) -> Arc<Self> {
-        let store = Store::load(&config_dir);
+        let store = Arc::new(Store::load(&config_dir));
         // Every event leaves the core with credentials in URLs masked (R36).
         let sink: Arc<dyn EventSink> = Arc::new(mask::MaskingSink(sink));
         let repos = runner.map(|runner| {
             let repos = RepoManager::new(runner, sink.clone());
             repos.set_fetch_interval(store.settings().fetch_interval_secs);
+            repos.set_worktree_memory(Arc::new(StoreMemory(store.clone())));
             repos
         });
+        let login_path = repos.as_ref().ok().and_then(|r| r.login_path());
         Arc::new(Self {
             repos,
             log,
@@ -110,6 +124,7 @@ impl Core {
             perf: Mutex::new(Perf::default()),
             io_turn: tokio::sync::Mutex::new(()),
             opened: Mutex::new(Vec::new()),
+            cli: Mutex::new(cli::CliContext::new(login_path)),
             sink,
         })
     }
@@ -166,11 +181,21 @@ impl Core {
         self.perf().log = path;
     }
 
-    /// From now on, editor launches are appended to `file` instead of run (see
-    /// [`RepoManager::record_editor_launches_to`]); nothing without git.
-    pub fn record_editor_launches_to(&self, file: Option<PathBuf>) {
+    /// From now on, launches (editor, terminal, file manager, browser) are appended to `file`
+    /// instead of run (see [`RepoManager::record_launches_to`]); nothing without git.
+    pub fn record_launches_to(&self, file: Option<PathBuf>) {
         if let Ok(repos) = self.repos() {
-            repos.record_editor_launches_to(file);
+            repos.record_launches_to(file);
+        }
+    }
+
+    /// Finds `gh` and `ssh` in the first folder of `path` and runs them with it instead of
+    /// the login `PATH`: for tests and the devserver only (a fake `gh` and `ssh`; the
+    /// `tool-path` feature, never in the app).
+    #[cfg(feature = "tool-path")]
+    pub fn set_tool_path(&self, path: Option<std::ffi::OsString>) {
+        if let Ok(repos) = self.repos() {
+            repos.set_tool_path(path);
         }
     }
 
@@ -192,14 +217,28 @@ impl Core {
             perf.marks.drain(..excess);
         }
         perf.marks.push((name.clone(), ms));
-        let Some(path) = &perf.log else {
+        let Some(path) = perf.log.clone() else {
             return Ok(());
         };
+        let mut lines = format!("{name}\t{ms}\t{}\n", unix_ms());
+        // Once known: when the login shell for git's PATH ran, by the wall clock (no time
+        // since navigation: -1), so a launch's marks can be set against it.
+        if !perf.login_logged
+            && let Some((start, end)) = crate::git::runner::login_path_times()
+        {
+            perf.login_logged = true;
+            lines.push_str(&format!(
+                "login-shell-start\t-1\t{start:.0}\nlogin-shell-done\t-1\t{end:.0}\n"
+            ));
+        }
+        for (native, at) in lock_ignoring_poison(&NATIVE_MARKS).drain(..) {
+            lines.push_str(&format!("{native}\t-1\t{at}\n"));
+        }
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
-            .and_then(|mut f| f.write_all(format!("{name}\t{ms}\t{}\n", unix_ms()).as_bytes()))
+            .open(&path)
+            .and_then(|mut f| f.write_all(lines.as_bytes()))
             .map_err(|e| {
                 CoreError::new(
                     ErrorCode::Io,
@@ -207,6 +246,12 @@ impl Core {
                 )
                 .with_detail(e.to_string())
             })
+    }
+
+    /// The repository manager (tests only: what it recorded, such as a request's turn wait).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn manager(&self) -> Result<&Arc<RepoManager>> {
+        self.repos()
     }
 
     /// The repository manager, or `git_not_found`.
@@ -219,11 +264,53 @@ impl Core {
     }
 }
 
+/// Each repository's active worktree, kept in the store's repository preferences.
+struct StoreMemory(Arc<Store>);
+
+impl repo::WorktreeMemory for StoreMemory {
+    fn remembered(&self, root: &std::path::Path) -> Option<PathBuf> {
+        self.0.active_worktree(root)
+    }
+
+    fn remember(&self, root: &std::path::Path, worktree: Option<&std::path::Path>) {
+        // Only the next start would miss it.
+        let _ = self.0.set_active_worktree(root, worktree);
+    }
+
+    fn pr_base(&self, root: &std::path::Path) -> Option<String> {
+        self.0.repo_prefs(root).pr_base
+    }
+
+    fn remember_pr_base(&self, root: &std::path::Path, base: &str) {
+        // Only the next pull request's suggestion would miss it.
+        let _ = self.0.set_repo_prefs(
+            root,
+            store::RepoPrefsPatch {
+                pr_base: Some(Some(base.to_owned())),
+                ..Default::default()
+            },
+        );
+    }
+}
+
 pub(crate) fn lock_ignoring_poison<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Milliseconds since the unix epoch (0 if the clock is before it).
+/// Start-up marks of the native side (wall clock), waiting for the perf log (performance runs).
+static NATIVE_MARKS: Mutex<Vec<(&'static str, u128)>> = Mutex::new(Vec::new());
+
+/// Records native start-up mark `name` at this moment (wall clock): written to the perf log
+/// with the page's next mark, as `name<TAB>-1<TAB>unix ms`. For performance runs (the perf
+/// build calls it); a few entries otherwise, never written.
+pub fn native_mark(name: &'static str) {
+    let mut marks = lock_ignoring_poison(&NATIVE_MARKS);
+    if marks.len() < 64 {
+        marks.push((name, unix_ms()));
+    }
+}
+
 fn unix_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -46,6 +46,105 @@ export function shortenPath(path: string, home?: string | null): string {
   return path;
 }
 
+/** What the side panel shows of the worktrees' folders (see `worktreeFolders`). */
+export type WorktreeFolders = {
+  /** The folder most linked worktrees are in, home as `~`; null with no linked worktree. */
+  parent: string | null;
+  /** That folder in full. */
+  parentPath: string | null;
+  /** Each worktree's label: its folder name, or for one elsewhere its shortest distinguishing end ("~/…/other/fix"). */
+  labels: Map<string, string>;
+};
+
+/**
+ * How the side panel names the worktrees at `paths` (`main`: the main worktree's). The
+ * folder most of the linked worktrees are in is the panel's `parent` (said once, in its
+ * header); a worktree in it, and the main worktree, are named by their folder name alone. A
+ * linked worktree elsewhere shows the shortest end of its path that tells it apart, at least
+ * two folders, with what is left out as `…` ("~/…/other/fix"). Names that would be the same
+ * get longer ends too. Folder names are never cut here: the row cuts them in the middle.
+ */
+export function worktreeFolders(paths: string[], main: string | null, home?: string | null): WorktreeFolders {
+  const sep = separatorOf(paths[0] ?? "/");
+  const parentOf = (p: string) => p.slice(0, Math.max(0, p.lastIndexOf(sep)));
+  const nameOf = (p: string) => p.slice(p.lastIndexOf(sep) + 1);
+  const linked = paths.filter((p) => p !== main);
+  // The folder most linked worktrees are in (the first such, on a tie).
+  const counts = new Map<string, number>();
+  for (const p of linked) counts.set(parentOf(p), (counts.get(parentOf(p)) ?? 0) + 1);
+  let parent: string | null = null;
+  for (const [folder, n] of counts) if (parent === null || n > counts.get(parent)!) parent = folder;
+
+  /** The last `k` folders of `p` (home as ~), with what is left out as "…". */
+  const end = (p: string, k: number) => {
+    const parts = shortenPath(p, home).split(sep);
+    if (parts.length <= k + 1) return parts.join(sep);
+    const lead = parts[0] === "~" ? ["~", "…"] : ["…"];
+    return [...lead, ...parts.slice(-k)].join(sep);
+  };
+  const depth = new Map<string, number>();
+  for (const p of paths) depth.set(p, p === main || parentOf(p) === parent ? 1 : 2);
+  const label = (p: string) => (depth.get(p) === 1 ? nameOf(p) : end(p, depth.get(p)!));
+  // Longer ends for names that would be the same, until each is told apart.
+  for (let round = 0; round < 64; round++) {
+    const seen = new Map<string, string[]>();
+    for (const p of paths) seen.set(label(p), [...(seen.get(label(p)) ?? []), p]);
+    const same = [...seen.values()].filter((group) => group.length > 1).flat();
+    const longer = same.filter((p) => end(p, depth.get(p)!) !== end(p, depth.get(p)! + 1));
+    if (longer.length === 0) break;
+    for (const p of longer) depth.set(p, Math.max(2, depth.get(p)! + 1));
+  }
+  const labels = new Map(paths.map((p) => [p, label(p)] as [string, string]));
+  return { parent: parent === null ? null : shortenPath(parent, home), parentPath: parent, labels };
+}
+
+/**
+ * `text` cut in the middle to fit `room` (in the units of `width`, which measures a string):
+ * its end (up to `keep` characters, at most half) stays and its start gives way, with "…"
+ * between ("feature/pay…service-v2"); when even "…" and the end do not fit, the end gives way
+ * too. With `endFirst`, all of the end that fits stays and the start goes first ("…45%
+ * (450/1000)": a progress line's counts). Null when the whole text fits.
+ */
+export function cutToFit(
+  text: string,
+  room: number,
+  keep: number,
+  width: (s: string) => number,
+  endFirst = false,
+): string | null {
+  if (width(text) <= room) return null;
+  const chars = [...text];
+  let tail = endFirst ? chars.length - 1 : Math.min(keep, Math.floor(chars.length / 2));
+  const cut = (head: number, tailN: number) => chars.slice(0, head).join("") + "…" + chars.slice(chars.length - tailN).join("");
+  const fits = (head: number, tailN: number) => width(cut(head, tailN)) <= room;
+  while (tail > 0 && !fits(0, tail)) tail--;
+  // The most of the start that fits beside the end.
+  let lo = 0;
+  let hi = chars.length - tail - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(mid, tail)) lo = mid;
+    else hi = mid - 1;
+  }
+  return cut(lo, tail);
+}
+
+/**
+ * `text` (a message from the core) with every absolute path under the home folder `home`
+ * shown as `~/…`, as paths are shown elsewhere. Only a path that starts the text or follows a
+ * space, quote or bracket is changed. Without `home`, `text` as is.
+ */
+export function homeInText(text: string, home?: string | null): string {
+  if (!home) return text;
+  const sep = separatorOf(home);
+  let root = home;
+  while (root.length > 1 && root.endsWith(sep)) root = root.slice(0, -1);
+  if (root.length <= 1) return text;
+  const escaped = (root + sep).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const flags = sep === "\\" ? "gi" : "g";
+  return text.replace(new RegExp(`(^|[\\s"'“‘(\\[])${escaped}`, flags), `$1~${sep}`);
+}
+
 /** The folder that contains `path`, for display, with the home folder `home` shown as `~`. */
 export function displayFolder(path: string, home?: string | null): string {
   const sep = separatorOf(path);
@@ -59,21 +158,86 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const pad2 = (n: number) => (n < 10 ? `0${n}` : String(n));
 
-/** A commit time (unix seconds) in local time: "12 Nov 2026 16:02". */
-export function formatDate(unixSecs: number): string {
-  const d = new Date(unixSecs * 1000);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+/**
+ * How dates are shown (Settings › Appearance): "standard" (what the app always showed, the
+ * default) "12 Nov 2026 16:02"; "relative" "3 days ago"; "iso" "2026-11-12 16:02"; "locale"
+ * the system's own format for the user's language and region.
+ */
+export type DateFormat = "standard" | "relative" | "iso" | "locale";
+
+/** The locale formatters, made on first use (starting Intl costs a little). */
+const intl = new Map<string, Intl.DateTimeFormat>();
+function localeFormat(key: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  let format = intl.get(key);
+  if (!format) intl.set(key, (format = new Intl.DateTimeFormat(undefined, options)));
+  return format;
 }
 
-/** A commit time in full, for tooltips: "Thursday, 12 Nov 2026 16:02:00 (UTC+01:00)". */
-export function formatDateLong(unixSecs: number): string {
-  const d = new Date(unixSecs * 1000);
+/** "+01:00" for the zone offset of `d` (local time). */
+function zoneOffset(d: Date): string {
   const offset = -d.getTimezoneOffset();
   const sign = offset < 0 ? "-" : "+";
-  const zone = `UTC${sign}${pad2(Math.floor(Math.abs(offset) / 60))}:${pad2(Math.abs(offset) % 60)}`;
-  return `${WEEKDAYS[d.getDay()]}, ${formatDate(unixSecs)}:${pad2(d.getSeconds())} (${zone})`;
+  return `${sign}${pad2(Math.floor(Math.abs(offset) / 60))}:${pad2(Math.abs(offset) % 60)}`;
 }
 
+/** `d` as ISO 8601 in local time, to the minute: "2026-11-12 16:02". */
+function isoMinute(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
+ * A commit time (unix seconds) in local time, in `format`: "12 Nov 2026 16:02" (standard),
+ * "3 days ago" (relative, as of `now`), "2026-11-12 16:02" (iso), or the system's (locale).
+ */
+export function formatDate(unixSecs: number, format: DateFormat = "standard", now: number = Date.now()): string {
+  const d = new Date(unixSecs * 1000);
+  switch (format) {
+    case "relative":
+      return relativeTime(unixSecs * 1000, now);
+    case "iso":
+      return isoMinute(d);
+    case "locale":
+      return localeFormat("medium", { dateStyle: "medium", timeStyle: "short" }).format(d);
+    default:
+      return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+}
+
+/**
+ * A commit time in full, for tooltips and the details: "Thursday, 12 Nov 2026 16:02:00
+ * (UTC+01:00)" (standard; relative puts how long ago before it), "2026-11-12T16:02:00+01:00"
+ * (iso), or the system's long format (locale).
+ */
+export function formatDateLong(unixSecs: number, format: DateFormat = "standard", now: number = Date.now()): string {
+  const d = new Date(unixSecs * 1000);
+  const standard = () => `${WEEKDAYS[d.getDay()]}, ${formatDate(unixSecs)}:${pad2(d.getSeconds())} (UTC${zoneOffset(d)})`;
+  switch (format) {
+    case "relative":
+      return `${relativeTime(unixSecs * 1000, now)} · ${standard()}`;
+    case "iso":
+      return `${isoMinute(d).replace(" ", "T")}:${pad2(d.getSeconds())}${zoneOffset(d)}`;
+    case "locale":
+      return localeFormat("full", { dateStyle: "full", timeStyle: "long" }).format(d);
+    default:
+      return standard();
+  }
+}
+
+/**
+ * A moment of today (epoch milliseconds; a command run, a list loaded), in `format`:
+ * "09:05:07" (standard, iso), "2 min ago" (relative, as of `now`), or the system's time of
+ * day (locale).
+ */
+export function formatClock(ms: number, format: DateFormat = "standard", now: number = Date.now()): string {
+  switch (format) {
+    case "relative":
+      return relativeTime(ms, now);
+    case "locale":
+      return localeFormat("time", { timeStyle: "medium" }).format(new Date(ms));
+    default:
+      return clockTime(ms);
+  }
+}
 
 /** A stable lane colour index for `key` (a repository path, say): FNV-1a, folded to 0..9. */
 export function colorIndex(key: string): number {
@@ -135,8 +299,8 @@ export function shellQuote(arg: string): string {
 }
 
 /** The command line of git with `args`, quoted for a shell ("git commit -m 'Fix it'"). */
-export function commandLine(args: string[]): string {
-  return ["git", ...args].map(shellQuote).join(" ");
+export function commandLine(args: string[], program = "git"): string {
+  return [program, ...args].map(shellQuote).join(" ");
 }
 
 /**

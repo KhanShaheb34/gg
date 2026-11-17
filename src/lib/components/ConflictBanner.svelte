@@ -119,13 +119,13 @@
 
   /** The core asks to confirm, saying what goes back (R39): no dialog of its own. */
   function abort() {
-    if (progress) runOp(view.repoId, { op: "abort", expectHead: snap.head }).catch(() => {}); // reported by runOp
+    if (progress) runOp(view.repoId, { op: "abort", expectHead: snap.head, expectWorktree: snap.activeWorktree }).catch(() => {}); // reported by runOp
   }
 
   /** Leaves out the commit the banner shows as empty; the core checks git is still stopped on it. */
   function skip() {
     if (progress?.commit) {
-      runOp(view.repoId, { op: "skip", expectHead: snap.head, commit: progress.commit }).catch(() => {}); // reported by runOp
+      runOp(view.repoId, { op: "skip", expectHead: snap.head, commit: progress.commit, expectWorktree: snap.activeWorktree }).catch(() => {}); // reported by runOp
     }
   }
 
@@ -138,6 +138,7 @@
       fileCount: progress.fileCount,
       force,
       head: snap.head,
+      worktree: snap.activeWorktree,
     });
   }
 

@@ -13,6 +13,7 @@ use crate::Core;
 use crate::dto::{AppState, Confirmed, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::LogFilter;
+use crate::launch::{AppLink, External, Programs};
 use crate::mask;
 use crate::store::{RepoPrefsPatch, SettingsPatch};
 
@@ -43,6 +44,10 @@ struct RemoveRecentArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OpenRepoArgs {
     path: PathBuf,
+    /// A tab restored from the last session: the main worktree's folder then keeps the
+    /// worktree remembered as active (opened by the user, it makes the main one active).
+    #[serde(default)]
+    restore: bool,
 }
 
 #[derive(Deserialize)]
@@ -111,14 +116,62 @@ struct RunOpArgs {
 }
 
 /// What `open_repo` returns: the repository's snapshot, and the worktree the path asked for
-/// is in when that is another worktree of a repository already open (its tab acts on its
-/// own, `activeWorktree`; R42).
+/// is in when it could not be made active (an operation runs or waits in the repository):
+/// the tab goes on in `activeWorktree`. A path in a linked worktree otherwise makes that
+/// worktree active.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Opened {
     #[serde(flatten)]
     snapshot: crate::dto::RepoSnapshot,
     opened_worktree: Option<String>,
+}
+
+/// What `uninstall_cli` returns: the command's state, and the files it removed (none when
+/// there was nothing to remove).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Uninstalled {
+    #[serde(flatten)]
+    state: crate::dto::CliState,
+    removed: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RefreshArgs {
+    repo_id: u32,
+    /// The user asked (the Refresh button or shortcut): the pull requests load too.
+    #[serde(default)]
+    prs: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrSuggestArgs {
+    repo_id: u32,
+    branch: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetActiveWorktreeArgs {
+    repo_id: u32,
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorktreeFilesArgs {
+    repo_id: u32,
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DefaultPathArgs {
+    repo_id: u32,
+    branch: String,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +204,38 @@ struct RepoPrefsArgs {
 struct OpenInEditorArgs {
     repo_id: u32,
     path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenExternalArgs {
+    repo_id: u32,
+    target: External,
+    /// A worktree of the repository (editor, terminal, reveal); the active one when absent.
+    #[serde(default)]
+    path: Option<PathBuf>,
+    /// The web page (url).
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// What `open_external` returns: a note for the user when something else than asked was
+/// opened.
+#[derive(serde::Serialize)]
+struct OpenedExternal {
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AppLinkArgs {
+    link: AppLink,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstallCliArgs {
+    dir: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -200,6 +285,16 @@ impl Core {
                 }
                 to_json(settings)
             }
+            "restore_default_settings" => {
+                let NoArgs {} = parse(cmd, args)?;
+                let settings = self
+                    .blocking(|core| core.store.restore_default_settings())
+                    .await?;
+                if let Ok(repos) = self.repos() {
+                    repos.set_fetch_interval(settings.fetch_interval_secs);
+                }
+                to_json(settings)
+            }
             "reset_settings" => {
                 let NoArgs {} = parse(cmd, args)?;
                 self.blocking(|core| core.store.reset()).await?;
@@ -218,8 +313,10 @@ impl Core {
             }
             "open_repo" => {
                 let a: OpenRepoArgs = parse(cmd, args)?;
-                let (snapshot, opened_worktree) =
-                    self.repos()?.open_noting_worktree(&a.path).await?;
+                let (snapshot, opened_worktree) = self
+                    .repos()?
+                    .open_noting_worktree(&a.path, !a.restore)
+                    .await?;
                 // The repository is open either way; a recent that cannot be saved is only
                 // missing from the next start's list.
                 let root = snapshot.root_path.clone();
@@ -282,8 +379,17 @@ impl Core {
                 Ok(Value::Null)
             }
             "refresh" => {
-                let a: RepoArgs = parse(cmd, args)?;
-                to_json(self.repos()?.refresh(a.repo_id).await?)
+                let a: RefreshArgs = parse(cmd, args)?;
+                let repos = self.repos()?;
+                if a.prs {
+                    to_json(repos.refresh_by_user(a.repo_id).await?)
+                } else {
+                    to_json(repos.refresh(a.repo_id).await?)
+                }
+            }
+            "pr_suggest" => {
+                let a: PrSuggestArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_suggest(a.repo_id, &a.branch).await?)
             }
             "set_window_focused" => {
                 let a: FocusArgs = parse(cmd, args)?;
@@ -324,6 +430,27 @@ impl Core {
                         .await?,
                 )
             }
+            "set_active_worktree" => {
+                let a: SetActiveWorktreeArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .set_active_worktree(a.repo_id, &a.path)
+                        .await?,
+                )
+            }
+            "worktree_files" => {
+                let a: WorktreeFilesArgs = parse(cmd, args)?;
+                to_json(self.repos()?.worktree_files(a.repo_id, &a.path).await?)
+            }
+            "worktree_default_path" => {
+                let a: DefaultPathArgs = parse(cmd, args)?;
+                let pattern = self.store.settings().worktree_pattern;
+                to_json(
+                    self.repos()?
+                        .worktree_default_path(a.repo_id, &a.branch, &pattern)
+                        .await?,
+                )
+            }
             "stop_op" => {
                 let a: StopOpArgs = parse(cmd, args)?;
                 to_json(self.repos()?.stop_op(a.repo_id, a.op_id)?)
@@ -349,6 +476,49 @@ impl Core {
                     .open_in_editor(a.repo_id, a.path.as_deref(), command.as_deref())
                     .await?;
                 to_json(note)
+            }
+            "open_external" => {
+                let a: OpenExternalArgs = parse(cmd, args)?;
+                let settings = self.store.settings();
+                let programs = Programs {
+                    editor: settings.editor_command.as_deref(),
+                    terminal: settings.terminal_command.as_deref(),
+                };
+                let note = self
+                    .repos()?
+                    .open_external(
+                        a.repo_id,
+                        a.target,
+                        a.path.as_deref(),
+                        a.url.as_deref(),
+                        programs,
+                    )
+                    .await?;
+                to_json(OpenedExternal { note })
+            }
+            "open_app_link" => {
+                let a: AppLinkArgs = parse(cmd, args)?;
+                let file = self.store.file();
+                let note = self.repos()?.open_app_link(a.link, &file)?;
+                to_json(OpenedExternal { note })
+            }
+            "install_cli" => {
+                let a: InstallCliArgs = parse(cmd, args)?;
+                to_json(
+                    self.off_runtime(move |core| core.install_cli(&a.dir))
+                        .await?,
+                )
+            }
+            "uninstall_cli" => {
+                let NoArgs {} = parse(cmd, args)?;
+                let (removed, state) = self.off_runtime(|core| core.uninstall_cli()).await?;
+                to_json(Uninstalled {
+                    state,
+                    removed: removed
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect(),
+                })
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;
@@ -379,6 +549,20 @@ impl Core {
             })
     }
 
+    /// Runs `f`, which blocks (writes a file, waits for the login shell), on Tokio's blocking
+    /// pool, without waiting for the store's turn: it does not touch the store.
+    async fn off_runtime<T: Send + 'static>(
+        self: &Arc<Self>,
+        f: impl FnOnce(&Core) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let core = self.clone();
+        tokio::task::spawn_blocking(move || f(&core))
+            .await
+            .unwrap_or_else(|e| {
+                Err(CoreError::new(ErrorCode::Io, "The task failed").with_detail(e.to_string()))
+            })
+    }
+
     /// The main worktree of open repository `repo_id`: what its preferences are kept by.
     fn repo_root(&self, repo_id: u32) -> Result<PathBuf> {
         let repos = self.repos()?;
@@ -402,7 +586,10 @@ impl Core {
             launch_path: self.launch_path.clone(),
             home_dir: home_dir(),
             settings_problem: self.store.problem(),
+            settings_file: self.store.file().to_string_lossy().into_owned(),
             git_problem: self.repos().ok().and_then(|r| r.git_problem()),
+            cli: self.cli_state(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
         }
     }
 }

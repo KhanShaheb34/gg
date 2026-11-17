@@ -10,14 +10,15 @@ import { findRepoView } from "../state/repo.svelte";
 import type { RefLabel } from "../types";
 
 /**
- * Checks out local branch `branch` of repository `repoId`. `label`: its label as the menu
- * had it; without one, its label on the loaded rows, if any, says how far behind it is.
+ * Checks out local branch `branch` of repository `repoId`, in `worktree`, the active worktree
+ * the request was made from. `label`: its label as the menu had it; without one, its label on
+ * the loaded rows, if any, says how far behind it is.
  */
-export function checkOutBranch(repoId: number, branch: string, label?: RefLabel): void {
+export function checkOutBranch(repoId: number, branch: string, worktree: string, label?: RefLabel): void {
   const known = label ?? findRepoView(repoId)?.loadedLabel(branch);
   if (known && known.upstream !== null && known.behind > 0 && known.ahead === 0) {
-    showDialog(FastForwardDialog, { repoId, branch, upstream: known.upstream, behind: known.behind });
+    showDialog(FastForwardDialog, { repoId, branch, upstream: known.upstream, behind: known.behind, worktree });
     return;
   }
-  runOp(repoId, { op: "checkout_branch", branch, fastForward: false }).catch(() => {}); // reported by runOp
+  runOp(repoId, { op: "checkout_branch", branch, fastForward: false, expectWorktree: worktree }).catch(() => {}); // reported by runOp
 }

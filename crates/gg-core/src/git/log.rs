@@ -197,6 +197,8 @@ async fn stream_log<F: FnMut(Vec<Commit>)>(
     on_batch: &mut F,
 ) -> Result<StreamEnd> {
     let started = Instant::now();
+    // Counted as running until it has been waited for.
+    let _live = r.live_child();
     let mut child = r.spawn_stream(cwd, args)?;
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(CoreError::new(ErrorCode::Io, "git output was not piped"));

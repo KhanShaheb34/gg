@@ -1,4 +1,4 @@
-// The menu of a commit row (spec §5.2, "Commit"; "create worktree here" comes with Plan 3).
+// The menu of a commit row (spec §5.2, "Commit").
 
 import type { CommitRow, RepoSnapshot } from "../types";
 import { firstReason, inProgressReason, item, SEPARATOR, shown } from "./common";
@@ -16,6 +16,7 @@ export function commitMenu(row: CommitRow, snap: RepoSnapshot): MenuItem[] {
     SEPARATOR,
     item("branch.create", "Create branch here…"),
     item("tag.create", "Create tag here…"),
+    item("worktree.create", "Create worktree here…"),
     SEPARATOR,
     item("cherry_pick", "Cherry-pick…", {
       disabledReason: firstReason(isHead ? "This commit is already HEAD" : undefined, busy),

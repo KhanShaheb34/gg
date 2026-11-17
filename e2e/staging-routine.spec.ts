@@ -290,6 +290,9 @@ test("the merge dialog never writes the default over a stored choice it has not 
     return route.continue();
   });
   await pickOnLabel(page, "feature/login", "Merge feature/login into main…");
+  // The dialog is up and has the focus before Enter goes to it.
+  await expect(dialog(page)).toBeVisible();
+  await expect.poll(() => dialog(page).evaluate((d) => d.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Enter");
   await expect(notice(page, /Merged feature\/login into main/)).toBeVisible();
   release();
@@ -297,6 +300,22 @@ test("the merge dialog never writes the default over a stored choice it has not 
   expect(await prefs()).toBe(false);
 
   // Changed by hand, but the core refuses the request before it runs: nothing is saved.
+  // Diagnosis of a rare flake (Task 9 review minor 10): the right-click below once waited
+  // 30 s for the label to be "stable". Tell a page that stopped drawing frames from a label
+  // that keeps moving.
+  const frame = await page.evaluate(
+    () =>
+      new Promise<string>((resolve) => {
+        requestAnimationFrame(() => resolve("drawn"));
+        setTimeout(() => resolve("no frame for 2 s"), 2000);
+      }),
+  );
+  expect(frame, "the page stopped rendering").toBe("drawn");
+  await pickOnLabel(page, "staging", "Merge staging into main…");
+  const box = dialog(page).getByRole("checkbox", { name: /Create a merge commit even if fast-forward is possible/ });
+  await expect(box).not.toBeChecked();
+  await box.check();
+  // Routed only now, just before the request it answers.
   await page.route("**/invoke", (route) => {
     if ((route.request().postDataJSON() as { cmd: string } | null)?.cmd === "run_op") {
       return route.fulfill({
@@ -305,10 +324,6 @@ test("the merge dialog never writes the default over a stored choice it has not 
     }
     return route.continue();
   });
-  await pickOnLabel(page, "staging", "Merge staging into main…");
-  const box = dialog(page).getByRole("checkbox", { name: /Create a merge commit even if fast-forward is possible/ });
-  await expect(box).not.toBeChecked();
-  await box.check();
   await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "That is not a branch." })).toBeVisible();
   await page.unrouteAll({ behavior: "wait" });
@@ -360,10 +375,12 @@ test("actions_queue_while_one_runs", async ({ gg }) => {
   const outcomes = page.evaluate(async () => {
     const ops = await import("/src/lib/state/ops.svelte.ts");
     const { app } = await import("/src/lib/state/app.svelte.ts");
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
     const repoId = app.activeRepoId!;
+    const expectWorktree = findRepoView(repoId)!.snapshot.activeWorktree;
     return Promise.all([
-      ops.runOp(repoId, { op: "checkout_branch", branch: "feature/login", fastForward: false }),
-      ops.runOp(repoId, { op: "checkout_branch", branch: "staging", fastForward: true }),
+      ops.runOp(repoId, { op: "checkout_branch", branch: "feature/login", fastForward: false, expectWorktree }),
+      ops.runOp(repoId, { op: "checkout_branch", branch: "staging", fastForward: true, expectWorktree }),
     ]);
   });
   const busy = page.getByTestId("busy");

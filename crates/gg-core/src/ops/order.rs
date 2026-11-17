@@ -56,6 +56,10 @@ impl ClientOrders {
 pub(crate) struct OpOrder {
     state: Mutex<Numbers>,
     changed: Notify,
+    /// How long the last request waited for its turn (what the tests look at, whatever the
+    /// machine's speed).
+    #[cfg(any(test, feature = "testutil"))]
+    last_wait: Mutex<Duration>,
 }
 
 struct Numbers {
@@ -106,7 +110,10 @@ impl OpOrder {
     /// [`ORDER_WAIT`] for it. The returned turn lets the numbers after `n` in once it is
     /// dropped: drop it once the request has its place in the queue (or will never take one).
     pub(crate) async fn wait_for_turn(self: &Arc<Self>, n: u64) -> NumberedTurn {
-        let deadline = tokio::time::Instant::now() + ORDER_WAIT;
+        let started = tokio::time::Instant::now();
+        let deadline = started + ORDER_WAIT;
+        #[cfg(not(any(test, feature = "testutil")))]
+        let _ = started;
         let turn = NumberedTurn {
             order: self.clone(),
             n,
@@ -125,6 +132,10 @@ impl OpOrder {
                 }
                 if numbers.next >= n {
                     numbers.waiting.remove(&n);
+                    #[cfg(any(test, feature = "testutil"))]
+                    {
+                        *lock(&self.last_wait) = started.elapsed();
+                    }
                     break;
                 }
                 if numbers.next != before {
@@ -139,6 +150,12 @@ impl OpOrder {
             }
         }
         turn
+    }
+
+    /// How long the last request waited for its turn (tests only).
+    #[cfg(any(test, feature = "testutil"))]
+    pub(crate) fn last_wait(&self) -> Duration {
+        *lock(&self.last_wait)
     }
 
     /// Gives up number `n` at once: a request that will never join (its arguments could

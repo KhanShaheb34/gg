@@ -15,7 +15,7 @@ import { expect, test } from "@playwright/test";
 import { startDevserver, stopDevserver } from "../fixtures";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
-const REPO = process.env.GG_PERF_R20K ?? path.join(homedir(), ".cache/gitgraph-perf/r20k");
+const REPO = process.env.GG_PERF_R20K ?? path.join(homedir(), ".cache/gg-perf/r20k");
 
 test.skip(process.env.GG_PERF !== "1", "performance run: set GG_PERF=1");
 test.use({ viewport: { width: 1280, height: 800 } });

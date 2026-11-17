@@ -15,17 +15,19 @@ describe("pick", () => {
     expect(app.toasts.map((t) => t.message)).toEqual(["No remote of this repository has gone/x‹U+202E›."]);
   });
 
-  it("drops a stash by its commit, through the core's confirmation", async () => {
+  it("drops, pops and applies a stash by its commit, in the worktree and on the branch the menu was built from", async () => {
     const { pick } = await import("./dispatch");
     const { runOp } = await import("../state/ops.svelte");
     const row = { kind: "stash", hash: "a".repeat(40), subject: "On main: wip" } as CommitRow;
-    pick("stash.drop", { row, label: null }, snap());
-    pick("stash.pop", { row, label: null }, snap());
-    pick("stash.apply", { row, label: null }, snap());
+    const shown = snap();
+    pick("stash.drop", { row, label: null }, shown);
+    pick("stash.pop", { row, label: null }, shown);
+    pick("stash.apply", { row, label: null }, shown);
     expect(vi.mocked(runOp).mock.calls.map((c) => c[1])).toEqual([
-      { op: "stash_drop", stash: "a".repeat(40) },
-      { op: "stash_pop", stash: "a".repeat(40) },
-      { op: "stash_apply", stash: "a".repeat(40) },
+      { op: "stash_drop", stash: "a".repeat(40), expectWorktree: "/r" },
+      { op: "stash_pop", stash: "a".repeat(40), expectHead: shown.head, expectWorktree: "/r" },
+      { op: "stash_apply", stash: "a".repeat(40), expectHead: shown.head, expectWorktree: "/r" },
     ]);
+    expect(shown.head.branch).not.toBeNull();
   });
 });

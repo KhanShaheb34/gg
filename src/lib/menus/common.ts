@@ -2,7 +2,7 @@
 // items cannot apply.
 
 import { visibleText } from "../format";
-import type { RepoSnapshot } from "../types";
+import type { PrUnavailable, PullRequest, RepoSnapshot } from "../types";
 import type { MenuItem } from "./types";
 
 /** Longest name shown whole in an item's label; longer ones lose their middle. */
@@ -15,12 +15,12 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
  * in the middle to MAX_NAME characters (code points). Cut only between graphemes, each shown
  * whole: never inside a character, a flag or an invisible character's marker (‹U+202E›).
  */
-export function shown(name: string): string {
+export function shown(name: string, max = MAX_NAME): string {
   const text = visibleText(name);
-  if ([...text].length <= MAX_NAME) return text;
+  if ([...text].length <= max) return text;
   const parts = [...graphemes.segment(name)].map((g) => visibleText(g.segment));
   const width = (part: string) => [...part].length;
-  const budget = MAX_NAME - 1; // the ellipsis
+  const budget = max - 1; // the ellipsis
   let head = "";
   let tail = "";
   let used = 0;
@@ -112,3 +112,29 @@ export function defaultRemote(remotes: string[], preferred: string | null = null
 
 /** Said under a remote list while nothing is chosen in it (R29). */
 export const CHOOSE_REMOTE = "Choose the remote.";
+
+/** Why pull requests cannot be made through gh, as items and dialogs say it. */
+export const PR_REASONS: Record<Exclude<PrUnavailable, "failed">, string> = {
+  no_gh: "GitHub CLI (gh) is not installed",
+  signed_out: "gh is not signed in — run `gh auth login` in a terminal",
+  not_github: "This remote is not on GitHub",
+};
+
+/**
+ * The pull-request item of local `branch` (null: a detached HEAD) whose open pull request is
+ * `pr`: "Open pull request #N" when there is one; else "Create pull request…", whose dialog
+ * decides what it can do and says so (when the pull requests are not known yet, or gh is
+ * missing or signed out: it pushes first when needed, then opens GitHub's compare page). The
+ * menu promises no more than that (Task 10 review minor 8); disabled, with the reason,
+ * without a branch, a remote, or a remote on GitHub.
+ */
+export function pullRequestItem(branch: string | null, pr: PullRequest | null, snap: RepoSnapshot): MenuItem {
+  if (pr) return item("pr.open", `Open pull request #${pr.number}`);
+  const create = "Create pull request…";
+  if (branch === null) return item("pr.create", create, { disabledReason: "HEAD is detached there: there is no branch to propose" });
+  if (snap.remotes.length === 0) return item("pr.create", create, { disabledReason: "This repository has no remote" });
+  if (snap.prs.status === "unavailable" && snap.prs.reason === "not_github") {
+    return item("pr.create", create, { disabledReason: PR_REASONS.not_github });
+  }
+  return item("pr.create", create);
+}

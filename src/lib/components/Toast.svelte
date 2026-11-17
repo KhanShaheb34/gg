@@ -7,7 +7,7 @@
   to the newest one; Tab reaches the stack after the page.
 -->
 <script lang="ts">
-  import { visibleText } from "../format";
+  import { homeInText, visibleText } from "../format";
   import { app, dismissToast, type Toast, type ToastAction } from "../state/app.svelte";
   import { findRepoView } from "../state/repo.svelte";
 
@@ -107,7 +107,7 @@
       <div class="body selectable">
         <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
              what is around it. -->
-        <p class="message"><bdi>{visibleText(toast.message)}</bdi></p>
+        <p class="message"><bdi>{visibleText(homeInText(toast.message, app.homeDir))}</bdi></p>
         {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}
@@ -161,7 +161,8 @@
 <style>
   .stack {
     position: fixed;
-    right: 16px;
+    /* Beside the docked side panel (it sets --side-w), never over its buttons (Commit). */
+    right: calc(16px + var(--side-w, 0px));
     /* Above the command log while it is open (it sets --log-h), so it never hides the entry a notice's Show log went to. */
     bottom: calc(16px + var(--log-h, 0px));
     z-index: 50;

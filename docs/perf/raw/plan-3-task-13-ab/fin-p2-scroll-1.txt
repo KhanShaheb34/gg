@@ -1,0 +1,48 @@
+repo: ~/.cache/gitgraph-perf/r20k (20000 commits)
+machine: Apple M1 Pro, 8 cores, 16 GB, macOS 27.2
+bundle: 6.8M (<scratch>/p2/target/release/bundle/macos/GitGraph.app)
+
+run	mode	load (1/5/15 min)	spawn->first-rows	spawn->fully-loaded	nav->first-rows	nav->fully-loaded	idle CPU %	footprint MB	RSS MB
+1	scroll	5.49 5.90 6.58	706 ms	687 ms	211 ms	192 ms	-	322.4	384
+    footprint MB: gitgraph=53.8 WebKit.GPU=32.1 WebKit.WebContent=230.7 WebKit.Networking=5.8
+    probe: scroll-frames=361 scroll-p50=17 scroll-p95=19 scroll-p99=19 scroll-max=22 scroll-over17=95 scroll-over25=0 scroll-skeleton-max=136 scroll-slow-skeleton-frames=0 scroll-skeletons-after-stop=0 click-count=20 click-p50=2 click-p95=10 click-max=12 page-errors=0
+    footprint 30 s later: 284.1 MB: gitgraph=53.3 WebKit.GPU=19.2 WebKit.WebContent=204.7 WebKit.Networking=6.9
+2	scroll	10.62 7.20 7.02	794 ms	825 ms	297 ms	329 ms	-	313	374.8
+    footprint MB: gitgraph=53.2 WebKit.GPU=32.4 WebKit.WebContent=221.5 WebKit.Networking=5.9
+    probe: scroll-frames=361 scroll-p50=17 scroll-p95=19 scroll-p99=19 scroll-max=20 scroll-over17=84 scroll-over25=0 scroll-skeleton-max=134 scroll-slow-skeleton-frames=0 scroll-skeletons-after-stop=0 click-count=20 click-p50=2 click-p95=10 click-max=12 page-errors=0
+    footprint 30 s later: 273.7 MB: gitgraph=52.6 WebKit.GPU=19.0 WebKit.WebContent=195.3 WebKit.Networking=6.8
+3	scroll	8.21 7.07 6.99	814 ms	852 ms	299 ms	337 ms	-	314.4	370.5
+    footprint MB: gitgraph=53.5 WebKit.GPU=32.6 WebKit.WebContent=222.3 WebKit.Networking=6.0
+    probe: scroll-frames=361 scroll-p50=17 scroll-p95=19 scroll-p99=20 scroll-max=21 scroll-over17=85 scroll-over25=0 scroll-skeleton-max=135 scroll-slow-skeleton-frames=0 scroll-skeletons-after-stop=0 click-count=20 click-p50=2 click-p95=7 click-max=11 page-errors=0
+    footprint 30 s later: 263.4 MB: gitgraph=52.2 WebKit.GPU=16.1 WebKit.WebContent=189.3 WebKit.Networking=5.8
+
+launches 2-3, per mode: median / min / max
+  scroll:
+    click-count                         20.00      20.00      20.00   (2)
+    click-max                           11.50      11.00      12.00   (2)
+    click-p50                            2.00       2.00       2.00   (2)
+    click-p95                            8.50       7.00      10.00   (2)
+    first                              804.00     794.00     814.00   (2)
+    foot                               313.70     313.00     314.40   (2)
+    foot-gitgraph                       53.35      53.20      53.50   (2)
+    foot-WebKit.GPU                     32.50      32.40      32.60   (2)
+    foot-WebKit.Networking               5.95       5.90       6.00   (2)
+    foot-WebKit.WebContent             221.90     221.50     222.30   (2)
+    foot30                             268.55     263.40     273.70   (2)
+    foot30-gitgraph                     52.40      52.20      52.60   (2)
+    foot30-WebKit.GPU                   17.55      16.10      19.00   (2)
+    foot30-WebKit.Networking             6.30       5.80       6.80   (2)
+    foot30-WebKit.WebContent           192.30     189.30     195.30   (2)
+    loaded                             838.50     825.00     852.00   (2)
+    page-errors                          0.00       0.00       0.00   (2)
+    rss                                372.65     370.50     374.80   (2)
+    scroll-frames                      361.00     361.00     361.00   (2)
+    scroll-max                          20.50      20.00      21.00   (2)
+    scroll-over17                       84.50      84.00      85.00   (2)
+    scroll-over25                        0.00       0.00       0.00   (2)
+    scroll-p50                          17.00      17.00      17.00   (2)
+    scroll-p95                          19.00      19.00      19.00   (2)
+    scroll-p99                          19.50      19.00      20.00   (2)
+    scroll-skeleton-max                134.50     134.00     135.00   (2)
+    scroll-skeletons-after-stop          0.00       0.00       0.00   (2)
+    scroll-slow-skeleton-frames          0.00       0.00       0.00   (2)

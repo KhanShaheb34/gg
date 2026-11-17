@@ -1,0 +1,29 @@
+repo: ~/.cache/gitgraph-perf/r20k (20000 commits)
+machine: Apple M1 Pro, 8 cores, 16 GB, macOS 27.2
+bundle: 7.9M (~/Dev/experiments/git-graph/target/release/bundle/macos/gg.app)
+
+run	mode	load (1/5/15 min)	spawn->first-rows	spawn->fully-loaded	nav->first-rows	nav->fully-loaded	idle CPU %	footprint MB	RSS MB
+1	idle	5.29 8.30 7.47	752 ms	720 ms	254 ms	223 ms	0.00	159.4	251.3
+    footprint MB: gg-desktop=56.1 WebKit.GPU=16.4 WebKit.WebContent=81.2 WebKit.Networking=5.7
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+2	idle	8.52 8.62 7.61	863 ms	900 ms	456 ms	493 ms	0.00	152.3	233.4
+    footprint MB: gg-desktop=50.1 WebKit.GPU=16.4 WebKit.WebContent=80.0 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+3	idle	6.86 8.21 7.50	652 ms	671 ms	257 ms	278 ms	0.10	154.9	237.1
+    footprint MB: gg-desktop=52.3 WebKit.GPU=16.2 WebKit.WebContent=80.6 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.10% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+4	idle	5.12 7.63 7.32	755 ms	782 ms	344 ms	370 ms	0.00	152.7	234.3
+    footprint MB: gg-desktop=50.2 WebKit.GPU=15.9 WebKit.WebContent=80.9 WebKit.Networking=5.7
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+
+launches 2-4, per mode: median / min / max
+  idle:
+    cpu                                  0.00       0.00       0.10   (3)
+    first                              755.00     652.00     863.00   (3)
+    foot                               152.70     152.30     154.90   (3)
+    foot-gg-desktop                     50.20      50.10      52.30   (3)
+    foot-WebKit.GPU                     16.20      15.90      16.40   (3)
+    foot-WebKit.Networking               5.80       5.70       5.80   (3)
+    foot-WebKit.WebContent              80.60      80.00      80.90   (3)
+    loaded                             782.00     671.00     900.00   (3)
+    rss                                234.30     233.40     237.10   (3)

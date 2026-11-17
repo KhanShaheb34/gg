@@ -1,14 +1,32 @@
 #!/usr/bin/env bash
 # Measures the release app (macOS) on one repository and prints a table.
 #
-#   scripts/perf.sh [--no-build] [--runs N] [--scroll | --still | --smooth | --mixed | --modes "M..."] <repo>
+#   scripts/perf.sh [--no-build] [--runs N] [--logs DIR] [--login-shell]
+#                   [--scroll | --still | --smooth | --mixed | --modes "M..."] <repo>
+#
+# --logs DIR: each launch's raw perf log is kept there (perf-<run>.log), with the printed
+#   table (the run's own folder is removed at the end).
+# --login-shell: the app reads git's PATH from the user's own login shell ($SHELL -ilc), as
+#   an installed app does, instead of the stand-in (the stubs are then not on its PATH). For
+#   launch timing: the shell runs while the window is made. Only on a repository the run
+#   does not change (no walk, no actions).
 #
 # Builds the bundle with its measurement hooks (`pnpm tauri build --bundles app --features
 # perf`, skipped with --no-build), then launches it N times (default 6), one at a time, with
-# `open -n -a GitGraph.app --env ...`, the way a user's launch goes through LaunchServices.
+# `open -n -a gg.app --env ...`, the way a user's launch goes through LaunchServices.
 # Every launch gets its own empty config folder (GG_CONFIG_DIR), so the user's own app state
-# is never read or changed and no saved session adds tabs. The script refuses to run while
-# any copy of the app (bundle id dev.gitgraph.desktop) is running.
+# is never read or changed and no saved session adds tabs. The bundle is built under its own
+# identifier, com.shakirul.gg.perf (Task 13 review I2): it shares no WebKit storage,
+# single-instance identity or LaunchServices registration with an installed gg
+# (com.shakirul.gg, whose shipped identifier this never changes), which may run meanwhile
+# (P3-R34). The script refuses to run while a copy of the perf build runs, and refuses a
+# bundle that is not the perf one.
+#
+# The app runs git without the user's global and system config (GIT_CONFIG_GLOBAL is an
+# empty file, GIT_CONFIG_NOSYSTEM=1) and gets a stand-in login shell (SHELL) whose PATH is a
+# folder of stubs first (`ssh`, `open`, `gh`: they fail, and say so in the output), then the
+# folder of the git the user's shell finds, then /usr/bin and /bin. Editors, terminals and
+# the browser are recorded (GG_PERF_LAUNCHES), never started.
 #
 # - Launch: the wall-clock time (unix ms) is taken right before `open` runs ("spawn"). The app
 #   appends `name<TAB>ms since navigation start<TAB>unix ms` to the perf log for each mark,
@@ -30,13 +48,16 @@
 # - Smooth (--smooth): GG_PERF_SCROLL=smooth scrolls for the same 6 s the way a trackpad does,
 #   a few px every frame at a steady speed (most frames move the rows by less than a row).
 # - Mixed (--mixed): N still and N scroll launches, alternating, so both see the same load.
-#   --modes "still 1 smooth" interleaves any of: 0 (idle), 1 (scroll), still, smooth, actions, pages
+#   --modes "still 1 smooth" interleaves any of: 0 (idle), 1 (scroll), still, smooth, actions, pages, worktrees
 #   (pages: GG_PERF_SCROLL=pages loads every page of rows once without drawing them, then
 #   runs the still control; it tells the memory of loading rows from that of drawing them;
 #   actions: GG_PERF_SCROLL=actions times right-click -> menu, pick -> dialog, Enter -> dialog
 #   closed and operation end -> graph updated, creating branches; walk: the whole walk, see
 #   scripts/walk.sh. Both change the repository, so they run only on a throwaway repository
-#   made by scripts/walk-fixture.sh, which marks it: on any other the script refuses).
+#   made by scripts/walk-fixture.sh, which marks it: on any other the script refuses;
+#   worktrees: GG_PERF_SCROLL=worktrees times showing the side panel (Cmd+B -> its rows
+#   painted) and "Make active" on another worktree (-> the switch shown, -> done), on a
+#   repository with linked worktrees; it writes nothing to the repository).
 #
 # WebKit helpers: WKWebView runs its page in XPC services (com.apple.WebKit.WebContent,
 # .Networking, .GPU) whose parent is launchd, not the app. They are matched by "responsible
@@ -53,9 +74,13 @@ set -euo pipefail
 build=1
 runs=6
 modes="0"
+logs=""
+login_shell=0
 while [ $# -gt 0 ]; do
   case $1 in
     --no-build) build=0; shift ;;
+    --logs) logs=$(mkdir -p "$2" && cd "$2" && pwd); shift 2 ;;
+    --login-shell) login_shell=1; shift ;;
     --runs) runs=$2; shift 2 ;;
     --scroll) modes="1"; shift ;;
     --still) modes="still"; shift ;;
@@ -76,7 +101,11 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 # origin): only on a throwaway one scripts/walk-fixture.sh made, never on the user's (R43).
 for mode in $modes; do
   case $mode in
-    walk | actions)
+    walk | actions | walk3 | walk3-dark)
+      if [ "$login_shell" = 1 ]; then
+        echo "--login-shell is for runs that change nothing; not with --modes $mode" >&2
+        exit 2
+      fi
       if [ "$(cat "$repo/.git/gg-perf-fixture" 2>/dev/null)" != "$repo" ]; then
         echo "--modes $mode changes the repository: it runs only on a fixture made by" \
           "scripts/walk-fixture.sh, and $repo is not one" >&2
@@ -85,26 +114,55 @@ for mode in $modes; do
       ;;
   esac
 done
-bundle=$root/target/release/bundle/macos/GitGraph.app
-app=$bundle/Contents/MacOS/gitgraph
-bundle_id=dev.gitgraph.desktop
+bundle=$root/target/release/bundle/macos/gg.app
+app=$bundle/Contents/MacOS/gg-desktop
+bundle_id=com.shakirul.gg.perf
 
-if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "/GitGraph.app/Contents/MacOS/gitgraph" > /dev/null; then
-  echo "GitGraph ($bundle_id) is running; quit every copy of it first" >&2
+# Only a running copy of this perf build stops the run: an installed gg (com.shakirul.gg)
+# may run beside it (P3-R34) and is never signalled or touched; only pids this script started
+# are killed.
+if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "^$app" > /dev/null; then
+  echo "the perf build ($bundle_id) is running; quit it first" >&2
   exit 1
 fi
 if [ "$build" = 1 ]; then
-  (cd "$root" && CARGO_INCREMENTAL=0 pnpm tauri build --bundles app --features perf >&2)
+  (cd "$root" && CARGO_INCREMENTAL=0 pnpm tauri build --bundles app --features perf \
+    --config "{\"identifier\":\"$bundle_id\"}" >&2)
 fi
 [ -x "$app" ] || { echo "no app at $app (build it first)" >&2; exit 1; }
+built_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$bundle/Contents/Info.plist" 2> /dev/null)
+if [ "$built_id" != "$bundle_id" ]; then
+  echo "the app at $bundle is $built_id, not the perf build ($bundle_id): build it again" >&2
+  exit 1
+fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/gg-perf.XXXXXX")
 pid=""
 cleanup() {
   if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+  if [ -f "$work/blocked.log" ]; then
+    echo "BLOCKED (must not run):" >&2
+    cat "$work/blocked.log" >&2
+  fi
   rm -rf "$work"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+# git without the user's config, and a PATH whose first folder holds failing stubs.
+: > "$work/gitconfig-empty"
+tools=$work/tools
+mkdir -p "$tools"
+for blocked in ssh open gh; do
+  printf '#!/bin/sh\necho "%s $*" >> "%s/blocked.log"\nexit 97\n' "$blocked" "$work" > "$tools/$blocked"
+  chmod +x "$tools/$blocked"
+done
+git_dir=$(dirname "$(command -v git)")
+printf '#!/bin/sh\nPATH=%s:%s:/usr/bin:/bin\nexport PATH\neval "$2"\n' "$tools" "$git_dir" > "$tools/fake-shell"
+chmod +x "$tools/fake-shell"
+shell=$tools/fake-shell
+if [ "$login_shell" = 1 ]; then
+  shell=${SHELL:?SHELL is not set}
+fi
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1000'; }
 load() { uptime | sed 's/.*load averages*: *//'; }
@@ -143,7 +201,7 @@ footprint_mb() {
     awk '/phys_footprint:/ { printf "%.1f\n", $2 / 1048576; exit }'
 }
 rss_mb() { ps -o rss= -p "$1" | awk '{ printf "%.1f\n", $1 / 1024 }'; }
-name_of() { ps -o comm= -p "$1" | sed 's/.*\.WebKit\./WebKit./; s/.*\/gitgraph$/gitgraph/'; }
+name_of() { ps -o comm= -p "$1" | sed 's/.*\.WebKit\./WebKit./; s/.*\/gg-desktop$/gg-desktop/'; }
 # Footprint of the app and its helpers: prints "total<TAB>name=MB name=MB ...".
 footprints() {
   # Called as `IFS=<tab> read ... < <(footprints ...)`, which hands it that IFS.
@@ -156,8 +214,12 @@ footprints() {
   printf '%s\t%s\n' "$total" "$detail"
 }
 mode_name() { case $1 in 0) echo idle ;; 1) echo scroll ;; *) echo "$1" ;; esac; }
-# Quits the launch under measurement and lets it and its WebKit helpers exit.
+# Quits the launch under measurement and lets it and its WebKit helpers exit; with --logs,
+# its perf log (and when `open` ran, as "spawn") is kept first.
 stop_app() {
+  if [ -n "$logs" ] && [ -f "${log:-}" ]; then
+    { printf 'spawn\t-1\t%s\n' "$spawn"; cat "$log"; } > "$logs/perf-$run.log"
+  fi
   kill "$pid" 2>/dev/null || true
   for _ in $(seq 1 40); do
     kill -0 "$pid" 2>/dev/null || [ -n "$(helpers_of "$pid")" ] || break
@@ -186,7 +248,9 @@ for _ in $(seq 1 "$runs"); do
     run_load=$(load)
     spawn=$(now_ms)
     open -n -a "$bundle" --env GG_OPEN="$repo" --env GG_PERF_LOG="$log" \
-      --env GG_PERF_SCROLL="$mode" --env GG_CONFIG_DIR="$work/config-$run"
+      --env GG_PERF_SCROLL="$mode" --env GG_CONFIG_DIR="$work/config-$run" \
+      --env GG_PERF_LAUNCHES="$work/launches.jsonl" --env SHELL="$shell" \
+      --env GIT_CONFIG_GLOBAL="$work/gitconfig-empty" --env GIT_CONFIG_NOSYSTEM=1
     pid=$(pgrep -n -f "^$app" || true)
     [ -n "$pid" ] || { echo "run $run: the app did not start" >&2; exit 1; }
     missing=""
@@ -246,9 +310,9 @@ for _ in $(seq 1 "$runs"); do
       for d in $detail; do printf '%s\t%s\tfoot-%s\t%s\n' "$run" "$name" "${d%%=*}" "${d#*=}"; done
     } >> "$results"
     if [ "$mode" != 0 ]; then
-      echo "    probe:" $(awk -F'\t' '$1 ~ /^(scroll|click|page|action)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { printf "%s=%s ", $1, $2 }' "$log")
+      echo "    probe:" $(awk -F'\t' '$1 ~ /^(scroll|click|page|action|side|wt)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { printf "%s=%s ", $1, $2 }' "$log")
       awk -F'\t' '$1 ~ /^page-error / { print "    " $1 }' "$log"
-      awk -F'\t' -v r="$run" -v m="$name" '$1 ~ /^(scroll|click|page|action)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { print r "\t" m "\t" $1 "\t" $2 }' "$log" >> "$results"
+      awk -F'\t' -v r="$run" -v m="$name" '$1 ~ /^(scroll|click|page|action|side|wt)-/ && $1 != "scroll-done" && $1 !~ /^page-error / { print r "\t" m "\t" $1 "\t" $2 }' "$log" >> "$results"
       # WebKit drops graphics memory (tiles) some time after scrolling; measure again.
       sleep 30
       IFS=$'\t' read -r later detail < <(footprints "$pid")

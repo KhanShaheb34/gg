@@ -19,7 +19,9 @@ pub async fn read_worktrees(r: &GitRunner, cwd: &Path) -> Result<Vec<WorktreeInf
 }
 
 /// Parses `worktree list --porcelain -z`: NUL-terminated `key[ value]` attributes, each
-/// worktree ended by an empty attribute. The first worktree is the main one.
+/// worktree ended by an empty attribute. The first worktree is the main one. Only what git
+/// lists is filled in (the state fields stay empty); paths are spelled as the platform does
+/// ([`crate::platform::native_path`]).
 fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
     let mut list = Vec::new();
     let mut current: Option<WorktreeInfo> = None;
@@ -35,12 +37,9 @@ fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
             list.extend(current.take());
             if !value.is_empty() {
                 current = Some(WorktreeInfo {
-                    path: value.to_owned(),
-                    head: None,
-                    branch: None,
+                    path: crate::platform::native_path(value),
                     is_main: list.is_empty(),
-                    locked: false,
-                    prunable: false,
+                    ..WorktreeInfo::default()
                 });
             }
             continue;
@@ -58,8 +57,13 @@ fn parse_worktrees(out: &[u8]) -> Vec<WorktreeInfo> {
                 wt.branch = (!name.is_empty()).then(|| name.to_owned());
             }
             "detached" => wt.branch = None,
-            "locked" => wt.locked = true,
+            // `locked`, or `locked <reason>` when one was given.
+            "locked" => {
+                wt.locked = true;
+                wt.lock_reason = (!value.is_empty()).then(|| value.to_owned());
+            }
             "prunable" => wt.prunable = true,
+            "bare" => wt.bare = true,
             _ => {}
         }
     }
@@ -74,6 +78,8 @@ fn is_hex(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::platform::native_path as native;
 
     const C: &str = "cccccccccccccccccccccccccccccccccccccccc";
     const ZERO: &str = "0000000000000000000000000000000000000000";
@@ -91,36 +97,36 @@ mod tests {
             list,
             [
                 WorktreeInfo {
-                    path: "/repo/main dir".into(),
+                    path: native("/repo/main dir"),
                     head: Some(C.into()),
                     branch: Some("main".into()),
                     is_main: true,
-                    locked: false,
-                    prunable: false,
+                    ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
-                    path: "/wt/ünï ✨".into(),
+                    path: native("/wt/ünï ✨"),
                     head: Some(C.into()),
                     branch: Some("feature/x".into()),
                     is_main: false,
                     locked: true,
-                    prunable: false,
+                    ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
-                    path: "/wt/detached".into(),
+                    path: native("/wt/detached"),
                     head: Some(C.into()),
                     branch: None,
                     is_main: false,
                     locked: true,
-                    prunable: false,
+                    lock_reason: Some("on usb".into()),
+                    ..WorktreeInfo::default()
                 },
                 WorktreeInfo {
-                    path: "/wt/gone".into(),
+                    path: native("/wt/gone"),
                     head: Some(C.into()),
                     branch: Some("gone".into()),
                     is_main: false,
-                    locked: false,
                     prunable: true,
+                    ..WorktreeInfo::default()
                 },
             ]
         );
@@ -134,6 +140,7 @@ mod tests {
         let list = parse_worktrees(out.as_bytes());
         assert_eq!(list.len(), 2);
         assert!(list[0].is_main);
+        assert!(list[0].bare && !list[1].bare);
         assert_eq!(
             (list[0].head.as_deref(), list[0].branch.as_deref()),
             (None, None)
@@ -152,11 +159,11 @@ mod tests {
         let out = format!("worktree /a\0HEAD {C}\0\0worktree /b\0HEAD {C}");
         let list = parse_worktrees(out.as_bytes());
         assert_eq!(list.len(), 2);
-        assert_eq!(list[1].path, "/b");
+        assert_eq!(list[1].path, native("/b"));
         assert!(!list[1].is_main);
         // Unknown attributes are ignored; bad bytes decode lossily.
         let list = parse_worktrees(b"worktree /x\xFF\0future thing\0HEAD zz\0\0");
-        assert_eq!(list[0].path, "/x\u{FFFD}");
+        assert_eq!(list[0].path, native("/x\u{FFFD}"));
         assert_eq!(list[0].head, None);
     }
 }

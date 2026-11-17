@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppState, CoreErrorDto, OpenedRepo } from "../types";
+import type { AppState, CliState, CoreErrorDto, OpenedRepo } from "../types";
 
 // The core is mocked; CoreError stays the real class so `instanceof` checks behave.
 vi.mock("../ipc", async (importOriginal) => {
@@ -37,11 +37,14 @@ function appState(overrides: Partial<AppState> = {}): AppState {
   return {
     recents: [],
     session: { tabs: [], active: null },
-    settings: { theme: "system", fetchIntervalSecs: 300, editorCommand: null },
+    settings: { theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard" },
     launchPath: null,
     homeDir: null,
     settingsProblem: null,
+    settingsFile: "/c/state.json",
     gitProblem: null,
+    cli: { installed: null, shadowedBy: null, candidates: [] },
+    version: "0.1.0",
     ...overrides,
   };
 }
@@ -74,7 +77,7 @@ beforeEach(async () => {
   vi.mocked(ipc.api.openRepo).mockReset().mockImplementation(fakeOpenRepo);
   vi.mocked(ipc.api.updateSettings)
     .mockReset()
-    .mockImplementation(async (patch) => ({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, ...patch }));
+    .mockImplementation(async (patch) => ({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", ...patch }));
   vi.mocked(ipc.api.removeRecent).mockReset().mockResolvedValue([]);
   vi.mocked(ipc.api.pickFolder).mockReset().mockResolvedValue(null);
   vi.mocked(ipc.api.takeOpenedPaths).mockReset().mockResolvedValue([]);
@@ -95,18 +98,26 @@ describe("openPath", () => {
     expect(s.app.activeRepoId).toBe(1);
   });
 
-  it("says which folder the tab works in when the folder opened is another worktree of it (R42)", async () => {
+  it("a folder of a linked worktree makes it active in the repository's tab, saying nothing", async () => {
     await s.openPath("/r/a");
-    expect(s.app.toasts).toEqual([]);
-    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), openedWorktree: "/r/a-hotfix" });
+    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), activeWorktree: "/r/a-hotfix" });
     await s.openPath("/r/a-hotfix");
     expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
     expect(s.app.activeRepoId).toBe(1);
+    expect(s.app.toasts).toEqual([]);
+  });
+
+  it("says so when the worktree could not be made active (an operation runs there)", async () => {
+    await s.openPath("/r/a");
+    vi.mocked(ipc.api.openRepo).mockResolvedValueOnce({ ...snapshot(1, "/r/a"), openedWorktree: "/r/a-hotfix" });
+    await s.openPath("/r/a-hotfix");
+    expect(s.app.tabs.map((t) => t.repoId)).toEqual([1]);
     expect(s.app.toasts).toEqual([
       expect.objectContaining({
         kind: "info",
         persistent: true,
-        message: "/r/a-hotfix is another worktree of a, which is open already: its tab works in /r/a.",
+        message:
+          "/r/a-hotfix could not be made the active worktree of a while an operation runs there: the tab still works in /r/a.",
       }),
     ]);
   });
@@ -381,11 +392,11 @@ describe("init", () => {
   it("takes recents and settings from the stored state", async () => {
     const recents = [{ path: "/r/b", name: "b", lastOpenedMs: 5 }];
     vi.mocked(ipc.api.getAppState).mockResolvedValue(
-      appState({ recents, settings: { theme: "dark", fetchIntervalSecs: 60, editorCommand: null } }),
+      appState({ recents, settings: { theme: "dark", fetchIntervalSecs: 60, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard" } }),
     );
     await s.init();
     expect(s.app.recents).toEqual(recents);
-    expect(s.app.settings).toEqual({ theme: "dark", fetchIntervalSecs: 60, editorCommand: null });
+    expect(s.app.settings).toEqual({ theme: "dark", fetchIntervalSecs: 60, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard" });
   });
 
   it("shows an error toast and stays usable when the core cannot be reached", async () => {
@@ -404,6 +415,17 @@ describe("init", () => {
     const handler = call![1] as (p: { repoId: number; error: CoreErrorDto }) => void;
     handler({ repoId: 2, error: { code: "git_failed", message: "fetch failed", detail: "boom" } });
     expect(s.app.toasts).toMatchObject([{ kind: "error", message: "b: fetch failed", detail: "boom" }]);
+  });
+
+  it("takes the gg command's state at start, and what the shell says of gg when that comes", async () => {
+    const cli: CliState = { installed: null, shadowedBy: null, candidates: ["/h/bin"] };
+    vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ cli }));
+    await s.init();
+    expect(s.app.cli).toEqual(cli);
+    const call = vi.mocked(ipc.onEvent).mock.calls.find(([name]) => name === "cli-changed");
+    const handler = call![1] as (p: typeof cli) => void;
+    handler({ ...cli, shadowedBy: "an alias for git log" });
+    expect(s.app.cli.shadowedBy).toBe("an alias for git log");
   });
 });
 
@@ -475,6 +497,39 @@ describe("repo-error before the tab exists", () => {
   });
 });
 
+describe("pull requests unavailable (said once by the core)", () => {
+  it("is a plain notice that stays until dismissed: not an error, named with the tab", async () => {
+    await s.init();
+    await s.openPath("/r/b");
+    const call = vi.mocked(ipc.onEvent).mock.calls.find(([name]) => name === "repo-error");
+    const handler = call![1] as (p: { repoId: number; error: CoreErrorDto; prs?: string }) => void;
+    handler({
+      repoId: 2,
+      error: { code: "io", message: "Pull requests need the GitHub CLI (gh), which was not found.", detail: null },
+      prs: "no_gh",
+    });
+    expect(s.app.toasts).toHaveLength(1);
+    expect(s.app.toasts[0]).toMatchObject({
+      kind: "info",
+      message: "b: Pull requests need the GitHub CLI (gh), which was not found.",
+      persistent: true,
+    });
+    expect(s.app.toasts[0].actions ?? []).toEqual([]);
+  });
+
+  it("held for a repository with no tab yet, it is still a plain notice", async () => {
+    await s.init();
+    const call = vi.mocked(ipc.onEvent).mock.calls.find(([name]) => name === "repo-error");
+    const handler = call![1] as (p: { repoId: number; error: CoreErrorDto; prs?: string }) => void;
+    vi.mocked(ipc.api.openRepo).mockImplementation(async (path) => {
+      handler({ repoId: 3, error: { code: "io", message: "The GitHub CLI (gh) is not signed in.", detail: "x" }, prs: "signed_out" });
+      return fakeOpenRepo(path);
+    });
+    await s.openPath("/r/c");
+    expect(s.app.toasts).toMatchObject([{ kind: "info", message: "c: The GitHub CLI (gh) is not signed in.", detail: "x" }]);
+  });
+});
+
 describe("settings that cannot be saved", () => {
   const problem = "/c/state.json could not be read (Permission denied (os error 13))";
 
@@ -530,7 +585,7 @@ describe("theme", () => {
     const answers: (() => void)[] = [];
     vi.mocked(ipc.api.updateSettings).mockImplementation(
       (patch) =>
-        new Promise((resolve) => answers.push(() => resolve({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, ...patch }))),
+        new Promise((resolve) => answers.push(() => resolve({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", ...patch }))),
     );
     const light = s.setTheme("light");
     const dark = s.setTheme("dark");

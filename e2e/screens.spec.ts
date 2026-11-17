@@ -1,6 +1,6 @@
 // Screenshots for the visual check, written to docs/perf/screens/. Run on demand:
 //   GG_SCREENS=1 pnpm e2e screens
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, makeRepo, otherClone, runOp, test } from "./fixtures";
@@ -685,6 +685,16 @@ for (const theme of ["light", "dark"] as const) {
       await park(page);
       await shot("log-open");
 
+      // Task 10 review minor 6: the time column in the Relative and System date formats.
+      for (const [name, label] of [["relative", "Relative"], ["locale", "System"], ["standard", "Standard"]]) {
+        await page.getByTestId("open-settings").click();
+        await page.getByTestId("settings-dates").getByRole("radio", { name: label }).click();
+        await page.keyboard.press("Escape");
+        if (name === "standard") break;
+        await park(page);
+        await shot(`log-time-${name}`);
+      }
+
       // A failed checkout: its notice's Show log goes to it, highlighted, its output open.
       const differing = gg.git("branchy", "diff", "--name-only", "main", "develop").trim().split("\n")[0];
       writeFileSync(path.join(dir, differing), "in the way\n");
@@ -887,3 +897,409 @@ for (const [prefix, width, height] of SIZES)
     await page.screenshot({ path: path.join(OUT, `${prefix}notice-skip-${theme}.png`) });
   });
 }
+
+// The side panel's worktree list and the worktree dialogs. In the small window (900 px) the
+// panel is docked at its least width, shown by default.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`worktrees, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.goto("/");
+      const repo = gg.repoPath("worktrees");
+      await open(page, repo);
+      const grid = page.getByRole("grid", { name: "Commits" });
+      await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      const list = page.getByRole("grid", { name: "Worktrees" });
+      const row = (folder: string) => list.locator(`[role="row"][data-path$="/${folder}"]`);
+      const shot = async (name: string) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      await expect(row("feature-login").locator(".changes")).toHaveText("2");
+      await expect(row("hotfix").locator(".changes")).toBeVisible();
+
+      // The list as it opens: the main worktree active, the others in every state.
+      await park(page);
+      await shot("worktrees");
+
+      // One selected (its HEAD selected in the graph), another under the pointer.
+      await row("feature-login").click();
+      await row("fix-typo").hover();
+      await shot("worktrees-selected");
+
+      // A worktree's menu.
+      await row("release").click({ button: "right" });
+      await page.getByRole("menuitem", { name: /^Locked/ }).hover();
+      await shot("menu-worktree");
+      await page.keyboard.press("Escape");
+
+      // Create: a new branch, its folder suggested.
+      await page.getByRole("button", { name: "Add worktree" }).click();
+      const create = page.getByRole("dialog", { name: "Create worktree" });
+      await create.getByLabel("New branch name").fill("feature/payments");
+      await expect(create.getByTestId("worktree-location")).toHaveValue("~/repos/worktrees.worktrees/feature-payments");
+      await park(page);
+      await shot("dialog-create-worktree");
+      // A folder another worktree has.
+      await create.getByTestId("worktree-location").fill("~/repos/worktrees.worktrees/docs/site");
+      await shot("dialog-create-worktree-invalid");
+      await create.getByRole("button", { name: "Cancel" }).click();
+
+      // From a branch checked out elsewhere.
+      await grid.locator('.ref[data-ref="fix/typo"]').click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create worktree from fix/typo…" }).click();
+      await park(page);
+      await shot("dialog-create-worktree-taken");
+      await page.getByRole("dialog", { name: "Create worktree" }).getByRole("button", { name: "Cancel" }).click();
+
+      // Delete, plain, then the core's red confirmation listing the work.
+      await row("feature-login").click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Delete…" }).click();
+      const del = page.getByRole("dialog", { name: "Delete worktree feature-login" });
+      await del.getByRole("checkbox", { name: /Also delete branch/ }).check();
+      await park(page);
+      await shot("dialog-delete-worktree");
+      await del.getByRole("checkbox", { name: /Also delete branch/ }).uncheck();
+      await del.getByRole("button", { name: "Delete worktree" }).click();
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+      await shot("dialog-delete-worktree-red");
+      await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
+
+      // Ignored files alone: listed in the same dialog, in the ordinary style.
+      await row("docs").click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Delete…" }).click();
+      const docs = page.getByRole("dialog", { name: "Delete worktree docs" });
+      await docs.getByRole("button", { name: "Delete worktree" }).click();
+      await expect(docs.getByTestId("dangers")).toBeVisible();
+      await park(page);
+      await shot("dialog-delete-worktree-ignored");
+      await docs.getByRole("button", { name: "Cancel" }).click();
+
+      // Prune: the ordinary confirmation naming the entry.
+      await page.getByRole("button", { name: "Worktree actions" }).click();
+      await page.getByRole("menuitem", { name: "Prune stale entries…" }).click();
+      await expect(page.getByRole("dialog", { name: "Prune stale worktree entries" })).toBeVisible();
+      await park(page);
+      await shot("dialog-prune-worktrees");
+      await page.keyboard.press("Escape");
+
+      // Another worktree made active: the header and the graph follow.
+      await row("feature-login").dblclick();
+      await expect(list.locator('[data-active="true"]')).toHaveAttribute("data-path", /feature-login$/);
+      await expect(grid.locator('[role="row"].uncommitted')).toHaveCount(1);
+      await park(page);
+      await shot("worktrees-switched");
+    });
+  }
+
+for (const theme of ["light", "dark"] as const) {
+  test(`worktrees, one and many, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    const parent = path.dirname(gg.repoPath("small"));
+    // One worktree: the panel says what worktrees are for.
+    const solo = makeRepo(
+      "solo",
+      (git, write) => {
+        git("init", "-q", "-b", "main");
+        write("README.md", "solo\n");
+        git("add", "-A");
+        git("commit", "-q", "-m", "Start");
+      },
+      parent,
+    );
+    await open(page, solo);
+    await expect(page.getByTestId("worktrees-intro")).toBeVisible();
+    await park(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `worktrees-one-${theme}.png`) });
+
+    // Twenty, some with long branch names, in the narrowest panel.
+    const many = makeRepo(
+      "service-with-a-long-repository-name",
+      (git, write, dir) => {
+        git("init", "-q", "-b", "main");
+        write("README.md", "many\n");
+        git("add", "-A");
+        git("commit", "-q", "-m", "Start");
+        for (let i = 1; i <= 20; i++) {
+          const name = i % 4 === 0 ? `feature/a-rather-long-branch-name-for-change-${i}` : `topic-${i}`;
+          git("worktree", "add", "-q", "-b", name, path.join(path.dirname(dir), "many.worktrees", name.replace(/\//g, "-")));
+        }
+      },
+      parent,
+    );
+    await page.evaluate(() => localStorage.setItem("gg.side.v1", JSON.stringify({ width: 240 })));
+    await page.reload();
+    await open(page, many);
+    await expect(page.getByRole("grid", { name: "Worktrees" }).getByRole("row")).toHaveCount(21);
+    await park(page);
+    await page.waitForTimeout(1000);
+    await page.screenshot({ path: path.join(OUT, `worktrees-many-${theme}.png`) });
+    await page.evaluate(() => localStorage.removeItem("gg.side.v1"));
+  });
+}
+
+// The commit panel: the files of the active worktree with a message; some unticked with what
+// stops a commit said; another worktree offered to be made active; a merge with a conflict
+// left (the file that cannot be ticked, the merge's note); a hook's refusal in a notice.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`commit panel, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.goto("/");
+      const repo = gg.repoPath("commit");
+      await open(page, repo);
+      const shot = async (name: string) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      const files = page.getByRole("listbox", { name: "Changed files" });
+      await page.keyboard.press("ControlOrMeta+k");
+      await expect(files.getByRole("option")).toHaveCount(6);
+      await page.getByTestId("commit-message").fill("Rework the checkout summary\n\nThe line items show their price breakdown.");
+      await park(page);
+      await shot("commit");
+
+      // Two unticked, the message gone: what stops a commit is said under the buttons.
+      await files.locator('[data-path="todo.md"]').click();
+      await files.locator('[data-path="old.txt"]').click();
+      await page.getByTestId("commit-message").fill("");
+      await files.locator('[data-path="src/app.ts"]').hover();
+      await shot("commit-subset");
+
+      // A failing hook: the notice with git's output, the message kept.
+      writeFileSync(
+        path.join(repo, ".git", "hooks", "pre-commit"),
+        "#!/bin/sh\necho 'lint: src/app.ts:1: missing semicolon' >&2\nexit 1\n",
+      );
+      chmodSync(path.join(repo, ".git", "hooks", "pre-commit"), 0o755);
+      await page.getByTestId("commit-message").fill("Rework the checkout summary");
+      await page.getByTestId("commit-button").click();
+      const failed = page.locator("[data-notices] .toast", { hasText: "refused the commit" });
+      await failed.getByRole("button", { name: "Git output" }).click();
+      await park(page);
+      await shot("commit-hook-failed");
+      await failed.getByRole("button", { name: /Dismiss/ }).click();
+
+      // Another worktree: its files, and the offer to make it active.
+      await page.getByTestId("side-back").click();
+      const topic = page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"][data-path$="/topic"]');
+      await topic.click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Commit…" }).click();
+      await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
+      await park(page);
+      await shot("commit-elsewhere");
+    });
+
+    test(`commit panel concluding a merge, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.goto("/");
+      await open(page, gg.repoPath("worktrees"));
+      const hotfix = page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"][data-path$="/hotfix"]');
+      await hotfix.dblclick();
+      await expect(page.getByTestId("active-worktree")).toContainText("hotfix");
+      await page.keyboard.press("ControlOrMeta+k");
+      await expect(page.getByTestId("commit-merge")).toBeVisible();
+      await park(page);
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: path.join(OUT, `${prefix}commit-merge-${theme}.png`) });
+    });
+  }
+
+const LONG = "feature/rework-the-parser-error-recovery-for-unterminated-strings";
+
+// Pull requests (Task 9): markers beside labels with ahead/behind counts and long names, on
+// worktree rows, stale ones; the branch menu; the Create pull request dialog loading, filled,
+// waiting on the push, failed, and for a branch that has one already.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`pull requests, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.clock.install();
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      const repo = gg.repoPath("prs");
+      gg.git("prs", "branch", LONG, "fix/typo");
+      // A row of several branches, each with a pull request: two shown, the rest in "+k".
+      for (const name of ["hotfix/parser", "release/2026-11", "spike/lexer"]) gg.git("prs", "branch", name, "docs/readme");
+      // The worktree's branch one ahead of its upstream: a count beside the marker.
+      const wt = path.join(path.dirname(repo), "prs.worktrees", "login");
+      writeFileSync(path.join(wt, "remember.txt"), "remember me\n");
+      gg.gitAt(wt, "add", "-A");
+      gg.gitAt(wt, "commit", "-q", "-m", "Remember the user");
+      const pr = (number: number, head: string, title: string, draft = false) => ({
+        number,
+        title,
+        url: `https://github.com/octo/cat/pull/${number}`,
+        isDraft: draft,
+        headRefName: head,
+        baseRefName: "main",
+        headRepositoryOwner: { login: "octo" },
+        isCrossRepository: false,
+      });
+      gg.gh.reply(
+        "pr-list",
+        0,
+        JSON.stringify([
+          pr(1284, "feature/login", "Add the login form"),
+          pr(1291, "feature/search-indexing-across-every-workspace-package", "Index the search across packages", true),
+          pr(1295, "docs/readme", "Explain the parser"),
+          pr(1296, "hotfix/parser", "Fix the parser crash", true),
+          pr(1297, "release/2026-11", "Release November"),
+          pr(1298, "spike/lexer", "Try a new lexer", true),
+        ]),
+      );
+      gg.gh.reply("pr-list-head", 0, "[]");
+      gg.gh.reply("repo-view", 0, JSON.stringify({ defaultBranchRef: { name: "main" } }));
+      await page.goto("/");
+      await open(page, repo);
+      const grid = page.getByRole("grid", { name: "Commits" });
+      await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      await page.getByRole("button", { name: "Refresh" }).click();
+      await expect(grid.locator(`button.pr-chip[data-pr="1284"]`).first()).toBeVisible();
+      const shot = async (name: string) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      if (width < 1000) await page.getByRole("button", { name: /Worktrees/ }).first().click();
+      await park(page);
+      await shot("prs-markers");
+
+      // A marker under the pointer, its tooltip's text in the title (not drawn by the browser).
+      await grid.locator(`button.pr-chip[data-pr="1284"]`).first().hover();
+      await shot("prs-marker-hover");
+
+      // The list is older than 10 minutes: the markers dim.
+      await page.clock.fastForward("11:00");
+      await park(page);
+      await shot("prs-stale");
+
+      // The branch menu with Create pull request…
+      await grid.locator('[data-ref="fix/typo"] .name').first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create pull request…" }).hover();
+      await shot("prs-menu");
+
+      // The dialog: waiting on gh, then filled in.
+      gg.gh.slow("pr-list-head", 3);
+      await page.getByRole("menuitem", { name: "Create pull request…" }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByTestId("pr-waiting")).toBeVisible();
+      await shot("prs-dialog-loading");
+      await page.clock.runFor(3500);
+      await expect(dialog.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+      await shot("prs-dialog");
+
+      // Waiting on the push and gh.
+      gg.gh.reply("pr-create", 1, "", "HTTP 502: Bad Gateway (https://api.github.com/graphql)\n");
+      gg.gh.slow("pr-create", 4);
+      await dialog.getByRole("button", { name: /and create pull request$/ }).click();
+      await expect(dialog.getByTestId("pr-step")).toContainText("Creating the pull request…");
+      await shot("prs-dialog-pending");
+      await page.clock.runFor(4500);
+      await expect(dialog.getByTestId("pr-error")).toBeVisible();
+      // The failure, in sight (the dialog scrolls in a small window).
+      // The push was made before gh failed: once the repository is read again, the button
+      // only creates.
+      await page.clock.runFor(1000);
+      await expect(dialog.getByRole("button", { name: "Create pull request", exact: true })).toBeVisible();
+      await dialog.getByTestId("pr-error").scrollIntoViewIfNeeded();
+      await shot("prs-dialog-failed");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+
+      // A branch that has one already.
+      gg.gh.slow("pr-list-head", 0);
+      gg.gh.reply("pr-list-head", 0, JSON.stringify([pr(1302, "fix/typo", "Fix the typo in how the parser reads a file")]));
+      await grid.locator('[data-ref="fix/typo"] .name').first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create pull request…" }).click();
+      await expect(dialog.getByTestId("pr-existing")).toBeVisible();
+      await shot("prs-dialog-existing");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+
+      // A long branch name in the push the button names.
+      gg.gh.reply("pr-list-head", 0, "[]");
+      await grid.locator(`[data-ref="${LONG}"] .name`).first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Create pull request…" }).click();
+      await expect(dialog.getByTestId("pr-title")).not.toHaveValue("");
+      await shot("prs-dialog-long");
+    });
+  }
+
+// Settings and keyboard shortcuts (Task 10): the sheet at its top, a refused command with the
+// one beside it running, the lower sections, the reset confirmation; the shortcuts sheet; the
+// busy indicator with git's progress; a stale index.lock's notice.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`settings and shortcuts, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      const repo = gg.repoPath("small");
+      await page.goto("/");
+      await open(page, repo);
+      const grid = page.getByRole("grid", { name: "Commits" });
+      await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      const shot = async (name: string) => {
+        await park(page);
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+      };
+      const settings = page.getByTestId("settings");
+      await page.keyboard.press("ControlOrMeta+,");
+      await expect(settings).toBeVisible();
+      await shot("settings");
+
+      await settings.getByTestId("settings-editor").fill("code --goto={path}");
+      await settings.getByTestId("settings-terminal").fill("kitty --directory {path}");
+      await expect(settings.getByRole("alert").filter({ hasText: "separate word" })).toBeVisible();
+      await expect(settings.getByTestId("settings-terminal-runs")).toBeVisible();
+      await settings.getByRole("button", { name: "Tools" }).click();
+      await page.waitForTimeout(400);
+      await shot("settings-tools");
+
+      await settings.getByTestId("settings-pattern").fill("../{repo}-trees/{branch}");
+      await expect(settings.getByTestId("settings-pattern-preview")).toContainText("small-trees");
+      await settings.getByRole("button", { name: "About" }).click();
+      await page.waitForTimeout(400);
+      await shot("settings-about");
+
+      await settings.getByTestId("settings-reset").click();
+      await expect(page.getByRole("dialog", { name: "Reset all settings?" })).toBeVisible();
+      await shot("settings-reset");
+      await page.getByRole("dialog", { name: "Reset all settings?" }).getByRole("button", { name: "Cancel" }).click();
+      await page.keyboard.press("Escape");
+      await expect(settings).toHaveCount(0);
+
+      await grid.focus();
+      await page.keyboard.press("?");
+      await expect(page.getByTestId("shortcuts")).toBeVisible();
+      await shot("shortcuts");
+      await page.keyboard.press("Escape");
+
+      // A push that takes a while: its progress line in the busy indicator.
+      const hook = path.join(repo, ".git", "hooks", "pre-push");
+      writeFileSync(hook, "#!/bin/sh\necho 'Checking 42 files before the push…' >&2\nsleep 3\n");
+      chmodSync(hook, 0o755);
+      const push = runOp(page, { op: "push", branch: "main", remote: "origin", to: null, force: false });
+      await expect(page.getByTestId("busy")).toContainText("Checking 42 files", { timeout: 4000 });
+      await shot("busy-progress");
+      await push;
+
+      // A stale lock in the way.
+      const lock = path.join(repo, ".git", "index.lock");
+      writeFileSync(lock, "");
+      const old = new Date(Date.now() - 3 * 3600_000);
+      utimesSync(lock, old, old);
+      await grid.locator('[data-index="2"]').click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Check out this commit" }).click();
+      await expect(page.getByRole("button", { name: "Remove the lock file…" })).toBeVisible();
+      await shot("lock-stale");
+    });
+  }

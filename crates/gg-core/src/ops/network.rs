@@ -13,7 +13,8 @@ use crate::error::Result;
 use crate::git::runner::GitOutput;
 use crate::ops::explain::{Rejected, needs_pull_mode, nothing_to_do, push_rejected};
 use crate::ops::local::{
-    autostash_note, current_branch, git_may_stop, head_commit, kind_name, short, stopped_kind,
+    autostash_note, current_branch, git_may_stop, head_commit, kind_name, short, stash_top,
+    stopped_kind,
 };
 use crate::ops::{OpCtx, Step, explain};
 
@@ -100,7 +101,7 @@ pub(crate) async fn upstream(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Ups
 }
 
 /// The repository's remotes, by name.
-async fn remotes(ctx: &OpCtx<'_>) -> Result<Vec<String>> {
+pub(crate) async fn remotes(ctx: &OpCtx<'_>) -> Result<Vec<String>> {
     let out = ctx.read(&["remote"]).await?;
     Ok(out
         .text()
@@ -249,10 +250,19 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
     let mut args = vec!["pull", "--progress", "--no-edit"];
     match mode {
         PullMode::Default => {}
-        PullMode::Merge => args.push("--no-rebase"),
+        PullMode::Merge => {
+            args.push("--no-rebase");
+            // Merging was chosen over the fast-forward-only rule that stopped the pull: for
+            // this pull only (older git does not let --no-rebase lift it).
+            if fast_forward_only_configured(ctx).await? {
+                args.push("--ff");
+            }
+        }
         PullMode::Rebase => args.push("--rebase"),
     }
     let from = upstream(ctx, branch).await?.map(|u| u.short);
+    let stash_before = stash_top(ctx).await?;
+    let stash_before = stash_before.as_deref();
     let out = match git_may_stop(ctx, &args, true).await? {
         Ok(out) => out,
         Err(step) => {
@@ -273,21 +283,29 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         }
     };
     if nothing_to_do(&args, &out).is_some() {
-        return Ok(autostash_note(
-            Step::Done(format!(
-                "Already up to date: {branch} has every commit of {}.",
-                from.as_deref().unwrap_or("its upstream")
-            )),
-            &out,
-        ));
+        let done = format!(
+            "Already up to date: {branch} has every commit of {}.",
+            from.as_deref().unwrap_or("its upstream")
+        );
+        return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
-    Ok(autostash_note(
-        Step::Done(match from {
-            Some(from) => format!("Pulled {from} into {branch}."),
-            None => format!("Pulled into {branch}."),
-        }),
-        &out,
-    ))
+    let done = match from {
+        Some(from) => format!("Pulled {from} into {branch}."),
+        None => format!("Pulled into {branch}."),
+    };
+    autostash_note(ctx, Step::Done(done), &out, stash_before).await
+}
+
+/// Whether a pull here may only fast-forward: `pull.ff=only`, or with no `pull.ff`,
+/// `merge.ff=only`.
+async fn fast_forward_only_configured(ctx: &OpCtx<'_>) -> Result<bool> {
+    for key in ["pull.ff", "merge.ff"] {
+        let out = ctx.read(&["config", "--get", key]).await?;
+        if out.code == 0 {
+            return Ok(out.text().trim() == "only");
+        }
+    }
+    Ok(false)
 }
 
 async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
@@ -384,7 +402,7 @@ async fn fetch_into_failed(
     let Some((branch, path)) = refused else {
         return Ok(step);
     };
-    if dunce::canonicalize(&path).ok() != dunce::canonicalize(&ctx.cwd).ok() {
+    if !crate::platform::same_path(std::path::Path::new(&path), &ctx.cwd) {
         return Ok(step);
     }
     let stopped = stopped_kind(ctx).await;

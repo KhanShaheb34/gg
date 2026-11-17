@@ -10,10 +10,12 @@
     repoId: number;
     /** Untracked files there are now. */
     untracked: number;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, untracked, close }: Props = $props();
+  let { repoId, untracked, worktree, close }: Props = $props();
 
   const uid = Math.random().toString(36).slice(2, 8);
   let message = $state("");
@@ -27,7 +29,7 @@
 
   function submit() {
     const text = message.trim();
-    closeAndRun(close, repoId, { op: "stash_save", message: text === "" ? null : text, includeUntracked });
+    closeAndRun(close, repoId, { op: "stash_save", message: text === "" ? null : text, includeUntracked, expectWorktree: worktree });
   }
 </script>
 

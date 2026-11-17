@@ -1,6 +1,6 @@
 // What git stopped in (spec §5.6): the banner above the graph, its files, Abort, Open in
 // editor and Continue, end to end against the real core. The devserver records editor
-// launches instead of starting an editor (fixtures: `editorLaunches`).
+// launches instead of starting an editor (fixtures: `launches`).
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
@@ -250,12 +250,12 @@ test("open_in_editor_calls_the_core", async ({ gg }) => {
   expect((await runOp(page, MERGE_FEATURE)).status).toBe("stopped");
 
   await fileButton(page, "style.css").click();
-  await expect.poll(() => gg.editorLaunches().length).toBe(1);
-  expect(gg.editorLaunches()[0]).toEqual(["my-editor", "--wait", path.join(dir, "style.css")]);
+  await expect.poll(() => gg.launches().length).toBe(1);
+  expect(gg.launches()[0]).toEqual(["my-editor", "--wait", path.join(dir, "style.css")]);
 
   await banner(page).getByRole("button", { name: "Open in editor" }).click();
-  await expect.poll(() => gg.editorLaunches().length).toBe(2);
-  expect(gg.editorLaunches()[1]).toEqual(["my-editor", "--wait", dir]);
+  await expect.poll(() => gg.launches().length).toBe(2);
+  expect(gg.launches()[1]).toEqual(["my-editor", "--wait", dir]);
   // The app never touches the files itself.
   expect(gg.git("conflicts", "diff", "--name-only", "--diff-filter=U").trim().split("\n")).toEqual([
     "app.txt",

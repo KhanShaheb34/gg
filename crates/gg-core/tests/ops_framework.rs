@@ -26,9 +26,13 @@ async fn create_branch_runs_and_returns_the_new_snapshot() {
     let id = h.open(repo.path()).await.repo_id;
 
     let out =
-        h.m.run_op(id, create_branch("feature/x", &head), &[])
-            .await
-            .expect("run_op");
+        h.m.run_op(
+            id,
+            in_wt(repo.path(), create_branch("feature/x", &head)),
+            &[],
+        )
+        .await
+        .expect("run_op");
 
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(!out.message.is_empty());
@@ -71,8 +75,11 @@ async fn operations_on_one_repository_run_one_at_a_time() {
     h.m.set_op_delay(Duration::from_millis(DELAY_MS as u64));
 
     let first = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("a", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("a", &head)), &[])
+                .await
+        }
     });
     // The first is running before the second is asked for, so the order is known.
     let running = h
@@ -84,8 +91,11 @@ async fn operations_on_one_repository_run_one_at_a_time() {
         .expect("the first operation is published");
     assert_eq!(running.1["op"]["queued"], 0);
     let second = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("b", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("b", &head)), &[])
+                .await
+        }
     });
     let queued = h
         .sink
@@ -147,7 +157,7 @@ async fn an_operation_refreshes_once() {
     h.m.set_op_delay(Duration::from_millis(1500));
 
     let out =
-        h.m.run_op(id, create_branch("x", &head), &[])
+        h.m.run_op(id, in_wt(repo.path(), create_branch("x", &head)), &[])
             .await
             .expect("run_op");
     assert_eq!(out.status, OpStatus::Done);
@@ -218,7 +228,7 @@ async fn bad_names_are_rejected_before_git_runs() {
     for name in ["-f", "a..b", "has space", "", "HEAD", "taken"] {
         let mark = h.last_log_id();
         let err =
-            h.m.run_op(id, create_branch(name, &head), &[])
+            h.m.run_op(id, in_wt(repo.path(), create_branch(name, &head)), &[])
                 .await
                 .expect_err(name);
         assert_eq!(err.code, ErrorCode::BadName, "{name:?}: {err:?}");
@@ -239,7 +249,7 @@ async fn bad_names_are_rejected_before_git_runs() {
 
     let name = "feature/émoji-🚀";
     let out =
-        h.m.run_op(id, create_branch(name, &head), &[])
+        h.m.run_op(id, in_wt(repo.path(), create_branch(name, &head)), &[])
             .await
             .expect("a unicode name with a slash is fine");
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
@@ -275,7 +285,10 @@ async fn commit_fields_take_only_full_hashes() {
     ];
     for hash in &bad {
         let requests = [
-            OpRequest::CheckoutCommit { hash: hash.clone() },
+            OpRequest::CheckoutCommit {
+                hash: hash.clone(),
+                expect_worktree: here_wt(),
+            },
             create_branch("x", hash),
             merge(MergeTargetKind::Commit, hash, true, false, false),
             OpRequest::CherryPick {
@@ -283,29 +296,43 @@ async fn commit_fields_take_only_full_hashes() {
                 mainline: None,
                 no_commit: false,
                 expect_head: here(),
+                expect_worktree: here_wt(),
             },
             OpRequest::Revert {
                 hash: hash.clone(),
                 mainline: None,
                 expect_head: here(),
+                expect_worktree: here_wt(),
             },
             reset(hash, ResetMode::Soft),
             OpRequest::CreateTag {
                 name: "v1".into(),
                 hash: hash.clone(),
                 message: None,
+                expect_worktree: here_wt(),
             },
         ];
         for request in requests {
             let mark = h.last_log_id();
             let shown = format!("{request:?}");
-            let err = h.m.run_op(id, request, &[]).await.expect_err(&shown);
+            let err =
+                h.m.run_op(id, in_wt(repo.path(), request), &[])
+                    .await
+                    .expect_err(&shown);
             assert_eq!(err.code, ErrorCode::BadRequest, "{shown}: {err:?}");
             assert!(h.log.since(mark).is_empty(), "{shown} ran git");
         }
     }
     // A full SHA-256 hash passes the check (git then says it does not exist).
-    let out = h.run(id, OpRequest::CheckoutCommit { hash: sha256 }).await;
+    let out = h
+        .run(
+            id,
+            OpRequest::CheckoutCommit {
+                hash: sha256,
+                expect_worktree: here_wt(),
+            },
+        )
+        .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     // And a full SHA-1 hash runs.
     let out = h.run(id, create_branch("x", &head)).await;
@@ -335,7 +362,8 @@ async fn writes_survive_many_reads_in_the_log() {
         "run_op",
         json!({
             "repoId": id,
-            "request": {"op": "create_branch", "name": "kept", "at": head, "checkout": false},
+            "request": {"op": "create_branch", "name": "kept", "at": head, "checkout": false,
+                        "expectWorktree": repo.path()},
             "confirmed": [],
             "clientId": "ui",
             "clientSeq": 1
@@ -408,26 +436,39 @@ async fn repo_prefs_round_trip_and_default() {
             .dispatch("get_repo_prefs", json!({ "repoId": id }))
             .await
             .unwrap();
-        assert_eq!(prefs, json!({ "mergeNoFf": true }));
+        assert_eq!(
+            prefs,
+            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBase": null })
+        );
         let set = core
             .dispatch(
                 "set_repo_prefs",
-                json!({ "repoId": id, "patch": { "mergeNoFf": false } }),
+                json!({ "repoId": id, "patch": { "mergeNoFf": false, "sidePanel": false } }),
             )
             .await
             .unwrap();
-        assert_eq!(set, json!({ "mergeNoFf": false }));
+        assert_eq!(
+            set,
+            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
+        );
         // An empty patch changes nothing.
         let same = core
             .dispatch("set_repo_prefs", json!({ "repoId": id, "patch": {} }))
             .await
             .unwrap();
-        assert_eq!(same, json!({ "mergeNoFf": false }));
+        assert_eq!(
+            same,
+            json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
+        );
         let theirs = core
             .dispatch("get_repo_prefs", json!({ "repoId": other_id }))
             .await
             .unwrap();
-        assert_eq!(theirs, json!({ "mergeNoFf": true }), "per repository");
+        assert_eq!(
+            theirs,
+            json!({ "mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBase": null }),
+            "per repository"
+        );
     }
 
     // Reloaded: kept, and found again when the repository is opened from a subfolder.
@@ -441,7 +482,10 @@ async fn repo_prefs_round_trip_and_default() {
         .dispatch("get_repo_prefs", json!({ "repoId": id }))
         .await
         .unwrap();
-    assert_eq!(prefs, json!({ "mergeNoFf": false }));
+    assert_eq!(
+        prefs,
+        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
+    );
 
     let root = dunce::canonicalize(repo.path()).unwrap();
     let store = Store::load(config.path());
@@ -452,7 +496,7 @@ async fn repo_prefs_round_trip_and_default() {
             .unwrap();
     assert_eq!(
         saved["repoPrefs"][root.to_string_lossy().as_ref()],
-        json!({ "mergeNoFf": false })
+        json!({ "mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": null })
     );
 }
 
@@ -469,7 +513,7 @@ async fn a_panicking_body_still_ends_its_operation() {
     // The caller waits.
     h.m.panic_next_op();
     let err =
-        h.m.run_op(id, create_branch("a", &head), &[])
+        h.m.run_op(id, in_wt(repo.path(), create_branch("a", &head)), &[])
             .await
             .expect_err("the body panicked");
     assert_eq!(err.code, ErrorCode::Io);
@@ -484,8 +528,11 @@ async fn a_panicking_body_still_ends_its_operation() {
     h.m.set_op_delay(Duration::from_millis(400));
     h.m.panic_next_op();
     let caller = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("b", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("b", &head)), &[])
+                .await
+        }
     });
     let running = h
         .sink
@@ -495,8 +542,11 @@ async fn a_panicking_body_still_ends_its_operation() {
         .await
         .expect("published");
     let next = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("c", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("c", &head)), &[])
+                .await
+        }
     });
     caller.abort();
     let next = tokio::time::timeout(TIMEOUT, next)
@@ -537,8 +587,11 @@ async fn close_is_refused_while_an_operation_runs_or_waits() {
     h.m.set_op_delay(Duration::from_millis(600));
 
     let first = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("a", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("a", &head)), &[])
+                .await
+        }
     });
     h.sink
         .wait_for(TIMEOUT, |n, v| {
@@ -551,8 +604,11 @@ async fn close_is_refused_while_an_operation_runs_or_waits() {
     assert!(!err.message.is_empty());
 
     let second = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("b", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("b", &head)), &[])
+                .await
+        }
     });
     h.sink
         .wait_for(TIMEOUT, |n, v| {
@@ -587,8 +643,11 @@ async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
     let on_main = head_at(repo.path());
 
     let first = tokio::spawn({
-        let m = h.m.clone();
-        async move { m.run_op(id, checkout_branch("feature"), &[]).await }
+        let (m, wt) = (h.m.clone(), repo.path().to_path_buf());
+        async move {
+            m.run_op(id, in_wt(&wt, checkout_branch("feature")), &[])
+                .await
+        }
     });
     h.sink
         .wait_for(TIMEOUT, |n, v| {
@@ -606,6 +665,7 @@ async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
         squash: false,
         no_commit: false,
         expect_head: on_main,
+        expect_worktree: here_wt(),
     };
     let feature = repo.git(&["rev-parse", "feature"]);
     let merge = h.run(id, asked_on_main).await;
@@ -638,8 +698,11 @@ async fn a_refresh_asked_for_during_an_operation_is_folded() {
     h.m.set_op_delay(DELAY);
 
     let op = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("x", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("x", &head)), &[])
+                .await
+        }
     });
     h.sink
         .wait_for(TIMEOUT, |n, v| {
@@ -840,9 +903,9 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
 
     // Number 2 arrives first, then number 1.
     let second = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
         async move {
-            m.run_op_in_order(id, "ui", 2, create_branch("b", &head), &[])
+            m.run_op_in_order(id, "ui", 2, in_wt(&wt, create_branch("b", &head)), &[])
                 .await
         }
     });
@@ -855,9 +918,9 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
     .await
     .expect("number 2 waits");
     let first = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
         async move {
-            m.run_op_in_order(id, "ui", 1, create_branch("a", &head), &[])
+            m.run_op_in_order(id, "ui", 1, in_wt(&wt, create_branch("a", &head)), &[])
                 .await
         }
     });
@@ -876,11 +939,22 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
     assert!(second.log_from > first.log_to);
     // Numbers go on from there.
     let third =
-        h.m.run_op_in_order(id, "ui", 3, create_branch("c", &head), &[])
-            .await
-            .expect("third");
+        h.m.run_op_in_order(
+            id,
+            "ui",
+            3,
+            in_wt(repo.path(), create_branch("c", &head)),
+            &[],
+        )
+        .await
+        .expect("third");
     assert!(third.op_id > second.op_id);
 }
+
+/// A numbered request that waited less than this for its turn waited for no earlier number
+/// (a missing one is waited for 500 ms). The turn wait is recorded by the order itself, so
+/// git's own time, long and uneven on a slow machine, does not count (Task 12 review minor 7).
+const AT_ONCE: Duration = Duration::from_millis(100);
 
 /// R28: a request whose predecessor never arrives waits for it 500 ms, then runs; the gap
 /// is not waited for again, and the late predecessor runs at once when it comes. Numbers
@@ -892,37 +966,37 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
 
-    let timed = |n: u64, name: &'static str| {
-        let (m, head) = (h.m.clone(), head.clone());
+    // How long each request waited for its turn (git's own time aside, which on a slow
+    // machine is longer than the gap wait itself).
+    let turn_wait = |id: u32, n: u64, name: &'static str| {
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
         async move {
-            let t = std::time::Instant::now();
             let out = m
-                .run_op_in_order(id, "ui", n, create_branch(name, &head), &[])
+                .run_op_in_order(id, "ui", n, in_wt(&wt, create_branch(name, &head)), &[])
                 .await
                 .expect("runs");
             assert_eq!(out.status, OpStatus::Done, "{out:?}");
-            t.elapsed()
+            m.last_turn_wait(id, "ui").expect("open")
         }
     };
-    let waited = timed(2, "b").await;
+    let waited = turn_wait(id, 2, "b").await;
     assert!(
         waited >= Duration::from_millis(480),
         "waited {waited:?} for number 1"
     );
     assert!(waited < Duration::from_millis(3000), "waited {waited:?}");
-    assert!(timed(3, "c").await < Duration::from_millis(450));
-    assert!(timed(1, "a").await < Duration::from_millis(450), "late");
+    let third = turn_wait(id, 3, "c").await;
+    assert!(
+        third < AT_ONCE,
+        "the gap is not waited for again: {third:?}"
+    );
+    let late = turn_wait(id, 1, "a").await;
+    assert!(late < AT_ONCE, "late: {late:?}");
 
     h.m.close(id).await.expect("closes");
     let id2 = h.open(repo.path()).await.repo_id;
-    let t = std::time::Instant::now();
-    h.m.run_op_in_order(id2, "ui", 1, create_branch("d", &head), &[])
-        .await
-        .expect("runs");
-    assert!(
-        t.elapsed() < Duration::from_millis(450),
-        "numbers start again"
-    );
+    let again = turn_wait(id2, 1, "d").await;
+    assert!(again < AT_ONCE, "numbers start again: {again:?}");
 }
 
 /// R28: a request refused before it is queued (a bad name) still lets the next number in.
@@ -934,15 +1008,27 @@ async fn a_refused_numbered_request_lets_the_next_one_in() {
     let id = h.open(repo.path()).await.repo_id;
 
     let err =
-        h.m.run_op_in_order(id, "ui", 1, create_branch("-bad", &head), &[])
-            .await
-            .expect_err("bad name");
-    assert_eq!(err.code, ErrorCode::BadName);
-    let t = std::time::Instant::now();
-    h.m.run_op_in_order(id, "ui", 2, create_branch("good", &head), &[])
+        h.m.run_op_in_order(
+            id,
+            "ui",
+            1,
+            in_wt(repo.path(), create_branch("-bad", &head)),
+            &[],
+        )
         .await
-        .expect("runs");
-    assert!(t.elapsed() < Duration::from_millis(450));
+        .expect_err("bad name");
+    assert_eq!(err.code, ErrorCode::BadName);
+    h.m.run_op_in_order(
+        id,
+        "ui",
+        2,
+        in_wt(repo.path(), create_branch("good", &head)),
+        &[],
+    )
+    .await
+    .expect("runs");
+    let waited = h.m.last_turn_wait(id, "ui").expect("open");
+    assert!(waited < AT_ONCE, "waited {waited:?}");
 }
 
 /// Review item 3a: each page load (a reload, another window) numbers from 1 under a client id
@@ -958,21 +1044,23 @@ async fn each_client_numbers_its_own_requests() {
             id,
             "before reload",
             n,
-            create_branch(&format!("a{n}"), &head),
+            in_wt(repo.path(), create_branch(&format!("a{n}"), &head)),
             &[],
         )
         .await
         .expect("runs");
     }
-    let t = std::time::Instant::now();
-    h.m.run_op_in_order(id, "after reload", 1, create_branch("b", &head), &[])
-        .await
-        .expect("runs");
-    assert!(
-        t.elapsed() < Duration::from_millis(450),
-        "{:?}",
-        t.elapsed()
-    );
+    h.m.run_op_in_order(
+        id,
+        "after reload",
+        1,
+        in_wt(repo.path(), create_branch("b", &head)),
+        &[],
+    )
+    .await
+    .expect("runs");
+    let waited = h.m.last_turn_wait(id, "after reload").expect("open");
+    assert!(waited < AT_ONCE, "waited {waited:?}");
 }
 
 /// Review item 3b: a `run_op` whose arguments cannot be read still gives up its number, so
@@ -1003,21 +1091,23 @@ async fn a_run_op_that_cannot_be_read_lets_the_next_one_in() {
         .await
         .expect_err("refused");
     assert_eq!(err.code, ErrorCode::BadRequest);
-    let t = std::time::Instant::now();
     let out = core
         .dispatch(
             "run_op",
             json!({"repoId": id, "clientId": "c", "clientSeq": 2, "confirmed": [],
-                   "request": {"op": "create_branch", "name": "x", "at": head, "checkout": false}}),
+                   "request": {"op": "create_branch", "name": "x", "at": head, "checkout": false,
+                               "expectWorktree": repo.path()}}),
         )
         .await
         .expect("runs");
     assert_eq!(out["status"], "done", "{out}");
-    assert!(
-        t.elapsed() < Duration::from_millis(450),
-        "{:?}",
-        t.elapsed()
-    );
+    let repo_id = u32::try_from(id.as_u64().expect("a number")).expect("small");
+    let waited = core
+        .manager()
+        .expect("git")
+        .last_turn_wait(repo_id, "c")
+        .expect("open");
+    assert!(waited < AT_ONCE, "waited {waited:?}");
 }
 
 /// R41: a hook that never ends (here, one that sleeps) holds the repository only until the
@@ -1042,8 +1132,11 @@ async fn a_hook_that_hangs_is_stopped() {
 
     let started = std::time::Instant::now();
     let run = tokio::spawn({
-        let m = h.m.clone();
-        async move { m.run_op(id, checkout_branch("other"), &[]).await }
+        let (m, wt) = (h.m.clone(), repo.path().to_path_buf());
+        async move {
+            m.run_op(id, in_wt(&wt, checkout_branch("other")), &[])
+                .await
+        }
     });
     let running = h
         .sink

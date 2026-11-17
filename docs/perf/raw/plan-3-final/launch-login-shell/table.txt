@@ -1,0 +1,32 @@
+repo: ~/.cache/gitgraph-perf/r20k (20000 commits)
+machine: Apple M1 Pro, 8 cores, 16 GB, macOS 27.2
+bundle: 8.0M (~/Dev/experiments/git-graph/target/release/bundle/macos/gg.app)
+
+run	mode	load (1/5/15 min)	spawn->first-rows	spawn->fully-loaded	nav->first-rows	nav->fully-loaded	idle CPU %	footprint MB	RSS MB
+1	idle	5.15 8.21 6.89	1011 ms	1047 ms	595 ms	630 ms	0.10	154.2	235.6
+    footprint MB: gg-desktop=51.4 WebKit.GPU=16.3 WebKit.WebContent=81.0 WebKit.Networking=5.5
+    idle CPU: gg-desktop=0.10% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+2	idle	4.36 7.73 6.76	856 ms	893 ms	466 ms	500 ms	0.10	151.2	233.2
+    footprint MB: gg-desktop=48.9 WebKit.GPU=16.0 WebKit.WebContent=80.5 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.10% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+3	idle	4.64 7.45 6.70	656 ms	677 ms	254 ms	276 ms	0.00	156.7	239.1
+    footprint MB: gg-desktop=54.1 WebKit.GPU=16.1 WebKit.WebContent=80.7 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+4	idle	5.14 7.28 6.67	728 ms	715 ms	313 ms	302 ms	0.00	156.7	238.2
+    footprint MB: gg-desktop=52.8 WebKit.GPU=16.2 WebKit.WebContent=81.9 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+5	idle	5.69 7.14 6.64	671 ms	698 ms	252 ms	281 ms	0.00	156.3	239.3
+    footprint MB: gg-desktop=53.6 WebKit.GPU=16.1 WebKit.WebContent=80.8 WebKit.Networking=5.8
+    idle CPU: gg-desktop=0.00% WebKit.GPU=0.00% WebKit.WebContent=0.00% WebKit.Networking=0.00%
+
+launches 2-5, per mode: median / min / max
+  idle:
+    cpu                                  0.00       0.00       0.10   (4)
+    first                              699.50     656.00     856.00   (4)
+    foot                               156.50     151.20     156.70   (4)
+    foot-gg-desktop                     53.20      48.90      54.10   (4)
+    foot-WebKit.GPU                     16.10      16.00      16.20   (4)
+    foot-WebKit.Networking               5.80       5.80       5.80   (4)
+    foot-WebKit.WebContent              80.75      80.50      81.90   (4)
+    loaded                             706.50     677.00     893.00   (4)
+    rss                                238.65     233.20     239.30   (4)

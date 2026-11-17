@@ -1,15 +1,25 @@
-# GitGraph
+# gg
 
 A fast, light desktop git client built around the commit graph: tabs of repositories, each a
 virtualized graph with branch and tag labels, a branch filter, search, fetch and refresh, a
-details panel with the commit's message and changed files, and the everyday actions on
-commits, branches, tags and stashes from right-click menus. Tauri 2 shell, Rust core
-(`crates/gg-core`), Svelte 5 UI (`src/`).
+details panel with the commit's message and changed files, the everyday actions on
+commits, branches, tags and stashes from right-click menus, a side panel of the repository's
+worktrees with a commit panel for each, and pull requests through GitHub's `gh`. Tauri 2
+shell, Rust core (`crates/gg-core`), Svelte 5 UI (`src/`).
+
+gg is inspired by the [Git Graph](https://marketplace.visualstudio.com/items?itemName=mhutchie.git-graph) extension for VS Code.
 
 It writes into a repository only when you ask for an action (and for `git fetch`, which also
 runs on a schedule you can turn off, updating remote-tracking refs, objects and `FETCH_HEAD`
 as in a terminal). Every action runs git itself, with your hooks, one at a time per
 repository, and shows git's own message when it fails.
+
+## Upgrading from a build made before the rename
+
+The app was renamed to gg, which gives it a new identity on macOS. Your settings, recent
+repositories and open tabs are copied over once, but column widths, panel sizes and each repository's
+view filters start fresh, and macOS asks again before the app may read folders such as
+Documents or Desktop.
 
 ## Using it
 
@@ -40,13 +50,56 @@ repository, and shows git's own message when it fails.
   on to another, it is refused. Skipping a rebase's commit puts every tracked file back as
   HEAD has it, so with other uncommitted changes it asks first, listing them.
 - Opening a folder of another worktree of a repository already open shows that
-  repository's tab, which keeps working in its own worktree; a notice names the folder, and
-  the tab's tooltip shows it. (Switching worktrees comes later.)
+  repository's tab with that worktree made active (if an action is running there, a notice
+  says the tab still works where it was).
 - Git 2.29 or newer is needed. With an older one the app says so once, when it starts, and
   skips the background fetch; some actions fail until git is updated.
 - git is looked up on your login shell's `PATH` (read when the app starts), falling back
   to the app's own `PATH`, so a git your shell finds is the one used even when the app is
   started from the Finder.
+
+### Worktrees, committing and pull requests
+
+- The side panel (⌘B, or the button at the right of the toolbar) lists the repository's
+  worktrees as git does, including ones made in a terminal or by another tool: each with its
+  branch, its uncommitted changes (kept up to date as files change), how it stands with its
+  upstream, and what is unusual (locked, folder missing, a merge stopped there). In a window
+  narrower than 840 px it lies over the graph. The **active** worktree, where every action
+  runs, is marked there and named in the toolbar; double-click another (or "Make active")
+  to switch. ⌘⌥1…⌘⌥9 switch to a worktree by its place in the list (Ctrl+Shift+1…9 on
+  Windows and Linux).
+- **Add worktree…** (the panel's + or menu, or a branch or commit menu) makes a folder for a
+  new or existing branch, by default beside the repository in `<repo>.worktrees/<branch>`
+  (set the pattern in Settings).
+- **Delete…** removes a worktree. A clean one goes after one plain question (files git
+  ignores, if any, are listed in it); one with uncommitted changes (edits to files marked
+  `assume-unchanged` or `skip-worktree` included, which `git status` does not show), untracked
+  files or commits on no branch needs a red confirmation listing them. One holding another
+  worktree or repository inside it, at any depth, is refused, and so is one with submodules
+  (git does not delete it; the notice says what a forced delete in a terminal would lose).
+  Its branch is deleted only if you tick that. **Prune** forgets worktrees whose folder is
+  gone, after a confirmation naming them; if you moved a worktree's folder, run
+  `git worktree repair <new path>` instead.
+- The **commit panel** (⌘K, or a worktree's change count) commits the files you tick, with
+  **Commit & Push** to the branch's upstream; when a merge is being concluded, its message is
+  filled in. The notice after a commit offers the push. Known limit: if the app quits or
+  crashes between making a commit and updating the staging area (during a slow
+  `post-commit` hook, say), the staging area still holds the committed files as they were
+  before the commit, so `git status` shows staged changes that would undo it; `git reset`
+  puts the staging area back as HEAD has it (your files are not touched).
+- **Create pull request…** (a branch's or worktree's menu) needs `gh`, signed in: it suggests a
+  title and description from the commits, pushes the branch first when it needs to, and
+  says so on its button. Without `gh`, it pushes and opens GitHub's compare page. Open pull
+  requests show as markers beside their branches and worktrees, loaded with each fetch (at
+  most once a minute). The app never reads or stores a GitHub token. Note that `gh`, by its
+  own design, sends a token it finds in your environment (`GH_TOKEN`, `GITHUB_TOKEN`) to
+  github.com and to any `*.ghe.com` host (GitHub's own enterprise cloud): a repository whose
+  remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
+  token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
+  than github.com, but leaves these two to gh.
+- **Settings** (⌘,): theme, date format, background fetch, the editor and terminal the
+  worktree menu opens, and the worktree location pattern. **?** lists the keyboard
+  shortcuts.
 
 ### Actions
 
@@ -138,12 +191,48 @@ On Windows and Linux, Ctrl stands for ⌘.
 | ⌘R | Refresh |
 | F6 | The newest notice (its first button) |
 | ⌘⇧L | Show or hide the command log |
+| ⌘B | Show or hide the side panel (worktrees) |
+| ⌘K | Commit the active worktree's changes |
+| ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the list |
+| ⌘, | Settings |
+| ?, ⌘/ (F1 elsewhere) | Keyboard shortcuts |
 | Menu key, Shift+F10 | The selected row's menu (arrow keys, Enter, Esc in it) |
 | ↑/↓, Page Up/Down, Home/End | Select commits in the graph |
 | Esc | Close what has the focus: a dialog, a menu, the command log, the details panel; in the graph, clear the selection |
 
 In the command log: ↑/↓, Home/End move between rows, Enter or Space opens one, C copies its
 command line.
+
+## Open from the terminal
+
+`gg` in a terminal opens the repository you are in; `gg <path>` the one that holds `path`
+(a subfolder opens its repository, a linked worktree opens as itself, and `gg -- <path>`
+takes a path that starts with `-`). It returns at once. If gg is already running, the
+repository opens there (or its tab comes to the front) and the window comes forward; only
+one copy of the app runs. `gg --help` and `gg --version` say what they say.
+
+To install the command, choose **gg → Install ‘gg’ Command…** (or "Install the command…" on
+the welcome screen). Pick one of the offered folders: they are already on your login shell's
+`PATH`, writable by you and not inside a repository (`~/.local/bin`, `/opt/homebrew/bin` and
+`/usr/local/bin` first). The app writes one small script there, named `gg`, and changes
+nothing else: no administrator rights, no edits to your shell files. It never replaces a
+`gg` it did not write, and the same dialog removes the one it did. If no folder is offered,
+add one such as `~/.local/bin` to your `PATH` in your shell's profile and open the dialog
+again.
+
+If your shell already has a `gg` (an alias such as Oh My Zsh's `gg` for `git gui
+citool`, a function, or another program earlier on `PATH`), the dialog says so: that one
+wins until you remove it or rename it. Past an alias or a function, `command gg` reaches
+this command anyway. The dialog learns this by asking your login shell (zsh, bash or a
+POSIX sh); with fish it cannot tell, so no warning is shown there: run `type gg` in fish to
+check.
+
+Two `gg` commands run within the same instant while the app is not running yet can each
+start a window of their own; once the app runs, every `gg` goes to it.
+
+On macOS the command finds the app by its identifier, wherever it is. On Linux it starts the
+app from where it was when the command was installed; after moving the app, install the
+command again (the command says so when it cannot find the app).
 
 ## Dev commands
 
@@ -171,7 +260,8 @@ http://localhost:1420 and each `--allow-origin`; `/invoke` takes only `applicati
 
 ## Speed
 
-Targets and measured numbers are in [docs/perf/2026-11-plan-1.md](docs/perf/2026-11-plan-1.md)
-and, for the actions, [docs/perf/2026-11-plan-2.md](docs/perf/2026-11-plan-2.md);
+Targets and measured numbers are in [docs/perf/2026-11-plan-1.md](docs/perf/2026-11-plan-1.md),
+for the actions [docs/perf/2026-11-plan-2.md](docs/perf/2026-11-plan-2.md), and for the
+worktrees [docs/perf/2026-11-plan-3.md](docs/perf/2026-11-plan-3.md);
 `scripts/perf.sh` measures the release app (macOS) on a repository, and
 `scripts/gen-synthetic-repo.sh` makes the large test repositories it uses.

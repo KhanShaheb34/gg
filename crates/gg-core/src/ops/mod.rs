@@ -7,13 +7,17 @@
 //! the active worktree, and ended with one refresh that also clears `snapshot.op`. Every git
 //! command it runs is logged with the repository's and the operation's id.
 
+mod commit;
 mod danger;
 mod explain;
 mod local;
+mod lock;
 mod network;
 pub(crate) mod order;
+mod pr;
 mod progress;
 mod stash;
+mod worktree;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -28,8 +32,8 @@ pub use explain::explain;
 
 use crate::EventSink;
 use crate::dto::{
-    Confirmed, Danger, DangerKind, HeadInfo, InProgressKind, MergeTargetKind, OpHint, OpOutcome,
-    OpRequest, OpStatus, ResetMode,
+    Confirmed, Danger, DangerKind, HeadInfo, InProgressKind, InputField, MergeTargetKind, OpHint,
+    OpOutcome, OpRequest, OpStatus, ResetMode, WorktreeBranch,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::names::{check_branch_name, check_tag_name};
@@ -62,20 +66,54 @@ pub enum Step {
 }
 
 /// What an operation's body works with: the repository, a runner that logs as this
-/// operation, the worktree to run in and the operation's id.
+/// operation, the worktree to run in (the active one; the main one for the worktree
+/// operations) and the operation's id.
+/// A walk of a worktree's ignored folders: (the worktree, a hash of the status read it
+/// walked from) and what a refusal says of what it found (`None`: nothing).
+pub(crate) type HeldWalk = ((PathBuf, u64), Option<String>);
+
 pub(crate) struct OpCtx<'a> {
     pub repo: &'a Arc<Repo>,
+    /// The manager, for what an operation does to the repository's state beside git
+    /// (making the main worktree active before the active one is removed).
+    pub manager: &'a Arc<RepoManager>,
     pub runner: GitRunner,
     pub cwd: PathBuf,
     pub op_id: u64,
     sink: &'a dyn EventSink,
     net_limit: TimeLimit,
+    /// The outcome the body gives stands when the user stops it: it says what was done that
+    /// cannot be taken back (a commit made before the Stop).
+    kept: std::sync::atomic::AtomicBool,
+    /// A read the operation's turn made that its later steps in the turn reuse (the worktree
+    /// removal's status with ignored files: the folder read, and git's output).
+    pub(crate) held_read: std::sync::Mutex<Option<(PathBuf, Vec<u8>)>>,
+    /// What the walk of a worktree's ignored folders for other repositories found in the
+    /// operation's turn, keyed by the worktree and a hash of the status read it walked from
+    /// (the body takes it again when it reads the same and no switch came between).
+    pub(crate) held_walk: std::sync::Mutex<Option<HeldWalk>>,
+    /// The worktree the operation made (its canonical path, as the snapshot lists it).
+    pub(crate) created: Arc<std::sync::Mutex<Option<String>>>,
+    /// The commit the operation made (its full hash), once made.
+    pub(crate) committed: Arc<std::sync::Mutex<Option<String>>>,
+    /// What git was stopped in when the operation's turn read it (final review M6).
+    pub(crate) turn_in_progress: std::sync::OnceLock<Option<InProgressKind>>,
 }
 
 /// Fewest milliseconds between two `op-progress` events of one operation.
 const PROGRESS_EVERY_MS: u128 = 100;
 
 impl OpCtx<'_> {
+    /// From now on, a Stop does not replace the body's outcome with "Stopped.": the body
+    /// says itself what was done before it (see [`OpCtx::kept`]).
+    pub fn keep_outcome_when_stopped(&self) {
+        self.kept.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn kept(&self) -> bool {
+        self.kept.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Runs a git command that changes the repository; its exit code is the caller's to
     /// check (see [`explain`]).
     pub async fn git(&self, args: &[&str]) -> Result<GitOutput> {
@@ -89,6 +127,15 @@ impl OpCtx<'_> {
         self.runner
             .run_unchecked(&self.cwd, args, CmdKind::Read)
             .await
+    }
+
+    /// Says which step the operation is at (`op-progress`, as a line of its own): what a
+    /// dialog waiting on it shows while git's own progress has nothing to say.
+    pub fn step(&self, line: &str) {
+        self.sink.emit(
+            "op-progress",
+            serde_json::json!({ "repoId": self.repo.identity.repo_id, "opId": self.op_id, "line": line }),
+        );
     }
 
     /// Like [`OpCtx::git`], for a command that talks to a remote: it gives up after 120 s
@@ -246,6 +293,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::CheckoutBranch {
             branch,
             fast_forward,
+            ..
         } => {
             check_arg(&branch, "branch")?;
             (
@@ -260,6 +308,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::CheckoutRemote {
             remote_branch,
             local_name,
+            ..
         } => {
             check_arg(&remote_branch, "remote branch")?;
             check_branch_name(&local_name)?;
@@ -272,7 +321,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::CheckoutCommit { hash } => {
+        OpRequest::CheckoutCommit { hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Check out {}", local::short(&hash))),
@@ -281,7 +330,9 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::CreateBranch { name, at, checkout } => {
+        OpRequest::CreateBranch {
+            name, at, checkout, ..
+        } => {
             check_branch_name(&name)?;
             check_full_hash(&at)?;
             let title = if checkout {
@@ -296,7 +347,9 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::RenameBranch { branch, new_name } => {
+        OpRequest::RenameBranch {
+            branch, new_name, ..
+        } => {
             check_arg(&branch, "branch")?;
             check_branch_name(&new_name)?;
             (
@@ -306,7 +359,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::DeleteBranch { branch } => {
+        OpRequest::DeleteBranch { branch, .. } => {
             check_arg(&branch, "branch")?;
             (
                 fixed(format!("Delete branch {branch}")),
@@ -320,7 +373,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             no_ff,
             squash,
             no_commit,
-            expect_head: _,
+            ..
         } => {
             match target.kind {
                 MergeTargetKind::Commit => check_full_hash(&target.name)?,
@@ -391,6 +444,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             name,
             hash,
             message,
+            ..
         } => {
             check_tag_name(&name)?;
             check_full_hash(&hash)?;
@@ -515,6 +569,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
         OpRequest::StashSave {
             message,
             include_untracked,
+            ..
         } => (
             fixed(if include_untracked {
                 "Stash changes and untracked files".to_owned()
@@ -527,7 +582,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 )
             }),
         ),
-        OpRequest::StashApply { stash: hash } => {
+        OpRequest::StashApply { stash: hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Apply stash {}", local::short(&hash))),
@@ -538,7 +593,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::StashPop { stash: hash } => {
+        OpRequest::StashPop { stash: hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Pop stash {}", local::short(&hash))),
@@ -547,14 +602,16 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
-        OpRequest::StashDrop { stash: hash } => {
+        OpRequest::StashDrop { stash: hash, .. } => {
             check_full_hash(&hash)?;
             (
                 fixed(format!("Drop stash {}", local::short(&hash))),
                 body(move |ctx, _| Box::pin(async move { stash::drop(ctx, &hash).await })),
             )
         }
-        OpRequest::StashBranch { stash: hash, name } => {
+        OpRequest::StashBranch {
+            stash: hash, name, ..
+        } => {
             check_full_hash(&hash)?;
             check_branch_name(&name)?;
             (
@@ -578,6 +635,104 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             (
                 on_progress(progress::skip_title),
                 body(move |ctx, _| Box::pin(async move { progress::skip(ctx).await })),
+            )
+        }
+        OpRequest::WorktreeAdd { path, branch } => {
+            check_path(&path).map_err(|e| e.about(InputField::Location))?;
+            match &branch {
+                WorktreeBranch::Existing { existing } => check_arg(existing, "branch")?,
+                WorktreeBranch::Create { create, at } => {
+                    check_branch_name(create).map_err(|e| e.about(InputField::Name))?;
+                    check_full_hash(at)?;
+                }
+                WorktreeBranch::Detach { detach } => check_full_hash(detach)?,
+            }
+            (
+                fixed(format!("Create worktree {path}")),
+                body(move |ctx, _| {
+                    Box::pin(async move { worktree::add(ctx, &path, &branch).await })
+                }),
+            )
+        }
+        OpRequest::WorktreeRemove {
+            path,
+            delete_branch,
+            ..
+        } => {
+            check_path(&path)?;
+            let title = if delete_branch {
+                format!("Delete worktree {path} and its branch")
+            } else {
+                format!("Delete worktree {path}")
+            };
+            (
+                fixed(title),
+                body(move |ctx, dangers| {
+                    Box::pin(
+                        async move { worktree::remove(ctx, dangers, &path, delete_branch).await },
+                    )
+                }),
+            )
+        }
+        OpRequest::WorktreePrune {} => (
+            fixed("Prune stale worktree entries".to_owned()),
+            body(move |ctx, dangers| Box::pin(async move { worktree::prune(ctx, dangers).await })),
+        ),
+        OpRequest::Commit {
+            paths,
+            message,
+            push,
+            ..
+        } => {
+            commit::check(&paths, &message)?;
+            let files = commit::files(paths.len());
+            (
+                on_head(move |head| {
+                    if push {
+                        format!("Commit {files} on {head} and push")
+                    } else {
+                        format!("Commit {files} on {head}")
+                    }
+                }),
+                body(move |ctx, _| {
+                    Box::pin(async move { commit::commit(ctx, &paths, &message, push).await })
+                }),
+            )
+        }
+        OpRequest::RemoveIndexLock { .. } => (
+            fixed("Remove the lock file index.lock".to_owned()),
+            body(move |ctx, dangers| Box::pin(async move { lock::remove(ctx, dangers).await })),
+        ),
+        OpRequest::PrCreate {
+            branch,
+            base,
+            base_remote,
+            title,
+            body: text,
+            draft,
+            compare_page,
+        } => {
+            pr::check(&branch, &base, base_remote.as_deref(), &title)?;
+            let into = match &base_remote {
+                Some(remote) => format!("{remote}/{base}"),
+                None => base.clone(),
+            };
+            (
+                fixed(format!("Open a pull request of {branch} into {into}")),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        let request = pr::Request {
+                            branch: &branch,
+                            base: &base,
+                            base_remote: base_remote.as_deref(),
+                            title: &title,
+                            body: &text,
+                            draft,
+                            compare_page,
+                        };
+                        pr::create(ctx, request).await
+                    })
+                }),
             )
         }
     };
@@ -618,6 +773,17 @@ fn check_full_hash(hash: &str) -> Result<()> {
     ))
 }
 
+/// `Ok` if `path` can name a folder: not empty, no NUL.
+fn check_path(path: &str) -> Result<()> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!("\u{201c}{path}\u{201d} is not a folder path."),
+        ));
+    }
+    Ok(())
+}
+
 /// `Ok` if `value`, naming an existing `what` (a branch, a commit), can be given to git:
 /// not empty and not option-like.
 fn check_arg(value: &str, what: &str) -> Result<()> {
@@ -648,6 +814,28 @@ enum Ran {
     Unconfirmed(Vec<Danger>),
     /// Nothing ran: it cannot while git is stopped in something (the plain line why).
     Refused(String),
+    /// Nothing ran: what was asked for cannot be, because of one field of the form it came
+    /// from (the plain line why, and the field).
+    RefusedAbout(String, InputField),
+}
+
+/// Where a body says what it made (a worktree's path, a commit's hash) for the outcome.
+type Said = Arc<std::sync::Mutex<Option<String>>>;
+
+/// What a body said in `slot`, if anything.
+fn said(slot: &Said) -> Option<String> {
+    slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The outcome of a commit made (`hash`) after which error `e` came: done, the commit said
+/// first, then what went wrong.
+fn after_commit(hash: &str, e: CoreError) -> Step {
+    let short = hash.get(..8).unwrap_or(hash);
+    Step::DoneWith {
+        message: format!("Committed {short}. Then: {}", e.message),
+        detail: e.detail,
+        hints: Vec::new(),
+    }
 }
 
 /// Said when an operation's body panicked.
@@ -784,13 +972,25 @@ impl RepoManager {
         // refresh. A request that needs confirmation shows nothing.
         let started = Arc::new(AtomicBool::new(false));
         let continuing = matches!(turn.request, OpRequest::Continue { .. });
+        // Where the body says which worktree it made (worktree_add), or which commit (commit).
+        let created = Arc::new(std::sync::Mutex::new(None));
+        let committed = Arc::new(std::sync::Mutex::new(None));
         let inner = tokio::spawn({
+            let made = (created.clone(), committed.clone());
             let (m, started) = (self.clone(), started.clone());
-            async move { m.run_body(turn, op_id, &started).await }
+            async move { m.run_body(turn, op_id, &started, &made).await }
         });
         let ran = inner.await.unwrap_or_else(|e| {
             Err(CoreError::new(ErrorCode::Io, STOPPED_UNEXPECTEDLY).with_detail(e.to_string()))
         });
+        // Ended abruptly after a commit was made: said with the commit, never hidden.
+        let ran = match ran {
+            Err(e) => match said(&committed) {
+                Some(hash) => Ok(("Commit".to_owned(), Ran::Step(after_commit(&hash, e)))),
+                None => Err(e),
+            },
+            ran => ran,
+        };
         // A refused continue is read again too (R33): the files it names were edited outside
         // the app, where nothing git watches changes, and the banner must show them as they are.
         let refused_continue = continuing && matches!(ran, Ok((_, Ran::Refused(_))));
@@ -813,6 +1013,9 @@ impl RepoManager {
             log_to,
             dangers: Vec::new(),
             hints: Vec::new(),
+            created: created.lock().unwrap_or_else(|e| e.into_inner()).take(),
+            committed: committed.lock().unwrap_or_else(|e| e.into_inner()).take(),
+            field: None,
             snapshot,
         };
         match ran {
@@ -845,6 +1048,11 @@ impl RepoManager {
                 outcome.status = OpStatus::Failed;
                 outcome.message = message;
             }
+            Ran::RefusedAbout(message, field) => {
+                outcome.status = OpStatus::Failed;
+                outcome.message = message;
+                outcome.field = Some(field);
+            }
             Ran::Unconfirmed(dangers) => {
                 outcome.status = OpStatus::NeedsConfirmation;
                 outcome.message = dangers
@@ -855,6 +1063,12 @@ impl RepoManager {
                 outcome.dangers = dangers;
             }
         }
+        // Making the active worktree active is no follow-up.
+        let active = std::path::Path::new(&outcome.snapshot.active_worktree).to_path_buf();
+        outcome.hints.retain(|hint| {
+            !matches!(hint, OpHint::MakeActive { worktree }
+                if crate::repo::canonical(std::path::Path::new(worktree)) == active)
+        });
         Ok(outcome)
     }
 
@@ -864,10 +1078,11 @@ impl RepoManager {
     /// confirmed, publishes it as running (setting `started`) and runs its body in the
     /// active worktree. Returns the title and how it ended.
     async fn run_body(
-        &self,
+        self: &Arc<Self>,
         turn: Turn,
         op_id: u64,
         started: &AtomicBool,
+        made: &(Said, Said),
     ) -> Result<(String, Ran)> {
         let Turn {
             repo,
@@ -880,14 +1095,44 @@ impl RepoManager {
         let stop = Stop::new();
         let ctx = OpCtx {
             repo: &repo,
+            manager: self,
             runner: repo.runner.for_op(op_id, stop.clone()),
-            cwd: repo.worktree.clone(),
+            // The worktree operations name the worktree they are about, and run from the
+            // main one whichever is active.
+            cwd: if request.runs_in_main() {
+                repo.root.clone()
+            } else {
+                repo.worktree()
+            },
             op_id,
             sink: self.sink.as_ref(),
             net_limit: self.net_limit(),
+            kept: std::sync::atomic::AtomicBool::new(false),
+            held_read: std::sync::Mutex::new(None),
+            held_walk: std::sync::Mutex::new(None),
+            created: made.0.clone(),
+            committed: made.1.clone(),
+            turn_in_progress: std::sync::OnceLock::new(),
         };
+        // A request runs only in the worktree it was asked for: switching worktrees never
+        // redirects one already asked for. Checked before anything is read there.
+        if let Some(expected) = request.expect_worktree() {
+            let why = match worktree_moved(expected, &ctx.cwd) {
+                Some(why) => Some(why),
+                None => no_longer_a_worktree(&ctx, expected).await,
+            };
+            if let Some(why) = why {
+                let title = title(&TurnFacts {
+                    head: "HEAD",
+                    in_progress: None,
+                });
+                repo.runner.log().name_op(op_id, &title);
+                return Ok((title, Ran::Refused(why)));
+            }
+        }
         let head = local::current_branch(&ctx).await?;
         let in_progress = read_kind(&ctx.runner, &ctx.cwd).await?;
+        let _ = ctx.turn_in_progress.set(in_progress);
         let title = title(&TurnFacts {
             head: head.as_deref().unwrap_or("detached HEAD"),
             in_progress,
@@ -965,6 +1210,26 @@ impl RepoManager {
         {
             return Ok((title, Ran::Refused(why)));
         }
+        if let Some((why, field)) = worktree::refused(&ctx, &request).await? {
+            return Ok((
+                title,
+                match field {
+                    Some(field) => Ran::RefusedAbout(why, field),
+                    None => Ran::Refused(why),
+                },
+            ));
+        }
+        if let OpRequest::Commit { paths, push, .. } = &request
+            && let Some(why) =
+                commit::refused(&ctx, paths, *push, in_progress, head.as_deref()).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
+        if matches!(request, OpRequest::RemoveIndexLock { .. })
+            && let Some(why) = lock::refused(&ctx).await?
+        {
+            return Ok((title, Ran::Refused(why)));
+        }
         let dangers = dangers(&ctx, &request).await?;
         if !all_confirmed(&dangers, &confirmed) {
             return Ok((title, Ran::Unconfirmed(dangers)));
@@ -972,11 +1237,21 @@ impl RepoManager {
         self.start_op(&repo, op_id, &title).await?;
         started.store(true, Ordering::SeqCst);
         *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some((op_id, stop.clone()));
+        let delay = self.body_delay();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         let step = body(&ctx, &dangers).await;
         *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // Stopped by the user (R41): whatever the body made of it, the operation failed, with
-        // what git said before it was ended.
-        let step = if stop.is_stopped() {
+        // what git said before it was ended; unless the body says what was done before the
+        // Stop that stands (a commit made).
+        // A staging-area lock in the way is named, and offered for removal when stale (M5).
+        let step = match step {
+            Ok(step) if !stop.is_stopped() => lock::explain_failure(&ctx, step).await,
+            step => step,
+        };
+        let step = if stop.is_stopped() && !ctx.kept() {
             let detail = match step {
                 Ok(Step::Failed { detail, .. } | Step::Stopped { detail, .. }) => detail,
                 Ok(Step::DoneWith { detail, .. }) => detail.unwrap_or_default(),
@@ -999,6 +1274,24 @@ impl RepoManager {
         if self.take_op_panic() {
             panic!("test: the operation's body panicked");
         }
+        #[cfg(any(test, feature = "testutil"))]
+        let step = if self.take_op_fail() {
+            Err(CoreError::new(
+                ErrorCode::Io,
+                "test: the operation's body failed",
+            ))
+        } else {
+            step
+        };
+        // An error after a commit was made is said with the commit (done), never instead
+        // of it.
+        let step = match step {
+            Err(e) => match said(&ctx.committed) {
+                Some(hash) => Ok(after_commit(&hash, e)),
+                None => Err(e),
+            },
+            step => step,
+        };
         step.map(|step| (title, Ran::Step(step)))
     }
 }
@@ -1014,20 +1307,24 @@ fn all_confirmed(dangers: &[Danger], confirmed: &[Confirmed]) -> bool {
 }
 
 /// HEAD as the UI showed it for `request`, if the request acts on the branch checked out,
-/// and whether its commit must be the same too (a reset, or a continue, abort or skip: what
-/// they do depends on where HEAD is; a merge, rebase, cherry-pick or revert only on which
-/// branch, so that several asked for one after another still run). `head` is the branch
-/// HEAD is on now. A pull counts when the branch it pulls is checked out, then or now.
+/// and whether its commit must be the same too (a reset, a commit, or a continue, abort or
+/// skip: what they do depends on where HEAD is; a merge, rebase, cherry-pick, revert, stash
+/// apply or pop only on which branch, so that several asked for one after another still
+/// run). `head` is the branch HEAD is on now. A pull counts when the branch it pulls is
+/// checked out, then or now.
 fn expected_head<'r>(request: &'r OpRequest, head: Option<&str>) -> Option<(&'r HeadInfo, bool)> {
     match request {
         OpRequest::Reset { expect_head, .. }
+        | OpRequest::Commit { expect_head, .. }
         | OpRequest::Continue { expect_head, .. }
-        | OpRequest::Abort { expect_head }
+        | OpRequest::Abort { expect_head, .. }
         | OpRequest::Skip { expect_head, .. } => Some((expect_head, true)),
         OpRequest::Merge { expect_head, .. }
         | OpRequest::Rebase { expect_head, .. }
         | OpRequest::CherryPick { expect_head, .. }
-        | OpRequest::Revert { expect_head, .. } => Some((expect_head, false)),
+        | OpRequest::Revert { expect_head, .. }
+        | OpRequest::StashApply { expect_head, .. }
+        | OpRequest::StashPop { expect_head, .. } => Some((expect_head, false)),
         OpRequest::Pull {
             branch,
             expect_head,
@@ -1077,6 +1374,38 @@ fn head_moved(expected: &HeadInfo, now: &HeadInfo, strict: bool) -> Option<Strin
     ))
 }
 
+/// Why a request asked for in the worktree `expected` must not run with `active` (a path with
+/// symlinks resolved) the active worktree, if it must not.
+fn worktree_moved(expected: &str, active: &std::path::Path) -> Option<String> {
+    let same = crate::platform::same_path(std::path::Path::new(expected), active);
+    (!same).then(|| {
+        format!(
+            "That was asked for in {expected}, but {} is the active worktree now.",
+            active.display()
+        )
+    })
+}
+
+/// Why a request asked for in the worktree `expected` must not run in `ctx.cwd`, the active
+/// worktree, if its folder is no longer the top of a worktree (removed, or replaced by a
+/// plain folder, outside the app).
+async fn no_longer_a_worktree(ctx: &OpCtx<'_>, expected: &str) -> Option<String> {
+    let top = ctx
+        .read(&["rev-parse", "--show-toplevel"])
+        .await
+        .ok()
+        .filter(|out| out.code == 0)
+        .map(|out| out.text().trim().to_owned());
+    let same =
+        top.is_some_and(|top| crate::platform::same_path(std::path::Path::new(&top), &ctx.cwd));
+    (!same).then(|| {
+        format!(
+            "That was asked for in {expected}, but {} is no longer a worktree.",
+            ctx.cwd.display()
+        )
+    })
+}
+
 /// The remote a request names, if any: it must be one of the repository's remotes.
 fn remote_of(request: &OpRequest) -> Option<&str> {
     match request {
@@ -1094,9 +1423,9 @@ fn remote_of(request: &OpRequest) -> Option<&str> {
 /// The stash a request names (by commit), if any: it must still be in the list.
 fn stash_of(request: &OpRequest) -> Option<&str> {
     match request {
-        OpRequest::StashApply { stash }
-        | OpRequest::StashPop { stash }
-        | OpRequest::StashDrop { stash }
+        OpRequest::StashApply { stash, .. }
+        | OpRequest::StashPop { stash, .. }
+        | OpRequest::StashDrop { stash, .. }
         | OpRequest::StashBranch { stash, .. } => Some(stash),
         _ => None,
     }
@@ -1232,12 +1561,14 @@ mod tests {
             hash: "c".repeat(40),
             mode: ResetMode::Soft,
             expect_head: main_a.clone(),
+            expect_worktree: String::new(),
         };
         assert_eq!(expected_head(&reset, Some("main")), Some((&main_a, true)));
         let pull = |branch: &str| OpRequest::Pull {
             branch: branch.into(),
             mode: crate::dto::PullMode::Default,
             expect_head: main_a.clone(),
+            expect_worktree: String::new(),
         };
         assert!(expected_head(&pull("main"), Some("main")).is_some());
         assert!(
@@ -1252,6 +1583,7 @@ mod tests {
             name: "x".into(),
             at: "c".repeat(40),
             checkout: false,
+            expect_worktree: String::new(),
         };
         assert!(expected_head(&create, Some("main")).is_none());
     }
@@ -1261,7 +1593,8 @@ mod tests {
         let refused = |r: &OpRequest| prepare(r).err().expect("refused").code;
         assert_eq!(
             refused(&OpRequest::StashDrop {
-                stash: "stash@{0}".into()
+                stash: "stash@{0}".into(),
+                expect_worktree: String::new()
             }),
             ErrorCode::BadRequest
         );
@@ -1269,6 +1602,7 @@ mod tests {
             refused(&OpRequest::StashBranch {
                 stash: "0123456789abcdef0123456789abcdef01234567".into(),
                 name: "-x".into(),
+                expect_worktree: String::new(),
             }),
             ErrorCode::BadName
         );
@@ -1276,12 +1610,14 @@ mod tests {
             name: "x".into(),
             at: "--all".into(),
             checkout: false,
+            expect_worktree: String::new(),
         };
         assert_eq!(refused(&option_like), ErrorCode::BadRequest);
         let ok = OpRequest::CreateBranch {
             name: "x".into(),
             at: "0123456789abcdef0123456789abcdef01234567".into(),
             checkout: false,
+            expect_worktree: String::new(),
         };
         let facts = |head| TurnFacts {
             head,
@@ -1300,11 +1636,13 @@ mod tests {
             squash: false,
             no_commit: false,
             expect_head: HeadInfo::default(),
+            expect_worktree: String::new(),
         };
         let title = prepare(&merge).map(|p| p.title).expect("ok");
         assert_eq!(title(&facts("trunk")), "Merge x into trunk");
         let abort = OpRequest::Abort {
             expect_head: HeadInfo::default(),
+            expect_worktree: String::new(),
         };
         let title = prepare(&abort).map(|p| p.title).expect("ok");
         assert_eq!(
@@ -1353,11 +1691,18 @@ mod tests {
         let r = m.get(id).expect("open");
         let ctx = OpCtx {
             repo: &r,
+            manager: &m,
             runner: r.runner.for_op(1, Stop::new()),
-            cwd: r.worktree.clone(),
+            cwd: r.worktree(),
             op_id: 1,
             sink: m.sink.as_ref(),
             net_limit: m.net_limit(),
+            kept: std::sync::atomic::AtomicBool::new(false),
+            held_read: std::sync::Mutex::new(None),
+            held_walk: std::sync::Mutex::new(None),
+            created: Arc::default(),
+            committed: Arc::default(),
+            turn_in_progress: std::sync::OnceLock::new(),
         };
         let mark = log.since(0).last().map_or(0, |c| c.id);
 

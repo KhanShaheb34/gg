@@ -4,11 +4,13 @@
 // It follows `repo-changed` events, and when the rows change under it, keeps the visible
 // commit and the selection where they were.
 
+import { startMark } from "../perf/startMarks";
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
 import type { RefLabel, RepoSnapshot, RowsPage, ViewOptions } from "../types";
 import { CommitDetailsLoader } from "./details.svelte";
+import { PanelState } from "./panelState.svelte";
 import { SearchState } from "./search.svelte";
 import { DEFAULT_OPTIONS, readOptions, sameOptions, visible, writeOptions } from "./viewOptionsStore";
 
@@ -64,9 +66,11 @@ function placeholder(repoId: number): RepoSnapshot {
     remotes: [],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
+    uncommittedSubject: "Uncommitted changes (0)",
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,
+    prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
     inProgress: null,
     seq: 0,
   };
@@ -92,6 +96,9 @@ export class RepoView {
 
   /** The commit search: query, hits, and moving between them. */
   readonly search: SearchState;
+
+  /** The side panel of this repository: shown or not, the worktree selected in it. */
+  readonly panel: PanelState;
 
   /** A refresh asked for here is underway. */
   refreshing = $state(false);
@@ -162,6 +169,7 @@ export class RepoView {
     this.repoId = repoId;
     this.details = new CommitDetailsLoader(repoId);
     this.search = new SearchState(this);
+    this.panel = new PanelState(repoId);
     this.snapshot = placeholder(repoId);
     this.cache = this.newCache(-1, 0);
     this.stopEvents = onEvent<RepoSnapshot>("repo-changed", (s) => {
@@ -470,7 +478,8 @@ export class RepoView {
     const started = performance.now();
     const seen = this.events;
     try {
-      this.applyAnswer(await api.refresh(this.repoId), seen);
+      // Asked for by the user: the pull requests load too.
+      this.applyAnswer(await api.refresh(this.repoId, true), seen);
     } catch (e) {
       this.notice(e, "Could not refresh");
     }
@@ -488,6 +497,9 @@ export class RepoView {
     const detail = e instanceof CoreError ? e.detail : null;
     this.onNotice?.(message, detail ? `${text}\n${detail}` : text);
   }
+
+  /** The first page of rows was asked for (performance runs mark it). */
+  private askedRows = false;
 
   /** Records first paint of real rows, once (`first-rows`). */
   markFirstRows(): void {
@@ -719,7 +731,12 @@ export class RepoView {
    */
   private async fetchPage(generation: number, start: number, count: number): Promise<RowsPage> {
     try {
-      return await api.getRows(this.repoId, generation, start, count);
+      const first = !this.askedRows;
+      this.askedRows = true;
+      if (first) startMark("rows-asked");
+      const page = await api.getRows(this.repoId, generation, start, count);
+      if (first) startMark("rows-answered");
+      return page;
     } catch (e) {
       if (!(e instanceof CoreError && e.code === "stale_generation")) throw e;
       void this.refreshSnapshot();

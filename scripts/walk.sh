@@ -3,7 +3,7 @@
 # makes a throwaway repository (scripts/walk-fixture.sh) under <outdir>, launches the app on it
 # with its own config folder (GG_CONFIG_DIR), answers the walk's `walk-need` marks by changing
 # files (or by running `gg`), screenshots the window at `walk-shot` marks into <outdir>, and
-# prints every mark when the walk is done (or after 7 minutes).
+# prints every mark when the walk is done (or after 12 minutes).
 #
 #   scripts/walk.sh [--mode walk | walk3 | walk3-dark] [--size WxH] [--via-gg] <outdir>
 #
@@ -150,7 +150,7 @@ sleep 1
 pid=$(pgrep -n -f "^$app")
 [ -n "$pid" ] || { echo "the app did not start" >&2; exit 1; }
 seen=0
-deadline=$(( $(date +%s) + 420 ))
+deadline=$(( $(date +%s) + 720 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   [ -f "$log" ] || { sleep 0.2; continue; }
   n=$(wc -l < "$log")
@@ -183,6 +183,20 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
           echo mine > "$wt/tmp/refs/nested/mine.txt"
           git -C "$wt/tmp/refs/nested" add mine.txt
           git -C "$wt/tmp/refs/nested" -c user.name=Ada -c user.email=ada@example.invalid commit -q -m "nested work"
+          ;;
+        "walk-need fill walk-big")
+          # An ignored node_modules of 300,000 entries (600 folders of 499 files), then a
+          # branch to say it is done (the page sees refs change).
+          wt=$W/work-trees/walk-big
+          printf 'node_modules/\n' >> "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+          python3 -I -c 'import os, sys
+root = sys.argv[1]
+for d in range(600):
+    p = os.path.join(root, "p%d" % d)
+    os.makedirs(p)
+    for f in range(499):
+        open(os.path.join(p, "f%d" % f), "w").close()' "$wt/node_modules"
+          git -C "$wt" branch walk-big-filled
           ;;
         "walk-need list pr 21")
           printf '[{"number":21,"title":"Walk: a change in a worktree","url":"https://github.com/octo/cat/pull/21","isDraft":false,"headRefName":"walk/wt","baseRefName":"main","headRepositoryOwner":{"id":"X","login":"octo"},"isCrossRepository":false}]\n' \

@@ -296,6 +296,32 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
     return text(n).slice(0, 200);
   }, { keepNotices: true });
 
+  await step("a worktree with a 300,000-entry ignored node_modules: asked as usual, then deleted", async () => {
+    await dismissAll();
+    (await until("Worktree actions", () => document.querySelector<HTMLButtonElement>('button[aria-label="Worktree actions"]'))).click();
+    await pick(/^Add worktree…$/);
+    await until("the Create worktree dialog", () => /Create worktree/.test(text(dialog())));
+    type(await until("the branch name field", () => inputNamed(/New branch name/)), "walk/big");
+    const activeBox = await until("Make it active", () => inputNamed(/Make it the active worktree/));
+    if (activeBox.checked) activeBox.click();
+    await primary(/^Create worktree$/);
+    await until("its row", () => row("walk-big"), 15000);
+    await needOnly("fill walk-big");
+    // The driver writes 300,000 entries, then makes branch walk-big-filled to say so.
+    await until("filled", () => scroller.querySelector('[data-ref="walk-big-filled"]'), 180000);
+    rightClick(await until("its row", () => row("walk-big")));
+    await pick(/^Delete…$/);
+    await until("the delete dialog", () => /Delete worktree walk-big/.test(text(dialog())));
+    const clicked = performance.now();
+    await primary(/^Delete worktree$/);
+    const asked = await until("asked about the ignored folder", () => (byTestId("dangers", dialog() ?? document) ? performance.now() : null), 30000);
+    const listed = text(byTestId("dangers", dialog()!));
+    await shot("dialog-delete-big");
+    await primary(/^Delete worktree$/);
+    const gone = await until("its row gone", () => (!row("walk-big") ? performance.now() : null), 120000);
+    return `asked ${Math.round(asked - clicked)} ms after Delete; deleted ${Math.round(gone - asked)} ms after confirming; ${listed.slice(0, 80)}`;
+  });
+
   // --- `gg` from a terminal into the running app -----------------------------------------------
   await step("gg in a terminal opens another repository in the running app", async () => {
     const before = document.querySelectorAll('[role="tab"]').length;

@@ -6,8 +6,11 @@ before you spend time on it.
 
 ## Setting up
 
-You need [Rust](https://rustup.rs) (stable), [Node.js](https://nodejs.org),
-[pnpm](https://pnpm.io), git 2.29 or later, and on macOS Xcode's command line tools.
+You need [rustup](https://rustup.rs) (it installs the Rust release pinned in
+`rust-toolchain.toml` by itself), [Node.js](https://nodejs.org) 24, [pnpm](https://pnpm.io)
+10, git 2.29 or later, and the platform's build tools: Xcode's command line tools on macOS,
+Tauri's system libraries on Linux, the C++ build tools and WebView2 on Windows (the README's
+"Build from source" lists them).
 
 ```sh
 pnpm install          # JavaScript dependencies
@@ -47,8 +50,9 @@ and the Svelte UI in `src/`.
 ## Checks a change must pass
 
 ```sh
-cargo fmt --all -- --check
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p gg-desktop --all-targets --features perf -- -D warnings
 cargo test --workspace     # Rust unit and integration tests
 pnpm check                 # svelte-check and tsc
 pnpm test                  # UI unit tests (Vitest)
@@ -56,7 +60,10 @@ pnpm e2e                   # end-to-end tests (Playwright, Chromium)
 ```
 
 `pnpm e2e` builds `gg-devserver` once and starts a fresh one for each test; the first run
-also needs `pnpm exec playwright install chromium`.
+also needs `pnpm exec playwright install chromium`. CI runs all of these on macOS, Linux and
+Windows (the end-to-end tests on macOS and Linux only), so a change that touches
+platform-specific code is checked on all three when you open the pull request; see
+[docs/platforms.md](docs/platforms.md).
 
 Add tests with the change: a reader or an operation gets a Rust test on a real throwaway
 repository (`gg_core::testutil`), a UI behaviour gets a Vitest or Playwright test. A change
@@ -69,17 +76,19 @@ that could affect speed should be measured as described in
   checked it.
 - Commit subjects follow the conventional style used in the history, for example
   `fix(push): …`, `feat(ui): …`, `docs: …`, `test(e2e): …`.
-- Screenshots help for anything visible, in both light and dark themes.
+- Screenshots help for anything visible, in both light and dark themes. `GG_SCREENS=1 pnpm e2e
+  screens` takes every view, menu and dialog in both themes, into `.screens/` (git-ignored).
 
 ## Reporting a bug
 
 Open an issue with the bug report template. The most useful thing you can attach is the
-**command log**: press ⌘⇧L (or the terminal button in the toolbar), find the operation that
+**command log**: press ⌘⇧L (Ctrl+Shift+L on Windows and Linux, or the terminal button in the
+toolbar), find the operation that
 went wrong, and copy its command lines (each has a Copy button) and the output shown under
 them. Credentials in URLs are already masked there, but check the text for paths or names
 you would rather not share before you post it.
 
-Please also give your macOS version, `git --version`, and the gg version (shown in the app
-menu's About window).
+Please also give your operating system and its version, `git --version`, and the gg version
+(shown in Settings → About).
 
 Security issues go through [SECURITY.md](SECURITY.md), not public issues.

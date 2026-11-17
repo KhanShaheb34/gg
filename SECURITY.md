@@ -33,7 +33,8 @@ gg runs git on repositories that may come from anyone, so these matter most:
 
 ## Out of scope
 
-- Vulnerabilities in git, `gh`, WebKit or macOS themselves: please report those upstream.
+- Vulnerabilities in git, `gh`, the system's web view (WebKit, WebView2, WebKitGTK) or the
+  operating system itself: please report those upstream.
 - Attacks that need someone who can already run code as you on your machine.
 - The app not being notarized by Apple; that is a known limitation described in the
   README.

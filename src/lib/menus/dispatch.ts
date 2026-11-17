@@ -22,7 +22,9 @@ import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
 import { runOp } from "../state/ops.svelte";
 import { showDialog as show } from "../state/overlays.svelte";
-import type { CommitRow, OpRequest, RefLabel, RepoSnapshot } from "../types";
+import { openCreatePullRequest, openPullRequest } from "../state/prs.svelte";
+import { openCreateWorktree } from "../state/worktrees.svelte";
+import type { CommitRow, OpRequest, PullRequest, RefLabel, RepoSnapshot } from "../types";
 import { branchMenu } from "./branchMenu";
 import { checkOutBranch } from "./checkout";
 import { remoteOf, shown } from "./common";
@@ -48,12 +50,12 @@ export function pick(id: string, target: MenuTarget, snap: RepoSnapshot): void {
   const { row, label } = target;
   // Labels share some ids with commits ("checkout", "push", "delete"): theirs go first.
   if (label?.kind === "tag" && pickTag(id, label.name, snap)) return;
-  if (label?.kind === "branch" && pickBranch(id, label, snap)) return;
-  if (label?.kind === "remote" && pickRemote(id, label.name, snap)) return;
+  if (label?.kind === "branch" && pickBranch(id, label, snap, row)) return;
+  if (label?.kind === "remote" && pickRemote(id, label, snap)) return;
   if (label === null && row.kind === "commit" && pickCommit(id, row, snap)) return;
   if ((row.kind === "stash" || label?.kind === "stash") && pickStash(id, row, snap)) return;
   if (row.kind === "uncommitted" && id === "stash.save") {
-    show(StashSaveDialog, { repoId: snap.repoId, untracked: snap.status.untracked });
+    show(StashSaveDialog, { repoId: snap.repoId, untracked: snap.status.untracked, worktree: snap.activeWorktree });
     return;
   }
   switch (id) {
@@ -93,28 +95,38 @@ function run(repoId: number, request: OpRequest): void {
 
 /** Commit item `id` on `row`; false if `id` is not one. */
 function pickCommit(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
-  const repoId = snap.repoId;
+  const { repoId, activeWorktree: worktree } = snap;
   const { hash, subject, parents } = row;
   switch (id) {
     case "checkout":
-      run(repoId, { op: "checkout_commit", hash });
+      run(repoId, { op: "checkout_commit", hash, expectWorktree: worktree });
       return true;
     case "branch.create":
-      show(CreateBranchDialog, { repoId, hash, subject, branches: snap.branches });
+      show(CreateBranchDialog, { repoId, hash, subject, branches: snap.branches, worktree });
       return true;
     case "tag.create":
-      show(CreateTagDialog, { repoId, hash, subject });
+      show(CreateTagDialog, { repoId, hash, subject, worktree });
+      return true;
+    case "worktree.create":
+      openCreateWorktree(snap, { kind: "commit", hash, subject });
       return true;
     case "cherry_pick":
-      show(CherryPickDialog, { repoId, hash, subject, parents, head: snap.head });
+      show(CherryPickDialog, { repoId, hash, subject, parents, head: snap.head, worktree });
       return true;
     case "revert":
-      show(RevertDialog, { repoId, hash, subject, parents, head: snap.head });
+      show(RevertDialog, { repoId, hash, subject, parents, head: snap.head, worktree });
       return true;
     case "reset.soft":
     case "reset.mixed":
     case "reset.hard":
-      show(ResetDialog, { repoId, hash, subject, head: snap.head, mode: id.slice("reset.".length) as "soft" | "mixed" | "hard" });
+      show(ResetDialog, {
+        repoId,
+        hash,
+        subject,
+        head: snap.head,
+        worktree,
+        mode: id.slice("reset.".length) as "soft" | "mixed" | "hard",
+      });
       return true;
     default:
       return false;
@@ -123,21 +135,23 @@ function pickCommit(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
 
 /** Stash item `id` on the stash of `row` (its commit); false if `id` is not one. */
 function pickStash(id: string, row: CommitRow, snap: RepoSnapshot): boolean {
-  const repoId = snap.repoId;
+  const { repoId, activeWorktree: worktree } = snap;
   const stash = row.hash;
   switch (id) {
+    // Into the branch checked out, as the menu showed it (R39): never another one checked
+    // out meanwhile.
     case "stash.apply":
-      run(repoId, { op: "stash_apply", stash });
+      run(repoId, { op: "stash_apply", stash, expectHead: snap.head, expectWorktree: worktree });
       return true;
     case "stash.pop":
-      run(repoId, { op: "stash_pop", stash });
+      run(repoId, { op: "stash_pop", stash, expectHead: snap.head, expectWorktree: worktree });
       return true;
     case "stash.drop":
       // The core asks to confirm, naming the stash: no dialog of its own.
-      run(repoId, { op: "stash_drop", stash });
+      run(repoId, { op: "stash_drop", stash, expectWorktree: worktree });
       return true;
     case "stash.branch":
-      show(StashBranchDialog, { repoId, stash, subject: row.subject, branches: snap.branches });
+      show(StashBranchDialog, { repoId, stash, subject: row.subject, branches: snap.branches, worktree });
       return true;
     default:
       return false;
@@ -160,52 +174,67 @@ function pickTag(id: string, name: string, snap: RepoSnapshot): boolean {
 }
 
 /** Local branch item `id` on `label`; false if `id` is not one. */
-function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot): boolean {
-  const repoId = snap.repoId;
+function pickBranch(id: string, label: RefLabel, snap: RepoSnapshot, row: CommitRow): boolean {
+  const { repoId, activeWorktree: worktree } = snap;
   const branch = label.name;
   const into = snap.head.branch;
   switch (id) {
     case "checkout":
-      checkOutBranch(repoId, branch, label);
+      checkOutBranch(repoId, branch, worktree, label);
       return true;
     case "rename":
-      show(RenameBranchDialog, { repoId, branch, branches: snap.branches });
+      show(RenameBranchDialog, { repoId, branch, branches: snap.branches, worktree });
       return true;
     case "delete":
-      show(DeleteBranchDialog, { repoId, branch, upstream: label.upstream });
+      show(DeleteBranchDialog, { repoId, branch, upstream: label.upstream, worktree });
       return true;
     case "merge":
-      if (into !== null) show(MergeDialog, { repoId, target: { kind: "branch" as const, name: branch }, into, head: snap.head });
+      if (into !== null) show(MergeDialog, { repoId, target: { kind: "branch" as const, name: branch }, into, head: snap.head, worktree });
       return true;
     case "rebase":
-      if (into !== null) show(RebaseDialog, { repoId, onto: branch, branch: into, head: snap.head });
+      if (into !== null) show(RebaseDialog, { repoId, onto: branch, branch: into, head: snap.head, worktree });
       return true;
     case "push":
       show(PushDialog, { repoId, branch, upstream: label.upstream, remotes: snap.remotes });
       return true;
     case "pull":
-      run(repoId, { op: "pull", branch, mode: "default", expectHead: snap.head });
+      run(repoId, { op: "pull", branch, mode: "default", expectHead: snap.head, expectWorktree: worktree });
       return true;
+    case "pr.open":
+    case "pr.create":
+      pickPullRequest(id, branch, label.pr, snap);
+      return true;
+    case "worktree.create": {
+      // Checked out in a worktree (this one included): a new branch at it instead.
+      const checkedOutIn = label.worktreePath ?? (label.current ? snap.activeWorktree : null);
+      const hash = row.hash;
+      openCreateWorktree(snap, { kind: "branch", name: branch, hash, checkedOutIn });
+      return true;
+    }
     default:
       return false;
   }
 }
 
-/** Remote branch item `id` on remote branch `name` ("origin/x"); false if `id` is not one. */
-function pickRemote(id: string, name: string, snap: RepoSnapshot): boolean {
-  const repoId = snap.repoId;
+/** Remote branch item `id` on remote branch `label` ("origin/x"); false if `id` is not one. */
+function pickRemote(id: string, label: RefLabel, snap: RepoSnapshot): boolean {
+  const name = label.name;
+  const { repoId, activeWorktree: worktree } = snap;
   const { remotes, branches } = snap;
   switch (id) {
     case "checkout":
-      show(CheckoutRemoteDialog, { repoId, remoteBranch: name, remotes, branches });
+      show(CheckoutRemoteDialog, { repoId, remoteBranch: name, remotes, branches, worktree });
       return true;
     case "fetch_into_local":
       show(FetchIntoLocalDialog, { repoId, remoteBranch: name, remotes, branches });
       return true;
     case "merge":
       if (snap.head.branch !== null) {
-        show(MergeDialog, { repoId, target: { kind: "remote" as const, name }, into: snap.head.branch, head: snap.head });
+        show(MergeDialog, { repoId, target: { kind: "remote" as const, name }, into: snap.head.branch, head: snap.head, worktree });
       }
+      return true;
+    case "pr.open":
+      if (label.pr) openPullRequest(repoId, label.pr);
       return true;
     case "delete": {
       // The core asks to confirm, saying what would be lost: no dialog of its own.
@@ -239,4 +268,13 @@ async function copyMessage(repoId: number, hash: string): Promise<void> {
     return;
   }
   await copy(message, "message");
+}
+
+/**
+ * A pull-request item (`pr.open`, `pr.create`) of local `branch`, whose open pull request was
+ * `pr` when the menu opened (the side panel's worktree menu too).
+ */
+export function pickPullRequest(id: string, branch: string, pr: PullRequest | null, snap: RepoSnapshot): void {
+  if (id === "pr.open" && pr) openPullRequest(snap.repoId, pr);
+  else if (id === "pr.create") openCreatePullRequest(snap, branch);
 }

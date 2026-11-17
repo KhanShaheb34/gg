@@ -559,11 +559,14 @@ test("delete a tag in a repository without remotes: no remote to choose", async 
 });
 
 /** Runs `request` through the app's own runOp in the active tab, not waiting for it. */
-function startOp(page: Page, request: OpRequest): Promise<unknown> {
+function startOp(page: Page, request: Omit<Extract<OpRequest, { op: "checkout_branch" }>, "expectWorktree">): Promise<unknown> {
   return page.evaluate(async (req) => {
     const ops = await import("/src/lib/state/ops.svelte.ts");
     const { app } = await import("/src/lib/state/app.svelte.ts");
-    void ops.runOp(app.activeRepoId!, req).catch(() => {});
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+    const id = app.activeRepoId!;
+    const expectWorktree = findRepoView(id)!.snapshot.activeWorktree;
+    void ops.runOp(id, { ...req, expectWorktree }).catch(() => {});
   }, request);
 }
 
@@ -653,8 +656,10 @@ test("a dialog closing under another leaves the focus in the one above; a covere
   await page.evaluate(async () => {
     const ops = await import("/src/lib/state/ops.svelte.ts");
     const { app } = await import("/src/lib/state/app.svelte.ts");
+    const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
     const picks = app.tabs.find((t: { path: string }) => t.path.endsWith("/picks"))!.repoId;
-    void ops.runOp(picks, { op: "delete_branch", branch: "topic" }).catch(() => {});
+    const expectWorktree = findRepoView(picks)!.snapshot.activeWorktree;
+    void ops.runOp(picks, { op: "delete_branch", branch: "topic", expectWorktree }).catch(() => {});
   });
   const above = page.getByRole("alertdialog");
   await expect(above.getByRole("button", { name: "Cancel" })).toBeFocused();

@@ -30,6 +30,8 @@
   import { api } from "../ipc";
   import { app, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
+  import { clock, openPullRequest, staleSince } from "../state/prs.svelte";
+  import { openCommit } from "../state/worktrees.svelte";
   import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
   import {
     alignSlackFor,
@@ -50,9 +52,13 @@
   import { GraphColumns } from "./graphColumns.svelte";
   import { gridKey } from "./gridKeys";
   import { LanesCanvas, type RowSource } from "./lanesCanvas";
+  import { rowSubject } from "./rowSubject";
   import RefLabels, { ownLabels } from "./RefLabels.svelte";
 
   let { view }: { view: RepoView } = $props();
+
+  /** The pull-request markers' "as of" when they may be out of date. */
+  const prStale = $derived(staleSince(view.snapshot.prs, clock.now, app.settings.dateFormat));
 
   const NO_LABELS: RefLabel[] = [];
   const NO_PATHS: string[] = [];
@@ -112,6 +118,15 @@
   /** Height of the rendered rows' container: the rows needed, and room to stay put a step. */
   const poolRows = $derived(neededRows + POOL_STEP + alignSlack);
   const detachedHead = $derived(view.snapshot.head.branch === null);
+  /** Worktrees other than the active one detached at `r`'s commit (the active one's is the HEAD pill). */
+  function otherDetached(r: CommitRow | undefined): string[] {
+    const all = r?.detachedWorktrees;
+    if (!all || all.length === 0) return NO_PATHS;
+    const active = view.snapshot.activeWorktree;
+    return all.includes(active) ? all.filter((p) => p !== active) : all;
+  }
+  /** A row's subject; the uncommitted row's is the snapshot's (see `rowSubject`). */
+  const subjectOf = (r: CommitRow) => rowSubject(r, view.snapshot);
   /** Rows matching the search, and how to find the match in their subjects. */
   // The set stays the same object while only load progress changes, so rows do not re-render.
   const hits = $derived(view.search.liveHitSet);
@@ -326,12 +341,17 @@
   }
 
   /**
-   * A double click on a local branch's label checks it out, as its menu's item does; on
-   * anything else (a remote branch's label or part of one, a tag, the row) it does nothing
-   * more than the clicks before it (selecting the row).
+   * A double click on a local branch's label checks it out, as its menu's item does; on the
+   * uncommitted row it opens the commit panel; on anything else (a remote branch's label or
+   * part of one, a tag, another row) it does nothing more than the clicks before it
+   * (selecting the row).
    */
   function onRowsDblClick(e: MouseEvent) {
     const on = e.target as Element;
+    if (rowAt(e)?.row.kind === "uncommitted") {
+      openCommit(view);
+      return;
+    }
     const ref = on.closest<HTMLElement>(".ref[data-slot]");
     const slot = ref?.dataset.slot;
     if (slot === undefined || slot === "more" || on.closest(".remotes")) return;
@@ -360,9 +380,9 @@
     const r = rowAt(e)?.row;
     if (!r) return;
     let text: string | null = null;
-    if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? r.subject : null;
+    if (el.classList.contains("subject")) text = el.scrollWidth > el.clientWidth ? subjectOf(r) : null;
     else if (r.kind === "uncommitted") text = null;
-    else if (el.classList.contains("date")) text = formatDateLong(r.time);
+    else if (el.classList.contains("date")) text = formatDateLong(r.time, app.settings.dateFormat, clock.now);
     else if (el.classList.contains("author")) text = `${r.author} <${r.email}>`;
     else text = r.hash;
     if (text === null) return;
@@ -388,6 +408,7 @@
       upstream: null,
       ahead: 0,
       behind: 0,
+      pr: null,
     };
   }
 
@@ -599,7 +620,12 @@
 
   onMount(() => {
     lanes.readColors(document.documentElement);
-    const resize = new ResizeObserver((entries) => onResize(entries[entries.length - 1].contentRect.height));
+    const resize = new ResizeObserver((entries) => {
+      const rect = entries[entries.length - 1].contentRect;
+      // Below its room, the description takes from Author, then Date (final review I2).
+      columns.available = rect.width;
+      onResize(rect.height);
+    });
     resize.observe(scroller);
     const theme = new MutationObserver(() => {
       lanes.readColors(document.documentElement);
@@ -674,7 +700,7 @@
           <!-- A hit's match is marked in fixed elements (before, mark, after) whose text alone
                changes as rows scroll by: nothing is created or destroyed. -->
           {@const hit = r !== undefined && needle !== null && hits.has(slot.index)}
-          {@const subj = hit ? splitMatch(r!.subject, needle!) : null}
+          {@const subj = hit ? splitMatch(subjectOf(r!), needle!) : null}
           {@const auth = hit ? splitMatch(r!.author, needle!) : null}
           {@const short = r && r.kind !== "uncommitted" ? shortHash(r.hash) : ""}
           {@const hashMarked = hit && r!.kind !== "uncommitted" ? hashMatch(r!.hash, needle) : 0}
@@ -701,17 +727,19 @@
               <RefLabels
                 labels={r?.labels ?? NO_LABELS}
                 detachedHead={!!r?.isHead && detachedHead}
-                detachedWorktrees={r?.detachedWorktrees ?? NO_PATHS}
+                detachedWorktrees={otherDetached(r)}
                 homeDir={app.homeDir}
+                {prStale}
+                onOpenPr={(pr) => openPullRequest(view.repoId, pr)}
               />
               <span class="subject"
-                ><span>{subj ? subj[0] : (r?.subject ?? "")}</span><mark>{subj ? subj[1] : ""}</mark><span
+                ><span>{subj ? subj[0] : r ? subjectOf(r) : ""}</span><mark>{subj ? subj[1] : ""}</mark><span
                   >{subj ? subj[2] : ""}</span
                 ></span
               >
             </div>
             <div class="cell date" role="gridcell">
-              {r && r.kind !== "uncommitted" ? formatDate(r.time) : ""}
+              {r && r.kind !== "uncommitted" ? formatDate(r.time, app.settings.dateFormat, clock.now) : ""}
             </div>
             <div class="cell author" role="gridcell"
               ><span>{auth ? auth[0] : (r?.author ?? "")}</span><mark>{auth ? auth[1] : ""}</mark><span
@@ -864,8 +892,9 @@
     padding-left: 8px;
   }
 
+  /* Gives way first: the labels (and their pull-request markers) keep their room. */
   .subject {
-    flex: 1 1 auto;
+    flex: 1 1000 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;

@@ -95,7 +95,9 @@ test("tooltips are built when hovered: full hash, date, author and a cut-off sub
   // A subject that fits gets no tooltip; one that is cut off gets its full text.
   await subject(r).hover();
   await expect(subject(r)).not.toHaveAttribute("title", /./);
-  const handle = page.getByRole("separator", { name: "Resize Author column" });
+  // Squeezed by the Commit column: Author and Date give their room back to the description
+  // (final review I2), Commit does not.
+  const handle = page.getByRole("separator", { name: "Resize Commit column" });
   const box = (await handle.boundingBox())!;
   await page.mouse.move(box.x + 4, box.y + 10);
   await page.mouse.down();
@@ -528,8 +530,10 @@ test("lanes stay level with their rows after scrolling: each commit's dot is at 
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(BIG_COMMITS + 1));
   for (const top of [1500 * 26 + 7, 333 * 26 + 19, 41]) {
     await scrollTo(page, top);
-    await page.waitForTimeout(200);
-    expect(await visibleSkeletons(page)).toBe(0);
+    // The rows there loaded (on a slow CI runner a page of rows can take longer than a fixed
+    // wait; how fast they come is the scroll tests' and the perf runs' to say, not this one's).
+    await expect.poll(() => visibleSkeletons(page)).toBe(0);
+    await page.waitForTimeout(200); // the lanes are drawn for them
     const misses = await grid(page).evaluate((el) => {
       const c = el.querySelector<HTMLCanvasElement>('[data-testid="graph-canvas"]')!;
       const ratio = c.width / c.getBoundingClientRect().width;
@@ -572,6 +576,9 @@ test("a row's tooltip goes when its commit changes under a still pointer", async
 });
 
 test("scrolling creates no elements: ref labels use fixed slots, with +k for the rest", async ({ gg }) => {
+  // 1,200 scroll positions, a frame each: 20 s at 60 frames a second, more where a CI
+  // machine's headless browser draws fewer.
+  test.setTimeout(120_000);
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("labelled"));

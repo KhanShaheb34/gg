@@ -1,6 +1,6 @@
 // Rows, labels and snapshots for the menu builders' tests, and ways to look into menus.
 
-import type { CommitRow, InProgress, RefLabel, RepoSnapshot } from "../types";
+import type { CommitRow, InProgress, PullRequest, RefLabel, RepoSnapshot, WorktreeInfo } from "../types";
 import type { MenuItem } from "./types";
 
 export const HASH = "a".repeat(40);
@@ -37,6 +37,7 @@ export function label(overrides: Partial<RefLabel> = {}): RefLabel {
     upstream: null,
     ahead: 0,
     behind: 0,
+    pr: null,
     ...overrides,
   };
 }
@@ -57,9 +58,11 @@ export function snap(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     remotes: ["origin"],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
+    uncommittedSubject: "Uncommitted changes (0)",
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,
+    prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
     inProgress: null,
     seq: 1,
     ...overrides,
@@ -112,4 +115,35 @@ export function disabled(items: MenuItem[]): string[] {
     if (it.submenu) out.push(...disabled(it.submenu));
   }
   return out;
+}
+
+export function worktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
+  return {
+    path: "/r.worktrees/feature-x",
+    head: HASH,
+    branch: "feature/x",
+    isMain: false,
+    locked: false,
+    prunable: false,
+    active: false,
+    status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
+    upstream: null,
+    unpushed: 0,
+    inProgress: null,
+    lockReason: null,
+    pr: null,
+    ...overrides,
+  };
+}
+
+export function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
+  return {
+    number: 12,
+    title: "Add the parser",
+    url: "https://github.com/octo/cat/pull/12",
+    state: "open",
+    head: "feature/x",
+    base: "main",
+    ...overrides,
+  };
 }

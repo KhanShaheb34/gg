@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "gg",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 500,
+        "decorations": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "icon": [
+      "icons/flat/32x32.png",
+      "icons/flat/64x64.png",
+      "icons/flat/128x128.png",
+      "icons/flat/128x128@2x.png",
+      "icons/flat/icon.png",
+      "icons/flat/icon.ico"
+    ]
+  }
+}

@@ -4,8 +4,10 @@
   refresh. Every control changes at once when used; the work it starts shows as it runs
   (spinning icons, a loading line along the header's bottom edge). An operation shows once
   it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
-  behind it show as a count. One that has run for STOP_AFTER_MS offers Stop (R41): a hook
-  that hangs, or git waiting on something that never comes, must not hold the repository.
+  behind it show as a count. Once it has run for a second, git's latest progress line (or the
+  step it is at) shows beside its title, cut in the middle. One that has run for
+  STOP_AFTER_MS offers Stop (R41): a hook that hangs, or git waiting on something that never
+  comes, must not hold the repository.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
@@ -15,9 +17,12 @@
   import { reportError } from "../state/app.svelte";
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
+  import { clearProgress, progressDue, progressLine, PROGRESS_AFTER_MS, watchOpProgress } from "../state/opProgress.svelte";
+  import { NARROW_W, panelShown, setPanelShown, sidePanel } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
+  import MiddleText from "./MiddleText.svelte";
   import SearchBox from "./SearchBox.svelte";
 
   let { view }: { view: RepoView } = $props();
@@ -26,6 +31,10 @@
   const FETCH_KEYS = mac ? "⌘⇧F" : "Ctrl+Shift+F";
   const REFRESH_KEYS = mac ? "⌘R" : "Ctrl+R";
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
+  const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
+  const sideShown = $derived(panelShown(view.repoId));
+  /** A narrow window: the toggles show as icons (their names in tooltips), so nothing is cut off. */
+  const compact = $derived(sidePanel.windowW < NARROW_W);
 
   function toggleLog() {
     setLogOpen(!logPrefs.open);
@@ -69,6 +78,25 @@
     const timer = setTimeout(() => (busy = op), Math.max(0, BUSY_DELAY_MS - (performance.now() - seenAt)));
     return () => clearTimeout(timer);
   });
+  watchOpProgress();
+  /** The operation shown has run for PROGRESS_AFTER_MS: its progress line shows. */
+  let progressShown = $state(false);
+  $effect(() => {
+    const op = busy;
+    progressShown = false;
+    if (op === null) {
+      clearProgress(view.repoId);
+      return;
+    }
+    if (progressDue(op.startedAtMs, Date.now())) {
+      progressShown = true;
+      return;
+    }
+    const timer = setTimeout(() => (progressShown = true), PROGRESS_AFTER_MS - (Date.now() - op.startedAtMs));
+    return () => clearTimeout(timer);
+  });
+  const progress = $derived(busy !== null && progressShown ? progressLine(view.repoId, busy.id) : null);
+
   const STOP_AFTER_MS = 5_000;
   /** The operation shown has run for STOP_AFTER_MS: Stop is offered. */
   let stoppable = $state(false);
@@ -102,7 +130,9 @@
   const busyTitle = $derived(
     busy === null
       ? ""
-      : visibleText(busy.title) + (busy.queued > 0 ? `\n${busy.queued} more waiting to run after it` : ""),
+      : visibleText(busy.title) +
+          (progress ? `\n${progress}` : "") +
+          (busy.queued > 0 ? `\n${busy.queued} more waiting to run after it` : ""),
   );
 
   function fetch() {
@@ -111,51 +141,63 @@
   }
 </script>
 
-<div class="toolbar">
+<div class="toolbar" class:compact>
   <span class="divider" aria-hidden="true"></span>
   <BranchFilter {view} disabled={noCommits} />
 
-  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
-    <input
-      type="checkbox"
-      class="checkbox"
-      disabled={noCommits}
-      checked={view.viewOptions.showRemotes}
-      onchange={(e) => view.setViewOptions({ showRemotes: e.currentTarget.checked })}
-    />
-    <span>Remote branches</span>
-  </label>
-  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
-    <input
-      type="checkbox"
-      class="checkbox"
-      disabled={noCommits}
-      checked={view.viewOptions.showTags}
-      onchange={(e) => view.setViewOptions({ showTags: e.currentTarget.checked })}
-    />
-    <span>Tags</span>
-  </label>
-  <!-- With a branch selection, the stashes on its commits show (R21). -->
-  <label class="toggle" title={noCommits ? NO_COMMITS : undefined}>
-    <input
-      type="checkbox"
-      class="checkbox"
-      disabled={noCommits}
-      checked={view.viewOptions.showStashes}
-      onchange={(e) => view.setViewOptions({ showStashes: e.currentTarget.checked })}
-    />
-    <span>Stashes</span>
-  </label>
+{#snippet toggle(label: string, checked: boolean, set: (on: boolean) => void, glyph: string)}
+    <label class="toggle" title={noCommits ? NO_COMMITS : compact ? label : undefined}>
+      <input
+        type="checkbox"
+        class="checkbox"
+        aria-label={label}
+        disabled={noCommits}
+        {checked}
+        onchange={(e) => set(e.currentTarget.checked)}
+      />
+      {#if compact}
+        <svg class="glyph" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+          <path d={glyph} fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      {:else}
+        <span aria-hidden="true">{label}</span>
+      {/if}
+    </label>
+  {/snippet}
+  <!-- A cloud: the remotes' branches. -->
+  {@render toggle(
+    "Remote branches",
+    view.viewOptions.showRemotes,
+    (on) => view.setViewOptions({ showRemotes: on }),
+    "M4.9 12.2h6.3a2.8 2.8 0 0 0 .35-5.58 3.7 3.7 0 0 0-7.1-.32A2.95 2.95 0 0 0 4.9 12.2z",
+  )}
+  <!-- A tag. -->
+  {@render toggle(
+    "Tags",
+    view.viewOptions.showTags,
+    (on) => view.setViewOptions({ showTags: on }),
+    "M2.6 7.8V3.4c0-.45.35-.8.8-.8h4.4l5.9 5.9-5.2 5.2zM5.6 5.4h.01",
+  )}
+  <!-- Stacked boxes: stashes. With a branch selection, the stashes on its commits show (R21). -->
+  {@render toggle(
+    "Stashes",
+    view.viewOptions.showStashes,
+    (on) => view.setViewOptions({ showStashes: on }),
+    "M3 5.2h10v7.6H3zM4.6 3h6.8M6.4 8.2h3.2",
+  )}
 
   <span class="spacer"></span>
 
   {#if busy}
-    <div class="busy" role="status" data-testid="busy" title={busyTitle}>
+    <div class="busy" class:with-progress={progress !== null} role="status" data-testid="busy" title={busyTitle}>
       <svg class="spinner" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
         <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.8" />
         <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
       </svg>
       <span class="busy-title">{visibleText(busy.title)}</span>
+      {#if progress !== null}
+        <MiddleText class="busy-progress" text={progress} keep={14} endFirst title={null} />
+      {/if}
       {#if busy.queued > 0}
         <span class="queued" aria-label="{busy.queued} more queued">+{busy.queued}</span>
       {/if}
@@ -241,6 +283,22 @@
     </svg>
   </button>
 
+  <button
+    class="icon-btn tool"
+    aria-label="Worktrees"
+    aria-pressed={sideShown}
+    title="{sideShown ? 'Hide' : 'Show'} the worktrees ({PANEL_KEYS})"
+    data-testid="side-toggle"
+    onclick={() => setPanelShown(view.repoId)}
+  >
+    <!-- A window with a panel on its right. -->
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" />
+      <path d="M9.8 3.4v9.2" stroke="currentColor" stroke-width="1.4" />
+      <path d="M11.4 6h1M11.4 8h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+    </svg>
+  </button>
+
   {#if view.snapshot.loading}
     <!-- Along the bottom edge of the header (the nearest positioned ancestor). -->
     <div class="loading" role="progressbar" aria-label="Loading commits"></div>
@@ -248,13 +306,29 @@
 </div>
 
 <style>
+  /* Never squeezed or cut off: what gives way in a narrow window is the repository's name
+     and path beside it (and a long operation title, which is contained). */
   .toolbar {
     display: flex;
     align-items: center;
     gap: 4px;
     flex: 1 1 auto;
-    min-width: 0;
+    min-width: min-content;
     height: 100%;
+  }
+
+  .compact {
+    gap: 2px;
+  }
+
+  .compact .toggle {
+    gap: 5px;
+    padding: 0 7px 0 6px;
+  }
+
+  .glyph {
+    display: block;
+    color: var(--text-muted);
   }
 
   /* Separates the repository's name and path from the controls. */
@@ -303,14 +377,17 @@
     flex: none;
   }
 
-  /* The running operation: a quiet accent pill, its title cut short if it must be. */
+  /* The running operation: a quiet accent pill, its title cut short if it must be. As wide
+     from its start as with git's progress beside the title: nothing moves when that comes. */
   .busy {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    flex: 0 1 auto;
+    flex: 0 1 360px;
     min-width: 0;
-    max-width: 280px;
+    max-width: 360px;
+    /* Its title does not widen the toolbar: it takes the room there is. */
+    contain: inline-size;
     height: 24px;
     margin-right: 6px;
     padding: 0 9px 0 8px;
@@ -328,10 +405,31 @@
   }
 
   .busy-title {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     color: var(--text);
+  }
+
+  /* With git's progress beside the title: the progress gives way first (its start). */
+  .busy.with-progress .busy-title {
+    flex: none;
+    max-width: 55%;
+  }
+
+  .busy :global(.busy-progress) {
+    flex: 1 1 0;
+    min-width: 3em;
+    color: var(--text-muted);
+    /* No font-variant here: MiddleText measures with the computed font shorthand, which
+       Chrome leaves empty when a variant it cannot write is set. */
+    font-weight: 400;
+  }
+
+  .busy-title:has(+ :global(.busy-progress))::after {
+    content: " ·";
+    color: var(--text-faint);
   }
 
   .queued {

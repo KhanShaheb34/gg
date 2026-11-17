@@ -456,3 +456,31 @@ test("a merge that stopped on conflicts shows in the log as stopped, in amber, n
   await expect(merge.locator(".exit")).toHaveText("exit 1");
   await expect(merge.locator(".exit")).not.toHaveClass(/bad/);
 });
+
+// Task 10 review minor 6: the time column is as wide as its text in every date format
+// ("10:05:07 PM" in System, "13 days ago" in Relative), never cut or spilling over.
+test("the time column fits its text in every date format", async ({ gg }) => {
+  const { page } = gg;
+  identity(gg, "branchy");
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  const out = await runOp(page, { op: "create_branch", name: "wide-times", at: gg.git("branchy", "rev-parse", "HEAD").trim(), checkout: false });
+  expect(out.status).toBe("done");
+  await toggle(page).click();
+  const time = entries(page).locator(".op-head .time").first();
+  await expect(time).toBeVisible();
+  for (const format of ["System", "Relative", "ISO 8601", "Standard"]) {
+    await page.getByTestId("open-settings").click();
+    await page.getByTestId("settings-dates").getByRole("radio", { name: format }).click();
+    await page.keyboard.press("Escape");
+    await expect(time).not.toHaveText("");
+    // The text as laid out is one line that ends inside its cell.
+    const fits = await time.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+      return lines.size === 1 && range.getBoundingClientRect().right <= el.getBoundingClientRect().right + 0.5;
+    });
+    expect(fits, `${format}: ${await time.textContent()}`).toBe(true);
+  }
+});

@@ -1,0 +1,998 @@
+/* gg.shakirul.com. Colours are the app's own (src/app.css): graphite on cool paper, a teal
+   accent, and the graph's lane colours. The page is drawn as a commit graph: one lane runs
+   down the left edge, every section is a commit on it, and what is coming next is a branch
+   that has not been merged yet. */
+
+:root {
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu,
+    "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --gutter: 76px; /* room for the lane */
+  --rail: 22px; /* the lane's centre, from the block's left edge */
+  /* Wide enough that the content column (wrap − 2 × pad − gutter) holds the 1280 px hero
+     screenshot and its border at 1:1. */
+  --wrap: 1422px;
+  --pad: 32px;
+  --radius: 10px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  color-scheme: light;
+  --paper: #fbfbfc;
+  --chrome: #eeeff2;
+  --raised: #ffffff;
+  --line: #e0e1e7;
+  --line-strong: #c9cbd4;
+  --ink: #1b1d24;
+  --muted: #5b5f6e;
+  --accent: #0a7c6c;
+  --accent-hover: #086b5d;
+  --accent-ink: #ffffff;
+  --focus: rgba(10, 124, 108, 0.55);
+  --warn: #a35f00;
+  --lane-0: #2563eb;
+  --lane-1: #c2410c;
+  --lane-5: #a16207;
+  --term-bg: #17181c;
+  --term-ink: #e7e8ec;
+  --term-muted: #878b99;
+  --shadow: 0 1px 2px rgba(16, 18, 27, 0.05), 0 18px 48px -12px rgba(16, 18, 27, 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #17181c;
+    --chrome: #111215;
+    --raised: #202228;
+    --line: #2a2c33;
+    --line-strong: #3a3d47;
+    --ink: #e7e8ec;
+    --muted: #a3a7b4;
+    --accent: #3ccbb4;
+    --accent-hover: #5ad8c3;
+    --accent-ink: #062521;
+    --focus: rgba(60, 203, 180, 0.6);
+    --warn: #f0b232;
+    --lane-0: #6b9bff;
+    --lane-1: #fb8a4e;
+    --lane-5: #e8b23a;
+    --term-bg: #111215;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 24px 60px -16px rgba(0, 0, 0, 0.7);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #17181c;
+  --chrome: #111215;
+  --raised: #202228;
+  --line: #2a2c33;
+  --line-strong: #3a3d47;
+  --ink: #e7e8ec;
+  --muted: #a3a7b4;
+  --accent: #3ccbb4;
+  --accent-hover: #5ad8c3;
+  --accent-ink: #062521;
+  --focus: rgba(60, 203, 180, 0.6);
+  --warn: #f0b232;
+  --lane-0: #6b9bff;
+  --lane-1: #fb8a4e;
+  --lane-5: #e8b23a;
+  --term-bg: #111215;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 24px 60px -16px rgba(0, 0, 0, 0.7);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+code,
+pre {
+  font-family: var(--mono);
+  font-size: 0.875em;
+}
+
+p code,
+li code,
+dd code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  font-size: 0.82em;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.sprite {
+  position: absolute;
+}
+
+.skip {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 10;
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.skip:focus {
+  top: 12px;
+}
+
+/* ---- Top bar ---------------------------------------------------------------------------- */
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: var(--wrap);
+  margin: 0 auto;
+  padding: 14px var(--pad);
+  font-size: 14px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.mark {
+  width: 26px;
+  height: 26px;
+}
+
+.nav ul {
+  display: flex;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav a,
+.top-link {
+  display: block;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.nav a:hover,
+.top-link:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.top-link {
+  color: var(--ink);
+}
+
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-left: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---- The lane ----------------------------------------------------------------------------
+   Each .block draws its own stretch of the lane; blocks touch (padding, never margin), so the
+   stretches join into one line. Each block's node sits on the line at --node-y. */
+
+.log {
+  max-width: var(--wrap);
+  margin: 0 auto;
+  padding: 0 var(--pad);
+}
+
+.block {
+  --node-y: 30px;
+  position: relative;
+  padding-left: var(--gutter);
+}
+
+.block::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail) - 1px);
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--lane-0);
+}
+
+.node {
+  position: absolute;
+  left: calc(var(--rail) - 6px);
+  top: calc(var(--node-y) - 6px);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--lane-0);
+  box-shadow: 0 0 0 3px var(--paper);
+}
+
+.node-sm {
+  left: calc(var(--rail) - 4.5px);
+  top: calc(var(--node-y) - 4.5px);
+  width: 9px;
+  height: 9px;
+}
+
+/* HEAD: hollow, as in the app. */
+.node-head {
+  left: calc(var(--rail) - 7px);
+  top: calc(var(--node-y) - 7px);
+  width: 14px;
+  height: 14px;
+  background: var(--paper);
+  border: 2.5px solid var(--lane-0);
+}
+
+/* ---- Hero ------------------------------------------------------------------------------- */
+
+.hero {
+  --node-y: 59px;
+  padding-top: 48px;
+  padding-bottom: 24px;
+}
+
+.hero::before {
+  top: var(--node-y);
+}
+
+.refs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 28px;
+  height: 22px;
+}
+
+.ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--c) 55%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--c) 12%, transparent);
+  color: var(--c);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ref-head {
+  --c: var(--lane-0);
+}
+
+.ref-head::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border: 1.6px solid currentColor;
+  border-radius: 50%;
+}
+
+.ref-tag {
+  --c: var(--lane-1);
+}
+
+.ref-tag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: 1.6px solid currentColor;
+  border-radius: 1px 1px 1px 0;
+  transform: rotate(45deg);
+  margin: 0 2px;
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 56px;
+  align-items: start;
+}
+
+.wordmark {
+  margin: 0;
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: clamp(104px, 15vw, 188px);
+  line-height: 0.74;
+  letter-spacing: -0.07em;
+  margin-top: 4px;
+  margin-left: -0.04em;
+}
+
+.pitch {
+  margin: 0;
+  max-width: 17ch;
+  font-size: clamp(30px, 4.1vw, 50px);
+  font-weight: 650;
+  line-height: 1.06;
+  letter-spacing: -0.028em;
+  text-wrap: balance;
+}
+
+.hero-body {
+  max-width: 600px;
+}
+
+.lede {
+  margin: 20px 0 28px;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1.55;
+}
+
+.get {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 46px;
+  padding: 0 20px 0 17px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+  transition: background-color 120ms var(--ease);
+}
+
+.download:hover {
+  background: var(--accent-hover);
+}
+
+.download svg {
+  width: 17px;
+  height: 17px;
+}
+
+.get-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.get-meta > span + span::before {
+  content: "·";
+  margin: 0 7px;
+  color: var(--line-strong);
+}
+
+.get-meta > span[hidden] {
+  display: none;
+}
+
+/* The first-launch note: a permanent part of the page, set like the app's own banners. */
+.install {
+  margin-top: 26px;
+  padding: 14px 18px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: 4px var(--radius) var(--radius) 4px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.install p {
+  margin: 0;
+}
+
+.install .install-title {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.install .install-why {
+  margin-top: 3px;
+}
+
+.install b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.ways {
+  margin: 12px 0 0;
+}
+
+.ways > div {
+  display: grid;
+  grid-template-columns: 5.2rem minmax(0, 1fr);
+  gap: 6px 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+
+.ways > div:last-child {
+  padding-bottom: 0;
+}
+
+.ways dt {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.9;
+}
+
+.ways dd {
+  margin: 0;
+}
+
+.cmd-note {
+  display: block;
+  margin-top: 6px;
+  font-size: 13.5px;
+}
+
+.install .sha {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 7px;
+  background: var(--term-bg);
+  color: var(--term-ink);
+  max-width: 100%;
+}
+
+.install .cmd code {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.copy {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid #3a3d47;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--term-ink);
+  font: 12px var(--sans);
+  cursor: pointer;
+}
+
+.copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sha code {
+  word-break: break-all;
+}
+
+/* Screenshots: the app's window, at its real size or smaller, never larger. The border sits
+   outside the image (content-box), so an image shown at its own width is drawn 1:1, pixel
+   for pixel, not resampled to 2 px narrower. */
+.shot {
+  margin: 0;
+}
+
+.shot img {
+  box-sizing: content-box;
+  max-width: calc(100% - 2px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* The text column's width, up to the screenshot's own 1280 px (and its border), where it is
+   drawn 1:1; it never sticks out of the column. */
+.shot-hero {
+  max-width: 1282px;
+  margin-top: 56px;
+}
+
+.shot-hero img {
+  width: calc(100% - 2px);
+}
+
+/* ---- Sections --------------------------------------------------------------------------- */
+
+.section-head {
+  --node-y: 104px;
+  padding-top: 88px;
+  padding-bottom: 8px;
+}
+
+h2 {
+  margin: 0;
+  font-size: clamp(26px, 3vw, 34px);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.022em;
+}
+
+.section-lede {
+  max-width: 62ch;
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 17px;
+}
+
+.feature {
+  --node-y: 63px;
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 24px 56px;
+  align-items: start;
+  padding-top: 52px;
+  padding-bottom: 8px;
+}
+
+.feature-text {
+  max-width: 460px;
+}
+
+h3 {
+  margin: 0 0 8px;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.feature p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.feature-wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.feature-wide .feature-text {
+  max-width: 640px;
+}
+
+.verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.verbs li {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--raised);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.small-features {
+  margin: 4px 0 0;
+}
+
+.small-features div + div {
+  margin-top: 12px;
+}
+
+.small-features dt {
+  font-weight: 600;
+}
+
+.small-features dd {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+
+/* ---- Terminal --------------------------------------------------------------------------- */
+
+.terminal {
+  padding-bottom: 8px;
+}
+
+.term {
+  max-width: 560px;
+  margin: 24px 0 0;
+  border-radius: var(--radius);
+  background: var(--term-bg);
+  border: 1px solid #2a2c33;
+  box-shadow: var(--shadow);
+}
+
+.term pre {
+  margin: 0;
+  padding: 18px 20px;
+  overflow-x: auto;
+  color: var(--term-ink);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.term .ps {
+  color: var(--term-muted);
+}
+
+/* ---- Speed ------------------------------------------------------------------------------ */
+
+.numbers {
+  max-width: 720px;
+  margin: 28px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.numbers div {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 20px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.numbers dd {
+  grid-row: 1;
+  grid-column: 1;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.numbers small {
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.numbers dt {
+  grid-column: 2;
+  color: var(--ink);
+}
+
+.fine {
+  max-width: 720px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+/* ---- Coming next: a branch off the lane, not merged yet --------------------------------- */
+
+.next {
+  padding-bottom: 24px;
+}
+
+.branch {
+  position: relative;
+  margin-top: 28px;
+  padding-top: 28px;
+}
+
+/* From the lane to the branch's own lane, beside it. */
+.fork {
+  position: absolute;
+  left: calc(var(--rail) - var(--gutter) - 1px);
+  top: 0;
+  width: 26px;
+  height: 32px;
+  overflow: visible;
+}
+
+.fork path {
+  fill: none;
+  stroke: var(--lane-1);
+  stroke-width: 2px;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.next-list {
+  --branch: calc(var(--rail) - var(--gutter) + 24px);
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  max-width: 980px;
+  margin: 0;
+  padding: 4px 0 0;
+  list-style: none;
+}
+
+.next-list::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--branch) - 1px);
+  top: 0;
+  bottom: 20px;
+  border-left: 2px dashed var(--lane-1);
+}
+
+.next-list li {
+  position: relative;
+  padding: 14px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.next-list b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink);
+  font-weight: 650;
+  font-size: 16px;
+}
+
+/* The branch's tip: a commit not made yet. */
+.next-list::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--branch) - 6px);
+  bottom: 10px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--lane-1);
+  border-radius: 50%;
+  background: var(--paper);
+}
+
+/* ---- Footer: the root commit ------------------------------------------------------------ */
+
+.foot {
+  --node-y: 104px;
+  padding-top: 88px;
+  padding-bottom: 72px;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.foot::before {
+  bottom: auto;
+  height: var(--node-y);
+}
+
+.foot p {
+  margin: 0;
+  line-height: 1.6;
+  position: relative;
+  top: -4px;
+}
+
+.foot-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-top: 6px !important;
+}
+
+.foot-links a {
+  color: var(--ink);
+}
+
+/* ---- Narrower screens ------------------------------------------------------------------- */
+
+@media (max-width: 980px) {
+  .hero-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wordmark {
+    margin-bottom: 0.32em;
+  }
+
+  .feature {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .nav {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --gutter: 30px;
+    --rail: 7px;
+    --pad: 16px;
+  }
+
+  .top {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .hero {
+    --node-y: 39px;
+    padding-top: 28px;
+    padding-bottom: 16px;
+  }
+
+  .refs {
+    margin-bottom: 20px;
+  }
+
+  .lede {
+    font-size: 16.5px;
+  }
+
+  .download {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .ways > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ways dt {
+    line-height: 1.4;
+  }
+
+  .shot-hero {
+    margin-top: 36px;
+  }
+
+  .section-head,
+  .foot {
+    --node-y: 76px;
+    padding-top: 60px;
+  }
+
+  .feature {
+    --node-y: 52px;
+    padding-top: 40px;
+  }
+
+  .numbers div {
+    grid-template-columns: 6.6rem minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .numbers dd {
+    font-size: 23px;
+  }
+
+  .numbers small {
+    font-size: 13px;
+  }
+
+  .term pre {
+    font-size: 13.5px;
+    padding: 14px 16px;
+  }
+
+  .next-list {
+    --branch: calc(var(--rail) - var(--gutter) + 14px);
+    padding-left: 12px;
+  }
+
+  .fork {
+    width: 15px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
+}

@@ -1,7 +1,7 @@
 // Scrolling speed on a large repository (plan 1, task 10), in Chromium against a release
 // gg-devserver. Runs only with GG_PERF=1 (see playwright.config.ts):
 //
-//   GG_PERF=1 GG_PERF_R100K=~/.cache/gitgraph-perf/r100k pnpm e2e e2e/perf --headed --repeat-each=5
+//   GG_PERF=1 GG_PERF_R100K=~/.cache/gg-perf/r100k pnpm e2e e2e/perf --headed --repeat-each=5
 //
 // The page runs the same measurement as the Tauri app does with GG_PERF_SCROLL=1
 // (src/lib/perf/scrollProbe.ts): once the repository has fully loaded, the graph scrolls
@@ -17,7 +17,7 @@ import type { ScrollSummary } from "../../src/lib/perf/scrollProbe";
 import { startDevserver, stopDevserver } from "../fixtures";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
-const REPO = process.env.GG_PERF_R100K ?? path.join(homedir(), ".cache/gitgraph-perf/r100k");
+const REPO = process.env.GG_PERF_R100K ?? path.join(homedir(), ".cache/gg-perf/r100k");
 
 test.skip(process.env.GG_PERF !== "1", "performance run: set GG_PERF=1");
 test.use({ viewport: { width: 1280, height: 800 } });

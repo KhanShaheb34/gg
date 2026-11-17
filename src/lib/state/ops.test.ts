@@ -7,7 +7,12 @@ vi.mock("../ipc", async (importOriginal) => {
   return {
     CoreError: actual.CoreError,
     onEvent: vi.fn(() => () => {}),
-    api: { runOp: vi.fn(), saveSession: vi.fn(async () => {}) },
+    api: {
+      runOp: vi.fn(),
+      saveSession: vi.fn(async () => {}),
+      setActiveWorktree: vi.fn(),
+      openExternal: vi.fn(async () => ({ note: null })),
+    },
   };
 });
 
@@ -55,6 +60,9 @@ function outcome(overrides: Partial<OpOutcome> = {}): OpOutcome {
     logTo: 0,
     dangers: [],
     hints: [],
+    created: null,
+    committed: null,
+    field: null,
     snapshot: snap({ seq: 5 }),
     ...overrides,
   };
@@ -65,7 +73,7 @@ function danger(overrides: Partial<Danger> = {}): Danger {
 }
 
 const HEAD = { branch: "main", hash: "c".repeat(40) };
-const RESET: OpRequest = { op: "reset", hash: "a".repeat(40), mode: "hard", expectHead: HEAD };
+const RESET: OpRequest = { op: "reset", hash: "a".repeat(40), mode: "hard", expectHead: HEAD, expectWorktree: "/r" };
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /** The props of the dialog opened last (the confirmation). */
@@ -198,7 +206,7 @@ describe("runOp", () => {
   });
 
   it("confirms every danger with the token it was shown with, the request unchanged (R39)", async () => {
-    const drop: OpRequest = { op: "stash_drop", stash: "d".repeat(40) };
+    const drop: OpRequest = { op: "stash_drop", stash: "d".repeat(40), expectWorktree: "/r" };
     vi.mocked(ipc.api.runOp)
       .mockResolvedValueOnce(outcome({ status: "needs_confirmation", dangers: [danger({ kind: "drop_stash", token: "d".repeat(40) })] }))
       .mockResolvedValueOnce(outcome());
@@ -273,7 +281,7 @@ describe("runOp", () => {
   it("leaves the errors its caller shows itself unreported (a dialog shows a bad name beside its field)", async () => {
     const bad = new ipc.CoreError({ code: "bad_name", message: "A branch named “x” already exists.", detail: null });
     vi.mocked(ipc.api.runOp).mockRejectedValueOnce(bad);
-    const create: OpRequest = { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false };
+    const create: OpRequest = { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false, expectWorktree: "/r" };
     await expect(ops.runOp(1, create, { ownErrors: ["bad_name"] })).rejects.toBe(bad);
     expect(app.app.toasts).toEqual([]);
 
@@ -281,6 +289,36 @@ describe("runOp", () => {
     vi.mocked(ipc.api.runOp).mockRejectedValueOnce(new ipc.CoreError({ code: "io", message: "Disk full", detail: null }));
     await expect(ops.runOp(1, create, { ownErrors: ["bad_name"] })).rejects.toThrow("Disk full");
     expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: "Disk full" })]);
+  });
+
+  it("leaves the whole outcome to a caller that says how it went (ownOutcome): no notice, earlier ones still go", async () => {
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 3, hints: [{ kind: "fetch" }] }));
+    await ops.runOp(1, RESET);
+    expect(app.app.toasts).toHaveLength(1);
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 4, status: "failed", message: "gh failed." }));
+    const out = await ops.runOp(1, RESET, { ownOutcome: true });
+    expect(out.message).toBe("gh failed.");
+    expect(app.app.toasts).toEqual([]);
+  });
+
+  it("leaves a refusal in the request's turn to a caller that shows it, and reports git's failures", async () => {
+    const add: OpRequest = { op: "worktree_add", path: "../wt", branch: { existing: "feature/x" } };
+    const refused = outcome({ status: "failed", message: "Nothing was created: there is a worktree at /wt already." });
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(refused);
+    expect(await ops.runOp(1, add, { ownRefusals: true })).toBe(refused);
+    expect(app.app.toasts).toEqual([]);
+    expect(view.applySnapshot).toHaveBeenCalledWith(refused.snapshot);
+
+    // git ran and failed (a hook): reported as always.
+    const failed = outcome({ status: "failed", message: "git could not create it.", detail: "hook said no", logFrom: 4, logTo: 4 });
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(failed);
+    await ops.runOp(1, add, { ownRefusals: true });
+    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: "git could not create it." })]);
+
+    // Without asking, a refusal is reported.
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(refused);
+    await ops.runOp(1, add);
+    expect(app.app.toasts).toHaveLength(2);
   });
 });
 
@@ -325,6 +363,48 @@ describe("hint buttons", () => {
     return app.app.toasts[0].actions ?? [];
   }
 
+  it("a notice's follow-up runs only where its operation ran: the request's expectWorktree, not the snapshot's", async () => {
+    // Another worktree was made active while the operation ran: its snapshot shows that one.
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
+      outcome({ hints: [{ kind: "pull", branch: "main" }], snapshot: snap({ seq: 5, activeWorktree: "/r/other" }) }),
+    );
+    await ops.runOp(1, { ...RESET, expectWorktree: "/r/wt" });
+    vi.mocked(ipc.api.runOp).mockReset().mockResolvedValue(outcome({ message: "Followed up." }));
+    const [pull] = app.app.toasts[0].actions ?? [];
+    await pull.run();
+    const sent = vi.mocked(ipc.api.runOp).mock.calls[0][1];
+    expect(sent).toMatchObject({ op: "pull", expectWorktree: "/r/wt" });
+  });
+
+  it("make_active: makes the worktree holding the branch active, and shows it", async () => {
+    const after = snap({ seq: 9, activeWorktree: "/r/feature" });
+    vi.mocked(ipc.api.setActiveWorktree).mockResolvedValueOnce(after);
+    const [make] = await buttonsFor([{ kind: "make_active", worktree: "/r/feature" }], "failed");
+    expect(make.label).toBe("Make /r/feature active");
+    await make.run();
+    await Promise.resolve();
+    expect(ipc.api.setActiveWorktree).toHaveBeenCalledWith(1, "/r/feature");
+    expect(ipc.api.runOp).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(view.applySnapshot).toHaveBeenCalledWith(after));
+  });
+
+  it("remove_index_lock: offers to remove the stale lock, in the worktree it is in, through the core's red confirmation (M5)", async () => {
+    const [remove] = await buttonsFor([{ kind: "remove_index_lock", path: "/r/.git/index.lock", worktree: "/r/wt" }], "failed");
+    expect(remove.label).toBe("Remove the lock file…");
+    expect(remove.danger).toBe(true);
+    await remove.run();
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "remove_index_lock", expectWorktree: "/r/wt" }, []);
+  });
+
+  it("open_url: opens the page the core named (a pull request, a compare page) in the browser", async () => {
+    const url = "https://github.com/octo/cat/pull/42";
+    const [open] = await buttonsFor([{ kind: "open_url", url, label: "Open pull request" }]);
+    expect(open.label).toBe("Open pull request");
+    await open.run();
+    expect(ipc.api.openExternal).toHaveBeenCalledWith(1, { target: "url", url });
+    expect(ipc.api.runOp).not.toHaveBeenCalled();
+  });
+
   it("push: pushes the branch the core named", async () => {
     const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin" }]);
     expect(push.label).toBe("Push main to origin/main");
@@ -349,7 +429,11 @@ describe("hint buttons", () => {
     await buttons[0].run();
     expect(view.fetch).toHaveBeenCalled();
     await buttons[1].run();
-    expect(ipc.api.runOp).toHaveBeenLastCalledWith(1, { op: "pull", branch: "main", mode: "default", expectHead: (view.snapshot as RepoSnapshot).head }, []);
+    expect(ipc.api.runOp).toHaveBeenLastCalledWith(
+      1,
+      { op: "pull", branch: "main", mode: "default", expectHead: (view.snapshot as RepoSnapshot).head, expectWorktree: "/r" },
+      [],
+    );
     await buttons[2].run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,
@@ -376,7 +460,7 @@ describe("hint buttons", () => {
     await skip.run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,
-      { op: "skip", expectHead: (view.snapshot as RepoSnapshot).head, commit },
+      { op: "skip", expectHead: (view.snapshot as RepoSnapshot).head, commit, expectWorktree: "/r" },
       [],
     );
   });
@@ -418,11 +502,11 @@ describe("hint buttons", () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
       outcome({ status: "failed", message, hints: [{ kind: "choose_pull_mode", branch: "main" }] }),
     );
-    await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD });
+    await ops.runOp(1, { op: "pull", branch: "main", mode: "default", expectHead: HEAD, expectWorktree: "/r/wt" });
     expect(app.app.toasts).toEqual([]);
     expect(overlays.showDialog).toHaveBeenCalledWith(
       { name: "PullDialog" },
-      { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head },
+      { repoId: 1, branch: "main", upstream: "origin/main", message, head: (view.snapshot as RepoSnapshot).head, worktree: "/r/wt" },
     );
   });
 

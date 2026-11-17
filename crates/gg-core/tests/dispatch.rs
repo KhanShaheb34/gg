@@ -112,28 +112,156 @@ async fn malformed_args_is_bad_request() {
     }
 }
 
-/// I7 / R42: opening a folder of another worktree of a repository already open answers with
-/// that repository, whose tab acts on its own worktree, and says which worktree the folder
-/// was in, so the UI can say which folder the tab acts on. Its own folders say nothing.
+/// Opening a folder of a linked worktree opens the repository (or the tab it has) with that
+/// worktree active, and the choice is remembered for the next start. The main worktree's
+/// folder opened by the user makes the main worktree active, like any other; a tab restored
+/// from the last session (`restore`) keeps the worktree remembered (replaces R42's notice).
 #[tokio::test]
-async fn opening_another_worktree_of_an_open_repository_says_so() {
+async fn opening_a_linked_worktree_makes_it_active_and_it_is_remembered() {
     let repo = TestRepo::new();
     repo.commit("one");
     let hotfix = repo.add_worktree("hotfix");
     let h = harness().await;
     let first = h.call("open_repo", json!({ "path": repo.path() })).await;
     assert_eq!(first["openedWorktree"], Value::Null);
-    let main = first["activeWorktree"].clone();
+    assert_eq!(first["activeWorktree"], json!(path_string(repo.path())));
 
-    let again = h.call("open_repo", json!({ "path": hotfix })).await;
+    let again = h
+        .call("open_repo", json!({ "path": hotfix.join(".") }))
+        .await;
     assert_eq!(again["repoId"], first["repoId"]);
-    assert_eq!(
-        again["activeWorktree"], main,
-        "the tab still acts on its own"
-    );
-    assert_eq!(again["openedWorktree"], json!(path_string(&hotfix)));
-    let same = h.call("open_repo", json!({ "path": repo.path() })).await;
-    assert_eq!(same["openedWorktree"], Value::Null);
+    assert_eq!(again["activeWorktree"], json!(path_string(&hotfix)));
+    assert_eq!(again["head"]["branch"], "hotfix");
+    assert_eq!(again["openedWorktree"], Value::Null);
+    assert!(again["seq"].as_u64() > first["seq"].as_u64());
+    // Restored, the main worktree's folder changes nothing.
+    let same = h
+        .call("open_repo", json!({ "path": repo.path(), "restore": true }))
+        .await;
+    assert_eq!(same["activeWorktree"], json!(path_string(&hotfix)));
+
+    // Remembered (in the background) by the main worktree's path.
+    let remembered = || async {
+        let prefs = h
+            .call("get_repo_prefs", json!({ "repoId": first["repoId"] }))
+            .await;
+        prefs["activeWorktree"].clone()
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while remembered().await != json!(path_string(&hotfix)) {
+        assert!(std::time::Instant::now() < deadline, "not remembered");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // A new start restoring the main worktree's folder starts in it.
+    let config = h.config.path().to_path_buf();
+    let next = Core::new(config.clone(), None, Arc::new(RecordingSink::default()))
+        .await
+        .unwrap();
+    let snap = next
+        .dispatch("open_repo", json!({ "path": repo.path(), "restore": true }))
+        .await
+        .unwrap();
+    assert_eq!(snap["activeWorktree"], json!(path_string(&hotfix)));
+    assert_eq!(snap["head"]["branch"], "hotfix");
+    // Opened by the user, the main worktree's folder makes the main worktree active, and
+    // that is remembered.
+    let main = next
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(main["repoId"], snap["repoId"]);
+    assert_eq!(main["activeWorktree"], json!(path_string(repo.path())));
+    assert_eq!(main["head"]["branch"], "main");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let prefs = next
+            .dispatch("get_repo_prefs", json!({ "repoId": main["repoId"] }))
+            .await
+            .unwrap();
+        if prefs["activeWorktree"].is_null() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "main not remembered");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // A new start opening the main worktree's folder (the `gg` command) starts in main;
+    // remembered as the hotfix again, a restored tab starts there.
+    next.dispatch(
+        "set_active_worktree",
+        json!({ "repoId": main["repoId"], "path": hotfix }),
+    )
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let prefs = next
+            .dispatch("get_repo_prefs", json!({ "repoId": main["repoId"] }))
+            .await
+            .unwrap();
+        if prefs["activeWorktree"] == json!(path_string(&hotfix)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "hotfix not remembered"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let fresh = Core::new(config.clone(), None, Arc::new(RecordingSink::default()))
+        .await
+        .unwrap();
+    let snap = fresh
+        .dispatch("open_repo", json!({ "path": repo.path() }))
+        .await
+        .unwrap();
+    assert_eq!(snap["activeWorktree"], json!(path_string(repo.path())));
+
+    // Gone since: the main worktree, quietly.
+    repo.git(&["worktree", "remove", "--force", &path_string(&hotfix)]);
+    let last = Core::new(config, None, Arc::new(RecordingSink::default()))
+        .await
+        .unwrap();
+    let snap = last
+        .dispatch("open_repo", json!({ "path": repo.path(), "restore": true }))
+        .await
+        .unwrap();
+    assert_eq!(snap["activeWorktree"], json!(path_string(repo.path())));
+}
+
+/// `set_active_worktree` through dispatch: the snapshot of the worktree made active, and
+/// plain refusals for a folder that is no worktree of the repository.
+#[tokio::test]
+async fn set_active_worktree_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let feature = repo.add_worktree("feature");
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let snap = h
+        .call(
+            "set_active_worktree",
+            json!({ "repoId": id, "path": feature }),
+        )
+        .await;
+    assert_eq!(snap["activeWorktree"], json!(path_string(&feature)));
+    let actives: Vec<bool> = snap["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["active"].as_bool().unwrap())
+        .collect();
+    assert_eq!(actives, [false, true]);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let err = h
+        .fail(
+            "set_active_worktree",
+            json!({ "repoId": id, "path": elsewhere.path() }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let err = h.fail("set_active_worktree", json!({ "repoId": id })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
 #[tokio::test]
@@ -286,7 +414,7 @@ async fn open_missing_recent_path_errors_and_recent_is_removable() {
     h.call("close_repo", json!({ "repoId": snap["repoId"] }))
         .await;
 
-    std::fs::remove_dir_all(repo.path()).unwrap();
+    remove_soon(repo.path()).await;
     let err = h.fail("open_repo", json!({ "path": root })).await;
     assert_eq!(err.code, ErrorCode::PathMissing);
 
@@ -296,6 +424,22 @@ async fn open_missing_recent_path_errors_and_recent_is_removable() {
     assert_eq!(rest[0]["path"], path_string(keep.path()));
     let state = h.call("get_app_state", json!({})).await;
     assert_eq!(state["recents"], Value::Array(rest.clone()));
+}
+
+/// Removes folder `dir`, trying again for a few seconds: on Windows a folder cannot be
+/// removed while a handle in it is open, and a closed repository's watcher closes its own
+/// on its thread, just after the close returns.
+async fn remove_soon(dir: &Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("{} could not be removed: {e}", dir.display()),
+        }
+    }
 }
 
 /// A core whose saved session holds `tabs` and whose launch path is `launch`.
@@ -400,17 +544,21 @@ fn hide_object(repo: &TestRepo, hash: &str) -> impl FnOnce() {
     move || std::fs::rename(&to, &from).unwrap()
 }
 
-/// Waits until `n` snapshots of repository `id` with `loading: false` have been emitted.
+/// Waits until snapshots of `n` generations of repository `id` with `loading: false` have been
+/// emitted.
 async fn wait_loaded_events(sink: &RecordingSink, id: u64, n: usize) {
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
+        // Other changes (a status read, say) are emitted loaded too: one per generation.
         let loaded = sink
             .events()
             .iter()
             .filter(|(name, v)| {
                 name == "repo-changed" && v["repoId"] == id && v["loading"] == false
             })
-            .count();
+            .map(|(_, v)| v["generation"].as_u64())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
         if loaded >= n {
             return;
         }
@@ -618,7 +766,12 @@ async fn launch_path_is_reported() {
     assert_eq!(state["launchPath"], dir.path().to_string_lossy().as_ref());
 
     let none = harness().await;
-    let state = none.call("get_app_state", json!({})).await;
+    let mut state = none.call("get_app_state", json!({})).await;
+    // The `gg` command as this machine has it (see the_gg_command_installs_and_uninstalls);
+    // no shell is asked unless `start_cli` says which.
+    let cli = state.as_object_mut().unwrap().remove("cli").unwrap();
+    assert_eq!(cli["shadowedBy"], Value::Null);
+    assert!(cli["candidates"].is_array());
     let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let home = std::env::var_os(home_var)
         .filter(|v| !v.is_empty())
@@ -628,12 +781,15 @@ async fn launch_path_is_reported() {
         json!({
             "recents": [],
             "session": {"tabs": [], "active": null},
-            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null},
+            "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null, "terminalCommand": null,
+                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard"},
             "launchPath": null,
             "homeDir": home,
             "settingsProblem": null,
+            "settingsFile": none.config.path().join("state.json").to_string_lossy(),
             // The git installed here is new enough (M3).
-            "gitProblem": null
+            "gitProblem": null,
+            "version": env!("CARGO_PKG_VERSION")
         })
     );
 }
@@ -656,7 +812,8 @@ async fn session_and_settings_persist() {
         .await;
     assert_eq!(
         settings,
-        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard"})
     );
     let err = h
         .fail(
@@ -681,8 +838,96 @@ async fn session_and_settings_persist() {
     );
     assert_eq!(
         state["settings"],
-        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null})
+        json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard"})
     );
+}
+
+/// "Reset to defaults" puts the settings back as a new install has them (the background
+/// fetch interval with them) and keeps the open tabs; the next start reads them so.
+#[tokio::test]
+async fn settings_go_back_to_their_defaults() {
+    let h = harness().await;
+    h.call("save_session", json!({"tabs": ["/a"], "active": "/a"}))
+        .await;
+    h.call(
+        "update_settings",
+        json!({"patch": {"theme": "dark", "fetchIntervalSecs": 60, "dateFormat": "iso",
+                         "editorCommand": "code", "worktreePattern": "../w/{branch}"}}),
+    )
+    .await;
+    let settings = h.call("restore_default_settings", json!({})).await;
+    let defaults = json!({"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
+                          "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
+                          "dateFormat": "standard"});
+    assert_eq!(settings, defaults);
+    let err = h
+        .fail("restore_default_settings", json!({"keep": "theme"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let again = Core::new(
+        h.config.path().to_path_buf(),
+        None,
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .unwrap();
+    let state = again.dispatch("get_app_state", json!({})).await.unwrap();
+    assert_eq!(state["settings"], defaults);
+    assert_eq!(state["session"]["tabs"], json!(["/a"]));
+}
+
+/// The settings screen's links: gg's home page and source code in the browser, and the
+/// settings file in the file manager (its folder until something was saved). Fixed
+/// addresses only: no address comes from the UI. Recorded, never started.
+#[tokio::test]
+async fn the_settings_screen_opens_gg_pages_and_the_settings_file() {
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let config = h.config.path().to_path_buf();
+    let state_file = config.join("state.json");
+    // Nothing saved yet: the config folder is shown.
+    assert_eq!(
+        h.call("open_app_link", json!({"link": "settingsFile"}))
+            .await,
+        json!({"note": null})
+    );
+    h.call("update_settings", json!({"patch": {"theme": "dark"}}))
+        .await;
+    h.call("open_app_link", json!({"link": "settingsFile"}))
+        .await;
+    h.call("open_app_link", json!({"link": "home"})).await;
+    h.call("open_app_link", json!({"link": "source"})).await;
+    let launched: Vec<Value> = recorded(&file);
+    assert_eq!(launched.len(), 4, "{launched:?}");
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            launched,
+            [
+                json!(["/usr/bin/open", "-R", config.to_string_lossy()]),
+                json!(["/usr/bin/open", "-R", state_file.to_string_lossy()]),
+                json!(["/usr/bin/open", "https://gg.shakirul.com"]),
+                json!(["/usr/bin/open", "https://github.com/KhanShaheb34/gg"]),
+            ]
+        );
+    }
+    for args in [
+        json!({"link": "url", "url": "https://example.com"}),
+        json!({"link": "https://example.com"}),
+        json!({}),
+    ] {
+        let err = h.fail("open_app_link", args.clone()).await;
+        assert_eq!(err.code, ErrorCode::BadRequest, "{args}");
+    }
+    // A config folder that is gone: said, nothing opened.
+    std::fs::remove_dir_all(&config).unwrap();
+    let err = h
+        .fail("open_app_link", json!({"link": "settingsFile"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::PathMissing, "{err:?}");
+    assert_eq!(recorded(&file).len(), 4);
 }
 
 #[tokio::test]
@@ -895,17 +1140,17 @@ async fn open_in_editor_uses_the_editor_command_setting() {
     assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
 }
 
-/// With launches recorded to a file (the dev server's `--record-editor-launches`), nothing is
+/// With launches recorded to a file (the dev server's `--record-launches`), nothing is
 /// started: each launch is a line of JSON, the program and its arguments.
 #[tokio::test]
-async fn editor_launches_can_be_recorded_to_a_file() {
+async fn launches_can_be_recorded_to_a_file() {
     let repo = TestRepo::new();
     repo.write("a b.txt", "x\n");
     repo.commit_all("one");
     let h = harness().await;
     let record = tempfile::tempdir().unwrap();
     let file = record.path().join("launches.jsonl");
-    h.core.record_editor_launches_to(Some(file.clone()));
+    h.core.record_launches_to(Some(file.clone()));
     let snap = h.open_loaded(repo.path()).await;
     let id = snap["repoId"].clone();
     let patch = json!({"patch": {"editorCommand": "gg-no-such-editor --wait"}});
@@ -930,6 +1175,208 @@ async fn editor_launches_can_be_recorded_to_a_file() {
             json!(["gg-no-such-editor", "--wait", root]),
         ]
     );
+}
+
+/// The launches recorded in `file` so far, each the program and its arguments.
+fn recorded(file: &Path) -> Vec<Value> {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// `open_external` opens any worktree git lists for the repository, read afresh, not only
+/// the active one: in the editor, a terminal and the file manager, with the commands from
+/// the settings. A folder that is no worktree of it (outside, inside one, the git folder, a
+/// worktree of another repository) is refused, and a worktree whose folder is gone; nothing
+/// is started for those.
+#[tokio::test]
+async fn open_external_opens_the_repositorys_worktrees_only() {
+    let repo = TestRepo::new();
+    repo.write("dir/a.txt", "x\n");
+    repo.commit_all("one");
+    let linked = repo.add_worktree("feature");
+    let gone = repo.add_worktree("gone");
+    std::fs::remove_dir_all(&gone).unwrap();
+    let other = TestRepo::new();
+    other.commit("theirs");
+    let elsewhere = tempfile::tempdir().unwrap();
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    let patch = json!({"patch": {"editorCommand": "my-editor -n", "terminalCommand": "my-term --cwd {path} -x"}});
+    h.call("update_settings", patch).await;
+
+    // A worktree added after the repository was opened counts: the list is read afresh.
+    let later = repo.add_worktree("later");
+    let root = dunce::canonicalize(repo.path()).unwrap();
+    let linked = dunce::canonicalize(&linked).unwrap();
+    let later = dunce::canonicalize(&later).unwrap();
+    let open =
+        |target: &str, path: Option<&Path>| json!({"repoId": id, "target": target, "path": path});
+    for (target, path) in [
+        ("editor", Some(linked.as_path())),
+        ("terminal", Some(linked.as_path())),
+        ("editor", Some(later.as_path())),
+        ("editor", None),
+    ] {
+        let out = h.call("open_external", open(target, path)).await;
+        assert_eq!(out, json!({"note": null}), "{target} {path:?}");
+    }
+    h.call("open_external", open("reveal", Some(&linked))).await;
+    let reveal = if cfg!(target_os = "macos") {
+        json!(["/usr/bin/open", "-R", linked])
+    } else if cfg!(windows) {
+        let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        json!([
+            format!(r"{windows}\explorer.exe"),
+            format!("/select,\"{}\"", linked.display())
+        ])
+    } else {
+        json!(["xdg-open", linked.parent().unwrap()])
+    };
+    assert_eq!(
+        recorded(&file),
+        [
+            json!(["my-editor", "-n", linked]),
+            json!(["my-term", "--cwd", linked, "-x"]),
+            json!(["my-editor", "-n", later]),
+            json!(["my-editor", "-n", root]),
+            reveal,
+        ]
+    );
+
+    let inside = root.join("dir");
+    let git_dir = root.join(".git");
+    for (path, code) in [
+        (elsewhere.path(), ErrorCode::BadRequest),
+        (inside.as_path(), ErrorCode::BadRequest),
+        (git_dir.as_path(), ErrorCode::BadRequest),
+        (other.path(), ErrorCode::BadRequest),
+        (gone.as_path(), ErrorCode::PathMissing),
+    ] {
+        for target in ["editor", "terminal", "reveal"] {
+            let err = h.fail("open_external", open(target, Some(path))).await;
+            assert_eq!(err.code, code, "{target} {}: {err:?}", path.display());
+        }
+    }
+    // A relative path is refused, even one that leads to a worktree from the app's folder.
+    let here = dunce::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    let up = here.components().count() - 1;
+    let mut relative = PathBuf::new();
+    for _ in 0..up {
+        relative.push("..");
+    }
+    // The worktree's folders after its root (and drive, on Windows: from another drive the
+    // path leads nowhere, and is refused all the same).
+    relative.extend(
+        linked
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_))),
+    );
+    assert!(relative.is_relative());
+    for target in ["editor", "terminal", "reveal"] {
+        let err = h.fail("open_external", open(target, Some(&relative))).await;
+        assert_eq!(err.code, ErrorCode::BadRequest, "{target}: {err:?}");
+    }
+    let err = h
+        .fail(
+            "open_external",
+            json!({"repoId": id, "target": "editor", "path": linked, "url": "https://example.com/"}),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    let err = h
+        .fail("open_external", json!({"repoId": id, "target": "browser"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    let err = h
+        .fail("open_external", json!({"repoId": 999, "target": "reveal"}))
+        .await;
+    assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
+    assert_eq!(recorded(&file).len(), 5, "nothing more was started");
+}
+
+/// Without a terminal command, the platform's terminal opens in the worktree (macOS:
+/// Terminal; elsewhere see the unit tests of `launch`).
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_terminal_without_a_command_is_terminal_on_macos() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    h.call("open_external", json!({"repoId": id, "target": "terminal"}))
+        .await;
+    let root = dunce::canonicalize(repo.path()).unwrap();
+    assert_eq!(
+        recorded(&file),
+        [json!(["/usr/bin/open", "-a", "Terminal", root])]
+    );
+}
+
+/// A web page opens only from an `https://` address, written out again by the parser; never
+/// with a path. Nothing is started for a refused one.
+#[tokio::test]
+async fn open_external_opens_only_https_pages() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let record = tempfile::tempdir().unwrap();
+    let file = record.path().join("launches.jsonl");
+    h.core.record_launches_to(Some(file.clone()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    let page = "https://GitHub.com/o/r/pull/7";
+    let out = h
+        .call(
+            "open_external",
+            json!({"repoId": id, "target": "url", "url": page}),
+        )
+        .await;
+    assert_eq!(out, json!({"note": null}));
+    let opened = "https://github.com/o/r/pull/7";
+    let expected = if cfg!(target_os = "macos") {
+        json!(["/usr/bin/open", opened])
+    } else if cfg!(windows) {
+        let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        json!([
+            format!(r"{windows}\System32\rundll32.exe"),
+            "url.dll,FileProtocolHandler",
+            opened
+        ])
+    } else {
+        json!(["xdg-open", opened])
+    };
+    assert_eq!(recorded(&file), [expected]);
+
+    for args in [
+        json!({"repoId": id, "target": "url", "url": "http://github.com/o/r"}),
+        json!({"repoId": id, "target": "url", "url": "file:///etc/passwd"}),
+        json!({"repoId": id, "target": "url", "url": "https://x:y@github.com/"}),
+        json!({"repoId": id, "target": "url", "url": "https://github.com/a b"}),
+        json!({"repoId": id, "target": "url"}),
+        json!({"repoId": id, "target": "url", "url": page, "path": repo.path()}),
+    ] {
+        let err = h.fail("open_external", args.clone()).await;
+        assert_eq!(err.code, ErrorCode::BadRequest, "{args}: {err:?}");
+    }
+    let err = h
+        .fail(
+            "open_external",
+            json!({"repoId": 999, "target": "url", "url": page}),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::UnknownRepo, "{err:?}");
+    assert_eq!(recorded(&file).len(), 1);
 }
 
 /// R36: a credential in a URL (the `user:password@` part) never reaches the UI, wherever git
@@ -1023,5 +1470,313 @@ async fn credentials_in_urls_never_reach_the_ui() {
             !text.contains(SECRET),
             "the credential reached the UI: {text}"
         );
+    }
+}
+
+/// The `gg` command through `install_cli` / `uninstall_cli` and `get_app_state`, with a
+/// stand-in login shell and a `PATH` and home folder of temp folders only.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_gg_command_installs_and_uninstalls() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let local = home.join(".local/bin");
+    let bin = home.join("bin");
+    let outside = root.path().join("outside");
+    for dir in [&local, &bin, &outside] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let shell = root.path().join("fake-shell");
+    std::fs::write(&shell, "#!/bin/sh\nalias gg='git log'\neval \"$2\"\n").unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(std::env::join_paths([&outside, &bin, &local]).unwrap()),
+        home: Some(home.clone()),
+    });
+
+    // The shell's answer arrives in the background.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let cli = loop {
+        let cli = h.call("get_app_state", json!({})).await["cli"].clone();
+        if !cli["shadowedBy"].is_null() || std::time::Instant::now() > deadline {
+            break cli;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let s = |p: &Path| p.to_string_lossy().into_owned();
+    let expected = json!({
+        "installed": null,
+        "shadowedBy": "an alias for git log",
+        "candidates": [s(&local), s(&bin)],
+    });
+    assert_eq!(cli, expected);
+    // Announced too, for a UI that read the state before the answer came.
+    let announced = h
+        .sink
+        .wait_for(TIMEOUT, |name, _| name == "cli-changed")
+        .await;
+    assert_eq!(announced.map(|(_, v)| v), Some(expected));
+
+    // Only a candidate folder.
+    let err = h.fail("install_cli", json!({ "dir": outside })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(!outside.join("gg").exists());
+
+    let cli = h.call("install_cli", json!({ "dir": bin })).await;
+    assert_eq!(cli["installed"], s(&bin.join("gg")));
+    assert_eq!(cli["shadowedBy"], "an alias for git log");
+    assert!(gg_core::cli::has_marker(&bin.join("gg")));
+    assert_eq!(
+        h.call("get_app_state", json!({})).await["cli"]["installed"],
+        s(&bin.join("gg"))
+    );
+
+    let cli = h.call("uninstall_cli", json!({})).await;
+    assert_eq!(cli["installed"], Value::Null);
+    assert_eq!(cli["removed"], json!([s(&bin.join("gg"))]));
+    assert!(!bin.join("gg").exists());
+    // Again: nothing to remove, and it says so.
+    let cli = h.call("uninstall_cli", json!({})).await;
+    assert_eq!(cli["removed"], json!([]));
+
+    let err = h.fail("uninstall_cli", json!({ "dir": bin })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let err = h.fail("install_cli", json!({})).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
+/// Without a login shell to ask, nothing is said to shadow the command.
+#[tokio::test]
+async fn the_gg_command_without_a_shell_check() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: None,
+        search_path: Some(root.path().as_os_str().to_owned()),
+        home: Some(root.path().join("home")),
+    });
+    let cli = h.call("get_app_state", json!({})).await["cli"].clone();
+    assert_eq!(
+        cli,
+        json!({ "installed": null, "shadowedBy": null, "candidates": [] })
+    );
+}
+
+/// `worktree_default_path` follows the `worktreePattern` setting; the worktree operations
+/// take no `expectWorktree` and run through `run_op` like the others.
+#[tokio::test]
+async fn worktree_default_path_and_worktree_ops_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("feature/a");
+    // Pushed: a worktree with commits on no remote would need a confirmation.
+    let _origin = repo.clone_as_remote();
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let base = dunce::canonicalize(repo.dir.path()).unwrap();
+    let path = h
+        .call(
+            "worktree_default_path",
+            json!({ "repoId": id, "branch": "feature/a" }),
+        )
+        .await;
+    assert_eq!(
+        path,
+        json!({ "path": base.join("repo.worktrees").join("feature-a").to_string_lossy(), "exists": false })
+    );
+    h.call(
+        "update_settings",
+        json!({ "patch": { "worktreePattern": "../trees/{branch}@{repo}" } }),
+    )
+    .await;
+    let path = h
+        .call(
+            "worktree_default_path",
+            json!({ "repoId": id, "branch": "feature/a" }),
+        )
+        .await;
+    let at = path["path"].as_str().unwrap().to_owned();
+    assert_eq!(
+        at,
+        base.join("trees").join("feature-a@repo").to_string_lossy()
+    );
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
+                "request": { "op": "worktree_add", "path": at, "branch": { "existing": "feature/a" } },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert!(Path::new(&at).join(".git").exists());
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 2, "confirmed": [],
+                "request": { "op": "worktree_remove", "path": at, "deleteBranch": false },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert!(!Path::new(&at).exists());
+    let err = h
+        .fail(
+            "worktree_default_path",
+            json!({ "repoId": id, "branch": "x", "pattern": "y" }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
+/// `worktree_files` lists a worktree's changed files by path; a commit runs through
+/// `run_op` with its paths, message and push flag, and the bindings of `expectHead` and
+/// `expectWorktree`.
+#[tokio::test]
+async fn worktree_files_and_commit_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.write("a.txt", "a\n");
+    repo.commit_all("one");
+    repo.write("a.txt", "edited\n");
+    repo.write("new file.txt", "x\n");
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let wt = first["activeWorktree"].clone();
+    let files = h
+        .call("worktree_files", json!({ "repoId": id, "path": wt }))
+        .await;
+    assert_eq!(
+        files,
+        json!({
+            "files": [
+                {"path": "a.txt", "origPath": null, "status": "M", "staged": false, "unstaged": true,
+                 "committable": true, "reason": null},
+                {"path": "new file.txt", "origPath": null, "status": "?", "staged": false,
+                 "unstaged": true, "committable": true, "reason": null},
+            ],
+            "truncated": false,
+            "mergeMessage": null,
+            // No remote: nowhere to push (final boundary review M7).
+            "pushRemote": null,
+        })
+    );
+    let err = h
+        .fail(
+            "worktree_files",
+            json!({ "repoId": id, "path": repo.dir.path() }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
+                "request": {
+                    "op": "commit", "paths": ["new file.txt"], "message": "add it", "push": false,
+                    "expectHead": first["head"], "expectWorktree": wt,
+                },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert!(
+        out["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Committed 1 file to main ("),
+        "{out:#}"
+    );
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "add it");
+    assert_eq!(out["committed"], json!(repo.git(&["rev-parse", "HEAD"])));
+}
+
+/// Pull requests through dispatch (a fake `gh`): `refresh` with `prs` loads them (a plain
+/// one does not); `pr_suggest` offers the base remembered in the repository's preferences;
+/// `pr_create` runs as an operation, its outcome carrying an `open_url` hint, and remembers
+/// the base in the preferences.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_requests_via_dispatch() {
+    let gh = gg_core::testutil::FakeGh::new();
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&["branch", "develop"]);
+    let origin = repo.clone_as_remote();
+    let url = "https://github.com/octo/cat.git";
+    repo.git(&["remote", "set-url", "origin", url]);
+    let key = format!("url.{}.insteadOf", origin.path().display());
+    repo.git(&["config", &key, url]);
+    repo.git(&["switch", "-q", "-c", "topic"]);
+    repo.commit("Topic work");
+    let h = harness().await;
+    h.core.set_tool_path(Some(gh.path()));
+    let snap = h.open_loaded(repo.path()).await;
+    let id = snap["repoId"].clone();
+    assert_eq!(snap["prs"]["status"], "unknown");
+
+    gh.reply("pr-list", 0, "[]", "");
+    h.call("refresh", json!({ "repoId": id })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(gh.calls().is_empty(), "a plain refresh loads none");
+    h.call("refresh", json!({ "repoId": id, "prs": true }))
+        .await;
+    let ready = h
+        .sink
+        .wait_for(TIMEOUT, |name, v| {
+            name == "repo-changed" && v["repoId"] == id && v["prs"]["status"] == "ready"
+        })
+        .await;
+    assert!(ready.is_some(), "loaded");
+
+    h.call(
+        "set_repo_prefs",
+        json!({ "repoId": id, "patch": { "prBase": "develop" } }),
+    )
+    .await;
+    let suggested = h
+        .call("pr_suggest", json!({ "repoId": id, "branch": "topic" }))
+        .await;
+    assert_eq!(suggested["base"], "develop");
+    assert_eq!(suggested["title"], "Topic work");
+    assert_eq!(
+        suggested["compareUrl"],
+        "https://github.com/octo/cat/compare/develop...topic?expand=1"
+    );
+
+    gh.reply("pr-create", 0, "https://github.com/octo/cat/pull/5\n", "");
+    let out = h
+        .call(
+            "run_op",
+            json!({
+                "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
+                "request": { "op": "pr_create", "branch": "topic", "base": "main",
+                             "title": "Topic", "body": "b", "draft": false,
+                             "comparePage": false },
+            }),
+        )
+        .await;
+    assert_eq!(out["status"], "done", "{out:#}");
+    assert_eq!(
+        out["hints"],
+        json!([{ "kind": "open_url", "url": "https://github.com/octo/cat/pull/5",
+                 "label": "Open pull request" }])
+    );
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let prefs = h.call("get_repo_prefs", json!({ "repoId": id })).await;
+        if prefs["prBase"] == "main" {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{prefs}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

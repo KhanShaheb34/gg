@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { branchMenu } from "./branchMenu";
-import { DETACHED, disabled, find, ids, inProgress, label, row, RUNNING, snap, UNBORN } from "./menuTestData";
+import { DETACHED, disabled, find, ids, inProgress, label, pullRequest, row, RUNNING, snap, UNBORN } from "./menuTestData";
+import type { PrState } from "../types";
 
-const LOCAL_IDS = ["checkout", "-", "rename", "delete", "-", "merge", "rebase", "-", "push", "pull", "-", "copy.name"];
+const LOCAL_IDS = [
+  "checkout", "-", "rename", "delete", "-", "merge", "rebase", "-", "push", "pull", "pr.create", "-", "worktree.create", "-", "copy.name",
+];
 const REMOTE_IDS = ["checkout", "fetch_into_local", "-", "merge", "-", "delete", "-", "copy.name"];
 
 describe("branchMenu, local branch", () => {
@@ -13,6 +16,7 @@ describe("branchMenu, local branch", () => {
     expect(find(items, "merge").label).toBe("Merge feature/x into main…");
     expect(find(items, "rebase").label).toBe("Rebase main onto feature/x…");
     expect(find(items, "delete").danger).toBe(true);
+    expect(find(items, "worktree.create").label).toBe("Create worktree from feature/x…");
   });
 
   it("the current branch: no checkout, delete or merge into itself", () => {
@@ -123,5 +127,59 @@ describe("branchMenu, remote branch", () => {
   it("with HEAD detached cannot merge, and while a merge is in progress cannot check out or merge", () => {
     expect(disabled(branchMenu(remote, row(), snap(DETACHED)))).toEqual(["merge"]);
     expect(disabled(branchMenu(remote, row(), snap(inProgress("merge"))))).toEqual(["checkout", "merge"]);
+  });
+});
+
+describe("branchMenu, pull requests", () => {
+  const prs = (status: PrState["status"], reason: PrState["reason"] = null): PrState => ({
+    status,
+    reason,
+    loadedAtMs: status === "ready" ? 1 : null,
+    partial: false,
+  });
+
+  it("a branch with an open pull request offers to open it, by number", () => {
+    const items = branchMenu(label({ pr: pullRequest({ number: 42 }) }), row(), snap({ prs: prs("ready") }));
+    expect(find(items, "pr.open").label).toBe("Open pull request #42");
+    expect(ids(items)).not.toContain("pr.create");
+  });
+
+  it("without one: Create pull request…, whether known (ready), not known yet, or loading", () => {
+    for (const state of [prs("ready"), prs("unknown"), prs("loading"), prs("ready", "failed"), prs("unavailable", "failed")]) {
+      const items = branchMenu(label(), row(), snap({ prs: state }));
+      expect(find(items, "pr.create").label).toBe("Create pull request…");
+      expect(find(items, "pr.create").disabledReason).toBeUndefined();
+    }
+  });
+
+  it("gh missing: still Create pull request… (the dialog pushes, then opens GitHub's compare page)", () => {
+    const items = branchMenu(label(), row(), snap({ prs: prs("unavailable", "no_gh") }));
+    expect(find(items, "pr.create").disabledReason).toBeUndefined();
+  });
+
+  it("gh signed out: still Create pull request…, whose dialog says it pushes and opens the compare page (Task 10 review minor 8)", () => {
+    const signedOut = { prs: prs("unavailable", "signed_out") };
+    for (const l of [label(), label({ upstream: "origin/feature/x", ahead: 0 }), label({ upstream: "origin/feature/x", ahead: 2 })]) {
+      const items = branchMenu(l, row(), snap({ ...signedOut, remoteBranches: ["origin/feature/x"] }));
+      expect(find(items, "pr.create").label).toBe("Create pull request…");
+      expect(find(items, "pr.create").disabledReason).toBeUndefined();
+      expect(ids(items)).not.toContain("pr.compare");
+    }
+  });
+
+  it("disabled with the plain reason when nothing can be made: no GitHub remote, no remote at all", () => {
+    const notGithub = branchMenu(label(), row(), snap({ prs: prs("unavailable", "not_github") }));
+    expect(find(notGithub, "pr.create").disabledReason).toBe("This remote is not on GitHub");
+    const none = branchMenu(label(), row(), snap({ remotes: [], remoteBranches: [] }));
+    expect(find(none, "pr.create").disabledReason).toBe("This repository has no remote");
+  });
+
+  it("a remote branch offers only its open pull request, when it has one", () => {
+    const remote = label({ kind: "remote", name: "origin/feature/x" });
+    expect(ids(branchMenu(remote, row(), snap()))).not.toContain("pr.open");
+    expect(ids(branchMenu(remote, row(), snap())).filter((id) => id.startsWith("pr."))).toEqual([]);
+    const withPr = branchMenu({ ...remote, pr: pullRequest({ number: 7 }) }, row(), snap());
+    expect(ids(withPr)).toEqual(["checkout", "fetch_into_local", "-", "merge", "-", "pr.open", "-", "delete", "-", "copy.name"]);
+    expect(find(withPr, "pr.open").label).toBe("Open pull request #7");
   });
 });

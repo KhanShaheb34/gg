@@ -46,6 +46,7 @@ fn cherry_pick(hash: &str) -> OpRequest {
         mainline: None,
         no_commit: false,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -54,6 +55,7 @@ fn revert(hash: &str) -> OpRequest {
         hash: hash.to_owned(),
         mainline: None,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -62,6 +64,7 @@ fn create_branch_and_checkout(name: &str, at: &str) -> OpRequest {
         name: name.to_owned(),
         at: at.to_owned(),
         checkout: true,
+        expect_worktree: here_wt(),
     }
 }
 
@@ -462,6 +465,7 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
         squash: false,
         no_commit: false,
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     assert_eq!(h.run(id, merge).await.status, OpStatus::Stopped);
     let any = repo.git(&["rev-parse", "feature"]);
@@ -479,6 +483,7 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
     let rebase = OpRequest::Rebase {
         onto: "feature".into(),
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     let stopped = h.run(id, rebase).await;
     assert_eq!(stopped.status, OpStatus::Stopped);
@@ -514,6 +519,7 @@ async fn a_skip_for_another_commit_is_refused() {
     let rebase = OpRequest::Rebase {
         onto: "target".into(),
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     let stopped = h.run(id, rebase).await;
     assert_eq!(stopped.status, OpStatus::Stopped, "{stopped:?}");
@@ -560,6 +566,7 @@ async fn a_rebase_skip_that_would_discard_other_changes_asks_first() {
     let rebase = OpRequest::Rebase {
         onto: "feature".into(),
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     assert_eq!(h.run(id, rebase).await.status, OpStatus::Stopped);
     let main_side = repo.git(&["rev-parse", "main"]);
@@ -624,7 +631,7 @@ async fn continue_with_nothing_in_progress_is_nothing_to_do() {
 
     for request in [continue_op(false), abort()] {
         let err =
-            h.m.run_op(id, request.clone(), &[])
+            h.m.run_op(id, in_wt(repo.path(), request.clone()), &[])
                 .await
                 .expect_err("nothing to continue or abort");
         assert_eq!(err.code, ErrorCode::NothingToDo, "{request:?}");
@@ -667,6 +674,7 @@ async fn what_comes_in_is_named_as_the_app_asked_for_it() {
             OpRequest::Rebase {
                 onto: "main-copy".into(),
                 expect_head: here(),
+                expect_worktree: here_wt(),
             },
         )
         .await;
@@ -728,6 +736,94 @@ async fn abort_restores_the_branch() {
     }
 }
 
+/// `main` and `feature` both change `clash.txt` after `base`, and `feature` changes
+/// `other.txt`; on `main`, `other.txt` and `notes.txt` are changed and not committed. HEAD on
+/// `main`.
+fn clashing_with_changes(repo: &TestRepo) {
+    repo.write("clash.txt", "base\n");
+    repo.write("other.txt", "base\n");
+    repo.write("notes.txt", "base\n");
+    repo.commit_all("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("clash.txt", "feature\n");
+    repo.write("other.txt", "feature\n");
+    repo.commit_all("feature side");
+    repo.checkout("main");
+    repo.write("clash.txt", "main\n");
+    repo.commit_all("main side");
+    repo.write("other.txt", "mine\n");
+    repo.write("notes.txt", "mine\n");
+}
+
+/// A rebase with `rebase.autoStash` stops on a conflict; once it is continued or the commit
+/// skipped, git puts the auto-stashed changes back, they conflict with the result (`other.txt`),
+/// and git keeps them in the stash and exits 0: the outcome says so (Task 12 review I2). With
+/// git's words ignored, the stash's state alone tells it (review minor 2).
+#[tokio::test]
+async fn continue_and_skip_say_when_auto_stashed_changes_stay_in_the_stash() {
+    for (how, by_state) in [("continue", false), ("skip", false), ("continue", true)] {
+        let repo = TestRepo::new();
+        clashing_with_changes(&repo);
+        repo.git(&["config", "rebase.autoStash", "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+        let main_side = repo.git(&["rev-parse", "main"]);
+        let out = h.run(id, rebase("feature")).await;
+        assert_eq!(out.status, OpStatus::Stopped, "{how}: {out:?}");
+
+        gg_core::testutil::AUTOSTASH_BY_STATE_ONLY
+            .store(by_state, std::sync::atomic::Ordering::Relaxed);
+        let out = if how == "continue" {
+            repo.write("clash.txt", "resolved\n");
+            h.run(id, continue_op(false)).await
+        } else {
+            h.run(id, skip(&main_side)).await
+        };
+        gg_core::testutil::AUTOSTASH_BY_STATE_ONLY
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(out.status, OpStatus::Done, "{how}: {out:?}");
+        assert!(out.snapshot.in_progress.is_none(), "{how}");
+        assert!(
+            out.message.contains("kept in the stash"),
+            "{how} ({by_state}): {}",
+            out.message
+        );
+        assert!(repo.git(&["stash", "list"]).contains("autostash"), "{how}");
+    }
+}
+
+/// `merge --abort` puts auto-stashed changes back too: when a file they change was edited
+/// meanwhile, git cannot, keeps them in the stash, and the abort says so instead of "back as
+/// it was" (Task 12 review I2). An abort whose auto-stash comes back cleanly says nothing of it.
+#[tokio::test]
+async fn abort_says_when_auto_stashed_changes_stay_in_the_stash() {
+    for edited_meanwhile in [true, false] {
+        let repo = TestRepo::new();
+        clashing_with_changes(&repo);
+        repo.git(&["config", "merge.autoStash", "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+        let out = h.run(id, merge_branch("feature")).await;
+        assert_eq!(out.status, OpStatus::Stopped, "{out:?}");
+        if edited_meanwhile {
+            repo.write("notes.txt", "edited while stopped\n");
+        }
+        let out = h.run_confirmed(id, abort(), &[DangerKind::Abort]).await;
+        assert_eq!(out.status, OpStatus::Done, "{edited_meanwhile}: {out:?}");
+        assert_eq!(
+            out.message.contains("kept in the stash"),
+            edited_meanwhile,
+            "{edited_meanwhile}: {}",
+            out.message
+        );
+        assert_eq!(
+            repo.git(&["stash", "list"]).contains("autostash"),
+            edited_meanwhile
+        );
+    }
+}
+
 // ---- Other operations meanwhile ----
 
 #[tokio::test]
@@ -756,6 +852,7 @@ async fn other_operations_explain_while_in_progress() {
             branch: "main".into(),
             mode: gg_core::dto::PullMode::Default,
             expect_head: here(),
+            expect_worktree: here_wt(),
         },
     ] {
         let out = h.run(id, request.clone()).await;
@@ -808,7 +905,7 @@ async fn open_in_editor_rejects_paths_outside_the_worktree() {
     std::os::unix::fs::symlink(outside.path(), repo.path().join("link")).unwrap();
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    h.m.record_editor_launches();
+    h.m.record_launches();
 
     let escaping = outside.path().join("secret.txt");
     let escaping = escaping.to_str().unwrap();
@@ -831,7 +928,7 @@ async fn open_in_editor_rejects_paths_outside_the_worktree() {
             .await
             .expect_err("missing");
     assert_eq!(err.code, ErrorCode::PathMissing, "{err:?}");
-    assert!(h.m.editor_launches().is_empty(), "nothing was opened");
+    assert!(h.m.launches().is_empty(), "nothing was opened");
 
     let root = dunce::canonicalize(repo.path()).unwrap();
     let editor = Some("my-editor");
@@ -843,7 +940,7 @@ async fn open_in_editor_rejects_paths_outside_the_worktree() {
         .unwrap();
     h.m.open_in_editor(id, None, editor).await.unwrap();
     let opened: Vec<String> =
-        h.m.editor_launches()
+        h.m.launches()
             .into_iter()
             .map(|argv| argv.last().cloned().unwrap())
             .collect();
@@ -865,7 +962,7 @@ async fn editor_command_is_split_without_a_shell() {
     repo.commit_all("one");
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    h.m.record_editor_launches();
+    h.m.record_launches();
     let file = dunce::canonicalize(repo.path().join("a.txt"))
         .unwrap()
         .to_string_lossy()
@@ -888,16 +985,16 @@ async fn editor_command_is_split_without_a_shell() {
             note.as_deref().unwrap_or("").contains("Settings"),
             "{note:?}"
         );
-        let opener = if cfg!(windows) {
+        if cfg!(windows) {
+            // Explorer reads its own command line: the folder is given quoted, as written.
             let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-            format!(r"{windows}\explorer.exe")
+            vec![format!(r"{windows}\explorer.exe"), format!("\"{root}\"")]
         } else {
-            "xdg-open".to_owned()
-        };
-        vec![opener, root]
+            vec!["xdg-open".to_owned(), root]
+        }
     };
     assert_eq!(
-        h.m.editor_launches(),
+        h.m.launches(),
         [
             vec![
                 "my-editor".to_owned(),

@@ -5,22 +5,36 @@ import { isTauri } from "./platform";
 import type {
   AppState,
   BodyHits,
+  CliState,
   CommandRecord,
   CommitDetails,
   Confirmed,
   CoreErrorDto,
+  InputField,
   OpOutcome,
   OpenedRepo,
   OpRequest,
+  PrSuggestion,
   Recent,
   RepoPrefs,
   RepoSnapshot,
   RowsPage,
+  ExternalRequest,
   Settings,
   ViewOptions,
+  WorktreeFiles,
+  WorktreePath,
 } from "./types";
 
-export type EventName = "repo-changed" | "repo-error" | "paths-opened" | "op-progress";
+export type EventName =
+  | "repo-changed"
+  | "repo-error"
+  | "paths-opened"
+  | "op-progress"
+  | "cli-changed"
+  | "menu-install-cli"
+  | "menu-settings"
+  | "menu-shortcuts";
 
 /** Files or folders dragged onto the window (Tauri only). `drop` carries their paths. */
 export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "drop"; paths: string[] };
@@ -29,12 +43,15 @@ export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "d
 export class CoreError extends Error {
   code: CoreErrorDto["code"];
   detail: string | null;
+  /** The form field it is about, when the core says. */
+  field: InputField | null;
 
   constructor(dto: CoreErrorDto) {
     super(dto.message);
     this.name = "CoreError";
     this.code = dto.code;
     this.detail = dto.detail;
+    this.field = dto.field ?? null;
   }
 }
 
@@ -283,11 +300,20 @@ export const api = {
   },
   updateSettings: (patch: Partial<Settings>) => call<Settings>("update_settings", { patch }),
   removeRecent: (path: string) => call<Recent[]>("remove_recent", { path }),
+  /** Puts every setting back to its default ("Reset to defaults"); the settings after. */
+  restoreDefaultSettings: () => call<Settings>("restore_default_settings"),
+  /** Opens gg's home page or source code in the browser, or shows the settings file in the file manager. */
+  openAppLink: (link: "home" | "source" | "settingsFile") => call<{ note: string | null }>("open_app_link", { link }),
   /** Moves an unreadable settings file aside, so settings are saved again. */
   async resetSettings(): Promise<void> {
     await call("reset_settings");
   },
-  openRepo: (path: string) => call<OpenedRepo>("open_repo", { path }),
+  /**
+   * Opens the repository holding `path`. A worktree's folder makes that worktree active (the main
+   * one's too); `restore` (a tab of the last session) keeps the worktree remembered as active.
+   */
+  openRepo: (path: string, restore = false) =>
+    call<OpenedRepo>("open_repo", restore ? { path, restore } : { path }),
   async closeRepo(repoId: number): Promise<void> {
     await call("close_repo", { repoId });
   },
@@ -307,7 +333,9 @@ export const api = {
   async fetch(repoId: number): Promise<void> {
     await call("fetch", { repoId });
   },
-  refresh: (repoId: number) => call<RepoSnapshot>("refresh", { repoId }),
+  /** Re-reads the repository; `prs`: the user asked, so the pull requests load too (at most once a minute). */
+  refresh: (repoId: number, prs = false) => call<RepoSnapshot>("refresh", prs ? { repoId, prs } : { repoId }),
+  prSuggest: (repoId: number, branch: string) => call<PrSuggestion>("pr_suggest", { repoId, branch }),
   async setWindowFocused(focused: boolean): Promise<void> {
     await call("set_window_focused", { focused });
   },
@@ -334,13 +362,36 @@ export const api = {
    */
   stopOp: (repoId: number, opId: number) => call<boolean>("stop_op", { repoId, opId }),
   getRepoPrefs: (repoId: number) => call<RepoPrefs>("get_repo_prefs", { repoId }),
-  setRepoPrefs: (repoId: number, patch: Partial<RepoPrefs>) => call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
+  setRepoPrefs: (repoId: number, patch: Partial<Pick<RepoPrefs, "mergeNoFf" | "sidePanel">>) =>
+    call<RepoPrefs>("set_repo_prefs", { repoId, patch }),
+  /** Makes the worktree at `path` the active one (refused while an operation runs or waits there). */
+  setActiveWorktree: (repoId: number, path: string) => call<RepoSnapshot>("set_active_worktree", { repoId, path }),
+  /** The changed files of the worktree at `path` (any of the repository's, not only the active one). */
+  worktreeFiles: (repoId: number, path: string) => call<WorktreeFiles>("worktree_files", { repoId, path }),
+  /** Where a new worktree for `branch` goes by default (the `worktreePattern` setting). */
+  worktreeDefaultPath: (repoId: number, branch: string) =>
+    call<WorktreePath>("worktree_default_path", { repoId, branch }),
   /**
    * Opens `path` (relative to the worktree), or the worktree folder when null, in the editor.
    * Resolves to a note to show when something else was opened (no editor command is set:
    * the worktree folder instead of the file), else null.
    */
   openInEditor: (repoId: number, path: string | null) => call<string | null>("open_in_editor", { repoId, path }),
+  /**
+   * Opens worktree `path` of repository `repoId` (any of its worktrees; the active one when
+   * omitted) in the editor, a terminal or the file manager, or (`url`) the `https://` page
+   * `url` in the browser. Resolves to a note to show when something else was opened, else null.
+   */
+  openExternal: (repoId: number, request: ExternalRequest) =>
+    call<{ note: string | null }>("open_external", { repoId, ...request }),
+  /**
+   * Writes the `gg` launcher into `dir` (one of `CliState.candidates`), replacing only a
+   * launcher the app wrote; resolves to the command's state after.
+   */
+  installCli: (dir: string) => call<CliState>("install_cli", { dir }),
+  /** Removes the launchers the app wrote on the PATH; resolves to the command's state after. */
+  /** Removes the launchers the app wrote; `removed`: the files that went (none: nothing to remove). */
+  uninstallCli: () => call<CliState & { removed: string[] }>("uninstall_cli", {}),
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */

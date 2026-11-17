@@ -53,6 +53,7 @@ async fn checkout_remote_makes_a_tracking_branch() {
     let request = OpRequest::CheckoutRemote {
         remote_branch: "origin/topic".into(),
         local_name: "mine".into(),
+        expect_worktree: here_wt(),
     };
     let out = h.run(id, request).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
@@ -78,6 +79,7 @@ async fn checkout_commit_detaches_head() {
             id,
             OpRequest::CheckoutCommit {
                 hash: first.clone(),
+                expect_worktree: here_wt(),
             },
         )
         .await;
@@ -100,6 +102,7 @@ async fn create_branch_with_checkout_switches_to_it() {
         name: "fix".into(),
         at: first.clone(),
         checkout: true,
+        expect_worktree: here_wt(),
     };
     let out = h.run(id, request).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
@@ -123,6 +126,7 @@ async fn rename_branch_renames_it_and_keeps_head_on_it() {
     let rename = |branch: &str, new_name: &str| OpRequest::RenameBranch {
         branch: branch.into(),
         new_name: new_name.into(),
+        expect_worktree: here_wt(),
     };
     let out = h.run(id, rename("old", "new")).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
@@ -134,7 +138,10 @@ async fn rename_branch_renames_it_and_keeps_head_on_it() {
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(current_branch(&repo).as_deref(), Some("trunk"));
 
-    let err = h.m.run_op(id, rename("new", "-x"), &[]).await.unwrap_err();
+    let err =
+        h.m.run_op(id, in_wt(repo.path(), rename("new", "-x")), &[])
+            .await
+            .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadName);
 }
 
@@ -152,10 +159,12 @@ async fn an_existing_branch_name_explains() {
     let rename = OpRequest::RenameBranch {
         branch: "a".into(),
         new_name: "b".into(),
+        expect_worktree: here_wt(),
     };
     let remote = OpRequest::CheckoutRemote {
         remote_branch: "origin/a".into(),
         local_name: "b".into(),
+        expect_worktree: here_wt(),
     };
     for request in [rename, remote] {
         let out = h.run(id, request).await;
@@ -256,6 +265,31 @@ async fn delete_merged_branch_runs_without_confirmation() {
         "{:?}",
         op_records(&h.log, &out)
     );
+}
+
+/// Final review M9: the confirmation of one unmerged branch is not taken for another at the
+/// same tip (`git branch b2 b1`): the token names the branch.
+#[tokio::test]
+async fn a_confirmation_for_one_branch_is_not_taken_for_another_at_the_same_tip() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.branch("b1");
+    repo.checkout("b1");
+    repo.commit("two");
+    repo.checkout("main");
+    repo.git(&["branch", "b2", "b1"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let asked = h.run(id, delete_branch("b1")).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:?}");
+    let seen: Vec<gg_core::dto::Confirmed> = asked
+        .dangers
+        .iter()
+        .map(gg_core::dto::Confirmed::from)
+        .collect();
+    let out = h.run_with(id, delete_branch("b2"), &seen).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/b2"]));
 }
 
 #[tokio::test]
@@ -766,10 +800,39 @@ async fn autostash_that_cannot_be_reapplied_is_said() {
         );
         let detail = out.detail.as_deref().unwrap_or_default();
         assert!(
-            detail.contains("Applying autostash resulted in conflicts"),
+            detail.contains("resulted in conflicts"),
             "{config}: {detail}"
         );
         assert!(repo.git(&["stash", "list"]).contains("autostash"));
+    }
+}
+
+/// The stash is read before and after: an entry the user already had, even one git's
+/// reflog calls "autostash", is not taken for changes this op kept there, and auto-stashed
+/// changes that are put back cleanly are not mentioned.
+#[tokio::test]
+async fn an_older_autostash_entry_is_not_taken_for_this_ops() {
+    for (config, request) in [
+        ("rebase.autoStash", rebase("feature")),
+        ("merge.autoStash", merge_branch("feature")),
+    ] {
+        let repo = TestRepo::new();
+        dirty_against_feature(&repo);
+        // An entry of the user's own, stored under git's own name for one.
+        let kept = repo.git(&["stash", "create"]);
+        repo.git(&["stash", "store", "-m", "autostash", kept.trim()]);
+        // A change that does not touch what `feature` changes, auto-stashed and put back.
+        repo.write("clash.txt", "base\n");
+        repo.write("other.txt", "mine\n");
+        repo.git(&["add", "other.txt"]);
+        repo.git(&["config", config, "true"]);
+        let h = harness().await;
+        let id = h.open(repo.path()).await.repo_id;
+
+        let out = h.run(id, request).await;
+        assert_eq!(out.status, OpStatus::Done, "{config}: {out:?}");
+        assert!(!out.message.contains("stash"), "{config}: {}", out.message);
+        assert_eq!(repo.git(&["stash", "list"]).lines().count(), 1, "{config}");
     }
 }
 
@@ -879,6 +942,7 @@ fn cherry_pick(hash: &str, mainline: Option<u32>, no_commit: bool) -> OpRequest 
         mainline,
         no_commit,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -887,6 +951,7 @@ fn revert(hash: &str, mainline: Option<u32>) -> OpRequest {
         hash: hash.to_owned(),
         mainline,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -1006,9 +1071,13 @@ async fn cherry_pick_merge_commit_without_mainline_explains() {
         ]));
 
     let err =
-        h.m.run_op(id, cherry_pick(&merge_commit, Some(0), false), &[])
-            .await
-            .unwrap_err();
+        h.m.run_op(
+            id,
+            in_wt(repo.path(), cherry_pick(&merge_commit, Some(0), false)),
+            &[],
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
@@ -1239,6 +1308,7 @@ fn create_tag(name: &str, hash: &str, message: Option<&str>) -> OpRequest {
         name: name.to_owned(),
         hash: hash.to_owned(),
         message: message.map(str::to_owned),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -1275,7 +1345,7 @@ async fn create_tag_lightweight_and_annotated() {
 
     // A taken name is a bad name, as for a branch: the dialog shows it beside the field.
     let err =
-        h.m.run_op(id, create_tag("v1", &second, None), &[])
+        h.m.run_op(id, in_wt(repo.path(), create_tag("v1", &second, None)), &[])
             .await
             .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadName);
@@ -1287,15 +1357,19 @@ async fn create_tag_lightweight_and_annotated() {
 
     for name in ["-v3", "a..b", "HEAD"] {
         let err =
-            h.m.run_op(id, create_tag(name, &first, None), &[])
+            h.m.run_op(id, in_wt(repo.path(), create_tag(name, &first, None)), &[])
                 .await
                 .unwrap_err();
         assert_eq!(err.code, ErrorCode::BadName, "{name}");
     }
     let err =
-        h.m.run_op(id, create_tag("v4", &first, Some("  ")), &[])
-            .await
-            .unwrap_err();
+        h.m.run_op(
+            id,
+            in_wt(repo.path(), create_tag("v4", &first, Some("  "))),
+            &[],
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
@@ -1350,18 +1424,24 @@ async fn empty_repository() {
         OpRequest::CheckoutRemote {
             remote_branch: "origin/main".into(),
             local_name: "x".into(),
+            expect_worktree: here_wt(),
         },
-        OpRequest::CheckoutCommit { hash: hash.into() },
+        OpRequest::CheckoutCommit {
+            hash: hash.into(),
+            expect_worktree: here_wt(),
+        },
         create_branch("x", hash),
         OpRequest::CreateBranch {
             name: "x".into(),
             at: hash.into(),
             checkout: true,
+            expect_worktree: here_wt(),
         },
         // (Renaming the unborn branch itself works.)
         OpRequest::RenameBranch {
             branch: "nope".into(),
             new_name: "trunk".into(),
+            expect_worktree: here_wt(),
         },
         delete_branch("main"),
         merge_branch("main"),
@@ -1381,11 +1461,19 @@ async fn empty_repository() {
         let shown = format!("{request:?}");
         // Sent as the UI would, confirming what the core asks to confirm.
         let request = h.at_head(id, request).await;
-        let first = tokio::time::timeout(TIMEOUT, h.m.run_op(id, request.clone(), &[])).await;
+        let first = tokio::time::timeout(
+            TIMEOUT,
+            h.m.run_op(id, in_wt(repo.path(), request.clone()), &[]),
+        )
+        .await;
         let result = match first {
             Ok(Ok(out)) if out.status == OpStatus::NeedsConfirmation => {
                 let confirmed: Vec<Confirmed> = out.dangers.iter().map(Confirmed::from).collect();
-                tokio::time::timeout(TIMEOUT, h.m.run_op(id, request, &confirmed)).await
+                tokio::time::timeout(
+                    TIMEOUT,
+                    h.m.run_op(id, in_wt(repo.path(), request), &confirmed),
+                )
+                .await
             }
             other => other,
         };
@@ -1513,30 +1601,41 @@ async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
     let mark = h.last_log_id();
 
     let requests = [
-        OpRequest::CheckoutCommit { hash: side.clone() },
+        OpRequest::CheckoutCommit {
+            hash: side.clone(),
+            expect_worktree: here_wt(),
+        },
         OpRequest::CreateBranch {
             name: "fresh".into(),
             at: side.clone(),
             checkout: true,
+            expect_worktree: here_wt(),
         },
         OpRequest::CheckoutRemote {
             remote_branch: "origin/side".into(),
             local_name: "side-copy".into(),
+            expect_worktree: here_wt(),
         },
         OpRequest::StashApply {
             stash: stash.clone(),
+            expect_head: here(),
+            expect_worktree: here_wt(),
         },
         OpRequest::StashPop {
             stash: stash.clone(),
+            expect_head: here(),
+            expect_worktree: here_wt(),
         },
         OpRequest::StashBranch {
             stash: stash.clone(),
             name: "from-stash".into(),
+            expect_worktree: here_wt(),
         },
         OpRequest::Pull {
             branch: "main".into(),
             mode: PullMode::Default,
             expect_head: here(),
+            expect_worktree: here_wt(),
         },
         merge(MergeTargetKind::Branch, "side", false, true, false),
         merge_branch("side"),
@@ -1547,11 +1646,13 @@ async fn unexplained_conflicts_refuse_operations_that_touch_the_tree() {
             mainline: None,
             no_commit: false,
             expect_head: here(),
+            expect_worktree: here_wt(),
         },
         OpRequest::Revert {
             hash: side.clone(),
             mainline: None,
             expect_head: here(),
+            expect_worktree: here_wt(),
         },
     ];
     for request in requests {
@@ -1586,6 +1687,7 @@ async fn unexplained_conflicts_do_not_stop_a_confirmed_hard_reset() {
         hash: head.clone(),
         mode: ResetMode::Hard,
         expect_head: here(),
+        expect_worktree: here_wt(),
     };
     let out = h.run_confirmed(id, reset, &[DangerKind::HardReset]).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
@@ -1644,9 +1746,11 @@ async fn a_branch_deleted_underneath_fails_plainly_and_touches_nothing_else() {
         OpRequest::RenameBranch {
             branch: "gone".into(),
             new_name: "renamed".into(),
+            expect_worktree: here_wt(),
         },
         OpRequest::DeleteBranch {
             branch: "gone".into(),
+            expect_worktree: here_wt(),
         },
         OpRequest::Merge {
             target: gg_core::dto::MergeTarget {
@@ -1657,10 +1761,12 @@ async fn a_branch_deleted_underneath_fails_plainly_and_touches_nothing_else() {
             squash: false,
             no_commit: false,
             expect_head: here(),
+            expect_worktree: here_wt(),
         },
         OpRequest::Rebase {
             onto: "gone".into(),
             expect_head: here(),
+            expect_worktree: here_wt(),
         },
         OpRequest::Push {
             branch: "gone".into(),
@@ -1707,6 +1813,7 @@ async fn a_file_named_like_the_commit_is_no_ambiguity() {
             id,
             OpRequest::CheckoutCommit {
                 hash: first.clone(),
+                expect_worktree: here_wt(),
             },
         )
         .await;

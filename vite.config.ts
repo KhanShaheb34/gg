@@ -6,6 +6,13 @@ const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   plugins: [svelte()],
+  build: {
+    rollupOptions: {
+      // When the bundle starts running, for the perf build's start-up marks (a number on
+      // the window; see src/lib/perf/startMarks.ts).
+      output: { banner: "globalThis.__GG_T_BUNDLE__ ??= performance.now();" },
+    },
+  },
   // Keep Rust compiler errors visible when run under `tauri dev`.
   clearScreen: false,
   server: {

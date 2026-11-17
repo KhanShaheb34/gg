@@ -1,13 +1,15 @@
 [package]
 name = "gg-core"
-description = "Git graph core: reads repositories through the git CLI and lays out the commit graph"
+description = "gg core: reads repositories through the git CLI and lays out the commit graph"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [features]
 # Exposes `gg_core::testutil` (temp git repositories) to integration tests and dependent crates.
-testutil = ["dep:tempfile"]
+testutil = ["dep:tempfile", "tool-path"]
+# Lets the devserver and tests say where `gh` and `ssh` are (a fake of each). Never in the app.
+tool-path = []
 
 [dependencies]
 dunce = "1"
@@ -16,11 +18,24 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = { version = "3", optional = true }
 thiserror = "2"
+url = "2"
 tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 [target.'cfg(unix)'.dependencies]
 # killpg for a fetch that timed out (already in the build through tokio).
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Job objects that end a child's whole process tree, file identity, process liveness
+# (already in the build through tokio and notify).
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # Self dev-dependency: turns on `testutil` for the integration tests in `tests/`.

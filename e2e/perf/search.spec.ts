@@ -18,7 +18,7 @@ import type { ScrollSummary } from "../../src/lib/perf/scrollProbe";
 import { startDevserver, stopDevserver } from "../fixtures";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
-const REPO = process.env.GG_PERF_R20K ?? path.join(homedir(), ".cache/gitgraph-perf/r20k");
+const REPO = process.env.GG_PERF_R20K ?? path.join(homedir(), ".cache/gg-perf/r20k");
 const THROTTLE = Number(process.env.GG_PERF_THROTTLE ?? "1");
 
 test.skip(process.env.GG_PERF !== "1", "performance run: set GG_PERF=1");

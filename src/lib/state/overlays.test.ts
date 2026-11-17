@@ -39,4 +39,16 @@ describe("dialogs", () => {
   it("gives each dialog its own id", () => {
     expect(overlays.openDialog(Form, {})).not.toBe(overlays.openDialog(Form, {}));
   });
+
+  it("a native menu's command is ignored while a dialog is open, as the keys are (Task 10 review minor 9)", () => {
+    const action = vi.fn();
+    overlays.fromAppMenu(action);
+    expect(action).toHaveBeenCalledTimes(1);
+    const id = overlays.openDialog(Form, {});
+    overlays.fromAppMenu(action);
+    expect(action).toHaveBeenCalledTimes(1);
+    overlays.closeDialog(id);
+    overlays.fromAppMenu(action);
+    expect(action).toHaveBeenCalledTimes(2);
+  });
 });

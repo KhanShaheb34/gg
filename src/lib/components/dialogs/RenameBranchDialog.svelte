@@ -14,10 +14,12 @@
     branch: string;
     /** Local branches: their names are taken. */
     branches: string[];
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, branch, branches, close }: Props = $props();
+  let { repoId, branch, branches, worktree, close }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   let name = $state(branch);
@@ -27,7 +29,7 @@
   const problem = $derived(unchanged ? null : named.problem(name, refNameProblem(name, branches, "branch")));
 
   function submit() {
-    void named.submit(name, { op: "rename_branch", branch, newName: name });
+    void named.submit(name, { op: "rename_branch", branch, newName: name, expectWorktree: worktree });
   }
 </script>
 

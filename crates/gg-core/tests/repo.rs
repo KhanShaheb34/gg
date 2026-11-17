@@ -56,6 +56,9 @@ impl Harness {
         tokio::time::timeout(TIMEOUT, self.m.wait_status(snap.repo_id))
             .await
             .expect("status read");
+        tokio::time::timeout(TIMEOUT, self.m.wait_background(snap.repo_id))
+            .await
+            .expect("background reads end");
         self.m.snapshot(snap.repo_id).await.unwrap()
     }
 
@@ -135,7 +138,10 @@ fn snapshot_from_json(v: Value) -> RepoSnapshot {
 }
 
 fn canonical(p: &Path) -> String {
-    fs::canonicalize(p).unwrap().to_string_lossy().into_owned()
+    dunce::canonicalize(p)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn all_refs() -> ViewOptions {
@@ -171,6 +177,7 @@ fn label(kind: RefKind, name: &str) -> RefLabel {
         upstream: None,
         ahead: 0,
         behind: 0,
+        pr: None,
     }
 }
 
@@ -1372,11 +1379,22 @@ async fn events_emitted() {
         .expect("a final repo-changed event");
     let changed = h.repo_changed(id);
     assert!(changed.len() >= 2, "{} events", changed.len());
-    let last = changed.last().unwrap();
-    assert!(!last.loading);
-    assert_eq!(last.total_rows, 1200);
-    assert!(changed[..changed.len() - 1].iter().all(|s| s.loading));
-    assert!(changed[0].total_rows >= 500);
+    // Loading until the log is read; then loaded (a status read or a worktree's state may
+    // follow, loaded too).
+    let loaded = changed.iter().position(|s| !s.loading).unwrap();
+    assert!(loaded >= 1);
+    assert_eq!(changed[loaded].total_rows, 1200);
+    assert!(changed[loaded..].iter().all(|s| !s.loading));
+    // The view only grows while it loads. (The loader's own progress comes after the first
+    // 500 rows, `loader::tests::progress_waits_for_500_rows_then_throttles`; a worktree read
+    // in the background may emit before that, with fewer rows, on a slow machine.)
+    assert!(
+        changed
+            .windows(2)
+            .all(|w| w[0].total_rows <= w[1].total_rows),
+        "{:?}",
+        changed.iter().map(|s| s.total_rows).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

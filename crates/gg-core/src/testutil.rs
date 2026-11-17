@@ -20,6 +20,12 @@ use tokio::sync::watch;
 
 use crate::EventSink;
 
+/// Tests only: while set, an op does not look at git's words for auto-stashed changes it
+/// could not put back (see `ops::local::autostash_note`), so the stash's state alone must
+/// tell, as it must for a git that words it differently.
+pub static AUTOSTASH_BY_STATE_ONLY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Date of the first commit in every `TestRepo` (unix seconds).
 const FIRST_COMMIT_TIME: i64 = 1_700_000_000;
 /// Seconds between consecutive commits.
@@ -96,7 +102,10 @@ impl TestRepo {
             .prefix("gg-test-")
             .tempdir()
             .expect("create temp dir");
-        let root = dir.path().join(name);
+        // Canonical, as the core reports paths: macOS's temp folder is behind a link, and
+        // Windows' may be a short (8.3) name; never with a `\\?\` prefix (dunce).
+        let base = dunce::canonicalize(dir.path()).expect("resolve temp dir");
+        let root = base.join(name);
         fs::create_dir_all(&root).expect("create repo dir");
         let global_config = dir.path().join("empty-gitconfig");
         fs::write(&global_config, "").expect("write empty global git config");
@@ -254,21 +263,27 @@ impl TestRepo {
     /// keep it alive for as long as the remote is used.
     #[must_use]
     pub fn clone_as_remote(&self) -> TestRepo {
-        let origin = Self::in_new_tempdir("origin.git");
+        self.clone_as_remote_named("origin")
+    }
+
+    /// Like [`TestRepo::clone_as_remote`], as remote `name`.
+    #[must_use]
+    pub fn clone_as_remote_named(&self, name: &str) -> TestRepo {
+        let origin = Self::in_new_tempdir(&format!("{name}.git"));
         origin.git(&["init", "-q", "--bare", "-b", "main"]);
         origin.no_background_maintenance();
         self.git_with(
             &[
                 OsStr::new("remote"),
                 OsStr::new("add"),
-                OsStr::new("origin"),
+                OsStr::new(name),
                 origin.path().as_os_str(),
             ],
             &[],
         );
-        self.git(&["push", "-q", "origin", "--all"]);
-        self.git(&["push", "-q", "origin", "--tags"]);
-        self.git(&["fetch", "-q", "origin"]);
+        self.git(&["push", "-q", name, "--all"]);
+        self.git(&["push", "-q", name, "--tags"]);
+        self.git(&["fetch", "-q", name]);
         origin
     }
 
@@ -430,5 +445,224 @@ impl EventSink for RecordingSink {
     fn emit(&self, name: &str, payload: Value) {
         self.lock().push((name.to_owned(), payload));
         self.count.send_modify(|n| *n += 1);
+    }
+}
+
+/// A stand-in for the GitHub CLI (`gh`), for tests that must never reach a network host: a
+/// shell script `gh` in a folder of its own (put first on the runner's tool `PATH` with
+/// [`FakeGh::path`]) that records each call (its arguments, its environment, its working
+/// folder, what it read on stdin, whether it had a terminal) and answers with what the test
+/// set for that kind of call: `pr-list`, `pr-list-head` (with `--head`), `pr-create`,
+/// `repo-view`, `auth-token`. Unset, it prints nothing and exits 0. A call can also run a
+/// shell script first ([`FakeGh::run_on`]), as `gh` runs `git`; its output is recorded.
+#[cfg(unix)]
+pub struct FakeGh {
+    dir: TempDir,
+}
+
+/// One call of a [`FakeGh`].
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FakeGhCall {
+    pub argv: Vec<String>,
+    /// `NAME=value` lines.
+    pub env: Vec<String>,
+    pub cwd: String,
+    pub stdin: Vec<u8>,
+    /// It could open `/dev/tty` (a controlling terminal).
+    pub tty: bool,
+    /// What the script set with [`FakeGh::run_on`] printed (stdout and stderr).
+    pub ran: String,
+    /// When it started, and when it had answered (`None` while it runs).
+    pub started: Option<std::time::SystemTime>,
+    pub done: Option<std::time::SystemTime>,
+}
+
+#[cfg(unix)]
+impl Default for FakeGh {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(unix)]
+impl FakeGh {
+    const SCRIPT: &str = r#"#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
+d="$(cd "$(dirname "$0")/.." && pwd)"
+i=1
+while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
+c="$d/calls/$i"
+touch "$c/started"
+for a in "$@"; do printf '%s\0' "$a"; done > "$c/argv"
+env > "$c/env"
+pwd > "$c/cwd"
+if (: < /dev/tty) 2>/dev/null; then echo yes > "$c/tty"; fi
+cat > "$c/stdin"
+key="$1-$2"
+case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
+r="$d/replies/$key"
+if [ -f "$r.run" ]; then sh "$r.run" > "$c/ran" 2>&1; fi
+if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi
+if [ -f "$r.err" ]; then cat "$r.err" >&2; fi
+if [ -f "$r.out" ]; then cat "$r.out"; fi
+touch "$c/done"
+if [ -f "$r.code" ]; then exit "$(cat "$r.code")"; fi
+exit 0
+"#;
+
+    /// A fake `ssh` beside it, so the tool `PATH` never reaches the real one: `ssh -G --
+    /// <alias>` prints `hostname <the host set with ssh_alias, else the alias>`, or exits
+    /// with the code set with `ssh_fails`; each call's arguments are recorded.
+    const SSH: &str = r#"#!/bin/sh
+PATH=/usr/bin:/bin
+export PATH
+d="$(cd "$(dirname "$0")/.." && pwd)"
+i=1
+while ! mkdir "$d/ssh-calls/$i" 2>/dev/null; do i=$((i+1)); done
+for a in "$@"; do printf '%s\0' "$a"; done > "$d/ssh-calls/$i/argv"
+for a in "$@"; do alias="$a"; done
+if [ -f "$d/ssh-replies/code" ]; then exit "$(cat "$d/ssh-replies/code")"; fi
+host="$alias"
+if [ -f "$d/ssh-replies/$alias" ]; then host="$(cat "$d/ssh-replies/$alias")"; fi
+printf 'user git\nhostname %s\nport 22\n' "$host"
+"#;
+
+    pub fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix("gg-fake-gh-")
+            .tempdir()
+            .expect("temp dir");
+        for sub in ["bin", "calls", "replies", "ssh-calls", "ssh-replies"] {
+            fs::create_dir(dir.path().join(sub)).expect("fake gh folder");
+        }
+        for (name, script) in [("gh", Self::SCRIPT), ("ssh", Self::SSH)] {
+            let program = dir.path().join("bin").join(name);
+            fs::write(&program, script).expect("write fake tool");
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755))
+                .expect("chmod fake tool");
+        }
+        Self { dir }
+    }
+
+    /// Makes the fake `ssh -G` say `alias` stands for host `host`.
+    pub fn ssh_alias(&self, alias: &str, host: &str) {
+        fs::write(self.dir.path().join("ssh-replies").join(alias), host).unwrap();
+    }
+
+    /// Makes the fake `ssh` exit with `code` (`None`: answer again).
+    pub fn ssh_fails(&self, code: Option<i32>) {
+        let file = self.dir.path().join("ssh-replies/code");
+        match code {
+            Some(code) => fs::write(file, code.to_string()).unwrap(),
+            None => {
+                let _ = fs::remove_file(file);
+            }
+        }
+    }
+
+    /// The arguments of each call of the fake `ssh` so far, oldest first.
+    pub fn ssh_calls(&self) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        for i in 1.. {
+            let Ok(argv) = fs::read(
+                self.dir
+                    .path()
+                    .join("ssh-calls")
+                    .join(i.to_string())
+                    .join("argv"),
+            ) else {
+                break;
+            };
+            out.push(
+                argv.split(|&b| b == 0)
+                    .filter(|a| !a.is_empty())
+                    .map(|a| String::from_utf8_lossy(a).into_owned())
+                    .collect(),
+            );
+        }
+        out
+    }
+
+    /// The `PATH` that finds it first (then the system's own folders, for `sh`, `cat`…).
+    pub fn path(&self) -> std::ffi::OsString {
+        let mut path = self.dir.path().join("bin").into_os_string();
+        path.push(":/usr/bin:/bin");
+        path
+    }
+
+    /// The fake program itself.
+    pub fn program(&self) -> PathBuf {
+        self.dir.path().join("bin/gh")
+    }
+
+    /// Answers calls of `key` with `stdout`, `stderr` and exit `code`.
+    pub fn reply(&self, key: &str, code: i32, stdout: &str, stderr: &str) {
+        let base = self.dir.path().join("replies").join(key);
+        let file = |ext: &str| base.with_extension(ext);
+        fs::write(file("out"), stdout).unwrap();
+        fs::write(file("err"), stderr).unwrap();
+        fs::write(file("code"), code.to_string()).unwrap();
+    }
+
+    /// Makes calls of `key` run `script` (with `sh`, in the folder `gh` was started in, with
+    /// its environment) before answering; what it prints is the call's `ran`.
+    pub fn run_on(&self, key: &str, script: &str) {
+        let base = self.dir.path().join("replies").join(key);
+        fs::write(base.with_extension("run"), script).unwrap();
+    }
+
+    /// Makes calls of `key` wait `secs` seconds before answering.
+    pub fn slow(&self, key: &str, secs: u32) {
+        let base = self.dir.path().join("replies").join(key);
+        fs::write(base.with_extension("sleep"), secs.to_string()).unwrap();
+    }
+
+    /// Calls of `key` answer at once again.
+    pub fn fast(&self, key: &str) {
+        let base = self.dir.path().join("replies").join(key);
+        let _ = fs::remove_file(base.with_extension("sleep"));
+    }
+
+    /// The calls so far, oldest first.
+    pub fn calls(&self) -> Vec<FakeGhCall> {
+        let mut out = Vec::new();
+        for i in 1.. {
+            let c = self.dir.path().join("calls").join(i.to_string());
+            if !c.is_dir() {
+                break;
+            }
+            let read = |name: &str| fs::read(c.join(name)).unwrap_or_default();
+            let text = |name: &str| String::from_utf8_lossy(&read(name)).into_owned();
+            out.push(FakeGhCall {
+                argv: read("argv")
+                    .split(|&b| b == 0)
+                    .filter(|a| !a.is_empty())
+                    .map(|a| String::from_utf8_lossy(a).into_owned())
+                    .collect(),
+                env: text("env").lines().map(str::to_owned).collect(),
+                cwd: text("cwd").trim_end().to_owned(),
+                stdin: read("stdin"),
+                tty: c.join("tty").exists(),
+                ran: text("ran"),
+                started: fs::metadata(c.join("started"))
+                    .and_then(|m| m.modified())
+                    .ok(),
+                done: fs::metadata(c.join("done")).and_then(|m| m.modified()).ok(),
+            });
+        }
+        out
+    }
+
+    /// The calls whose arguments start with `prefix`.
+    pub fn calls_of(&self, prefix: &[&str]) -> Vec<FakeGhCall> {
+        self.calls()
+            .into_iter()
+            .filter(|c| {
+                c.argv.len() >= prefix.len() && c.argv.iter().zip(prefix).all(|(a, p)| a == p)
+            })
+            .collect()
     }
 }

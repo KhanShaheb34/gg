@@ -89,6 +89,7 @@ pub(crate) fn masks_result_of(cmd: &str) -> bool {
             | "search_commits"
             | "search_bodies"
             | "commit_details"
+            | "worktree_files"
             | "get_app_state"
             | "update_settings"
             | "get_repo_prefs"
@@ -160,6 +161,7 @@ mod tests {
         for cmd in [
             "get_rows",
             "commit_details",
+            "worktree_files",
             "get_app_state",
             "set_repo_prefs",
         ] {

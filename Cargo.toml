@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/gg-core", "crates/gg-devserver", "src-tauri"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
@@ -12,3 +12,8 @@ opt-level = 3
 lto = "thin"
 strip = true
 panic = "abort"
+
+# Build scripts and proc macros run on the build machine only: not stripped (a stripping
+# tool that writes a malformed library, as Homebrew's llvm-objcopy did here, breaks the build).
+[profile.release.build-override]
+strip = false

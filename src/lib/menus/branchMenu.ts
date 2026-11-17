@@ -1,5 +1,5 @@
 // The menu of a branch label, local or remote (spec §5.2, "Branch (local)" and "Branch
-// (remote)"; "create worktree" and pull-request items come with Plan 3).
+// (remote)"), with its pull request (§5.5).
 
 import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
 import {
@@ -9,6 +9,7 @@ import {
   item,
   noCurrentBranchReason,
   noRemoteReason,
+  pullRequestItem,
   remoteOf,
   SEPARATOR,
   shown,
@@ -69,6 +70,10 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
         label.current ? busy : undefined,
       ),
     }),
+    pullRequestItem(label.name, label.pr, snap),
+    SEPARATOR,
+    // A branch checked out somewhere already gets a new branch at its commit (the dialog says).
+    item("worktree.create", `Create worktree from ${name}…`),
     SEPARATOR,
     item("copy.name", "Copy name"),
   ];
@@ -77,6 +82,8 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
 function remoteMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
   const busy = inProgressReason(snap);
   const remote = remoteOf(label.name, snap.remotes);
+  // Only its open pull request: one is made from a local branch.
+  const pr = label.pr ? [item("pr.open", `Open pull request #${label.pr.number}`), SEPARATOR] : [];
   return [
     item("checkout", "Check out as a local branch…", { disabledReason: busy }),
     item("fetch_into_local", "Fetch into a local branch…"),
@@ -85,6 +92,7 @@ function remoteMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
       disabledReason: firstReason(noCurrentBranchReason(snap), busy),
     }),
     SEPARATOR,
+    ...pr,
     item("delete", remote === null ? "Delete from the remote…" : `Delete from ${shown(remote)}…`, { danger: true }),
     SEPARATOR,
     item("copy.name", "Copy name"),

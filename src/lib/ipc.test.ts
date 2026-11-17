@@ -75,7 +75,7 @@ describe("HTTP transport", () => {
   });
 
   it("numbers each repository's operations in the order they are sent (R28)", async () => {
-    const ABORT = { op: "abort", expectHead: { branch: "main", hash: null } } as const;
+    const ABORT = { op: "abort", expectHead: { branch: "main", hash: null }, expectWorktree: "/r" } as const;
     const fetchMock = respond({ ok: null });
     vi.stubGlobal("fetch", fetchMock);
     const sent = [api.runOp(71, ABORT), api.runOp(72, ABORT), api.runOp(71, ABORT)];
@@ -112,19 +112,24 @@ describe("HTTP transport", () => {
     await api.perfMark("first-rows", 12.5);
     await api.commandLog(4);
     await api.commandLog(0, { repoId: 2, writesOnly: true });
-    await api.runOp(2, { op: "create_branch", name: "x", at: "abc", checkout: false });
-    await api.runOp(2, { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null } }, [{ kind: "hard_reset", token: "t" }]);
+    await api.runOp(2, { op: "create_branch", name: "x", at: "abc", checkout: false, expectWorktree: "/r" });
+    await api.runOp(
+      2,
+      { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null }, expectWorktree: "/r" },
+      [{ kind: "hard_reset", token: "t" }],
+    );
     await api.runOp(
       2,
       { op: "push", branch: "b", remote: "origin", to: null, force: true },
       [{ kind: "force_push", token: "abc" }],
     );
-    await api.runOp(2, { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } });
+    await api.runOp(2, { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null }, expectWorktree: "/r" });
     await api.stopOp(2, 9);
     await api.getRepoPrefs(2);
     await api.setRepoPrefs(2, { mergeNoFf: false });
     await api.openInEditor(2, null);
     await api.openInEditor(2, "src/a b.ts");
+    await api.setActiveWorktree(2, "/r/wt");
 
     const bodies = fetchMock.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));
     expect(bodies).toEqual([
@@ -145,14 +150,14 @@ describe("HTTP transport", () => {
         cmd: "run_op",
         args: {
           repoId: 2,
-          request: { op: "create_branch", name: "x", at: "abc", checkout: false },
+          request: { op: "create_branch", name: "x", at: "abc", checkout: false, expectWorktree: "/r" },
           confirmed: [],
           clientId: expect.any(String), clientSeq: 1,
         },
       },
       {
         cmd: "run_op",
-        args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null } }, confirmed: [{ kind: "hard_reset", token: "t" }], clientId: expect.any(String), clientSeq: 2 },
+        args: { repoId: 2, request: { op: "reset", hash: "abc", mode: "hard", expectHead: { branch: "main", hash: null }, expectWorktree: "/r" }, confirmed: [{ kind: "hard_reset", token: "t" }], clientId: expect.any(String), clientSeq: 2 },
       },
       {
         cmd: "run_op",
@@ -163,12 +168,13 @@ describe("HTTP transport", () => {
           clientId: expect.any(String), clientSeq: 3,
         },
       },
-      { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null } }, confirmed: [], clientId: expect.any(String), clientSeq: 4 } },
+      { cmd: "run_op", args: { repoId: 2, request: { op: "continue", evenWithMarkers: false, expectHead: { branch: "main", hash: null }, expectWorktree: "/r" }, confirmed: [], clientId: expect.any(String), clientSeq: 4 } },
       { cmd: "stop_op", args: { repoId: 2, opId: 9 } },
       { cmd: "get_repo_prefs", args: { repoId: 2 } },
       { cmd: "set_repo_prefs", args: { repoId: 2, patch: { mergeNoFf: false } } },
       { cmd: "open_in_editor", args: { repoId: 2, path: null } },
       { cmd: "open_in_editor", args: { repoId: 2, path: "src/a b.ts" } },
+      { cmd: "set_active_worktree", args: { repoId: 2, path: "/r/wt" } },
     ]);
   });
 });

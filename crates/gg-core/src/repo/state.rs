@@ -2,11 +2,11 @@
 //! read so far with their layout, and everything derived from them (labels, rows, search).
 //! Pure and synchronous: no git, no I/O, no async.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::dto::{
-    CommitRow, FetchState, HeadInfo, InProgress, RefKind, RefLabel, RepoSnapshot, RowKind,
-    ViewOptions, WorktreeInfo, WorktreeStatus,
+    CommitRow, FetchState, HeadInfo, InProgress, PrState, PullRequest, RefKind, RefLabel,
+    RepoSnapshot, RowKind, ViewOptions, WorktreeInfo, WorktreeStatus,
 };
 use crate::git::log::{Commit, LOG_FORMAT, log_args};
 use crate::git::refs::RefInfo;
@@ -34,14 +34,20 @@ pub struct RepoInfo {
     pub in_progress: Option<InProgress>,
     /// The stashes, newest first.
     pub stashes: Vec<Stash>,
+    /// The open pull request of each branch label that has one, by kind and short name (the
+    /// repository's own to fill in from what `gh` listed; not read from git).
+    pub pr_marks: BTreeMap<(RefKind, String), PullRequest>,
 }
 
 /// What [`RepoState::update`] changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Update {
     Nothing,
-    /// Only what git is stopped in: the rows are as they were.
-    InProgressOnly,
+    /// Only what git is stopped in, or the working tree's change counts with the uncommitted
+    /// row where it was: no row moves, so no new generation. (The uncommitted row's subject
+    /// names the count: rows read later carry the new one, and the UI shows the snapshot's
+    /// `uncommittedSubject`.)
+    StateOnly,
     /// Something the rows show (labels, the uncommitted row) may have changed.
     Rows,
 }
@@ -52,7 +58,6 @@ pub struct RepoIdentity {
     pub repo_id: u32,
     pub name: String,
     pub root_path: String,
-    pub active_worktree: String,
 }
 
 /// Commits, layout and labels of one repository for one set of refs and view options.
@@ -170,13 +175,13 @@ impl RepoState {
             && info.head == self.info.head
             && info.refs == self.info.refs
             && info.remotes == self.info.remotes
-            && info.worktrees == self.info.worktrees
-            && info.status == self.info.status
+            && info.pr_marks == self.info.pr_marks
+            && same_worktree_labels(&info.worktrees, &self.info.worktrees)
             && self.stashes_shown(&info, &view) == self.stashes_shown(&self.info, &self.view);
         self.info = info;
         self.view = view;
-        if rows_same {
-            return Update::InProgressOnly;
+        if rows_same && self.wanted_uncommitted() == self.uncommitted {
+            return Update::StateOnly;
         }
         let old_bases = std::mem::take(&mut self.stash_bases);
         self.rebuild_stashes();
@@ -425,7 +430,8 @@ impl RepoState {
             repo_id: id.repo_id,
             name: id.name.clone(),
             root_path: id.root_path.clone(),
-            active_worktree: id.active_worktree.clone(),
+            // The repository's own to fill in: which worktree is active is not the rows'.
+            active_worktree: String::new(),
             generation: self.generation,
             total_rows: self.total_rows(),
             loading,
@@ -436,9 +442,11 @@ impl RepoState {
             remotes: self.info.remotes.clone(),
             worktrees: self.info.worktrees.clone(),
             status: self.info.status.clone(),
+            uncommitted_subject: crate::dto::uncommitted_subject(&self.info.status),
             view_options: self.view.clone(),
             fetch: fetch.clone(),
             op: None,
+            prs: PrState::default(),
             in_progress: self.info.in_progress.clone(),
             seq: 0,
         }
@@ -453,8 +461,6 @@ impl RepoState {
         let layout = &self.layouts[i as usize];
         let offset = self.row_offset();
         if i < offset {
-            let status = &self.info.status;
-            let n = status.changed.saturating_add(status.untracked);
             return CommitRow {
                 index: i,
                 kind: RowKind::Uncommitted,
@@ -463,7 +469,7 @@ impl RepoState {
                 author: String::new(),
                 email: String::new(),
                 time: 0,
-                subject: format!("Uncommitted changes ({n})"),
+                subject: crate::dto::uncommitted_subject(&self.info.status),
                 lane: layout.lane,
                 color: layout.color,
                 edges: layout.edges.clone(),
@@ -598,6 +604,15 @@ impl RepoState {
             }
         }
     }
+}
+
+/// Whether the worktrees `a` and `b` give the same labels: the same paths with the same
+/// branches and commits (whether one is locked or prunable shows nowhere in the rows).
+fn same_worktree_labels(a: &[WorktreeInfo], b: &[WorktreeInfo]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(a, b)| a.path == b.path && a.head == b.head && a.branch == b.branch)
 }
 
 /// Drops selected branch names that no longer exist; an empty selection becomes `None`
@@ -741,6 +756,7 @@ fn build_labels(
                     upstream: r.upstream.clone(),
                     ahead: r.ahead,
                     behind: r.behind,
+                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).cloned(),
                 }
             }
             RefKind::Remote if view.show_remotes => {
@@ -749,7 +765,10 @@ fn build_labels(
                 if absorbed {
                     continue;
                 }
-                plain_label(r)
+                RefLabel {
+                    pr: info.pr_marks.get(&(r.kind, r.name.clone())).cloned(),
+                    ..plain_label(r)
+                }
             }
             RefKind::Tag if view.show_tags => plain_label(r),
             RefKind::Remote | RefKind::Tag | RefKind::Stash => continue,
@@ -770,6 +789,7 @@ fn build_labels(
             upstream: None,
             ahead: 0,
             behind: 0,
+            pr: None,
         });
     }
     for list in labels.values_mut() {
@@ -788,6 +808,7 @@ fn plain_label(r: &RefInfo) -> RefLabel {
         upstream: None,
         ahead: 0,
         behind: 0,
+        pr: None,
     }
 }
 
@@ -858,8 +879,7 @@ mod tests {
             head: Some(h(head)),
             branch: branch.map(str::to_owned),
             is_main,
-            locked: false,
-            prunable: false,
+            ..WorktreeInfo::default()
         }
     }
 
@@ -878,6 +898,7 @@ mod tests {
             status: WorktreeStatus::default(),
             in_progress: None,
             stashes: Vec::new(),
+            pr_marks: BTreeMap::new(),
         }
     }
 
@@ -946,7 +967,6 @@ mod tests {
             repo_id: 3,
             name: "repo".into(),
             root_path: "/repo".into(),
-            active_worktree: "/repo".into(),
         }
     }
 
@@ -1019,7 +1039,7 @@ mod tests {
             commit: None,
             empty: false,
         });
-        assert_eq!(s.update(stopped.clone(), all()), Update::InProgressOnly);
+        assert_eq!(s.update(stopped.clone(), all()), Update::StateOnly);
         assert_eq!(s.info().in_progress, stopped.in_progress);
         assert_eq!(s.update(stopped, all()), Update::Nothing);
         assert_eq!(s.update(dirty(info(), 1, 0), all()), Update::Rows);
@@ -1033,9 +1053,9 @@ mod tests {
         assert_eq!(s.total_rows(), 5);
         assert_eq!(s.rows(0, 1)[0].kind, RowKind::Uncommitted);
         assert_eq!(s.rows(0, 10)[1..].len(), 4);
-        // Only the subject changes when the count does.
+        // Only the subject changes when the count does: no row moves.
         let before = s.rows(0, 10);
-        assert_eq!(s.update(dirty(info(), 4, 0), all()), Update::Rows);
+        assert_eq!(s.update(dirty(info(), 4, 0), all()), Update::StateOnly);
         let after = s.rows(0, 10);
         assert_eq!(after[0].subject, "Uncommitted changes (4)");
         assert_eq!(after[1..], before[1..]);
@@ -1362,8 +1382,11 @@ mod tests {
         let fetch = FetchState::default();
         assert_eq!(s.snapshot(&identity(), false, &fetch).max_lane, 0);
         // Going clean and dirty again changes nothing either.
-        assert_eq!(s.update(info(), feature_view()), Update::Rows);
-        assert_eq!(s.update(dirty(info(), 2, 0), feature_view()), Update::Rows);
+        assert_eq!(s.update(info(), feature_view()), Update::StateOnly);
+        assert_eq!(
+            s.update(dirty(info(), 2, 0), feature_view()),
+            Update::StateOnly
+        );
         assert_eq!(s.rows(0, 10), clean.rows(0, 10));
     }
 
@@ -1719,6 +1742,7 @@ mod tests {
         assert_eq!(snap.remote_branches, ["origin/alpha", "origin/zeta"]);
         assert_eq!(snap.remotes, ["origin"]);
         assert_eq!(snap.status, i.status);
+        assert_eq!(snap.uncommitted_subject, "Uncommitted changes (3)");
         assert_eq!(snap.head, i.head);
         assert_eq!(snap.worktrees, i.worktrees);
         assert_eq!(snap.view_options, all());

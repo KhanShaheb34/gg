@@ -48,6 +48,7 @@ test("right-clicking a commit selects it and shows the commit actions", async ({
     "Check out this commit",
     "Create branch here…",
     "Create tag here…",
+    "Create worktree here…",
     "Cherry-pick…",
     "Revert…",
     "Reset main to here",
@@ -84,6 +85,8 @@ test("branch, tag and remote labels have their own menus; the reason of a disabl
     "Rebase the current branch onto this…",
     "Push 2 commits…",
     "Pull",
+    "Create pull request…",
+    "Create worktree from main…",
     "Copy name",
   ]);
   const checkout = item(page, "Check out");
@@ -305,7 +308,10 @@ test("the menu closes on scroll, an outside click and the window losing focus, a
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await expect(menus(page)).toHaveCount(0);
 
-  // Near the bottom-right corner it opens up and to the left of the pointer.
+  // Near the bottom-right corner it opens up and to the left of the pointer (the side panel
+  // hidden, so the graph reaches the window's edge).
+  await page.getByTestId("side-toggle").click();
+  await expect(page.locator('[data-region="side-panel"]')).toHaveCount(0);
   const viewport = page.viewportSize()!;
   const area = (await grid(page).boundingBox())!; // above the details panel, now open
   await page.mouse.click(viewport.width - 10, area.y + area.height - 12, { button: "right" });
@@ -547,8 +553,10 @@ test("the busy indicator shows only once an operation has run for 150 ms (R23), 
       w.busyAt = null;
       const ops = await import("/src/lib/state/ops.svelte.ts");
       const { app } = await import("/src/lib/state/app.svelte.ts");
+      const { findRepoView } = await import("/src/lib/state/repo.svelte.ts");
+      const expectWorktree = findRepoView(app.activeRepoId!)!.snapshot.activeWorktree;
       const sent = performance.now();
-      const out = await ops.runOp(app.activeRepoId!, req as never);
+      const out = await ops.runOp(app.activeRepoId!, { ...req, expectWorktree } as never);
       const ended = performance.now();
       await new Promise((r) => setTimeout(r, 300));
       return { status: out.status, sent, ended, busyAt: w.busyAt };

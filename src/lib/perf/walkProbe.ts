@@ -31,7 +31,8 @@ async function until<T>(what: string, find: () => T | null | undefined | false, 
 
 const text = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 
-export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<void> {
+/** The walk's means of using the window (shared by both walks). */
+export function walkKit(view: RepoView, scroller: HTMLElement) {
   let passed = 0;
   let failed = 0;
 
@@ -135,7 +136,8 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
     await mark(`walk-shot ${name}`);
     await sleep(1500);
   }
-  async function step(name: string, body: () => Promise<string | void>): Promise<void> {
+  /** Runs a step; its notices are dismissed after it unless `keepNotices` (the next step uses them). */
+  async function step(name: string, body: () => Promise<string | void>, opts: { keepNotices?: boolean } = {}): Promise<void> {
     try {
       const note = await body();
       passed++;
@@ -156,12 +158,25 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
         await sleep(100);
       }
     }
-    await dismissAll();
+    if (!opts.keepNotices) await dismissAll();
     await idle().catch(() => {});
   }
   const commitRow = (subject: string) => () => rowWith(subject)?.querySelector<HTMLElement>(".subject");
 
-  // --- The staging routine -------------------------------------------------------------------
+  /** Reports how many steps passed and failed. */
+  async function finish(): Promise<void> {
+    await mark("walk-passed", passed);
+    await mark("walk-failed", failed);
+  }
+
+  return { label, rowWith, menu, dialog, notices, banner, menuOn, pick, primary, field, notice, dismissAll, idle, need, shot, step, commitRow, finish };
+}
+
+type Kit = ReturnType<typeof walkKit>;
+
+/** The staging routine: check out staging (fast-forwarded), merge a feature in, push. */
+export async function stagingRoutine(k: Kit): Promise<void> {
+  const { label, dialog, menuOn, pick, primary, notice, shot, step } = k;
   await step("checkout staging with fast-forward", async () => {
     await menuOn(() => label("staging"), "the staging label");
     await shot("menu-branch");
@@ -186,6 +201,12 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
     const pushed = await notice(/Pushed staging/);
     return text(pushed);
   });
+}
+
+export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<void> {
+  const k = walkKit(view, scroller);
+  const { label, rowWith, dialog, banner, menuOn, pick, primary, field, notice, dismissAll, idle, need, shot, step, commitRow } = k;
+  await stagingRoutine(k);
 
   // --- Each commit menu item once --------------------------------------------------------------
   await step("create branch here", async () => {
@@ -413,6 +434,5 @@ export async function runWalk(view: RepoView, scroller: HTMLElement): Promise<vo
     return `${ops.length} operations listed`;
   });
 
-  await mark("walk-passed", passed);
-  await mark("walk-failed", failed);
+  await k.finish();
 }

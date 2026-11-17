@@ -11,7 +11,7 @@ describe("NamedSubmit.waitingFor", () => {
     const { NamedSubmit } = await import("./named.svelte");
     const named = new NamedSubmit(1, () => {});
     view.snapshot.op = { id: 5, title: "Check out fix/typo", queued: 1 };
-    const sent = named.submit("x", { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false });
+    const sent = named.submit("x", { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false, expectWorktree: "/r" });
     expect(named.waitingFor).toBe("Check out fix/typo");
     expect(named.waitingFor).toBe("Check out fix/typo");
     // The next one shown is the request's own (the one queued between ran unseen).
@@ -26,7 +26,7 @@ describe("NamedSubmit.waitingFor", () => {
     const { NamedSubmit } = await import("./named.svelte");
     const named = new NamedSubmit(1, () => {});
     view.snapshot.op = null;
-    const sent = named.submit("x", { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false });
+    const sent = named.submit("x", { op: "create_branch", name: "x", at: "a".repeat(40), checkout: false, expectWorktree: "/r" });
     view.snapshot.op = { id: 8, title: "Create branch x", queued: 0 };
     expect(named.waitingFor).toBeNull();
     answer(null);

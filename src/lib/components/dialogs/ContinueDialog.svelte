@@ -22,10 +22,12 @@
     force?: boolean;
     /** HEAD as the banner showed it: what is continued is the stop there (R39). */
     head: HeadInfo;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
     close: () => void;
   };
 
-  let { repoId, kind, files, fileCount, force = false, head, close }: Props = $props();
+  let { repoId, kind, files, fileCount, force = false, head, worktree, close }: Props = $props();
 
   const then = $derived(
     {
@@ -59,7 +61,7 @@
     title="Continue the {kind} anyway?"
     primary="Continue anyway"
     danger
-    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: true, expectHead: head })}
+    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: true, expectHead: head, expectWorktree: worktree })}
     onCancel={close}
   >
     <p class="dialog-text">Every conflicted file is staged as it is now, then {then}.</p>
@@ -86,7 +88,7 @@
   <Dialog
     title="Continue the {kind}"
     primary={files.length > 0 ? "Stage and continue" : "Continue"}
-    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: false, expectHead: head })}
+    onSubmit={() => closeAndRun(close, repoId, { op: "continue", evenWithMarkers: false, expectHead: head, expectWorktree: worktree })}
     onCancel={close}
   >
     {#if files.length > 0}

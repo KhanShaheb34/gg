@@ -1,10 +1,13 @@
 //! `GitRunner` is the only place the app spawns `git`. Every command gets the same
 //! non-interactive environment and leading `-c` options, and lands in the `CommandLog`.
+//! `ToolRunner` runs another program the app needs (`gh`) the same way: no terminal, its own
+//! process group, a time limit, the operation's Stop, the log, masking; and stdin null or
+//! bytes it is given, never the app's.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -21,6 +24,7 @@ const LOG_CAPACITY: usize = 500;
 /// Longest stdout/stderr text kept per log record, in bytes.
 const MAX_LOG_TEXT: usize = 16 * 1024;
 /// How long the login shell gets to report its `PATH`.
+#[cfg(unix)]
 const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long the login shell's output may take to arrive once the shell has exited.
 #[cfg(unix)]
@@ -55,18 +59,86 @@ const LEADING_ARGS: [&str; 8] = [
     "core.fsmonitor=false",
 ];
 
-/// Variables an enclosing git process (for example a hook) exports. Inherited, they would
-/// point our commands at that process's repository instead of `cwd`.
-const INHERITED_REPO_VARS: [&str; 5] = [
+/// How much of a child's output is read at a time.
+const READ_CHUNK: usize = 8192;
+
+/// Where `core.hooksPath` points for the git another program runs: nowhere.
+const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// The environment that gives the git another program runs in a repository (`gh` runs git
+/// itself) the protection the app's own git children have, through what git honours in
+/// every child it is started with: [`GIT_ENV`], and the settings of [`LEADING_ARGS`] as
+/// command-line config, plus `core.hooksPath` set to the null device (such a program never
+/// needs the repository's hooks). The settings go into `GIT_CONFIG_PARAMETERS` (what `-c`
+/// passes on), after whatever the app inherited there: git reads it after the
+/// `GIT_CONFIG_COUNT` settings and takes the last of a key, so neither can override them,
+/// and a user's own `GIT_CONFIG_COUNT` settings of other keys still apply. Built from the
+/// same constants as git's own, so the two cannot drift; the variables of an enclosing git
+/// process are removed by [`child_command`] for every child.
+pub(crate) fn git_protection_env() -> Vec<(String, String)> {
+    protection_env_after(
+        std::env::var("GIT_CONFIG_PARAMETERS")
+            .ok()
+            .as_deref()
+            .filter(|v| !v.trim().is_empty()),
+    )
+}
+
+/// [`git_protection_env`] with `inherited` as the `GIT_CONFIG_PARAMETERS` inherited.
+fn protection_env_after(inherited: Option<&str>) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = GIT_ENV
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    let mut settings: Vec<String> = LEADING_ARGS
+        .chunks(2)
+        .filter_map(|pair| match pair {
+            ["-c", setting] => Some((*setting).to_owned()),
+            _ => None,
+        })
+        .collect();
+    settings.push(format!("core.hooksPath={NULL_DEVICE}"));
+    let mut params: Vec<String> = inherited.map(str::to_owned).into_iter().collect();
+    params.extend(settings.iter().map(|s| config_quoted(s)));
+    env.push(("GIT_CONFIG_PARAMETERS".to_owned(), params.join(" ")));
+    env
+}
+
+/// `text` quoted for `GIT_CONFIG_PARAMETERS`: in single quotes, a quote in it as `'\''`.
+fn config_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// Variables an enclosing git process (for example a hook) exports, or a shell sets, that
+/// point our commands at another repository, index, object store, namespace or discovery
+/// boundary than `cwd`'s: every variable `git rev-parse --local-env-vars` names except the
+/// config ones (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`: a user's own `-c` settings,
+/// kept on purpose), and the others of that kind. `GIT_INTERNAL_*` go too (see
+/// [`child_command`]).
+const INHERITED_REPO_VARS: [&str; 18] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
     "GIT_INDEX_FILE",
     "GIT_COMMON_DIR",
     "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_GRAFT_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_CONFIG",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_QUARANTINE_PATH",
+    "GIT_QUARANTINE_ENVIRONMENT",
 ];
 
 /// Brackets the `PATH` the login shell prints, so profile output around it cannot be taken
 /// for part of it.
+#[cfg(unix)]
 const PATH_MARKER: &[u8] = b"__GG_PATH__";
 
 /// Whether a command only reads the repository or may change it.
@@ -235,6 +307,8 @@ impl GitOutput {
 #[serde(rename_all = "camelCase")]
 pub struct CommandRecord {
     pub id: u64,
+    /// The program run: `git`, or another tool (`gh`).
+    pub program: String,
     pub kind: CmdKind,
     pub cwd: String,
     pub args: Vec<String>,
@@ -389,6 +463,7 @@ impl CommandLog {
         }
         ring.push_back(CommandRecord {
             id,
+            program: tags.program.to_owned(),
             kind,
             cwd: cwd.to_string_lossy().into_owned(),
             args: args.iter().map(|a| mask_userinfo(a).into_owned()).collect(),
@@ -413,30 +488,45 @@ fn lock_tail(t: &Mutex<Tail>) -> std::sync::MutexGuard<'_, Tail> {
     t.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The last [`KEPT_TAIL`] bytes written to it, starting at a line when it had to drop some.
-#[derive(Default)]
+/// The last `keep` bytes ([`KEPT_TAIL`] by default) written to it, starting at a line when
+/// it had to drop some.
 struct Tail {
     bytes: Vec<u8>,
     dropped: bool,
+    keep: usize,
+}
+
+impl Default for Tail {
+    fn default() -> Self {
+        Self::keeping(KEPT_TAIL)
+    }
 }
 
 impl Tail {
+    fn keeping(keep: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            dropped: false,
+            keep,
+        }
+    }
+
     fn push(&mut self, chunk: &[u8]) {
         self.bytes.extend_from_slice(chunk);
         // Trimmed only once it holds twice the tail, so each byte is moved at most once.
-        if self.bytes.len() > 2 * KEPT_TAIL {
+        if self.bytes.len() > 2 * self.keep {
             self.trim();
         }
     }
 
     fn trim(&mut self) {
-        if self.bytes.len() <= KEPT_TAIL {
+        if self.bytes.len() <= self.keep {
             return;
         }
-        let mut cut = self.bytes.len() - KEPT_TAIL;
+        let mut cut = self.bytes.len() - self.keep;
         // Start at the next line, if one starts early in the tail.
         if let Some(nl) = self.bytes[cut..].iter().position(|&b| b == b'\n')
-            && nl < KEPT_TAIL / 2
+            && nl < self.keep / 2
         {
             cut += nl + 1;
         }
@@ -468,16 +558,84 @@ fn truncate_text(mut s: String) -> String {
 }
 
 /// What a runner's log records are tagged with.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Tags {
+    /// The program's name, as the log shows it.
+    program: &'static str,
     repo_id: Option<u32>,
     op_id: Option<u64>,
+}
+
+impl Default for Tags {
+    fn default() -> Self {
+        Self {
+            program: "git",
+            repo_id: None,
+            op_id: None,
+        }
+    }
+}
+
+/// What a command reads on its standard input: nothing (null), or these bytes, written and
+/// then closed. Never the app's own stdin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum StdinPolicy {
+    #[default]
+    Null,
+    Bytes(Vec<u8>),
+}
+
+/// How many git children the app has running, per repository (counted by every runner of
+/// the app, which share it): the core never takes a lock file for stale while one of its own
+/// git commands may hold it.
+#[derive(Default)]
+pub(crate) struct LiveChildren(Mutex<std::collections::HashMap<u32, usize>>);
+
+impl LiveChildren {
+    fn change(&self, repo_id: u32, up: bool) {
+        let mut counts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let n = counts.entry(repo_id).or_default();
+        if up {
+            *n += 1;
+        } else {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                counts.remove(&repo_id);
+            }
+        }
+    }
+
+    fn of(&self, repo_id: u32) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&repo_id)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// One git child of a repository, counted while it lives (see [`LiveChildren`]).
+pub(crate) struct LiveChild {
+    live: Arc<LiveChildren>,
+    repo_id: u32,
+}
+
+impl Drop for LiveChild {
+    fn drop(&mut self) {
+        self.live.change(self.repo_id, false);
+    }
 }
 
 /// Runs git commands. Cheap to clone; clones share the command log.
 #[derive(Clone)]
 pub struct GitRunner {
     log: Arc<CommandLog>,
+    /// The git program: `None` for `git` found through the `PATH` below (Unix); its full
+    /// path on Windows, found by the app (see [`crate::platform::find_program`]).
+    program: Option<PathBuf>,
+    /// The git children running, per repository; shared by every clone.
+    live: Arc<LiveChildren>,
     /// `PATH` for git children, from the user's login shell when it could be read.
     path: Option<OsString>,
     tags: Tags,
@@ -485,6 +643,32 @@ pub struct GitRunner {
     stop: Option<Arc<Stop>>,
     /// The git version found at start, when it could be read.
     version: Option<(u32, u32, u32)>,
+    /// The index file git uses instead of the worktree's own (`GIT_INDEX_FILE`), if any: a
+    /// commit of chosen files builds its tree in a temporary index (see
+    /// [`GitRunner::with_index_file`]).
+    index_file: Option<PathBuf>,
+    /// `GIT_SSH_COMMAND` for every git child, if the app sets one (see
+    /// [`batch_ssh_command`]).
+    ssh_command: Option<&'static str>,
+}
+
+/// The ssh command that makes ssh fail at once instead of asking (a passphrase, a password,
+/// whether to trust a new host key).
+pub const BATCH_SSH_COMMAND: &str = "ssh -o BatchMode=yes";
+
+/// `GIT_SSH_COMMAND` for the git children of a repository: on Windows, where a child has no
+/// terminal to fail on but a hidden console that ssh would wait on until the time limit,
+/// [`BATCH_SSH_COMMAND`], so a fetch, pull or push that needs an answer fails at once (R41);
+/// `None` when the user chose their ssh already (`GIT_SSH_COMMAND` or `GIT_SSH` in the
+/// environment, `has_env`; `core.sshCommand` set for the repository, `configured`), and
+/// elsewhere (no terminal: ssh fails at once by itself).
+pub fn batch_ssh_command(
+    windows: bool,
+    has_env: impl Fn(&str) -> bool,
+    configured: bool,
+) -> Option<&'static str> {
+    let chosen = configured || has_env("GIT_SSH_COMMAND") || has_env("GIT_SSH");
+    (windows && !chosen).then_some(BATCH_SSH_COMMAND)
 }
 
 impl GitRunner {
@@ -512,13 +696,19 @@ impl GitRunner {
         log: Arc<CommandLog>,
         login_path: Option<OsString>,
     ) -> Result<Self> {
-        if let Some(path) = login_path {
+        if let Some(path) = login_path
+            && let Ok(program) = git_program(Some(&path))
+        {
             let mut runner = Self {
                 log: log.clone(),
+                live: Arc::default(),
                 path: Some(path),
                 tags: Tags::default(),
                 stop: None,
                 version: None,
+                index_file: None,
+                ssh_command: None,
+                program,
             };
             if let Ok(version) = runner.check().await {
                 runner.version = version;
@@ -527,13 +717,33 @@ impl GitRunner {
         }
         let mut runner = Self {
             log,
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: git_program(None)?,
         };
         runner.version = runner.check().await?;
         Ok(runner)
+    }
+
+    /// Counts a git child of this runner's repository while the returned value lives (see
+    /// [`LiveChildren`]); nothing for a runner of no repository.
+    pub(crate) fn live_child(&self) -> Option<LiveChild> {
+        let repo_id = self.tags.repo_id?;
+        self.live.change(repo_id, true);
+        Some(LiveChild {
+            live: self.live.clone(),
+            repo_id,
+        })
+    }
+
+    /// How many git children of repository `repo_id` the app has running now.
+    pub(crate) fn children_running(&self, repo_id: u32) -> usize {
+        self.live.of(repo_id)
     }
 
     /// This runner, logging its commands as run for repository `repo_id`.
@@ -552,6 +762,48 @@ impl GitRunner {
         runner
     }
 
+    /// This runner without its operation's Stop: for what must still run once git has done
+    /// something that cannot be taken back (the user's index following a commit made).
+    pub(crate) fn unstoppable(&self) -> Self {
+        let mut runner = self.clone();
+        runner.stop = None;
+        runner
+    }
+
+    /// Whether the operation this runner runs for was stopped.
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.as_ref().is_some_and(|s| s.is_stopped())
+    }
+
+    /// This runner, setting `GIT_SSH_COMMAND` to `command` for every git child when it is
+    /// `Some` (see [`batch_ssh_command`]).
+    pub(crate) fn with_ssh_command(mut self, command: Option<&'static str>) -> Self {
+        self.ssh_command = command;
+        self
+    }
+
+    /// The ssh command [`batch_ssh_command`] gives for the repository at `root`, whose
+    /// `core.sshCommand` is read for it (only on Windows: elsewhere it is never needed).
+    pub(crate) async fn batch_ssh_command_for(&self, root: &Path) -> Option<&'static str> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let configured = self
+            .run(root, &["config", "--get", "core.sshCommand"], CmdKind::Read)
+            .await
+            .is_ok_and(|out| out.code == 0 && !out.text().trim().is_empty());
+        let has_env = |var: &str| std::env::var_os(var).is_some_and(|v| !v.is_empty());
+        batch_ssh_command(true, has_env, configured)
+    }
+
+    /// This runner, with git using the index file `index` (an absolute path) instead of the
+    /// worktree's own: `GIT_INDEX_FILE` for git and the hooks it runs.
+    pub(crate) fn with_index_file(&self, index: &Path) -> Self {
+        let mut runner = self.clone();
+        runner.index_file = Some(index.to_path_buf());
+        runner
+    }
+
     /// Why the git found is too old for the app (M3), if it is; checked once, at start.
     pub fn version_problem(&self) -> Option<String> {
         self.version.and_then(version_problem)
@@ -561,7 +813,7 @@ impl GitRunner {
     async fn check(&self) -> Result<Option<(u32, u32, u32)>> {
         let mut cmd = self.command(None, &["--version"]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        match cmd.output().await {
+        match output(&mut cmd).await {
             Ok(out) if out.status.success() => {
                 Ok(parse_git_version(&String::from_utf8_lossy(&out.stdout)))
             }
@@ -594,13 +846,14 @@ impl GitRunner {
         args: &[&str],
         kind: CmdKind,
     ) -> Result<GitOutput> {
+        let _live = self.live_child();
         if let Some(stop) = &self.stop {
             return self.run_stoppable(cwd, args, kind, stop).await;
         }
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        match cmd.output().await {
+        match output(&mut cmd).await {
             Ok(out) => {
                 let code = out.status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -646,13 +899,12 @@ impl GitRunner {
         let started = Instant::now();
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let child = cmd.spawn().map_err(|e| {
+        let (child, tree) = crate::platform::spawn(&mut cmd).map_err(|e| {
             let err = spawn_error(cwd, e);
             self.log
                 .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
             err
         })?;
-        let group = child.id();
         let output = child.wait_with_output();
         tokio::pin!(output);
         let finished = tokio::select! {
@@ -660,9 +912,12 @@ impl GitRunner {
             () = stop.stopped() => None,
         };
         let out = match finished {
-            Some(out) => out,
+            Some(out) => {
+                tree.release();
+                out
+            }
             None => {
-                let (stdout, stderr) = match end_group(group, &mut output).await {
+                let (stdout, stderr) = match end_group(&tree, &mut output).await {
                     Some(Ok(out)) => (
                         out.stdout,
                         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -773,150 +1028,22 @@ impl GitRunner {
         on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
         cancel: Option<&tokio::sync::Notify>,
     ) -> Result<std::result::Result<GitOutput, TimedOut>> {
-        use tokio::io::AsyncReadExt;
-
-        if self.stop.as_ref().is_some_and(|s| s.is_stopped()) {
-            return Err(stopped_error(""));
-        }
-        let started = Instant::now();
-        let mut cmd = self.command(Some(cwd), args);
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let fail = |e: io::Error| {
-            let err = spawn_error(cwd, e);
-            self.log
-                .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
-            err
+        let _live = self.live_child();
+        let exec = Exec {
+            log: &self.log,
+            tags: self.tags,
+            stop: self.stop.as_deref(),
         };
-        let mut child = cmd.spawn().map_err(fail)?;
-        let group = child.id();
-        let mut stdout_pipe = child.stdout.take();
-        let mut stderr_pipe = child.stderr.take();
-        // When git last wrote anything, for an idle limit.
-        let last_output = Mutex::new(tokio::time::Instant::now());
-        let output_seen = || {
-            *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+        let cmd = self.command(Some(cwd), args);
+        let run = Run {
+            cwd,
+            args,
+            kind,
+            stdin: StdinPolicy::Null,
+            limit,
+            keep_stdout: Some(KEPT_TAIL),
         };
-        // Outside the reading future, so what was read is still there when it is dropped
-        // on timeout.
-        let (out, err) = (Mutex::new(Tail::default()), Mutex::new(Tail::default()));
-        let take = |t: &Mutex<Tail>| std::mem::take(&mut *lock_tail(t)).into_bytes();
-        let read = async {
-            let read_out = async {
-                if let Some(p) = stdout_pipe.as_mut() {
-                    let mut buf = [0u8; 8192];
-                    while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        lock_tail(&out).push(&buf[..n]);
-                        output_seen();
-                    }
-                }
-            };
-            let read_err = async {
-                if let Some(p) = stderr_pipe.as_mut() {
-                    let mut buf = [0u8; 8192];
-                    while let Ok(n @ 1..) = p.read(&mut buf).await {
-                        lock_tail(&err).push(&buf[..n]);
-                        output_seen();
-                        on_stderr(&buf[..n]);
-                    }
-                }
-            };
-            tokio::join!(read_out, read_err);
-            (take(&out), take(&err))
-        };
-        let run = async {
-            let ((out, err), status) = tokio::join!(read, child.wait());
-            (out, err, status)
-        };
-        let deadline = tokio::time::Instant::now() + limit.total;
-        let expired = async {
-            loop {
-                let idle_due = limit
-                    .idle
-                    .map(|idle| *last_output.lock().unwrap_or_else(|e| e.into_inner()) + idle);
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    return Expired::Total(limit.total);
-                }
-                match (idle_due, limit.idle) {
-                    (Some(due), Some(idle)) if now >= due => return Expired::Idle(idle),
-                    (Some(due), _) => tokio::time::sleep_until(due.min(deadline)).await,
-                    _ => tokio::time::sleep_until(deadline).await,
-                }
-            }
-        };
-        let cancelled = async {
-            let stopped = async {
-                match &self.stop {
-                    Some(stop) => stop.stopped().await,
-                    None => std::future::pending().await,
-                }
-            };
-            match cancel {
-                Some(cancel) => tokio::select! {
-                    () = cancel.notified() => {}
-                    () = stopped => {}
-                },
-                None => stopped.await,
-            }
-        };
-        let expired = async {
-            tokio::select! {
-                hit = expired => hit,
-                () = cancelled => Expired::Cancelled,
-            }
-        };
-        let finished = {
-            tokio::pin!(run);
-            let finished = tokio::select! {
-                done = &mut run => Ok(done),
-                hit = expired => Err(hit),
-            };
-            // Cancelled: ask git to stop, so that it removes its lock files, and give it a
-            // moment before it is killed with the rest.
-            #[cfg(unix)]
-            if let Err(Expired::Cancelled) = finished
-                && let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok())
-            {
-                // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-                unsafe {
-                    libc::killpg(pid, libc::SIGTERM);
-                }
-                let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
-            }
-            finished
-        };
-        match finished {
-            Ok((out, err, Ok(status))) => {
-                let code = status.code().unwrap_or(-1);
-                let stderr = String::from_utf8_lossy(&err).into_owned();
-                self.log
-                    .push(self.tags, kind, cwd, args, started, code, &out, &stderr);
-                Ok(Ok(GitOutput {
-                    stdout: out,
-                    stderr,
-                    code,
-                }))
-            }
-            Ok((_, _, Err(e))) => Err(fail(e)),
-            Err(hit) => {
-                #[cfg(unix)]
-                if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
-                    // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-                    unsafe {
-                        libc::killpg(pid, libc::SIGKILL);
-                    }
-                }
-                #[cfg(not(unix))]
-                let _ = group;
-                let _ = child.kill().await;
-                self.log_timed_out(cwd, args, kind, started);
-                Ok(Err(TimedOut {
-                    limit: hit,
-                    stdout: take(&out),
-                    stderr: String::from_utf8_lossy(&take(&err)).into_owned(),
-                }))
-            }
-        }
+        exec_limited(exec, cmd, run, on_stderr, cancel).await
     }
 
     /// Starts a read-only git command with stdout and stderr piped, for output too large to
@@ -928,24 +1055,29 @@ impl GitRunner {
     /// is full, so reading one to the end before the other can deadlock. If reading stdout
     /// fails, kill the child so the stderr drain can finish. For `git log`, use
     /// [`crate::git::log::read_log`], which does all of this.
-    pub fn spawn_stream(&self, cwd: &Path, args: &[&str]) -> Result<Child> {
+    pub fn spawn_stream(&self, cwd: &Path, args: &[&str]) -> Result<StreamChild> {
         let mut cmd = self.command(Some(cwd), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let started = Instant::now();
-        cmd.spawn().map_err(|e| {
-            let err = spawn_error(cwd, e);
-            self.log.push(
-                self.tags,
-                CmdKind::Read,
-                cwd,
-                args,
-                started,
-                -1,
-                b"",
-                &err.message,
-            );
-            err
-        })
+        crate::platform::spawn(&mut cmd)
+            .map(|(child, tree)| StreamChild {
+                child,
+                tree: Some(tree),
+            })
+            .map_err(|e| {
+                let err = spawn_error(cwd, e);
+                self.log.push(
+                    self.tags,
+                    CmdKind::Read,
+                    cwd,
+                    args,
+                    started,
+                    -1,
+                    b"",
+                    &err.message,
+                );
+                err
+            })
     }
 
     /// Records a `Read` command started with [`GitRunner::spawn_stream`] at `started`.
@@ -992,31 +1124,18 @@ impl GitRunner {
     /// started from a terminal; it fails at once instead. The session leader (git) also leads
     /// a new process group whose id is its pid: what a time limit or a Stop ends.
     fn command(&self, cwd: Option<&Path>, args: &[&str]) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.args(LEADING_ARGS)
-            .args(args)
-            .envs(GIT_ENV)
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            // SAFETY: the closure runs in the forked child before exec and only calls
-            // setsid, which is async-signal-safe and touches no memory of the parent.
-            unsafe {
-                cmd.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-        for var in INHERITED_REPO_VARS {
-            cmd.env_remove(var);
-        }
         // With PATH overridden, the program lookup for "git" also uses this PATH.
-        if let Some(path) = &self.path {
-            cmd.env("PATH", path);
+        let program = self
+            .program
+            .as_ref()
+            .map_or(std::ffi::OsStr::new("git"), |p| p.as_os_str());
+        let mut cmd = child_command(program, self.path.as_ref(), cwd);
+        cmd.args(LEADING_ARGS).args(args).envs(GIT_ENV);
+        if let Some(index) = &self.index_file {
+            cmd.env("GIT_INDEX_FILE", index);
+        }
+        if let Some(ssh) = self.ssh_command {
+            cmd.env("GIT_SSH_COMMAND", ssh);
         }
         // Test builds only (the app refuses `testutil` in a release build): the developer's
         // global and system config must not change what tests see.
@@ -1024,39 +1143,473 @@ impl GitRunner {
         cmd.env("GIT_CONFIG_GLOBAL", crate::testutil::empty_git_config())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("GIT_CONFIG_SYSTEM");
-        if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
-        }
         cmd
+    }
+
+    /// A runner of `program` (an absolute path, found by the caller), logged as `name`, with
+    /// this runner's log, tags, Stop and `PATH`.
+    pub(crate) fn tool(&self, program: PathBuf, name: &'static str) -> ToolRunner {
+        ToolRunner {
+            log: self.log.clone(),
+            program,
+            path: self.path.clone(),
+            env: Vec::new(),
+            removed: Vec::new(),
+            tags: Tags {
+                program: name,
+                ..self.tags
+            },
+            stop: self.stop.clone(),
+        }
     }
 }
 
-/// Ends the process group `group` (git's pid) of a stopped command whose output (not yet
-/// polled to its end) is `output`, and returns that output if it ends: SIGTERM, so git
-/// removes its lock files, then SIGKILL if it has not ended after [`CANCEL_GRACE`], then up
-/// to [`KILLED_GRACE`] for the pipes to close. Elsewhere than on Unix, nothing is returned
-/// and git itself is killed when `output` is dropped.
+/// The git program to run with `PATH` `path` (the app's own when `None`): elsewhere than on
+/// Windows `None`, found by name through that `PATH` at each start; on Windows found here,
+/// by the app, as a full path (Windows would otherwise look in the folder git runs in, a
+/// repository, before `PATH`), and only as a program: a `git.cmd` shim alone is refused
+/// with a message saying so, since it would run through `cmd.exe` (R19).
+fn git_program(path: Option<&OsString>) -> Result<Option<PathBuf>> {
+    if !cfg!(windows) {
+        return Ok(None);
+    }
+    match crate::platform::find_program("git", path.map(OsString::as_os_str)) {
+        crate::platform::Lookup::Program(git) => Ok(Some(git)),
+        crate::platform::Lookup::ScriptOnly(script) => Err(CoreError::new(
+            ErrorCode::GitNotFound,
+            format!(
+                "git was found only as {}, a script that Windows runs through cmd.exe; gg runs \
+                 git.exe itself only. Install Git for Windows, or put the folder that holds \
+                 git.exe on PATH.",
+                script.display()
+            ),
+        )),
+        crate::platform::Lookup::Missing => Err(CoreError::new(
+            ErrorCode::GitNotFound,
+            "git was not found on PATH",
+        )),
+    }
+}
+
+/// The spawn path every child of the app's shares (git and the other tools): `program` in
+/// `cwd`, with `path` as its `PATH` when known (and found with it), stdin null, killed when
+/// dropped, and (Unix) in a session of its own (R15, R41), so without a controlling terminal
+/// and leading its own process group; (Windows) without a console window, and put in a job
+/// object of its own when started with [`crate::platform::spawn`], as every child is. Without the variables an enclosing git process (a
+/// hook) exports, which would point it, or the git it runs, at another repository.
+fn child_command(
+    program: &std::ffi::OsStr,
+    path: Option<&OsString>,
+    cwd: Option<&Path>,
+) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.stdin(Stdio::null()).kill_on_drop(true);
+    crate::platform::child_flags(&mut cmd);
+    for var in INHERITED_REPO_VARS {
+        cmd.env_remove(var);
+    }
+    for (var, _) in std::env::vars_os() {
+        if var.to_string_lossy().starts_with("GIT_INTERNAL_") {
+            cmd.env_remove(var);
+        }
+    }
+    if let Some(path) = path {
+        cmd.env("PATH", path);
+    }
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd
+}
+
+/// Most bytes of another program's stdout kept: its answer is parsed (`gh`'s JSON list of
+/// up to 1000 pull requests), not only shown.
+const TOOL_STDOUT: usize = 32 * 1024 * 1024;
+
+/// Runs another program than git (`gh`) on the same spawn path as git (see
+/// [`child_command`]): an absolute path, an argument array, never a shell; no terminal, its
+/// own process group, a time limit, the operation's Stop; stdin null or the bytes given,
+/// written and then closed. Logged (as its name) and masked like git. Cheap to clone.
+#[derive(Clone)]
+pub struct ToolRunner {
+    log: Arc<CommandLog>,
+    program: PathBuf,
+    path: Option<OsString>,
+    /// Set for every command, beside the inherited environment.
+    env: Vec<(String, String)>,
+    /// Removed from the inherited environment for every command.
+    removed: Vec<&'static str>,
+    tags: Tags,
+    stop: Option<Arc<Stop>>,
+}
+
+impl ToolRunner {
+    /// This runner with `PATH` `path` for its children instead.
+    pub(crate) fn with_path(mut self, path: Option<OsString>) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// This runner, also setting `var` to `value` for every command.
+    pub(crate) fn with_env(mut self, var: &str, value: &str) -> Self {
+        self.env.push((var.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// This runner, giving the git its program runs the protection of the app's own git
+    /// children (see [`git_protection_env`]).
+    pub(crate) fn with_git_protection(mut self) -> Self {
+        self.env.extend(git_protection_env());
+        self
+    }
+
+    /// This runner, removing `var` from the environment its commands inherit.
+    pub(crate) fn without_env(mut self, var: &'static str) -> Self {
+        self.removed.push(var);
+        self
+    }
+
+    /// The program it runs.
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+
+    /// Runs the program with `args` in `cwd`, reading `stdin`, giving up at `limit` (it and
+    /// what it started are killed: `Ok(Err(..))`); an operation's Stop ends it too. Errs only
+    /// when it cannot start, or was stopped before it could.
+    pub async fn run(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        stdin: StdinPolicy,
+        limit: TimeLimit,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_keeping(cwd, args, kind, stdin, limit, Some(TOOL_STDOUT))
+            .await
+    }
+
+    /// Runs the program as [`ToolRunner::run`] does, with nothing on stdin and its output
+    /// (stdout and stderr) discarded, never read: only its exit status is known, and the
+    /// command log records the command without any output. For a command whose output must
+    /// not reach the app (`gh auth token`).
+    pub async fn run_status_only(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_keeping(cwd, args, kind, StdinPolicy::Null, limit, None)
+            .await
+    }
+
+    /// `keep_stdout`: most bytes of stdout kept; `None`: stdout and stderr discarded.
+    async fn run_keeping(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        stdin: StdinPolicy,
+        limit: TimeLimit,
+        keep_stdout: Option<usize>,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        let mut cmd = child_command(self.program.as_os_str(), self.path.as_ref(), Some(cwd));
+        cmd.args(args)
+            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        for var in &self.removed {
+            cmd.env_remove(var);
+        }
+        let exec = Exec {
+            log: &self.log,
+            tags: self.tags,
+            stop: self.stop.as_deref(),
+        };
+        let run = Run {
+            cwd,
+            args,
+            kind,
+            stdin,
+            limit,
+            keep_stdout,
+        };
+        exec_limited(exec, cmd, run, &|_| {}, None).await
+    }
+
+    /// The environment it sets, beside `PATH` (tests).
+    #[cfg(all(test, unix))]
+    fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+}
+
+/// Where a limited command's record goes, and the Stop that ends it.
+struct Exec<'a> {
+    log: &'a CommandLog,
+    tags: Tags,
+    stop: Option<&'a Stop>,
+}
+
+/// A limited command's arguments (beside the program, in its `Command`), what it reads on
+/// stdin and when it is given up on.
+struct Run<'a> {
+    cwd: &'a Path,
+    args: &'a [&'a str],
+    kind: CmdKind,
+    stdin: StdinPolicy,
+    limit: TimeLimit,
+    /// Most bytes of stdout kept (the last ones); `None`: stdout and stderr are discarded,
+    /// never read.
+    keep_stdout: Option<usize>,
+}
+
+/// Runs `cmd` (built by [`child_command`] and the runner's own options) as
+/// [`GitRunner::run_with_timeout`] describes, for git and every other program alike: stdin
+/// as `run.stdin` says, the output's tail kept, given up on at `run.limit`, on `cancel` or
+/// at the Stop, its process group ended then, and logged under `exec.tags`.
+async fn exec_limited(
+    exec: Exec<'_>,
+    mut cmd: Command,
+    run: Run<'_>,
+    on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
+    cancel: Option<&tokio::sync::Notify>,
+) -> Result<std::result::Result<GitOutput, TimedOut>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let Run {
+        cwd,
+        args,
+        kind,
+        stdin,
+        limit,
+        keep_stdout,
+    } = run;
+    if exec.stop.is_some_and(Stop::is_stopped) {
+        return Err(stopped_error(""));
+    }
+    let started = Instant::now();
+    if keep_stdout.is_some() {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let input = match stdin {
+        StdinPolicy::Null => {
+            cmd.stdin(Stdio::null());
+            None
+        }
+        StdinPolicy::Bytes(bytes) => {
+            cmd.stdin(Stdio::piped());
+            Some(bytes)
+        }
+    };
+    let fail = |e: io::Error| {
+        let err = spawn_error_of(exec.tags.program, cwd, e);
+        exec.log
+            .push(exec.tags, kind, cwd, args, started, -1, b"", &err.message);
+        err
+    };
+    let (mut child, tree) = crate::platform::spawn(&mut cmd).map_err(fail)?;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let mut stdin_pipe = child.stdin.take();
+    // When git last wrote anything, for an idle limit.
+    let last_output = Mutex::new(tokio::time::Instant::now());
+    let output_seen = || {
+        *last_output.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    };
+    // Outside the reading future, so what was read is still there when it is dropped
+    // on timeout.
+    let (out, err) = (
+        Mutex::new(Tail::keeping(keep_stdout.unwrap_or(0))),
+        Mutex::new(Tail::default()),
+    );
+    let take = |t: &Mutex<Tail>| {
+        let keep = lock_tail(t).keep;
+        std::mem::replace(&mut *lock_tail(t), Tail::keeping(keep)).into_bytes()
+    };
+    let read = async {
+        let read_out = async {
+            if let Some(p) = stdout_pipe.as_mut() {
+                // On the heap: kept in the future, the buffers would make every runner future
+                // 16 KiB larger (and a debug build's stack overflow; Task 9 review minor 8).
+                let mut buf = vec![0u8; READ_CHUNK];
+                while let Ok(n @ 1..) = p.read(&mut buf).await {
+                    lock_tail(&out).push(&buf[..n]);
+                    output_seen();
+                }
+            }
+        };
+        let read_err = async {
+            if let Some(p) = stderr_pipe.as_mut() {
+                let mut buf = vec![0u8; READ_CHUNK];
+                while let Ok(n @ 1..) = p.read(&mut buf).await {
+                    lock_tail(&err).push(&buf[..n]);
+                    output_seen();
+                    on_stderr(&buf[..n]);
+                }
+            }
+        };
+        // Written beside the reads, so a program that answers before it has read all of
+        // its input never blocks on a full pipe; then closed, so it sees the end.
+        let write_in = async {
+            if let (Some(pipe), Some(bytes)) = (stdin_pipe.as_mut(), input.as_deref()) {
+                let _ = pipe.write_all(bytes).await;
+                let _ = pipe.shutdown().await;
+            }
+            drop(stdin_pipe.take());
+        };
+        tokio::join!(read_out, read_err, write_in);
+        (take(&out), take(&err))
+    };
+    let run = async {
+        let ((out, err), status) = tokio::join!(read, child.wait());
+        (out, err, status)
+    };
+    let deadline = tokio::time::Instant::now() + limit.total;
+    let expired = async {
+        loop {
+            let idle_due = limit
+                .idle
+                .map(|idle| *last_output.lock().unwrap_or_else(|e| e.into_inner()) + idle);
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Expired::Total(limit.total);
+            }
+            match (idle_due, limit.idle) {
+                (Some(due), Some(idle)) if now >= due => return Expired::Idle(idle),
+                (Some(due), _) => tokio::time::sleep_until(due.min(deadline)).await,
+                _ => tokio::time::sleep_until(deadline).await,
+            }
+        }
+    };
+    let cancelled = async {
+        let stopped = async {
+            match exec.stop {
+                Some(stop) => stop.stopped().await,
+                None => std::future::pending().await,
+            }
+        };
+        match cancel {
+            Some(cancel) => tokio::select! {
+                () = cancel.notified() => {}
+                () = stopped => {}
+            },
+            None => stopped.await,
+        }
+    };
+    let expired = async {
+        tokio::select! {
+            hit = expired => hit,
+            () = cancelled => Expired::Cancelled,
+        }
+    };
+    let finished = {
+        tokio::pin!(run);
+        let finished = tokio::select! {
+            done = &mut run => Ok(done),
+            hit = expired => Err(hit),
+        };
+        // Cancelled: ask git to stop, so that it removes its lock files, and give it a
+        // moment before it is killed with the rest.
+        if let Err(Expired::Cancelled) = finished {
+            tree.terminate();
+            let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
+        }
+        finished
+    };
+    match finished {
+        Ok((out, err, Ok(status))) => {
+            tree.release();
+            let code = status.code().unwrap_or(-1);
+            let stderr = String::from_utf8_lossy(&err).into_owned();
+            exec.log
+                .push(exec.tags, kind, cwd, args, started, code, &out, &stderr);
+            Ok(Ok(GitOutput {
+                stdout: out,
+                stderr,
+                code,
+            }))
+        }
+        Ok((_, _, Err(e))) => Err(fail(e)),
+        Err(hit) => {
+            tree.kill();
+            let _ = child.kill().await;
+            exec.log
+                .push(exec.tags, kind, cwd, args, started, -1, b"", "timed out");
+            Ok(Err(TimedOut {
+                limit: hit,
+                stdout: take(&out),
+                stderr: String::from_utf8_lossy(&take(&err)).into_owned(),
+            }))
+        }
+    }
+}
+
+/// Ends the process tree `tree` of a stopped command whose output (not yet polled to its
+/// end) is `output`, and returns that output if it ends: asked to end (SIGTERM on Unix, so
+/// git removes its lock files; on Windows it ends at once), then killed if it has not ended
+/// after [`CANCEL_GRACE`], then up to [`KILLED_GRACE`] for the pipes to close.
 async fn end_group<F: std::future::Future + Unpin>(
-    group: Option<u32>,
+    tree: &crate::platform::ProcessTree,
     output: &mut F,
 ) -> Option<F::Output> {
-    #[cfg(unix)]
-    if let Some(pid) = group.and_then(|p| libc::pid_t::try_from(p).ok()) {
-        // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
-        unsafe {
-            libc::killpg(pid, libc::SIGTERM);
-        }
-        if let Ok(out) = tokio::time::timeout(CANCEL_GRACE, &mut *output).await {
-            return Some(out);
-        }
-        // SAFETY: as above.
-        unsafe {
-            libc::killpg(pid, libc::SIGKILL);
-        }
-        return tokio::time::timeout(KILLED_GRACE, output).await.ok();
+    tree.terminate();
+    if let Ok(out) = tokio::time::timeout(CANCEL_GRACE, &mut *output).await {
+        return Some(out);
     }
-    let _ = (group, output);
-    None
+    tree.kill();
+    tokio::time::timeout(KILLED_GRACE, output).await.ok()
+}
+
+/// Runs `cmd` to its end, as [`Command::output`] does, in a process tree of its own (see
+/// [`crate::platform::spawn`]); dropped before the end, the tree is ended (Windows; on Unix
+/// git itself is killed).
+async fn output(cmd: &mut Command) -> io::Result<std::process::Output> {
+    let (child, tree) = crate::platform::spawn(cmd)?;
+    let out = child.wait_with_output().await;
+    tree.release();
+    out
+}
+
+/// A git command started with [`GitRunner::spawn_stream`]: the child (its pipes, waiting for
+/// it, killing it) and the process tree it heads, which [`StreamChild::wait`] lets go once
+/// the command has ended by itself (dropped before that, the tree is ended on Windows).
+pub struct StreamChild {
+    child: Child,
+    tree: Option<crate::platform::ProcessTree>,
+}
+
+impl StreamChild {
+    /// Waits for git to end (see [`Child::wait`]).
+    pub async fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        let status = self.child.wait().await;
+        if let Some(tree) = self.tree.take() {
+            tree.release();
+        }
+        status
+    }
+}
+
+impl std::fmt::Debug for StreamChild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamChild")
+            .field("child", &self.child)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for StreamChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for StreamChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
 }
 
 /// The `GitFailed` error for a git command that exited with `code`: the first non-empty
@@ -1079,16 +1632,26 @@ pub(crate) fn git_failed(args: &[&str], code: i32, stderr: &str) -> CoreError {
 }
 
 fn spawn_error(cwd: &Path, e: io::Error) -> CoreError {
+    spawn_error_of("git", cwd, e)
+}
+
+/// Why `program` could not start in `cwd`.
+fn spawn_error_of(program: &str, cwd: &Path, e: io::Error) -> CoreError {
     if !cwd.is_dir() {
         CoreError::new(
             ErrorCode::PathMissing,
             format!("folder not found: {}", cwd.display()),
         )
     } else if e.kind() == io::ErrorKind::NotFound {
-        CoreError::new(ErrorCode::GitNotFound, "git was not found on PATH")
-            .with_detail(e.to_string())
+        let code = if program == "git" {
+            ErrorCode::GitNotFound
+        } else {
+            ErrorCode::Io
+        };
+        CoreError::new(code, format!("{program} was not found on PATH")).with_detail(e.to_string())
     } else {
-        CoreError::new(ErrorCode::Io, "could not start git").with_detail(e.to_string())
+        CoreError::new(ErrorCode::Io, format!("could not start {program}"))
+            .with_detail(e.to_string())
     }
 }
 
@@ -1109,11 +1672,33 @@ impl LoginPath {
     /// Starts reading the `PATH` on a background thread, unless it has been read.
     fn prefetch(&'static self, resolve: fn() -> Option<OsString>) {
         if self.0.get().is_none() {
+            let started = epoch_ms();
             std::thread::spawn(move || {
                 self.0.get_or_init(resolve);
+                *LOGIN_PATH_TIMES
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some((started, epoch_ms()));
             });
         }
     }
+}
+
+/// When the prefetched login shell started and ended (unix ms), for the perf log.
+static LOGIN_PATH_TIMES: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+
+fn epoch_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+}
+
+/// When the login shell [`prefetch_login_path`] started ran (unix ms, start and end), once
+/// it has ended: what a launch's timing marks set against the window's.
+pub fn login_path_times() -> Option<(f64, f64)> {
+    *LOGIN_PATH_TIMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The process's login shell `PATH`.
@@ -1144,21 +1729,52 @@ pub fn resolve_login_path() -> Option<OsString> {
 
 #[cfg(unix)]
 fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
-    use std::io::Read;
     use std::os::unix::ffi::OsStringExt;
+
+    let script = r#"printf '\n__GG_PATH__%s__GG_PATH__' "$PATH""#;
+    let out = shell_output(shell, &["-ilc", script], timeout)?;
+    let path = between_markers(&out, PATH_MARKER)?;
+    (!path.is_empty()).then(|| OsString::from_vec(path.to_vec()))
+}
+
+/// What `shell` started with `args` prints on stdout, if it exits successfully within
+/// `timeout` (it is killed past it). Stdin is null and stderr is dropped. The output is
+/// read on a thread: a process started by the shell's profile may keep stdout open after
+/// the shell exits, and reading must not outlive the deadline.
+#[cfg(unix)]
+pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
+    use std::io::Read;
     use std::sync::mpsc;
 
+    use std::os::unix::process::CommandExt as _;
+
     let deadline = Instant::now() + timeout;
-    let mut child = std::process::Command::new(shell)
-        .args(["-ilc", r#"printf '\n__GG_PATH__%s__GG_PATH__' "$PATH""#])
+    let mut cmd = std::process::Command::new(shell);
+    // In the home folder, as a new terminal starts (final boundary review M4): never in the
+    // folder the app was started in (the repository `gg .` was run in), where the user's
+    // interactive start-up files (directory-env plugins, prompt helpers) would act on it.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute() && h.is_dir());
+    cmd.current_dir(home.as_deref().unwrap_or(Path::new("/")));
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    // A session (and process group) of its own, without a terminal: given up on, the shell
+    // is ended with everything its profile started.
+    // SAFETY: the closure runs in the child between fork and exec and calls only setsid,
+    // which is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().ok()?;
 
-    // Read on a thread: a process started by the shell profile may keep stdout open after
-    // the shell exits, and reading must not outlive the deadline.
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -1172,6 +1788,12 @@ fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             _ => {
+                if let Ok(pid) = i32::try_from(child.id()) {
+                    // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
+                    unsafe {
+                        libc::killpg(pid, libc::SIGKILL);
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -1184,25 +1806,19 @@ fn login_path_from_shell(shell: &Path, timeout: Duration) -> Option<OsString> {
     // The shell has exited: its output is complete once the reader has it, unless something
     // it started holds stdout open. The reader gets a moment of its own for that, so a shell
     // that ends just before the deadline is not taken for one that printed nothing.
-    let out = rx
-        .recv_timeout(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .max(READ_GRACE),
-        )
-        .ok()?;
-    let path = between_markers(&out)?;
-    (!path.is_empty()).then(|| OsString::from_vec(path.to_vec()))
+    rx.recv_timeout(
+        deadline
+            .saturating_duration_since(Instant::now())
+            .max(READ_GRACE),
+    )
+    .ok()
 }
 
-/// The bytes between the first two [`PATH_MARKER`]s in `out`.
+/// The bytes between the first two `marker`s in `out`.
 #[cfg(unix)]
-fn between_markers(out: &[u8]) -> Option<&[u8]> {
-    let find = |hay: &[u8]| {
-        hay.windows(PATH_MARKER.len())
-            .position(|w| w == PATH_MARKER)
-    };
-    let start = find(out)? + PATH_MARKER.len();
+pub(crate) fn between_markers<'a>(out: &'a [u8], marker: &[u8]) -> Option<&'a [u8]> {
+    let find = |hay: &[u8]| hay.windows(marker.len()).position(|w| w == marker);
+    let start = find(out)? + marker.len();
     let len = find(&out[start..])?;
     Some(&out[start..start + len])
 }
@@ -1210,6 +1826,38 @@ fn between_markers(out: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review M8: every variable git itself calls local to a repository
+    /// (`rev-parse --local-env-vars`) is removed from every child, except the config ones the
+    /// app keeps on purpose (a user's `-c` settings), and so are the others that point git at
+    /// another namespace, object store or discovery boundary.
+    #[test]
+    fn every_variable_that_points_git_elsewhere_is_removed() {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .expect("git runs");
+        let local = String::from_utf8_lossy(&out.stdout).into_owned();
+        let cmd = child_command(std::ffi::OsStr::new("git"), None, None);
+        let removed: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        let kept = ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
+        for var in local.lines().filter(|v| !kept.contains(v)) {
+            assert!(removed.iter().any(|r| r == var), "{var} is passed on");
+        }
+        for var in [
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            "GIT_QUARANTINE_PATH",
+        ] {
+            assert!(removed.iter().any(|r| r == var), "{var} is passed on");
+        }
+    }
 
     #[test]
     fn truncate_keeps_char_boundaries() {
@@ -1254,10 +1902,14 @@ mod tests {
     async fn limited_commands_run_in_a_session_of_their_own() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1292,6 +1944,288 @@ mod tests {
         assert_eq!(out.code, 0);
     }
 
+    /// A tool runner of `/bin/sh` (as `gh`), logging to `log`.
+    #[cfg(unix)]
+    fn sh_tool(log: Arc<CommandLog>, stop: Option<Arc<Stop>>) -> ToolRunner {
+        let git = GitRunner {
+            log,
+            live: Arc::default(),
+            path: None,
+            tags: Tags::default(),
+            stop,
+            version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
+        };
+        git.for_repo(3).tool(PathBuf::from("/bin/sh"), "gh")
+    }
+
+    /// The read buffers live on the heap: a runner future stays small, so the futures that
+    /// hold it (an operation's, a load's) do not overflow a debug build's stack (Task 9
+    /// review minor 8).
+    #[test]
+    fn a_limited_run_is_a_small_future() {
+        let git = GitRunner {
+            log: CommandLog::new(),
+            live: Arc::default(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
+        };
+        let limit = TimeLimit::total(Duration::from_secs(1));
+        let run = git.run_with_timeout(Path::new("/"), &["status"], CmdKind::Read, limit);
+        let size = std::mem::size_of_val(&run);
+        assert!(size < 8192, "{size} bytes");
+        let tool = git.tool(PathBuf::from("/bin/sh"), "gh");
+        let run = tool.run(
+            Path::new("/"),
+            &["-c", "true"],
+            CmdKind::Read,
+            StdinPolicy::Null,
+            limit,
+        );
+        let size = std::mem::size_of_val(&run);
+        assert!(size < 8192, "{size} bytes");
+    }
+
+    /// The git another program runs gets every setting the app gives its own git (each
+    /// `-c` of the leading options), plus no hooks, and git's environment. The settings go
+    /// into `GIT_CONFIG_PARAMETERS` after whatever was inherited there (the last of a key
+    /// wins), and the user's own `GIT_CONFIG_COUNT` settings are left alone (Task 9 review
+    /// minor 1).
+    #[test]
+    fn the_protection_for_another_programs_git_follows_the_apps_own() {
+        let env = protection_env_after(Some("'core.fsmonitor=evil' 'user.name=it'\\''s'"));
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        for (k, v) in GIT_ENV {
+            assert_eq!(get(k), Some(v), "{k}");
+        }
+        assert_eq!(get("GIT_CONFIG_COUNT"), None, "the user's own are kept");
+        let settings: Vec<&str> = LEADING_ARGS
+            .iter()
+            .copied()
+            .filter(|a| *a != "-c")
+            .collect();
+        assert_eq!(
+            LEADING_ARGS.len(),
+            settings.len() * 2,
+            "every setting has its -c"
+        );
+        let mut expected = "'core.fsmonitor=evil' 'user.name=it'\\''s'".to_owned();
+        for setting in &settings {
+            expected.push_str(&format!(" '{setting}'"));
+        }
+        expected.push_str(&format!(" 'core.hooksPath={NULL_DEVICE}'"));
+        assert_eq!(get("GIT_CONFIG_PARAMETERS"), Some(expected.as_str()));
+        let alone = protection_env_after(None);
+        let params = alone
+            .iter()
+            .find(|(n, _)| n == "GIT_CONFIG_PARAMETERS")
+            .unwrap();
+        assert!(
+            params.1.starts_with("'core.quotePath=false'"),
+            "{}",
+            params.1
+        );
+        assert_eq!(config_quoted("a'b"), "'a'\\''b'");
+    }
+
+    /// What git makes of it (checked against git itself): the app's settings win over an
+    /// inherited `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`, and other keys of the
+    /// user's stay.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_protection_wins_over_inherited_config_and_keeps_the_rest() {
+        let repo = crate::testutil::TestRepo::new();
+        let mut tool = GitRunner {
+            log: CommandLog::new(),
+            live: Arc::default(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
+        }
+        .tool(PathBuf::from("/bin/sh"), "gh")
+        .with_env("GIT_CONFIG_COUNT", "2")
+        .with_env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .with_env("GIT_CONFIG_VALUE_0", "from-count")
+        .with_env("GIT_CONFIG_KEY_1", "user.name")
+        .with_env("GIT_CONFIG_VALUE_1", "Ada");
+        tool.env
+            .extend(protection_env_after(Some("'core.fsmonitor=from-params'")));
+        let out = tool
+            .run(
+                repo.path(),
+                &[
+                    "-c",
+                    "git config --get core.fsmonitor; git config --get user.name",
+                ],
+                CmdKind::Read,
+                StdinPolicy::Null,
+                TimeLimit::total(Duration::from_secs(10)),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.text(), "false\nAda\n", "{}", out.stderr);
+    }
+
+    /// A command whose output must not reach the app: discarded, never read, and the log
+    /// records the command alone; variables removed are not inherited.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_status_only_command_keeps_no_output_and_loses_the_variables_removed() {
+        let log = CommandLog::new();
+        let tool = sh_tool(log.clone(), None).without_env("HOME");
+        let out = tool
+            .run_status_only(
+                Path::new("/"),
+                &[
+                    "-c",
+                    "echo SECRET; echo SECRET >&2; [ -z \"$HOME\" ] && exit 3",
+                ],
+                CmdKind::Read,
+                TimeLimit::total(Duration::from_secs(10)),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.code, 3, "HOME was removed");
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        let records = log.since(0);
+        assert_eq!(records.len(), 1);
+        assert!(records[0].stdout.is_empty() && records[0].stderr.is_empty());
+    }
+
+    /// Another program runs on git's spawn path: no controlling terminal (a session of its
+    /// own), stdin null unless bytes are given, which it reads exactly and then sees end;
+    /// the variables given are set; its record shows its name, masked like git's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tool_runs_without_a_terminal_and_reads_only_what_it_is_given() {
+        let log = CommandLog::new();
+        let tool = sh_tool(log.clone(), None).with_env("GH_PROMPT_DISABLED", "1");
+        assert_eq!(
+            tool.env(),
+            [("GH_PROMPT_DISABLED".to_owned(), "1".to_owned())]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let script = format!(
+            "if (: < /dev/tty) 2>/dev/null; then echo tty; else echo no-tty; fi; \
+             echo \"prompt=$GH_PROMPT_DISABLED\"; echo $$ > '{}'; sleep 1; od -An -c",
+            pidfile.display()
+        );
+        let limit = TimeLimit::total(Duration::from_secs(20));
+        let args = ["-c", script.as_str(), "https://ada:SECRET@github.com/o/r"];
+        let run = |stdin| tool.run(dir.path(), &args, CmdKind::Read, stdin, limit);
+        let (null, pid) = tokio::join!(run(StdinPolicy::Null), async {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(pid) = std::fs::read_to_string(&pidfile)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+                {
+                    // SAFETY: getsid only reads a process's session id.
+                    break unsafe { (libc::getsid(pid), libc::getsid(0)) };
+                }
+                assert!(Instant::now() < deadline, "the script ran");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let (theirs, ours) = pid;
+        assert!(theirs > 0, "the script is running");
+        assert_ne!(theirs, ours, "it runs in a session of its own");
+        let null = null.unwrap().expect("finished");
+        assert_eq!(null.code, 0, "{}", null.stderr);
+        let lines: Vec<&str> = std::str::from_utf8(&null.stdout).unwrap().lines().collect();
+        assert_eq!(
+            lines,
+            ["no-tty", "prompt=1"],
+            "read nothing from a null stdin"
+        );
+
+        let body = "line one\n- `two` \u{e9}\n".as_bytes().to_vec();
+        let given = run(StdinPolicy::Bytes(body.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut piped = Command::new("od");
+        piped
+            .args(["-An", "-c"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut od = piped.spawn().unwrap();
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut input = od.stdin.take().unwrap();
+            input.write_all(&body).await.unwrap();
+        }
+        let expected = od.wait_with_output().await.unwrap().stdout;
+        let text = String::from_utf8_lossy(&given.stdout).into_owned();
+        assert!(
+            text.ends_with(&*String::from_utf8_lossy(&expected)),
+            "the exact bytes, then the end: {text:?}"
+        );
+
+        let records = log.since(0);
+        assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|r| r.program == "gh" && r.repo_id == Some(3))
+        );
+        assert_eq!(records[0].args[2], "https://***@github.com/o/r");
+    }
+
+    /// A tool that does not end within its limit is killed with what it started; a
+    /// stopped operation's tool ends at the Stop.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tool_is_given_up_on_at_its_limit_and_at_the_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let gave_up = sh_tool(CommandLog::new(), None)
+            .run(
+                dir.path(),
+                &["-c", "sleep 30"],
+                CmdKind::Read,
+                StdinPolicy::Null,
+                TimeLimit::total(Duration::from_millis(500)),
+            )
+            .await
+            .unwrap()
+            .expect_err("timed out");
+        assert_eq!(gave_up.limit, Expired::Total(Duration::from_millis(500)));
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        let stop = Stop::new();
+        let tool = sh_tool(CommandLog::new(), Some(stop.clone()));
+        let path = dir.path().to_path_buf();
+        let run = tokio::spawn(async move {
+            tool.run(
+                &path,
+                &["-c", "sleep 30"],
+                CmdKind::Write,
+                StdinPolicy::Bytes(b"x".to_vec()),
+                TimeLimit::total(Duration::from_secs(60)),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop.stop();
+        let out = run.await.unwrap().unwrap().expect_err("stopped");
+        assert_eq!(out.limit, Expired::Cancelled);
+    }
+
     /// M3: the version is read from `git --version`, and one older than 2.29 is a problem
     /// said once, plainly.
     #[test]
@@ -1323,10 +2257,14 @@ mod tests {
     async fn every_command_runs_in_a_session_of_its_own_without_stdin() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("pid");
@@ -1368,10 +2306,14 @@ mod tests {
         let stop = Stop::new();
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: Some(stop.clone()),
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
@@ -1408,24 +2350,148 @@ mod tests {
         );
     }
 
+    /// A runner with no log of interest, for the time-limit tests.
+    /// The app's git children are counted per repository while they run (M5: a lock is
+    /// never taken for stale while one of them may hold it), by every clone of the runner.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn running_children_are_counted_per_repository() {
+        let repo = crate::testutil::TestRepo::new();
+        let base = plain_runner();
+        let runner = base.for_repo(7);
+        let other = base.for_repo(8);
+        assert_eq!(base.children_running(7), 0);
+        let slow = runner.run_unchecked(
+            repo.path(),
+            &["-c", "alias.nap=!sleep 0.5", "nap"],
+            CmdKind::Read,
+        );
+        let watch = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            (other.children_running(7), other.children_running(8))
+        };
+        let (out, during) = tokio::join!(slow, watch);
+        assert_eq!(out.unwrap().code, 0);
+        assert_eq!(during, (1, 0));
+        assert_eq!(base.children_running(7), 0, "counted down once it ended");
+    }
+
+    #[cfg(unix)]
+    fn plain_runner() -> GitRunner {
+        GitRunner {
+            log: CommandLog::new(),
+            live: Arc::default(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
+        }
+    }
+
+    /// Runs the shell `script` (as a git alias, so as the runner runs git) with `limit`.
+    #[cfg(unix)]
+    async fn run_script(
+        script: &str,
+        limit: TimeLimit,
+    ) -> std::result::Result<GitOutput, TimedOut> {
+        let dir = tempfile::tempdir().unwrap();
+        let alias = format!("alias.probe=!{script}");
+        plain_runner()
+            .run_with_timeout(dir.path(), &["-c", &alias, "probe"], CmdKind::Read, limit)
+            .await
+            .unwrap()
+    }
+
+    /// The idle limit counts from the last output: a command that keeps writing (to stderr,
+    /// as git's progress) for longer than it runs to its end. Limits generous against a slow
+    /// start (Task 6 review: the end-to-end tests were flaky).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_that_keeps_writing_is_not_idle() {
+        let started = Instant::now();
+        let out = run_script(
+            "for i in $(seq 30); do echo x >&2; sleep .1; done",
+            TimeLimit::idle(Duration::from_secs(2), Duration::from_secs(20)),
+        )
+        .await
+        .expect("finished");
+        assert_eq!(out.code, 0);
+        assert!(
+            started.elapsed() > Duration::from_secs(2),
+            "ran past the idle limit"
+        );
+    }
+
+    /// A command that writes nothing for the idle limit is given up as idle.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_silent_command_is_given_up_as_idle() {
+        let started = Instant::now();
+        let timed_out = run_script(
+            "sleep 30",
+            TimeLimit::idle(Duration::from_millis(500), Duration::from_secs(20)),
+        )
+        .await
+        .expect_err("gave up");
+        assert_eq!(timed_out.limit, Expired::Idle(Duration::from_millis(500)));
+        assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    /// However much a command keeps writing, it ends at the total limit, with what it wrote
+    /// kept.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_that_never_ends_stops_at_the_cap() {
+        let timed_out = run_script(
+            "while :; do echo still here >&2; sleep .1; done",
+            TimeLimit::idle(Duration::from_secs(2), Duration::from_secs(3)),
+        )
+        .await
+        .expect_err("gave up");
+        assert_eq!(timed_out.limit, Expired::Total(Duration::from_secs(3)));
+        assert!(
+            timed_out.stderr.contains("still here"),
+            "{:?}",
+            timed_out.stderr
+        );
+    }
+
     /// Output past the tail is read (so git is never blocked on a full pipe) and dropped.
     #[cfg(unix)]
     #[tokio::test]
     async fn run_with_timeout_keeps_only_the_tail_of_large_output() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         let dir = tempfile::tempdir().unwrap();
-        // git prints back a 300 KiB config value given on its command line.
-        let big = "x".repeat(300 * 1024);
+        // git prints back 300 KiB of config values given on its command line, in three
+        // arguments of 100 KiB: Linux refuses any one argument over 128 KiB.
+        let value = format!("gg.big={}", "x".repeat(100 * 1024));
         let out = runner
             .run_with_timeout(
                 dir.path(),
-                &["-c", &format!("gg.big={big}"), "config", "--get", "gg.big"],
+                &[
+                    "-c",
+                    &value,
+                    "-c",
+                    &value,
+                    "-c",
+                    &value,
+                    "config",
+                    "--get-all",
+                    "gg.big",
+                ],
                 CmdKind::Read,
                 TimeLimit::total(Duration::from_secs(20)),
             )
@@ -1442,14 +2508,66 @@ mod tests {
         );
     }
 
+    /// ssh is told not to ask on Windows only, and only when the user has not chosen their
+    /// ssh (environment or the repository's `core.sshCommand`).
     #[test]
-    fn inherited_repo_vars_are_removed() {
+    fn ssh_is_made_to_fail_at_once_on_windows_unless_chosen() {
+        let none = |_: &str| false;
+        assert_eq!(
+            batch_ssh_command(true, none, false),
+            Some("ssh -o BatchMode=yes")
+        );
+        assert_eq!(batch_ssh_command(false, none, false), None);
+        assert_eq!(batch_ssh_command(true, none, true), None);
+        for var in ["GIT_SSH_COMMAND", "GIT_SSH"] {
+            assert_eq!(
+                batch_ssh_command(true, |v: &str| v == var, false),
+                None,
+                "{var}"
+            );
+        }
+        assert_eq!(
+            batch_ssh_command(true, |v: &str| v == "SSH_AUTH_SOCK", false),
+            Some(BATCH_SSH_COMMAND)
+        );
+    }
+
+    /// The ssh command reaches git's children as `GIT_SSH_COMMAND`.
+    #[test]
+    fn the_ssh_command_is_given_to_git() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
+        }
+        .with_ssh_command(Some(BATCH_SSH_COMMAND));
+        let cmd = runner.command(None, &["fetch"]);
+        let set = cmd
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "GIT_SSH_COMMAND")
+            .and_then(|(_, v)| v);
+        assert_eq!(set, Some(std::ffi::OsStr::new(BATCH_SSH_COMMAND)));
+    }
+
+    #[test]
+    fn inherited_repo_vars_are_removed() {
+        let runner = GitRunner {
+            log: CommandLog::new(),
+            live: Arc::default(),
+            path: None,
+            tags: Tags::default(),
+            stop: None,
+            version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         let cmd = runner.command(None, &["status"]);
         let removed: Vec<_> = cmd
@@ -1498,10 +2616,14 @@ mod tests {
         let log = CommandLog::new();
         let runner = GitRunner {
             log: log.clone(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         runner.log_timed_out(
             Path::new("/r"),
@@ -1552,6 +2674,7 @@ mod tests {
         let op = Tags {
             repo_id: Some(1),
             op_id: Some(7),
+            ..Tags::default()
         };
         record(&log, op, CmdKind::Write, "branch");
         record(&log, op, CmdKind::Write, "checkout");
@@ -1559,6 +2682,7 @@ mod tests {
             let repo = Tags {
                 repo_id: Some(1 + i % 2),
                 op_id: None,
+                ..Tags::default()
             };
             record(&log, repo, CmdKind::Read, "status");
         }
@@ -1632,6 +2756,7 @@ mod tests {
         let op = Tags {
             repo_id: Some(1),
             op_id: Some(7),
+            ..Tags::default()
         };
         record(&log, op, CmdKind::Read, "rev-parse");
         log.name_op(7, "Merge feature/x into main");
@@ -1658,10 +2783,14 @@ mod tests {
         let log = CommandLog::new();
         let runner = GitRunner {
             log: log.clone(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         let op = runner.for_repo(4).for_op(9, Stop::new());
         op.log_timed_out(Path::new("/r"), &["push"], CmdKind::Write, Instant::now());
@@ -1675,10 +2804,14 @@ mod tests {
     fn git_never_waits_for_an_editor() {
         let runner = GitRunner {
             log: CommandLog::new(),
+            live: Arc::default(),
             path: None,
             tags: Tags::default(),
             stop: None,
             version: None,
+            index_file: None,
+            ssh_command: None,
+            program: None,
         };
         let cmd = runner.command(None, &["rebase"]);
         let env: Vec<(String, String)> = cmd
@@ -1708,6 +2841,7 @@ mod tests {
     fn command_record_serializes_camel_case() {
         let rec = CommandRecord {
             id: 1,
+            program: "git".into(),
             kind: CmdKind::Write,
             cwd: "/r".into(),
             args: vec!["status".into()],
@@ -1722,6 +2856,7 @@ mod tests {
         };
         let json = serde_json::to_value(&rec).unwrap();
         assert_eq!(json["kind"], "write");
+        assert_eq!(json["program"], "git");
         assert_eq!(json["startedAtMs"], 5);
         assert_eq!(json["durationMs"], 2);
         assert_eq!(json["exitCode"], 0);
@@ -1810,6 +2945,52 @@ mod tests {
             );
         }
 
+        /// Final boundary review M4: the login shell starts in the home folder (or `/`),
+        /// never in the folder the app inherited (the repository `gg .` was run in), so the
+        /// user's interactive start-up files run where a new terminal's would.
+        #[test]
+        fn the_login_shell_runs_in_the_home_folder() {
+            let dir = tempfile::tempdir().unwrap();
+            let shell = script(&dir, "shell", "pwd");
+            let out = shell_output(&shell, &[], Duration::from_secs(5)).expect("it ran");
+            let ran_in = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim());
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let expected = home
+                .filter(|h| h.is_dir())
+                .unwrap_or_else(|| std::path::PathBuf::from("/"));
+            assert_eq!(
+                ran_in.canonicalize().unwrap(),
+                expected.canonicalize().unwrap()
+            );
+        }
+
+        /// Given up on, the shell is ended with what its profile started (its process
+        /// group), not only the shell itself.
+        #[test]
+        fn a_shell_given_up_on_is_ended_with_its_children() {
+            let dir = tempfile::tempdir().unwrap();
+            let pidfile = dir.path().join("child.pid");
+            let shell = script(
+                &dir,
+                "shell",
+                &format!("sleep 30 & echo $! > '{}'; wait", pidfile.display()),
+            );
+            // Long enough for the shell to start its child under a loaded test run (it
+            // could not write the pid file within 500 ms once), short of the child's 30 s.
+            assert_eq!(shell_output(&shell, &[], Duration::from_secs(2)), None);
+            let pid: i32 = std::fs::read_to_string(&pidfile)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            // SAFETY: signal 0 only checks that the process exists.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(Instant::now() < deadline, "the profile's child still runs");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
         #[test]
         fn login_path_failure_is_none() {
             let dir = tempfile::tempdir().unwrap();
@@ -1834,20 +3015,21 @@ mod tests {
         fn slow_shell() -> Option<OsString> {
             CALLS.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(300));
-            Some(OsString::from("/usr/bin:/bin"))
+            // The test's own PATH, where git is found on every platform.
+            std::env::var_os("PATH")
         }
 
         let started = Instant::now();
         SLOT.prefetch(slow_shell);
         let runner = GitRunner::detect_from(CommandLog::new(), || SLOT.get(slow_shell))
             .await
-            .expect("git runs with /usr/bin:/bin");
+            .expect("git runs with the test's PATH");
         assert!(
             started.elapsed() >= Duration::from_millis(250),
             "detect did not wait for the prefetch ({:?})",
             started.elapsed()
         );
-        assert_eq!(runner.path, Some(OsString::from("/usr/bin:/bin")));
+        assert_eq!(runner.path, std::env::var_os("PATH"));
         assert_eq!(CALLS.load(Ordering::SeqCst), 1, "the shell ran twice");
         SLOT.prefetch(slow_shell);
         assert_eq!(

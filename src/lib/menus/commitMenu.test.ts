@@ -10,6 +10,7 @@ describe("commitMenu", () => {
       "-",
       "branch.create",
       "tag.create",
+      "worktree.create",
       "-",
       "cherry_pick",
       "revert",
@@ -20,6 +21,7 @@ describe("commitMenu", () => {
     ]);
     expect(ids(find(items, "reset").submenu!)).toEqual(["reset.soft", "reset.mixed", "reset.hard"]);
     expect(disabled(items)).toEqual([]);
+    expect(find(items, "worktree.create").label).toBe("Create worktree here…");
   });
 
   it("disables what the core refuses while files still have conflicts nothing in progress explains (R20')", () => {

@@ -1,0 +1,5 @@
+.preview/
+.shots/
+.wrangler/
+node_modules/
+public/download/

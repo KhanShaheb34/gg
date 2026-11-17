@@ -206,8 +206,8 @@ async fn path_with_spaces_and_unicode() {
         .await
         .unwrap();
     assert_eq!(
-        fs::canonicalize(top.text().trim()).unwrap(),
-        fs::canonicalize(repo.path()).unwrap()
+        dunce::canonicalize(top.text().trim()).unwrap(),
+        dunce::canonicalize(repo.path()).unwrap()
     );
     // core.quotePath=false keeps non-ASCII file names unescaped.
     let status = git

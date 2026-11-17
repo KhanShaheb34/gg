@@ -57,6 +57,7 @@ fn pull(branch: &str, mode: PullMode) -> OpRequest {
         branch: branch.to_owned(),
         mode,
         expect_head: here(),
+        expect_worktree: here_wt(),
     }
 }
 
@@ -685,6 +686,61 @@ async fn pull_diverged_asks_for_a_mode() {
     assert_eq!(rev(&repo, "HEAD~1"), theirs);
 }
 
+/// Diverged with `pull.ff=only` configured: git refuses ("Not possible to fast-forward"),
+/// and the outcome offers the same merge-or-rebase choice, each of which then works: a
+/// merge commit (`--ff` lifts the fast-forward-only rule for that pull only) or a rebase.
+#[tokio::test]
+async fn pull_diverged_with_fast_forward_only_offers_merge_or_rebase() {
+    let (repo, _origin, other) = with_remote();
+    let theirs = other.commit("theirs");
+    other.git(&["push", "-q", "origin", "main"]);
+    let mine = repo.commit("mine");
+    repo.git(&["config", "pull.ff", "only"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, pull("main", PullMode::Default)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:?}");
+    assert_eq!(
+        out.hints,
+        [OpHint::ChoosePullMode {
+            branch: "main".into()
+        }]
+    );
+    assert!(out.message.contains("diverged"), "{}", out.message);
+    assert!(out.message.contains("fast-forward"), "{}", out.message);
+    assert_eq!(rev(&repo, "HEAD"), mine);
+
+    let out = h.run(id, pull("main", PullMode::Merge)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        ran(
+            &h,
+            &out,
+            &["pull", "--progress", "--no-edit", "--no-rebase", "--ff"]
+        ),
+        "{:?}",
+        op_args(&h, &out)
+    );
+    assert_eq!(
+        repo.git(&["rev-list", "--parents", "-n", "1", "HEAD"])
+            .split(' ')
+            .count(),
+        3,
+        "a merge commit"
+    );
+    assert_eq!(
+        repo.git(&["config", "pull.ff"]),
+        "only",
+        "the setting stays"
+    );
+
+    repo.git(&["reset", "-q", "--hard", &mine]);
+    let out = h.run(id, pull("main", PullMode::Rebase)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(rev(&repo, "HEAD~1"), theirs);
+}
+
 /// `main` here and on `origin` both change `clash.txt` after a shared `base`: the other
 /// clone pushed its change, this one committed its own. HEAD on `main`.
 fn clashing_with_remote() -> (TestRepo, TestRepo) {
@@ -761,7 +817,7 @@ async fn pull_whose_autostash_conflicts_says_so() {
             out.detail
                 .as_deref()
                 .unwrap_or_default()
-                .contains("Applying autostash resulted in conflicts"),
+                .contains("resulted in conflicts"),
             "{config}: {out:?}"
         );
         assert!(repo.git(&["stash", "list"]).contains("autostash"));
@@ -897,9 +953,13 @@ async fn fetch_into_local_creates_or_fast_forwards() {
 
     // A bad local name never reaches git.
     let err =
-        h.m.run_op(id, fetch_into_local("origin/feature", "-x"), &[])
-            .await
-            .unwrap_err();
+        h.m.run_op(
+            id,
+            in_wt(repo.path(), fetch_into_local("origin/feature", "-x")),
+            &[],
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.code, gg_core::error::ErrorCode::BadName);
 }
 
@@ -1083,6 +1143,7 @@ async fn checkout_with_fast_forward() {
     let checkout_ff = |branch: &str| OpRequest::CheckoutBranch {
         branch: branch.to_owned(),
         fast_forward: true,
+        expect_worktree: here_wt(),
     };
 
     let out = h.run(id, checkout_ff("topic")).await;
@@ -1146,6 +1207,7 @@ async fn checkout_with_fast_forward_and_a_change_in_the_way_loses_nothing() {
             OpRequest::CheckoutBranch {
                 branch: "topic".into(),
                 fast_forward: true,
+                expect_worktree: here_wt(),
             },
         )
         .await;
@@ -1183,8 +1245,11 @@ async fn push_to_unreachable_remote_fails_fast_and_queue_continues() {
 
     let started = Instant::now();
     let pushing = tokio::spawn({
-        let m = h.m.clone();
-        async move { m.run_op(id, push("main", "dead", false), &[]).await }
+        let (m, wt) = (h.m.clone(), repo.path().to_path_buf());
+        async move {
+            m.run_op(id, in_wt(&wt, push("main", "dead", false)), &[])
+                .await
+        }
     });
     // Asked for once the push has started: it waits for the push, then runs.
     h.sink
@@ -1433,11 +1498,13 @@ async fn network_operations_fail_plainly_on_an_empty_repository() {
         OpRequest::CheckoutBranch {
             branch: "main".into(),
             fast_forward: true,
+            expect_worktree: here_wt(),
         },
     ];
     for request in requests {
         let shown = format!("{request:?}");
-        match tokio::time::timeout(TIMEOUT, h.m.run_op(id, request, &[])).await {
+        match tokio::time::timeout(TIMEOUT, h.m.run_op(id, in_wt(repo.path(), request), &[])).await
+        {
             Err(_) => panic!("{shown}: did not end"),
             Ok(Err(e)) => assert!(!e.message.is_empty(), "{shown}: {e:?}"),
             Ok(Ok(out)) => {
@@ -1507,8 +1574,11 @@ async fn user_fetch_waits_for_the_running_operation() {
     h.m.set_op_delay(Duration::from_millis(DELAY_MS as u64));
 
     let op = tokio::spawn({
-        let (m, head) = (h.m.clone(), head.clone());
-        async move { m.run_op(id, create_branch("a", &head), &[]).await }
+        let (m, wt, head) = (h.m.clone(), repo.path().to_path_buf(), head.clone());
+        async move {
+            m.run_op(id, in_wt(&wt, create_branch("a", &head)), &[])
+                .await
+        }
     });
     h.sink
         .wait_for(TIMEOUT, |n, v| {
@@ -1695,7 +1765,7 @@ async fn a_running_scheduled_fetch_is_cancelled_when_an_operation_takes_its_turn
         } else {
             let out = tokio::time::timeout(
                 Duration::from_secs(10),
-                h.m.run_op(id, create_branch("b", &head), &[]),
+                h.m.run_op(id, in_wt(repo.path(), create_branch("b", &head)), &[]),
             )
             .await
             .expect("the operation is not held up")
@@ -1889,6 +1959,7 @@ async fn pulling_the_branch_being_rebased_here_says_a_rebase_is_in_progress() {
                 branch: "main".into(),
                 mode: PullMode::Default,
                 expect_head: here(),
+                expect_worktree: here_wt(),
             },
         )
         .await;

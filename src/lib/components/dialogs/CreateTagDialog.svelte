@@ -10,9 +10,16 @@
   import NameField from "./NameField.svelte";
   import { NamedSubmit } from "./named.svelte";
 
-  type Props = { repoId: number; hash: string; subject: string; close: () => void };
+  type Props = {
+    repoId: number;
+    hash: string;
+    subject: string;
+    /** The active worktree it was opened for: what it asks for runs only there. */
+    worktree: string;
+    close: () => void;
+  };
 
-  let { repoId, hash, subject, close }: Props = $props();
+  let { repoId, hash, subject, worktree, close }: Props = $props();
 
   const uid = Math.random().toString(36).slice(2, 8);
   let name = $state("");
@@ -24,7 +31,7 @@
   const annotated = $derived(message.trim() !== "");
 
   function submit() {
-    void named.submit(name, { op: "create_tag", name, hash, message: annotated ? message : null });
+    void named.submit(name, { op: "create_tag", name, hash, message: annotated ? message : null, expectWorktree: worktree });
   }
 </script>
 

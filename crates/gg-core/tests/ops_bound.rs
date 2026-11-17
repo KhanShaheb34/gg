@@ -24,6 +24,7 @@ fn reset_hard(hash: &str, expect_head: HeadInfo) -> OpRequest {
         hash: hash.to_owned(),
         mode: ResetMode::Hard,
         expect_head,
+        expect_worktree: here_wt(),
     }
 }
 
@@ -135,6 +136,30 @@ async fn a_hard_reset_confirmed_before_more_files_changed_is_asked_again() {
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
 }
 
+/// A file already listed and edited again after the dialog asks again too (Task 4 review):
+/// the token has the files' sizes and times, not only their names.
+#[tokio::test]
+async fn a_hard_reset_asks_again_when_a_listed_file_is_edited_again() {
+    let repo = TestRepo::new();
+    repo.write("a.txt", "a\n");
+    let first = repo.commit_all("one");
+    repo.commit("two");
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let asked = h.run(id, reset_hard(&first, here())).await;
+    let yes = confirmed(&asked);
+    repo.write("a.txt", "edited again, at more length\n");
+    let mark = h.last_log_id();
+    let out = h.run_with(id, reset_hard(&first, here()), &yes).await;
+    assert_eq!(out.status, OpStatus::NeedsConfirmation, "{out:?}");
+    assert!(h.writes_since(mark).is_empty());
+    let out = h
+        .run_with(id, reset_hard(&first, here()), &confirmed(&out))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+}
+
 /// A reset (any mode) asked for with main at one commit does not run once main has moved
 /// (a commit made in a terminal): what it would undo is not what the user saw.
 #[tokio::test]
@@ -154,6 +179,7 @@ async fn a_reset_does_not_run_once_the_branch_has_moved() {
                 hash: first.clone(),
                 mode: ResetMode::Soft,
                 expect_head: seen,
+                expect_worktree: here_wt(),
             },
         )
         .await;
@@ -190,6 +216,7 @@ async fn a_cherry_pick_runs_on_the_branch_it_was_asked_for() {
         mainline: None,
         no_commit: false,
         expect_head: on_main.clone(),
+        expect_worktree: here_wt(),
     };
     // Both asked for while main was at the same commit: the second runs after the first.
     assert_eq!(h.run(id, pick(&one)).await.status, OpStatus::Done);
@@ -326,12 +353,20 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
                     id,
                     OpRequest::Abort {
                         expect_head: head.clone(),
+                        expect_worktree: here_wt(),
                     },
                 )
                 .await;
             let yes = confirmed(&asked);
-            h.run_with(id, OpRequest::Abort { expect_head: head }, &yes)
-                .await
+            h.run_with(
+                id,
+                OpRequest::Abort {
+                    expect_head: head,
+                    expect_worktree: here_wt(),
+                },
+                &yes,
+            )
+            .await
         } else {
             repo.write("clash.txt", "resolved\n");
             h.run(
@@ -339,6 +374,7 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
                 OpRequest::Continue {
                     even_with_markers: false,
                     expect_head: head,
+                    expect_worktree: here_wt(),
                 },
             )
             .await
@@ -346,6 +382,36 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
         assert_eq!(out.status, OpStatus::Done, "aborting {aborting}: {out:?}");
         assert!(out.snapshot.in_progress.is_none());
     }
+}
+
+/// Many untracked files with long names, all overwritten: listed whole across the runs the
+/// paths are read in (150: more than one run of 100). That a run also stays under Windows'
+/// 32 KiB command line is pinned by `ops::commit`'s unit test
+/// `paths_go_in_runs_short_by_count_and_by_length`: here, 100 paths cannot pass 32 KiB on
+/// Windows, whose paths stop at 260 characters (Task 12 review minor 8).
+#[tokio::test]
+async fn a_hard_reset_counts_many_long_named_files_it_overwrites() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    let long = "n".repeat(180);
+    let names: Vec<String> = (0..150).map(|i| format!("{long}-{i:03}.txt")).collect();
+    for name in &names {
+        repo.write(name, "the commit's\n");
+    }
+    let later = repo.commit_all("adds many");
+    repo.git(&["reset", "-q", "--hard", &first]);
+    for name in &names {
+        repo.write(name, "mine\n");
+    }
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let asked = h.run(id, reset_hard(&later, here())).await;
+    assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:?}");
+    let message = &asked.dangers[0].message;
+    assert!(
+        message.contains("150 untracked files will be overwritten by"),
+        "{message}"
+    );
 }
 
 /// O1: a hard reset overwrites an untracked file at a path the target commit tracks. The

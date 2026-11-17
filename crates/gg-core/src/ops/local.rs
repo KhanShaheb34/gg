@@ -341,6 +341,7 @@ pub(crate) async fn merge(
     // Unmerged entries the squash did not make must never be undone with it (run_op refuses
     // a merge over them; this is the second line).
     let unmerged_before = squash && !unmerged_paths(ctx).await?.is_empty();
+    let stash_before = stash_top(ctx).await?;
     let ran = git_may_stop(ctx, &args, false).await?;
     remember_incoming(ctx, shown).await?;
     let out = match ran {
@@ -353,22 +354,18 @@ pub(crate) async fn merge(
         return Ok(Step::Done(message));
     }
     let into = branch.as_deref().unwrap_or("detached HEAD");
+    let stash_before = stash_before.as_deref();
     if squash {
-        return Ok(autostash_note(
-            Step::Done(format!(
-                "Squashed {shown} into staged changes on {into}: commit them to finish."
-            )),
-            &out,
-        ));
+        let done =
+            format!("Squashed {shown} into staged changes on {into}: commit them to finish.");
+        return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
     if stopped_kind(ctx).await == Some(InProgressKind::Merge) {
-        return Ok(autostash_note(
-            Step::Done(format!(
-                "Merged {shown} into {into} without committing: the result is staged; commit \
-                 it to finish the merge."
-            )),
-            &out,
-        ));
+        let done = format!(
+            "Merged {shown} into {into} without committing: the result is staged; commit it \
+             to finish the merge."
+        );
+        return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
     let hints = match &branch {
         Some(b) if head_commit(ctx).await? != before => {
@@ -377,18 +374,16 @@ pub(crate) async fn merge(
         _ => Vec::new(),
     };
     let message = format!("Merged {shown} into {into}.");
-    Ok(autostash_note(
-        if hints.is_empty() {
-            Step::Done(message)
-        } else {
-            Step::DoneWith {
-                message,
-                detail: None,
-                hints,
-            }
-        },
-        &out,
-    ))
+    let step = if hints.is_empty() {
+        Step::Done(message)
+    } else {
+        Step::DoneWith {
+            message,
+            detail: None,
+            hints,
+        }
+    };
+    autostash_note(ctx, step, &out, stash_before).await
 }
 
 /// Said when a squash merge conflicts (R20).
@@ -424,28 +419,81 @@ async fn squash_failed(ctx: &OpCtx<'_>, step: Step) -> Result<Step> {
     })
 }
 
-/// `step` (done), saying so if git's output `out` shows that the changes it auto-stashed
-/// (`rebase.autoStash`, `merge.autoStash`) conflicted as they were put back: git exits 0,
-/// keeps them in the stash and leaves its attempt in the working tree. git's text becomes
-/// the detail.
-pub(crate) fn autostash_note(step: Step, out: &GitOutput) -> Step {
+/// Whether git's output says that the changes it auto-stashed conflicted as they were put
+/// back. git 2.54 says "Applying autostash resulted in conflicts."; newer ones (2.56 at least)
+/// "Your local changes are stashed, however applying them resulted in conflicts.", broken
+/// over lines (the runner runs git with `LC_ALL=C`, so the text is English).
+fn autostash_conflicted(output: &str) -> bool {
+    let words = output.split_whitespace().collect::<Vec<_>>().join(" ");
+    words.contains("Applying autostash resulted in conflicts")
+        || words
+            .contains("Your local changes are stashed, however applying them resulted in conflicts")
+}
+
+/// The stash's top entry (`refs/stash`), read before an op that may auto-stash: see
+/// [`autostash_note`].
+pub(crate) async fn stash_top(ctx: &OpCtx<'_>) -> Result<Option<String>> {
+    let out = ctx
+        .read(&["rev-parse", "--verify", "--quiet", "refs/stash"])
+        .await?;
+    Ok((out.code == 0).then(|| out.text().trim().to_owned()))
+}
+
+/// Whether git kept auto-stashed changes in the stash during an op: the stash's top entry
+/// is another than `before` (read before the op), and git's reflog calls it "autostash"
+/// (git stores the auto-stash only when putting it back failed; every git version says so).
+async fn autostash_kept(ctx: &OpCtx<'_>, before: Option<&str>) -> Result<bool> {
+    let after = stash_top(ctx).await?;
+    if after.is_none() || after.as_deref() == before {
+        return Ok(false);
+    }
+    let out = ctx
+        .read(&["log", "--walk-reflogs", "-1", "--format=%gs", "refs/stash"])
+        .await?;
+    Ok(out.code == 0 && out.text().trim() == "autostash")
+}
+
+/// `step` (done), saying so if the changes git auto-stashed (`rebase.autoStash`,
+/// `merge.autoStash`) conflicted as they were put back: git exits 0, keeps them in the
+/// stash and leaves its attempt in the working tree. Known by git's output `out`, or else
+/// by a new "autostash" entry in the stash since `stash_before` (the top entry before the
+/// op, [`stash_top`]), so a git that words it differently is still understood. git's text
+/// becomes the detail.
+pub(crate) async fn autostash_note(
+    ctx: &OpCtx<'_>,
+    step: Step,
+    out: &GitOutput,
+    stash_before: Option<&str>,
+) -> Result<Step> {
+    if !matches!(step, Step::Done(_) | Step::DoneWith { .. }) {
+        return Ok(step);
+    }
     let all = format!("{}\n{}", out.stderr, out.text());
-    if !all.contains("Applying autostash resulted in conflicts") {
-        return step;
+    // git has run by now: a stash that cannot be read must not turn what it did into an
+    // error, so it counts as nothing kept (the text has been looked at). `refs/stash` is shared
+    // by every worktree: an auto-stash a terminal's rebase kept in another worktree during
+    // this op would be taken for this op's (rare: both would have to end at once).
+    #[cfg(any(test, feature = "testutil"))]
+    let said = autostash_conflicted(&all)
+        && !crate::testutil::AUTOSTASH_BY_STATE_ONLY.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(any(test, feature = "testutil")))]
+    let said = autostash_conflicted(&all);
+    if !said && !autostash_kept(ctx, stash_before).await.unwrap_or(false) {
+        return Ok(step);
     }
     let (message, hints) = match step {
         Step::Done(message) => (message, Vec::new()),
         Step::DoneWith { message, hints, .. } => (message, hints),
-        other => return other,
+        other => return Ok(other),
     };
-    Step::DoneWith {
+    Ok(Step::DoneWith {
         message: format!(
             "{message} Your uncommitted changes could not be put back cleanly: they are kept \
              in the stash, and git left its attempt, with conflicts, in the working tree."
         ),
         detail: Some(all.trim().to_owned()),
         hints,
-    }
+    })
 }
 
 /// Push for `branch` after it got new commits, to the branch of the same name (R38): on
@@ -505,6 +553,7 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
         onto.to_owned()
     };
     let args = ["rebase", full.as_str()];
+    let stash_before = stash_top(ctx).await?;
     let ran = git_may_stop(ctx, &args, false).await?;
     remember_incoming(ctx, onto).await?;
     let out = match ran {
@@ -513,7 +562,7 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
     };
     let done =
         nothing_to_do(&args, &out).unwrap_or_else(|| format!("Rebased {branch} onto {onto}."));
-    Ok(autostash_note(Step::Done(done), &out))
+    autostash_note(ctx, Step::Done(done), &out, stash_before.as_deref()).await
 }
 
 /// `cherry-pick [-m N] [--no-commit] --end-of-options <hash>`.
@@ -626,4 +675,26 @@ pub(crate) async fn delete_tag(ctx: &OpCtx<'_>, name: &str) -> Result<Step> {
         format!("Deleted tag {name}."),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::autostash_conflicted;
+
+    #[test]
+    fn an_autostash_that_conflicted_is_recognised_in_old_and_new_words() {
+        // git 2.54 and earlier.
+        assert!(autostash_conflicted(
+            "Successfully rebased and updated refs/heads/main.\nApplying autostash resulted in \
+             conflicts.\nYour changes are safe in the stash.\n"
+        ));
+        // git 2.56, as it prints it.
+        assert!(autostash_conflicted(
+            "Your local changes are stashed, however applying them\nresulted in conflicts.  You \
+             can either resolve the conflicts\nand then discard the stash with \"git stash drop\"\n"
+        ));
+        assert!(!autostash_conflicted(
+            "Applied autostash.\nSuccessfully rebased."
+        ));
+    }
 }

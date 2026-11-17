@@ -12,7 +12,10 @@ use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::progress::{judge, read_kind, state_files};
 use crate::git::status::{paths, read_conflicted};
 use crate::ops::explain::{explain, recognised};
-use crate::ops::local::{current_branch, kind_name, stopped_message, stopped_without_conflicts};
+use crate::ops::local::{
+    autostash_note, current_branch, kind_name, stash_top, stopped_message,
+    stopped_without_conflicts,
+};
 use crate::ops::{OpCtx, Step};
 
 /// Most paths given to one `git add`, so the command line stays short on any platform.
@@ -61,6 +64,17 @@ pub(crate) fn refused_while(
     kind: InProgressKind,
     head: Option<&str>,
 ) -> Option<String> {
+    // A commit concludes a merge (see `commit`); a rebase, cherry-pick or revert makes its
+    // commit by continuing.
+    if matches!(request, OpRequest::Commit { .. }) {
+        return (kind != InProgressKind::Merge).then(|| {
+            format!(
+                "A {} is in progress: Continue commits its changes and goes on (or abort it). \
+                 A commit of its own would end up in the middle of it.",
+                kind_name(kind)
+            )
+        });
+    }
     (changes_head_or_tree(request, head) || matches!(request, OpRequest::StashSave { .. })).then(
         || {
             format!(
@@ -198,6 +212,8 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
         InProgressKind::CherryPick => &["cherry-pick", "--continue", "--no-edit"],
         InProgressKind::Revert => &["revert", "--continue", "--no-edit"],
     };
+    // A rebase or merge that auto-stashed puts the changes back as it ends.
+    let stash_before = stash_top(ctx).await?;
     let out = ctx.git(args).await?;
     let after = read_kind(&ctx.runner, &ctx.cwd).await?;
     let what = kind_name(kind);
@@ -213,10 +229,11 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
             return Ok(explain(args, &out));
         }
         let branch = current_branch(ctx).await?;
-        return Ok(Step::Done(match (kind, branch) {
+        let done = Step::Done(match (kind, branch) {
             (InProgressKind::Rebase, Some(branch)) => format!("Finished rebasing {branch}."),
             _ => format!("Finished the {what}: it is committed."),
-        }));
+        });
+        return autostash_note(ctx, done, &out, stash_before.as_deref()).await;
     };
     let conflicted = read_conflicted(&ctx.runner, &ctx.cwd).await?;
     if !conflicted.is_empty() {
@@ -320,6 +337,7 @@ pub(crate) async fn skip(ctx: &OpCtx<'_>) -> Result<Step> {
         });
     }
     let args = [what, "--skip"];
+    let stash_before = stash_top(ctx).await?;
     let out = ctx.git(&args).await?;
     let after = read_kind(&ctx.runner, &ctx.cwd).await?;
     let detail = format!("{}\n{}", out.stderr.trim_end(), out.text())
@@ -329,9 +347,8 @@ pub(crate) async fn skip(ctx: &OpCtx<'_>) -> Result<Step> {
         if out.code != 0 {
             return Ok(explain(&args, &out));
         }
-        return Ok(Step::Done(format!(
-            "Skipped the commit; the {what} is finished."
-        )));
+        let done = Step::Done(format!("Skipped the commit; the {what} is finished."));
+        return autostash_note(ctx, done, &out, stash_before.as_deref()).await;
     };
     if !read_conflicted(&ctx.runner, &ctx.cwd).await?.is_empty() {
         return Ok(Step::Stopped {
@@ -367,6 +384,8 @@ pub(crate) async fn abort(ctx: &OpCtx<'_>) -> Result<Step> {
     };
     let what = kind_name(kind);
     let args = [what, "--abort"];
+    // `rebase --abort` and `merge --abort` put auto-stashed changes back too.
+    let stash_before = stash_top(ctx).await?;
     let out = ctx.git(&args).await?;
     if out.code != 0 {
         return Ok(explain(&args, &out));
@@ -374,54 +393,85 @@ pub(crate) async fn abort(ctx: &OpCtx<'_>) -> Result<Step> {
     let all = format!("{}\n{}", out.stderr, out.text());
     if all.contains("You seem to have moved HEAD") {
         // A sequence whose commit was made by hand: git ends it without rewinding.
-        return Ok(Step::DoneWith {
+        let done = Step::DoneWith {
             message: format!(
                 "Stopped the {what}, without going back: commits were made since it started \
                  (HEAD moved), so git leaves them as they are."
             ),
             detail: Some(all.trim().to_owned()),
             hints: Vec::new(),
-        });
+        };
+        return autostash_note(ctx, done, &out, stash_before.as_deref()).await;
     }
     let branch = current_branch(ctx).await?;
     let back = branch.as_deref().unwrap_or("HEAD");
-    Ok(Step::Done(format!(
+    let done = Step::Done(format!(
         "Aborted the {what}: {back} is back as it was before it."
-    )))
+    ));
+    autostash_note(ctx, done, &out, stash_before.as_deref()).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::HeadInfo;
 
     #[test]
     fn stash_operations_that_merge_are_refused_while_stopped() {
         let stash = || "0123456789abcdef0123456789abcdef01234567".to_owned();
         let refused = |r: OpRequest| refused_while(&r, InProgressKind::Rebase, Some("main"));
-        assert!(refused(OpRequest::StashApply { stash: stash() }).is_some());
-        assert!(refused(OpRequest::StashPop { stash: stash() }).is_some());
         assert!(
-            refused(OpRequest::StashBranch {
+            refused(OpRequest::StashApply {
                 stash: stash(),
-                name: "x".into()
+                expect_head: HeadInfo::default(),
+                expect_worktree: String::new()
             })
             .is_some()
         );
-        let why = refused(OpRequest::StashPop { stash: stash() }).unwrap();
+        assert!(
+            refused(OpRequest::StashPop {
+                stash: stash(),
+                expect_head: HeadInfo::default(),
+                expect_worktree: String::new()
+            })
+            .is_some()
+        );
+        assert!(
+            refused(OpRequest::StashBranch {
+                stash: stash(),
+                name: "x".into(),
+                expect_worktree: String::new()
+            })
+            .is_some()
+        );
+        let why = refused(OpRequest::StashPop {
+            stash: stash(),
+            expect_head: HeadInfo::default(),
+            expect_worktree: String::new(),
+        })
+        .unwrap();
         assert!(why.starts_with("A rebase is in progress"), "{why}");
         // Saving would take the stopped operation's state with it (R17, revised).
         assert!(
             refused(OpRequest::StashSave {
                 message: None,
-                include_untracked: false
+                include_untracked: false,
+                expect_worktree: String::new()
             })
             .is_some()
         );
-        assert!(refused(OpRequest::StashDrop { stash: stash() }).is_none());
+        assert!(
+            refused(OpRequest::StashDrop {
+                stash: stash(),
+                expect_worktree: String::new()
+            })
+            .is_none()
+        );
         let pull = |branch: &str| OpRequest::Pull {
             branch: branch.into(),
             mode: crate::dto::PullMode::Default,
             expect_head: crate::dto::HeadInfo::default(),
+            expect_worktree: String::new(),
         };
         assert!(refused(pull("main")).is_some());
         assert!(refused(pull("other")).is_none(), "only fetches into it");

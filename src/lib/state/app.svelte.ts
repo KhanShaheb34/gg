@@ -1,12 +1,13 @@
 // The app shell's state: open tabs, recents, settings and toasts, and the actions on them.
 // Every change to the tabs (or the active one) is saved as the session.
 
+import { startMark } from "../perf/startMarks";
 import { shortenPath } from "../format";
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
-import type { CoreErrorDto, OpenedRepo, Recent, RepoSnapshot, Settings } from "../types";
+import type { CliState, CoreErrorDto, OpenedRepo, Recent, RepoSnapshot, Settings } from "../types";
 import { setLogOpen } from "./commandLog.svelte";
-import { disposeRepoView, repoView } from "./repo.svelte";
+import { disposeRepoView, findRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
 export type ToastKind = "info" | "error";
@@ -42,7 +43,20 @@ export const app = $state({
   tabs: [] as Tab[],
   activeRepoId: null as number | null,
   recents: [] as Recent[],
-  settings: { theme: "system", fetchIntervalSecs: 300 } as Settings,
+  settings: {
+    theme: "system",
+    fetchIntervalSecs: 300,
+    editorCommand: null,
+    terminalCommand: null,
+    worktreePattern: "../{repo}.worktrees/{branch}",
+    dateFormat: "standard",
+  } as Settings,
+  /** The file settings are kept in, as the core says. */
+  settingsFile: "",
+  /** Why settings are not being saved (the file could not be read), or null. */
+  settingsProblem: null as string | null,
+  /** gg's version. */
+  version: "",
   toasts: [] as Toast[],
   /** The stored state has been loaded (or failed to load); until then nothing is drawn. */
   ready: false,
@@ -57,6 +71,8 @@ export const app = $state({
   homeDir: null as string | null,
   /** The command-log entries asked for last ("Show log" on a notice): from id `from` on. */
   logRequest: null as { repoId: number; from: number } | null,
+  /** The `gg` terminal command, as last read (see state/cli.svelte.ts). */
+  cli: { installed: null, shadowedBy: null, candidates: [] } as CliState,
 });
 
 let nextToastId = 1;
@@ -119,6 +135,7 @@ function reportSettingsProblem(problem: string): void {
             return;
           }
           dismissToast(id);
+          app.settingsProblem = null;
           toast("info", "Settings reset: saving again.");
         },
       },
@@ -176,23 +193,26 @@ async function openTab(path: string): Promise<boolean> {
     reportError(e);
     return false;
   }
+  const existed = app.tabs.some((t) => t.repoId === snapshot.repoId);
   addTab(snapshot);
+  // A folder of a linked worktree made that worktree active (the event brings it too).
+  if (existed) void findRepoView(snapshot.repoId)?.applySnapshot(snapshot);
   show(snapshot.repoId);
-  noteOtherWorktree(snapshot);
+  noteWorktreeNotMadeActive(snapshot);
   return true;
 }
 
 /**
- * Says so when a folder opened is in another worktree of a repository already open: its tab
- * acts on its own worktree, which the notice names (R42; switching worktrees is Plan 3).
+ * A folder opened in a linked worktree makes that worktree active; when it could not be (an
+ * operation runs or waits in the repository), the notice says so and where the tab works.
  */
-function noteOtherWorktree(opened: OpenedRepo): void {
+function noteWorktreeNotMadeActive(opened: OpenedRepo): void {
   if (opened.openedWorktree === null) return;
   const there = shortenPath(opened.openedWorktree, app.homeDir);
   const here = shortenPath(opened.activeWorktree, app.homeDir);
   notify({
     kind: "info",
-    message: `${there} is another worktree of ${opened.name}, which is open already: its tab works in ${here}.`,
+    message: `${there} could not be made the active worktree of ${opened.name} while an operation runs there: the tab still works in ${here}.`,
     persistent: true,
   });
 }
@@ -230,7 +250,7 @@ function addTab(snapshot: RepoSnapshot, rank?: number): void {
   repoView(snapshot.repoId, snapshot).onNotice = (message, detail) => toast("error", message, detail);
   const held = heldErrors.get(snapshot.repoId);
   heldErrors.delete(snapshot.repoId);
-  for (const error of held ?? []) reportError(new CoreError(error), snapshot.name);
+  for (const { error, prs } of held ?? []) showRepoError(error, prs, snapshot.name);
 }
 
 /**
@@ -238,19 +258,32 @@ function addTab(snapshot: RepoSnapshot, rank?: number): void {
  * repository it opened at start while the UI's `open_repo` for it is being answered, before
  * its tab exists. Shown, named, when the tab is added. A few repositories' worth at most.
  */
-const heldErrors = new Map<number, CoreErrorDto[]>();
+const heldErrors = new Map<number, { error: CoreErrorDto; prs: boolean }[]>();
 const MAX_HELD_REPOS = 16;
 
-function onRepoError(repoId: number, error: CoreErrorDto): void {
+function onRepoError(repoId: number, error: CoreErrorDto, prs: boolean): void {
   const tab = app.tabs.find((t) => t.repoId === repoId);
   if (tab) {
-    reportError(new CoreError(error), tab.name);
+    showRepoError(error, prs, tab.name);
     return;
   }
   const held = heldErrors.get(repoId) ?? [];
-  held.push(error);
+  held.push({ error, prs });
   heldErrors.set(repoId, held);
   if (heldErrors.size > MAX_HELD_REPOS) heldErrors.delete(heldErrors.keys().next().value!);
+}
+
+/**
+ * A `repo-error` of repository `name`: reported; or, when it says why pull requests are not
+ * shown (`prs`: said once per repository by the core), a plain notice that stays until
+ * dismissed, never an error and never in the way.
+ */
+function showRepoError(error: CoreErrorDto, prs: boolean, name: string): void {
+  if (!prs) {
+    reportError(new CoreError(error), name);
+    return;
+  }
+  notify({ kind: "info", message: `${name}: ${error.message}`, detail: error.detail ?? undefined, foldDetail: true, persistent: true });
 }
 
 /** Opens the repository at `path` in a tab and activates it; failures become toasts. */
@@ -388,8 +421,9 @@ export async function setTheme(theme: ThemeSetting): Promise<void> {
   const request = ++themeRequest;
   try {
     const settings = await api.updateSettings({ theme });
-    // An answer to an earlier choice must not undo a later one.
-    if (request === themeRequest) app.settings = settings;
+    // An answer to an earlier choice must not undo a later one; nor, as the rest of it is as
+    // the core had it then, another setting changed meanwhile.
+    if (request === themeRequest) app.settings = { ...app.settings, theme: settings.theme };
   } catch (e) {
     reportError(e, "Could not save the theme");
   }
@@ -412,13 +446,19 @@ export async function init(): Promise<void> {
   if (!started) {
     started = true;
     onSystemThemeChange(() => applyTheme(app.settings.theme));
-    onEvent<{ repoId: number; error: CoreErrorDto }>("repo-error", ({ repoId, error }) => onRepoError(repoId, error));
+    onEvent<{ repoId: number; error: CoreErrorDto; prs?: string }>("repo-error", ({ repoId, error, prs }) =>
+      onRepoError(repoId, error, prs !== undefined),
+    );
     onEvent("paths-opened", () => void openSystemPaths());
+    // What the login shell says of `gg` arrives a moment after start.
+    onEvent<CliState>("cli-changed", (cli) => (app.cli = cli));
   }
 
   let state;
   try {
+    startMark("state-asked");
     state = await api.getAppState();
+    startMark("state-answered");
   } catch (e) {
     reportError(e);
     app.ready = true;
@@ -435,7 +475,11 @@ export async function init(): Promise<void> {
   if (state.gitProblem) notify({ kind: "error", message: state.gitProblem, persistent: true });
   app.recents = state.recents;
   app.settings = state.settings;
+  app.settingsFile = state.settingsFile;
+  app.settingsProblem = state.settingsProblem;
+  app.version = state.version;
   app.homeDir = state.homeDir;
+  app.cli = state.cli;
   applyTheme(state.settings.theme);
 
   // Reopened together; each tab shows as soon as its repository is open, in the session's
@@ -448,6 +492,7 @@ export async function init(): Promise<void> {
   app.ready = true;
   const opened = (path: string, snapshot: RepoSnapshot, rank?: number) => {
     addTab(snapshot, rank);
+    startMark("tab-added");
     if (restoreTarget === path) {
       show(snapshot.repoId);
       app.restoring = false;
@@ -456,7 +501,8 @@ export async function init(): Promise<void> {
   tabs.forEach((path, rank) => stillReopening.set(rank, path));
   const reopen = tabs.map(async (path, rank) => {
     try {
-      const snapshot = await api.openRepo(path);
+      // A restored tab keeps the worktree remembered as active.
+      const snapshot = await api.openRepo(path, true);
       stillReopening.delete(rank);
       opened(path, snapshot, rank);
     } catch (e) {
@@ -468,9 +514,11 @@ export async function init(): Promise<void> {
   const launchRank = launch === null ? -1 : tabs.indexOf(launch);
   const openLaunch = async (path: string) => {
     try {
+      startMark("open-asked");
       const snapshot = await api.openRepo(path);
+      startMark("open-answered");
       opened(path, snapshot, launchRank >= 0 ? launchRank : undefined);
-      noteOtherWorktree(snapshot);
+      noteWorktreeNotMadeActive(snapshot);
     } catch (e) {
       reportError(e);
     }

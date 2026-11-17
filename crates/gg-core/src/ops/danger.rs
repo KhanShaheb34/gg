@@ -1,6 +1,7 @@
 //! Which dangers a request carries, given the repository's state: the paths that cannot
 //! run unconfirmed (force push, hard reset, deleting an unmerged branch, deleting a remote
-//! branch, dropping a stash, aborting what git is stopped in). Checked by the core, in the
+//! branch, dropping a stash, aborting what git is stopped in, removing a worktree with work
+//! in it; see `worktree` for that one). Checked by the core, in the
 //! operation's turn, so the state looked at is the state the operation runs on. Each danger
 //! carries a token of that state (R39): a confirmation counts only with the same token.
 
@@ -17,7 +18,7 @@ use crate::ops::stash;
 /// The dangers `request` would run into now.
 pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<Danger>> {
     Ok(match request {
-        OpRequest::DeleteBranch { branch } => {
+        OpRequest::DeleteBranch { branch, .. } => {
             unmerged_branch(ctx, branch).await?.into_iter().collect()
         }
         OpRequest::Reset {
@@ -35,9 +36,19 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
         OpRequest::DeleteRemoteBranch { remote, branch } => {
             vec![remote_branch_deleted(ctx, remote, branch).await?]
         }
-        OpRequest::StashDrop { stash } => stash::dropped(ctx, stash).await?,
+        OpRequest::StashDrop { stash, .. } => stash::dropped(ctx, stash).await?,
         OpRequest::Abort { .. } => aborted(ctx).await?.into_iter().collect(),
         OpRequest::Skip { .. } => skip_discards(ctx).await?.into_iter().collect(),
+        OpRequest::WorktreeRemove {
+            path,
+            delete_branch,
+            ..
+        } => crate::ops::worktree::removal_dangers(ctx, path, *delete_branch).await?,
+        OpRequest::WorktreePrune {} => crate::ops::worktree::prune_dangers(ctx)
+            .await?
+            .into_iter()
+            .collect(),
+        OpRequest::RemoveIndexLock { .. } => crate::ops::lock::danger(ctx).await?,
         // The others carry none.
         _ => Vec::new(),
     })
@@ -49,7 +60,7 @@ pub(crate) async fn dangers(ctx: &OpCtx<'_>, request: &OpRequest) -> Result<Vec<
 /// confirmation even if HEAD lacks it, and one merged into HEAD but not into its upstream
 /// needs confirmation (then `-D`). The message counts the commits only the branch has,
 /// relative to that reference, and says when the current branch has them nevertheless.
-async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>> {
+pub(crate) async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>> {
     let full = format!("refs/heads/{branch}");
     if !verifies(ctx, &full).await? {
         // git says it does not exist.
@@ -117,8 +128,11 @@ async fn unmerged_branch(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<Danger>
         kind: DangerKind::DeleteUnmergedBranch,
         message,
         detail: None,
-        // The tip the count was made from: a branch that grew since is asked about again.
-        token: ref_commit(ctx, &full).await?,
+        // The branch and the tip the count was made from: a branch that grew since is asked
+        // about again, and another branch at the same tip is never taken for it.
+        token: ref_commit(ctx, &full)
+            .await?
+            .map(|tip| format!("{full}\n{tip}")),
     }))
 }
 
@@ -271,7 +285,7 @@ fn short_ref(full: &str) -> &str {
 }
 
 /// Most files a hard reset's confirmation lists; the rest are counted.
-const MAX_LOST_LISTED: usize = 20;
+pub(crate) const MAX_LOST_LISTED: usize = 20;
 
 /// `hard_reset`, always: it discards the uncommitted changes, which the message counts and
 /// the detail lists (MAX_LOST_LISTED files, then how many more). Untracked files are kept,
@@ -339,8 +353,16 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
         lines.push(format!("{f} (untracked, overwritten)"));
     }
     let detail = (!lines.is_empty()).then(|| lines.join("\n"));
+    // The files' sizes and times too: an edit after the dialog asks again.
+    let stats = stat_hash(
+        &ctx.cwd,
+        files
+            .iter()
+            .copied()
+            .chain(overwritten.iter().map(String::as_str)),
+    );
     let token = format!(
-        "{}\n{:016x}\n{:016x}",
+        "{}\n{:016x}\n{:016x}\n{stats:016x}",
         head_token(ctx).await?,
         fnv1a(&out.stdout),
         fnv1a(overwritten.join("\0").as_bytes())
@@ -352,9 +374,6 @@ async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
         token: Some(token),
     })
 }
-
-/// Most paths given to one `git ls-files`, so the command line stays short.
-const PATHS_CHUNK: usize = 100;
 
 /// The untracked files a hard reset to `target` overwrites (read-only): paths the target
 /// tracks and HEAD does not (all its paths before the first commit), that are a file or a
@@ -390,7 +409,8 @@ async fn overwritten_untracked(ctx: &OpCtx<'_>, target: &str) -> Result<Vec<Stri
         })
         .collect();
     let mut indexed = std::collections::HashSet::new();
-    for chunk in present.chunks(PATHS_CHUNK) {
+    // In runs that fit one command line: by count and by bytes (long names).
+    for chunk in crate::ops::commit::path_chunks(&present) {
         let mut args = vec!["--literal-pathspecs", "ls-files", "-z", "--"];
         args.extend(chunk.iter().copied());
         let listed = ctx.read(&args).await?;
@@ -517,7 +537,33 @@ async fn head_token(ctx: &OpCtx<'_>) -> Result<String> {
 }
 
 /// The 64-bit FNV-1a hash of `bytes`: a short, stable digest for a token.
-fn fnv1a(bytes: &[u8]) -> u64 {
+/// Most paths whose size and modification time go into a token; beyond them, only names.
+pub(crate) const MAX_STATTED: usize = 5000;
+
+/// A hash of the size and modification time (ns) of each of `paths` (relative to `dir`; the
+/// first [`MAX_STATTED`]), as `symlink_metadata` gives them, a missing one as missing: a
+/// token with it changes when a listed file is edited after the dialog, not only when the
+/// list changes.
+pub(crate) fn stat_hash<'p>(dir: &std::path::Path, paths: impl Iterator<Item = &'p str>) -> u64 {
+    let mut bytes = Vec::new();
+    for path in paths.take(MAX_STATTED) {
+        match std::fs::symlink_metadata(dir.join(path)) {
+            Ok(meta) => {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                bytes.extend_from_slice(&meta.len().to_le_bytes());
+                bytes.extend_from_slice(&mtime.to_le_bytes());
+            }
+            Err(_) => bytes.push(0xff),
+        }
+    }
+    fnv1a(&bytes)
+}
+
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })

@@ -20,7 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::dto::{Recent, RepoPrefs, Session, Settings, Theme};
+use crate::dto::{
+    DEFAULT_WORKTREE_PATTERN, DateFormat, Recent, RepoPrefs, Session, Settings, Theme,
+};
 use crate::error::{CoreError, ErrorCode, Result};
 
 const FILE_NAME: &str = "state.json";
@@ -41,6 +43,12 @@ pub struct SettingsPatch {
     /// `Some(None)` (JSON `null`) goes back to the system's default opener.
     #[serde(default, deserialize_with = "present")]
     pub editor_command: Option<Option<String>>,
+    /// `Some(None)` (JSON `null`) goes back to the platform's terminal.
+    #[serde(default, deserialize_with = "present")]
+    pub terminal_command: Option<Option<String>>,
+    /// A blank pattern goes back to the default; any other must contain `{branch}`.
+    pub worktree_pattern: Option<String>,
+    pub date_format: Option<DateFormat>,
 }
 
 /// A change to [`RepoPrefs`]: only the fields present are changed.
@@ -48,6 +56,10 @@ pub struct SettingsPatch {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepoPrefsPatch {
     pub merge_no_ff: Option<bool>,
+    pub side_panel: Option<bool>,
+    /// `Some(None)` (JSON `null`) forgets it.
+    #[serde(default, deserialize_with = "present")]
+    pub pr_base: Option<Option<String>>,
 }
 
 /// Reads a field that is present, `null` included, as `Some`; a missing one stays `None`
@@ -208,6 +220,20 @@ impl Store {
         self.lock().settings.clone()
     }
 
+    /// The settings file, `<config_dir>/state.json` (it may not exist yet).
+    pub fn file(&self) -> PathBuf {
+        self.dir.join(FILE_NAME)
+    }
+
+    /// Puts every setting back to its default ("Reset to defaults"); returns them. Recents,
+    /// the session, each repository's preferences and keys this version does not know stay.
+    pub fn restore_default_settings(&self) -> Result<Settings> {
+        self.change(|data| {
+            data.settings = Settings::default();
+            Ok(data.settings.clone())
+        })
+    }
+
     /// Puts the repository at `path` first in the recents, removing any other entry for the
     /// same folder, and keeps the newest 20. `path` is stored with symlinks resolved; the
     /// stored ones were stored that way, so they are compared as text and their folders are
@@ -258,7 +284,7 @@ impl Store {
         self.lock()
             .repo_prefs
             .get(&key)
-            .copied()
+            .cloned()
             .unwrap_or_default()
     }
 
@@ -270,8 +296,40 @@ impl Store {
             if let Some(no_ff) = patch.merge_no_ff {
                 prefs.merge_no_ff = no_ff;
             }
-            Ok(*prefs)
+            if let Some(shown) = patch.side_panel {
+                prefs.side_panel = shown;
+            }
+            if let Some(base) = patch.pr_base {
+                prefs.pr_base = base.filter(|b| !b.trim().is_empty());
+            }
+            Ok(prefs.clone())
         })
+    }
+
+    /// Remembers `worktree` (`None`: the main one) as the active worktree of the repository
+    /// at `root`, with symlinks resolved. Nothing is written when it is remembered already.
+    pub fn set_active_worktree(&self, root: &Path, worktree: Option<&Path>) -> Result<()> {
+        let key = canonical(root).to_string_lossy().into_owned();
+        let value = worktree.map(|w| canonical(w).to_string_lossy().into_owned());
+        let now = self
+            .lock()
+            .repo_prefs
+            .get(&key)
+            .and_then(|p| p.active_worktree.clone());
+        if now == value {
+            return Ok(());
+        }
+        self.change(|data| {
+            data.repo_prefs.entry(key).or_default().active_worktree = value;
+            Ok(())
+        })
+    }
+
+    /// The active worktree remembered for the repository at `root`, if it is still a folder
+    /// (else the main one counts: `None`).
+    pub fn active_worktree(&self, root: &Path) -> Option<PathBuf> {
+        let path = PathBuf::from(self.repo_prefs(root).active_worktree?);
+        path.is_dir().then_some(path)
     }
 
     /// Applies `patch` and returns the new settings. `BadRequest` (and nothing changes) if
@@ -285,6 +343,28 @@ impl Store {
                 format!("The fetch interval must be 0 (off) or 30 to 86400 seconds, not {secs}."),
             ));
         }
+        if let Some(Some(command)) = &patch.editor_command {
+            crate::launch::check_editor_command(command)?;
+        }
+        if let Some(Some(command)) = &patch.terminal_command {
+            crate::launch::check_terminal_command(command)?;
+        }
+        if let Some(pattern) = &patch.worktree_pattern
+            && !pattern.trim().is_empty()
+        {
+            if !pattern.contains("{branch}") {
+                return Err(CoreError::new(
+                    ErrorCode::BadRequest,
+                    "The worktree location must contain {branch}, so that each branch gets its own folder.",
+                ));
+            }
+            if pattern_inside_repository(pattern) {
+                return Err(CoreError::new(
+                    ErrorCode::BadRequest,
+                    "The worktree location must be outside the repository's folder (start it with ../): a worktree inside it would show up there as untracked files.",
+                ));
+            }
+        }
         self.change(|data| {
             if let Some(theme) = patch.theme {
                 data.settings.theme = theme;
@@ -295,6 +375,21 @@ impl Store {
             if let Some(command) = patch.editor_command {
                 // A blank command means the default opener, like `null`.
                 data.settings.editor_command = command.filter(|c| !c.trim().is_empty());
+            }
+            if let Some(command) = patch.terminal_command {
+                // A blank command means the platform's terminal, like `null`.
+                data.settings.terminal_command = command.filter(|c| !c.trim().is_empty());
+            }
+            if let Some(format) = patch.date_format {
+                data.settings.date_format = format;
+            }
+            if let Some(pattern) = patch.worktree_pattern {
+                // A blank pattern means the default.
+                data.settings.worktree_pattern = if pattern.trim().is_empty() {
+                    DEFAULT_WORKTREE_PATTERN.to_owned()
+                } else {
+                    pattern
+                };
             }
             Ok(data.settings.clone())
         })
@@ -401,7 +496,19 @@ impl StoreData {
                 };
                 let merge_no_ff =
                     field(prefs, "mergeNoFf").unwrap_or(RepoPrefs::default().merge_no_ff);
-                Some((root.clone(), RepoPrefs { merge_no_ff }))
+                let active_worktree = field(prefs, "activeWorktree").unwrap_or_default();
+                let side_panel =
+                    field(prefs, "sidePanel").unwrap_or(RepoPrefs::default().side_panel);
+                let pr_base = field(prefs, "prBase").unwrap_or_default();
+                Some((
+                    root.clone(),
+                    RepoPrefs {
+                        merge_no_ff,
+                        active_worktree,
+                        side_panel,
+                        pr_base,
+                    },
+                ))
             })
             .collect();
         Ok(Self {
@@ -415,6 +522,10 @@ impl StoreData {
                 fetch_interval_secs: field(settings, "fetchIntervalSecs")
                     .unwrap_or(defaults.fetch_interval_secs),
                 editor_command: field(settings, "editorCommand"),
+                terminal_command: field(settings, "terminalCommand"),
+                worktree_pattern: field(settings, "worktreePattern")
+                    .unwrap_or(defaults.worktree_pattern),
+                date_format: field(settings, "dateFormat").unwrap_or(defaults.date_format),
             },
             repo_prefs,
         })
@@ -444,6 +555,8 @@ impl StoreData {
                     .any(|(root, entry)| match (entry, now.get(root)) {
                         (Value::Object(was), Some(Value::Object(now))) => {
                             differs(was, now, "mergeNoFf")
+                                || differs(was, now, "activeWorktree")
+                                || differs(was, now, "sidePanel")
                         }
                         _ => true,
                     })
@@ -452,7 +565,17 @@ impl StoreData {
         };
         differs(top, &known, "recents")
             || lost_inner("session", &["tabs", "active"])
-            || lost_inner("settings", &["theme", "fetchIntervalSecs", "editorCommand"])
+            || lost_inner(
+                "settings",
+                &[
+                    "theme",
+                    "fetchIntervalSecs",
+                    "editorCommand",
+                    "terminalCommand",
+                    "worktreePattern",
+                    "dateFormat",
+                ],
+            )
             || lost_prefs
     }
 
@@ -483,6 +606,9 @@ impl StoreData {
         if !valid_fetch_interval(self.settings.fetch_interval_secs) {
             self.settings.fetch_interval_secs = Settings::default().fetch_interval_secs;
         }
+        if !valid_worktree_pattern(&self.settings.worktree_pattern) {
+            self.settings.worktree_pattern = DEFAULT_WORKTREE_PATTERN.to_owned();
+        }
         self
     }
 }
@@ -510,6 +636,36 @@ fn valid_fetch_interval(secs: u32) -> bool {
     secs == 0 || FETCH_INTERVAL_RANGE.contains(&secs)
 }
 
+/// Whether `pattern` can place worktrees: it names the branch, so each gets its own folder,
+/// and does not put them inside the repository's folder.
+fn valid_worktree_pattern(pattern: &str) -> bool {
+    pattern.contains("{branch}") && !pattern_inside_repository(pattern)
+}
+
+/// Whether the relative `pattern` places a worktree inside the main worktree (or its git
+/// dir) of any repository: worked out on paths alone. An absolute pattern cannot be judged
+/// without the repository; the suggestion skips one that lands inside (see
+/// `worktree_default_path`).
+pub(crate) fn pattern_inside_repository(pattern: &str) -> bool {
+    use std::path::Component;
+    if Path::new(pattern).has_root() || Path::new(pattern).is_absolute() {
+        return false;
+    }
+    let root = Path::new("r").join("repo");
+    let filled = pattern.replace("{repo}", "repo").replace("{branch}", "b");
+    let mut out = PathBuf::new();
+    for part in root.join(filled).components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out.starts_with(&root)
+}
+
 /// `path` with symlinks resolved (unchanged if it cannot be, for example a deleted folder).
 fn canonical(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
@@ -525,14 +681,184 @@ fn unix_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// The config folder to use instead of the platform's: `GG_CONFIG_DIR` when it is set and
-/// not empty. Performance runs use it so they never read or change the user's own state.
-pub fn config_dir_override() -> Option<PathBuf> {
-    config_dir_from(std::env::var_os("GG_CONFIG_DIR"))
+/// The app's config folder: `GG_CONFIG_DIR` when it is set and not empty (performance runs
+/// use it so they never read or change the user's own state), and nothing else happens;
+/// otherwise `platform_dir()`, into which the state of the app's config folder from before
+/// it was renamed is first copied, once (see [`migrate_config`]). Call it once, before the
+/// store loads. A copy that fails is reported on stderr and the app starts without it.
+pub fn config_dir(platform_dir: impl FnOnce() -> Result<PathBuf>) -> Result<PathBuf> {
+    config_dir_with(std::env::var_os("GG_CONFIG_DIR"), platform_dir)
+}
+
+fn config_dir_with(
+    gg_config_dir: Option<std::ffi::OsString>,
+    platform_dir: impl FnOnce() -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(dir) = config_dir_from(gg_config_dir) {
+        return Ok(dir);
+    }
+    let dir = platform_dir()?;
+    if let Some(old) = old_config_dir(&dir)
+        && let Err(e) = migrate_config(&old, &dir)
+    {
+        eprintln!("gg: {e}: {}", e.detail.as_deref().unwrap_or_default());
+    }
+    Ok(dir)
 }
 
 fn config_dir_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The name of the app's config folder before the app was renamed to gg (its identifier
+/// then), in the same parent folder as the current one.
+const OLD_CONFIG_DIR_NAME: &str = "dev.gitgraph.desktop";
+
+/// Where the app kept its config before it was renamed: the folder next to `new_dir` named
+/// after its old identifier. `None` when `new_dir` has no parent.
+pub fn old_config_dir(new_dir: &Path) -> Option<PathBuf> {
+    new_dir
+        .parent()
+        .map(|parent| parent.join(OLD_CONFIG_DIR_NAME))
+}
+
+/// The hidden file [`migrate_config`] leaves in the new config folder once it has done its
+/// work (copied the old state, or found nothing to copy): it never runs there again.
+const MIGRATED_MARKER: &str = ".migrated";
+
+/// Copies `state.json` from `old_dir` into `new_dir` (created if need be) when `new_dir` is
+/// empty: true when it copied. It runs to an end once: after a copy, or when there is
+/// nothing to copy (no old state, or the app has written its own state there already), it
+/// leaves [`MIGRATED_MARKER`] in `new_dir` and does nothing from then on, so a state file
+/// the user deleted is never filled again from the old one. A copy that fails leaves no
+/// marker and is tried again at the next start. An existing state file is never written
+/// over, and `old_dir` is left as it is. The copy is written to a hidden temp file and moved
+/// into place without replacing anything, so it is whole or absent.
+pub fn migrate_config(old_dir: &Path, new_dir: &Path) -> Result<bool> {
+    let from = old_dir.join(FILE_NAME);
+    let failed = |e: io::Error| {
+        CoreError::new(
+            ErrorCode::Io,
+            format!(
+                "Could not copy the settings from {} to {}",
+                from.display(),
+                new_dir.display()
+            ),
+        )
+        .with_detail(e.to_string())
+    };
+    let marker = new_dir.join(MIGRATED_MARKER);
+    // Done before; or done now, with nothing to copy (both best effort: without the marker,
+    // the next start only looks again).
+    if marker.exists() {
+        return Ok(false);
+    }
+    let done = || {
+        let _ = fs::create_dir_all(new_dir).and_then(|()| fs::write(&marker, ""));
+    };
+    if !is_empty_dir(new_dir).map_err(failed)? {
+        done();
+        return Ok(false);
+    }
+    let bytes = match fs::read(&from) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            done();
+            return Ok(false);
+        }
+        Err(e) => return Err(failed(e)),
+    };
+    let tmp = new_dir.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
+    let written = (|| {
+        fs::create_dir_all(new_dir)?;
+        // A copy that died half-way leaves its temp file: ours, so it goes first.
+        remove_stale_temps(new_dir, &format!(".{FILE_NAME}."))?;
+        let mut file = create_new_file(&tmp, 0o600)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        move_no_overwrite(&tmp, &new_dir.join(FILE_NAME))
+    })();
+    let _ = fs::remove_file(&tmp);
+    match written {
+        Ok(()) => {
+            done();
+            Ok(true)
+        }
+        // The app wrote its own state meanwhile: that one stays.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            done();
+            Ok(false)
+        }
+        Err(e) => Err(failed(e)),
+    }
+}
+
+/// Removes the temp files this app leaves in `dir` when it dies half-way through a write:
+/// the plain files named `<prefix><digits>.tmp` (a link or folder of that name is left).
+pub(crate) fn remove_stale_temps(dir: &Path, prefix: &str) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let ours = name
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if ours && entry.file_type()?.is_file() {
+            match fs::remove_file(entry.path()) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Creates `path`, which must not exist (never through a link someone put there), for
+/// writing, with permissions `mode` where there are such.
+pub(crate) fn create_new_file(path: &Path, mode: u32) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    options.open(path)
+}
+
+/// Gives file `from` the name `to` unless `to` exists (then an error, `AlreadyExists`): a
+/// hard link, which never replaces anything, then `from` is removed. Where hard links are
+/// not supported, a rename that never replaces either
+/// ([`crate::platform::rename_no_replace`]). `from` may be left behind on failure.
+pub(crate) fn move_no_overwrite(from: &Path, to: &Path) -> io::Result<()> {
+    match fs::hard_link(from, to) {
+        Ok(()) => {
+            let _ = fs::remove_file(from);
+            Ok(())
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) if fs::symlink_metadata(to).is_ok() => Err(io::ErrorKind::AlreadyExists.into()),
+        Err(_) => crate::platform::rename_no_replace(from, to),
+    }
+}
+
+/// Whether `dir` is missing or holds nothing but hidden files (a `.DS_Store` the Finder
+/// left, say).
+fn is_empty_dir(dir: &Path) -> io::Result<bool> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        if !entry?.file_name().to_string_lossy().starts_with('.') {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1022,40 +1348,297 @@ mod tests {
         assert_eq!(s.editor_command, None, "blank is the default opener");
     }
 
+    #[test]
+    fn terminal_command_is_set_and_cleared() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.settings().terminal_command, None);
+        let s = store
+            .update_settings(patch(
+                serde_json::json!({"terminalCommand": "kitty --directory {path}"}),
+            ))
+            .unwrap();
+        assert_eq!(
+            s.terminal_command.as_deref(),
+            Some("kitty --directory {path}")
+        );
+        // Kept across a patch without it and a reload; the editor command is its own.
+        store
+            .update_settings(patch(serde_json::json!({"editorCommand": "code"})))
+            .unwrap();
+        let again = Store::load(config.path()).settings();
+        assert_eq!(
+            again.terminal_command.as_deref(),
+            Some("kitty --directory {path}")
+        );
+        assert_eq!(again.editor_command.as_deref(), Some("code"));
+        let s = store
+            .update_settings(patch(serde_json::json!({"terminalCommand": " "})))
+            .unwrap();
+        assert_eq!(s.terminal_command, None, "blank is the platform's terminal");
+        // `{path}` inside a word is refused when saved, and nothing is saved.
+        let err = store
+            .update_settings(patch(
+                serde_json::json!({"terminalCommand": "wezterm --cwd={path}"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(err.message, "Write {path} as a separate word.");
+        assert_eq!(store.settings().terminal_command, None);
+        store
+            .update_settings(patch(serde_json::json!({"terminalCommand": "wezterm"})))
+            .unwrap();
+        let s = store
+            .update_settings(patch(serde_json::json!({"terminalCommand": null})))
+            .unwrap();
+        assert_eq!(s.terminal_command, None);
+    }
+
+    /// The date format: "standard" (what the app always showed) by default, set, kept
+    /// across a reload, and a value this version does not know reads as the default.
+    #[test]
+    fn date_format_is_set_and_read_back() {
+        use crate::dto::DateFormat;
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.settings().date_format, DateFormat::Standard);
+        for (text, format) in [
+            ("relative", DateFormat::Relative),
+            ("iso", DateFormat::Iso),
+            ("locale", DateFormat::Locale),
+            ("standard", DateFormat::Standard),
+            ("iso", DateFormat::Iso),
+        ] {
+            let s = store
+                .update_settings(patch(serde_json::json!({ "dateFormat": text })))
+                .unwrap();
+            assert_eq!(s.date_format, format, "{text}");
+        }
+        assert_eq!(
+            Store::load(config.path()).settings().date_format,
+            DateFormat::Iso
+        );
+        assert!(
+            serde_json::from_value::<SettingsPatch>(serde_json::json!({"dateFormat": "roman"}))
+                .is_err(),
+            "an unknown format is refused"
+        );
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"dateFormat": "roman", "theme": "dark"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path()).settings();
+        assert_eq!(edited.date_format, DateFormat::Standard);
+        assert_eq!(edited.theme, Theme::Dark);
+    }
+
+    /// "Reset to defaults" puts every setting back as a new install has it, and keeps the
+    /// rest of the file: recents, the open tabs, each repository's preferences and keys this
+    /// version does not know.
+    #[test]
+    fn settings_go_back_to_their_defaults_and_nothing_else_does() {
+        let config = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"future": 1, "settings": {"futureSetting": "kept"}}"#,
+        )
+        .unwrap();
+        let store = Store::load(config.path());
+        store.add_recent(repo.path()).unwrap();
+        store
+            .save_session(Session {
+                tabs: vec!["/x".into()],
+                active: Some("/x".into()),
+            })
+            .unwrap();
+        store
+            .set_repo_prefs(
+                repo.path(),
+                serde_json::from_value(serde_json::json!({"mergeNoFf": false})).unwrap(),
+            )
+            .unwrap();
+        store
+            .update_settings(patch(serde_json::json!({
+                "theme": "dark",
+                "fetchIntervalSecs": 60,
+                "editorCommand": "code",
+                "terminalCommand": "kitty",
+                "worktreePattern": "../wt/{branch}",
+                "dateFormat": "relative",
+            })))
+            .unwrap();
+
+        let s = store.restore_default_settings().unwrap();
+        assert_eq!(s, Settings::default());
+        let again = Store::load(config.path());
+        assert_eq!(again.settings(), Settings::default());
+        assert_eq!(again.recents().len(), 1);
+        assert_eq!(again.session().tabs, vec!["/x".to_owned()]);
+        assert!(!again.repo_prefs(repo.path()).merge_no_ff);
+        let text = fs::read_to_string(config.path().join("state.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["future"], 1);
+        assert_eq!(json["settings"]["futureSetting"], "kept");
+    }
+
+    /// Where the settings are kept, for the settings screen to show.
+    #[test]
+    fn the_settings_file_is_state_json_in_the_config_folder() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.file(), config.path().join("state.json"));
+    }
+
+    /// The editor command is checked as the terminal command is when saved: quotes closed,
+    /// `{path}` a word of its own and never after an option that runs a command.
+    #[test]
+    fn editor_command_is_checked_when_saved() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        for (bad, says) in [
+            ("code 'unclosed", "quote that is not closed"),
+            ("code --goto={path}", "Write {path} as a separate word."),
+            ("sh -c {path}", "{path} cannot follow -c"),
+        ] {
+            let err = store
+                .update_settings(patch(serde_json::json!({ "editorCommand": bad })))
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{bad}");
+            assert!(err.message.contains(says), "{bad}: {}", err.message);
+        }
+        assert_eq!(store.settings().editor_command, None, "nothing was saved");
+        let s = store
+            .update_settings(patch(
+                serde_json::json!({"editorCommand": "idea --wait {path}"}),
+            ))
+            .unwrap();
+        assert_eq!(s.editor_command.as_deref(), Some("idea --wait {path}"));
+    }
+
+    #[test]
+    fn worktree_pattern_is_set_checked_and_reset() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(
+            store.settings().worktree_pattern,
+            "../{repo}.worktrees/{branch}"
+        );
+        let s = store
+            .update_settings(patch(
+                serde_json::json!({"worktreePattern": "../wt/{repo}-{branch}"}),
+            ))
+            .unwrap();
+        assert_eq!(s.worktree_pattern, "../wt/{repo}-{branch}");
+        let err = store
+            .update_settings(patch(serde_json::json!({"worktreePattern": "../same"})))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("{branch}"), "{}", err.message);
+        assert_eq!(store.settings().worktree_pattern, "../wt/{repo}-{branch}");
+        // Inside the repository's folder: refused (Task 4 review).
+        for inside in [
+            "wt/{branch}",
+            "./{branch}",
+            "../{repo}/x/{branch}",
+            "{branch}",
+        ] {
+            let err = store
+                .update_settings(patch(serde_json::json!({"worktreePattern": inside})))
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{inside}");
+            assert!(err.message.contains("outside"), "{}", err.message);
+        }
+        assert_eq!(store.settings().worktree_pattern, "../wt/{repo}-{branch}");
+        for outside in [
+            "../{branch}",
+            "../{repo}-wt/{branch}",
+            "/abs/{repo}/{branch}",
+        ] {
+            assert!(!pattern_inside_repository(outside), "{outside}");
+        }
+        // Survives a reload; blank goes back to the default.
+        let again = Store::load(config.path());
+        assert_eq!(again.settings().worktree_pattern, "../wt/{repo}-{branch}");
+        let s = again
+            .update_settings(patch(serde_json::json!({"worktreePattern": " "})))
+            .unwrap();
+        assert_eq!(s.worktree_pattern, "../{repo}.worktrees/{branch}");
+        // A hand-edited pattern without {branch} reads as the default.
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"worktreePattern": "/fixed"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path());
+        assert_eq!(
+            edited.settings().worktree_pattern,
+            "../{repo}.worktrees/{branch}"
+        );
+        // So does one inside the repository.
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"worktreePattern": "wt/{branch}"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Store::load(config.path()).settings().worktree_pattern,
+            "../{repo}.worktrees/{branch}"
+        );
+    }
+
     /// Repository preferences are read field by field like the rest: a newer version's
     /// keys inside an entry survive a save, and a value that falls back copies the file
-    /// aside first.
+    /// aside first. (Folders that exist nowhere: the keys are the folders' real paths, and
+    /// on Windows `/a` is the current drive's `\a`, which exists on CI: `D:\a`.)
     #[test]
     fn repo_prefs_keep_unknown_keys_and_fall_back_one_value_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         fs::write(
             &path,
-            r#"{"repoPrefs": {"/a": {"mergeNoFf": false, "future": 1}, "/b": "junk"}}"#,
+            r#"{"repoPrefs": {"/no-repo-a": {"mergeNoFf": false, "future": 1}, "/no-repo-b": "junk"}}"#,
         )
         .unwrap();
         let store = Store::load(dir.path());
-        assert!(!store.repo_prefs(Path::new("/a")).merge_no_ff);
-        assert!(store.repo_prefs(Path::new("/b")).merge_no_ff);
-        assert!(store.repo_prefs(Path::new("/c")).merge_no_ff);
+        assert!(!store.repo_prefs(Path::new("/no-repo-a")).merge_no_ff);
+        assert!(store.repo_prefs(Path::new("/no-repo-b")).merge_no_ff);
+        assert!(store.repo_prefs(Path::new("/no-repo-c")).merge_no_ff);
         store
             .set_repo_prefs(
-                Path::new("/c"),
+                Path::new("/no-repo-c"),
                 RepoPrefsPatch {
                     merge_no_ff: Some(false),
+                    side_panel: Some(false),
+                    pr_base: Some(Some("develop".into())),
                 },
             )
             .unwrap();
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
-            saved["repoPrefs"]["/a"],
-            serde_json::json!({"mergeNoFf": false, "future": 1})
+            saved["repoPrefs"]["/no-repo-a"],
+            serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null, "sidePanel": true, "prBase": null})
         );
         assert_eq!(
-            saved["repoPrefs"]["/c"],
-            serde_json::json!({"mergeNoFf": false})
+            saved["repoPrefs"]["/no-repo-c"],
+            serde_json::json!({"mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": "develop"})
         );
+        // Read back, and forgotten with null.
+        assert_eq!(
+            Store::load(dir.path())
+                .repo_prefs(Path::new("/no-repo-c"))
+                .pr_base
+                .as_deref(),
+            Some("develop")
+        );
+        let patch: RepoPrefsPatch =
+            serde_json::from_value(serde_json::json!({"prBase": null})).unwrap();
+        let prefs = store
+            .set_repo_prefs(Path::new("/no-repo-c"), patch)
+            .unwrap();
+        assert_eq!(prefs.pr_base, None);
         let aside = fs::read_dir(dir.path())
             .unwrap()
             .filter(|e| {
@@ -1067,6 +1650,36 @@ mod tests {
             })
             .count();
         assert_eq!(aside, 1, "the unreadable entry for /b was kept aside");
+    }
+
+    /// The active worktree is remembered by the main worktree's path, symlinks resolved, and
+    /// one whose folder is gone counts as the main one.
+    #[test]
+    fn the_active_worktree_is_remembered_and_a_gone_one_is_the_main_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        let wt = dir.path().join("wt");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+        let store = Store::load(&dir.path().join("config"));
+        assert_eq!(store.active_worktree(&root), None);
+        store.set_active_worktree(&root, Some(&wt)).unwrap();
+        let real = canonical(&wt);
+        assert_eq!(store.active_worktree(&root), Some(real.clone()));
+        let reloaded = Store::load(&dir.path().join("config"));
+        assert_eq!(
+            reloaded.active_worktree(&root.join(".")),
+            Some(real.clone())
+        );
+        assert_eq!(
+            reloaded.repo_prefs(&root).active_worktree.as_deref(),
+            Some(real.to_string_lossy().as_ref())
+        );
+        fs::remove_dir(&wt).unwrap();
+        assert_eq!(reloaded.active_worktree(&root), None, "gone: the main one");
+        reloaded.set_active_worktree(&root, None).unwrap();
+        assert_eq!(reloaded.repo_prefs(&root).active_worktree, None);
+        assert!(reloaded.repo_prefs(&root).merge_no_ff, "the rest kept");
     }
 
     #[test]
@@ -1088,5 +1701,201 @@ mod tests {
         );
         assert_eq!(config_dir_from(Some("".into())), None);
         assert_eq!(config_dir_from(None), None);
+    }
+
+    /// A config folder of the app under its old name, holding `state` as its state file,
+    /// and the path of the new one next to it (not created).
+    fn old_and_new(root: &Path, state: &str) -> (PathBuf, PathBuf) {
+        let old = root.join(OLD_CONFIG_DIR_NAME);
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join(FILE_NAME), state).unwrap();
+        (old, root.join("com.shakirul.gg"))
+    }
+
+    #[test]
+    fn migrate_config_copies_the_old_state_once_and_keeps_the_old_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), r#"{"recents":[]}"#);
+        assert!(migrate_config(&old, &new).unwrap());
+        assert_eq!(
+            fs::read_to_string(new.join(FILE_NAME)).unwrap(),
+            r#"{"recents":[]}"#
+        );
+        assert_eq!(
+            fs::read_to_string(old.join(FILE_NAME)).unwrap(),
+            r#"{"recents":[]}"#
+        );
+        // No temp file is left behind; the marker says it is done.
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER, FILE_NAME]);
+        // Once only: the state saved since is kept.
+        fs::write(new.join(FILE_NAME), "{}").unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "{}");
+        // Nor once that state was found broken and moved aside: it gives defaults.
+        fs::rename(new.join(FILE_NAME), new.join(format!("{BAD_FILE_PREFIX}1"))).unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert!(!new.join(FILE_NAME).exists());
+        // Nor once the user deleted everything but the marker.
+        fs::remove_file(new.join(format!("{BAD_FILE_PREFIX}1"))).unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert!(!new.join(FILE_NAME).exists());
+    }
+
+    /// The names in folder `dir`, sorted.
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn migrate_config_marks_a_folder_the_app_wrote_already() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(FILE_NAME), "new").unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        // Its state deleted by hand later, it is not filled from the old one.
+        fs::remove_file(new.join(FILE_NAME)).unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER]);
+    }
+
+    #[test]
+    fn migrate_config_retries_after_a_crashed_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        // A copy that died half-way left its hidden temp file and no marker.
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(format!(".{FILE_NAME}.1.tmp")), "ol").unwrap();
+        // One of this very process too (a pid reused): never written through.
+        let mine = new.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
+        fs::write(&mine, "stale").unwrap();
+        assert!(migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "old");
+        // The stale temp files are gone.
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER, FILE_NAME]);
+    }
+
+    #[test]
+    fn move_no_overwrite_never_replaces() {
+        let root = tempfile::tempdir().unwrap();
+        let (from, to) = (root.path().join("from"), root.path().join("to"));
+        fs::write(&from, "a").unwrap();
+        fs::write(&to, "b").unwrap();
+        let err = move_no_overwrite(&from, &to).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "b");
+        fs::remove_file(&to).unwrap();
+        move_no_overwrite(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "a");
+        assert!(!from.exists());
+    }
+
+    #[test]
+    fn migrate_config_into_a_folder_with_hidden_files_only() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(".DS_Store"), "").unwrap();
+        assert!(migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "old");
+    }
+
+    #[test]
+    fn migrate_config_never_overwrites_a_new_state() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join(FILE_NAME), "new").unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "new");
+        assert_eq!(fs::read_to_string(old.join(FILE_NAME)).unwrap(), "old");
+    }
+
+    #[test]
+    fn migrate_config_without_an_old_state_does_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join(OLD_CONFIG_DIR_NAME);
+        let new = root.path().join("com.shakirul.gg");
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert_eq!(dir_names(&new), [MIGRATED_MARKER]);
+        // An old folder without a state file is no different.
+        let other = root.path().join("other");
+        fs::create_dir_all(&old).unwrap();
+        assert!(!migrate_config(&old, &other).unwrap());
+        assert_eq!(dir_names(&other), [MIGRATED_MARKER]);
+        // A state appearing in the old folder later is not taken.
+        fs::write(old.join(FILE_NAME), "old").unwrap();
+        assert!(!migrate_config(&old, &new).unwrap());
+        assert!(!new.join(FILE_NAME).exists());
+    }
+
+    #[test]
+    fn migrate_config_whose_new_folder_is_a_file_is_io() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        // The new folder's path is taken by a file.
+        fs::write(&new, "").unwrap();
+        assert_eq!(migrate_config(&old, &new).unwrap_err().code, ErrorCode::Io);
+    }
+
+    /// The copy itself fails (the new folder cannot be written): `Io`, nothing left there,
+    /// and no marker, so the next start tries again.
+    #[cfg(unix)]
+    #[test]
+    fn migrate_config_that_cannot_write_is_io() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = old_and_new(root.path(), "old");
+        fs::create_dir_all(&new).unwrap();
+        fs::set_permissions(&new, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = migrate_config(&old, &new);
+        fs::set_permissions(&new, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap_err().code, ErrorCode::Io);
+        assert!(dir_names(&new).is_empty());
+        assert!(migrate_config(&old, &new).unwrap());
+    }
+
+    #[test]
+    fn the_old_config_folder_is_next_to_the_new_one() {
+        let new = Path::new("/config/home/com.shakirul.gg");
+        assert_eq!(
+            old_config_dir(new),
+            Some(Path::new("/config/home").join(OLD_CONFIG_DIR_NAME))
+        );
+        assert_eq!(old_config_dir(Path::new("/")), None);
+    }
+
+    #[test]
+    fn config_dir_migrates_into_the_platform_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, new) = old_and_new(root.path(), "old");
+        let dir = config_dir_with(None, || Ok(new.clone())).unwrap();
+        assert_eq!(dir, new);
+        assert_eq!(fs::read_to_string(new.join(FILE_NAME)).unwrap(), "old");
+    }
+
+    #[test]
+    fn config_dir_skips_the_migration_with_gg_config_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, new) = old_and_new(root.path(), "old");
+        let override_dir = root.path().join("override");
+        let dir = config_dir_with(Some(override_dir.clone().into_os_string()), || {
+            Ok(new.clone())
+        })
+        .unwrap();
+        assert_eq!(dir, override_dir);
+        assert!(!new.exists());
+        assert!(!override_dir.exists());
+    }
+
+    #[test]
+    fn config_dir_without_a_platform_folder_fails() {
+        let err = config_dir_with(None, || Err(CoreError::new(ErrorCode::Io, "none"))).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io);
     }
 }

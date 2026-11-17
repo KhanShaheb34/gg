@@ -7,8 +7,10 @@
 #   email  an email address, other than noreply addresses and the reserved example domains
 #   token  a token-looking string (GitHub tokens, sk- keys, AWS key ids, private-key headers)
 #          outside the test fixtures in TOKEN_ALLOW_PATHS
-#   name   the retired names "GitGraph", "Git Graph", "git-graph" or "gitgraph" (any case),
-#          outside the README's one credit line and the lines in NAME_ALLOW
+#   name   the retired development name, in any case and joined by nothing, a space, "-" or
+#          "_" (spelled out in src-tauri/tests/naming.rs, which checks the same; this file
+#          writes it in pieces so that test passes over it), outside the README's one credit
+#          line and the lines in NAME_ALLOW
 #   notes  pointers to internal planning material that is not published (docs/superpowers,
 #          docs/perf, plan and review-round references such as "Task 9 review" or "final
 #          review M3"), and tool attribution lines (Co-Authored-By, "Generated with")
@@ -25,9 +27,9 @@ HOME_ALLOW="ada adam a ab me you runner Shared"
 TOKEN_ALLOW_PATHS="crates/gg-core/src/git/runner.rs crates/gg-core/src/hosts.rs crates/gg-core/tests/gh_tokens.rs"
 # Lines that may name the retired app name, as "path|text the line contains": the code that
 # moves the settings over from the old app's config folder, which has that name.
-NAME_ALLOW="crates/gg-core/src/store.rs|const OLD_CONFIG_DIR_NAME: &str = \"dev.gitgraph.desktop\";"
+NAME_ALLOW="crates/gg-core/src/store.rs|const OLD_CONFIG_DIR_NAME: &str = "
 # The one README line that may name the extension gg is inspired by.
-README_CREDIT="inspired by the Git Graph extension"
+README_CREDIT="inspired by the Git"" Graph extension"
 
 SELF=scripts/audit-public.sh
 
@@ -75,7 +77,7 @@ found=$(
         BEGIN { n = split(allow, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
         { p = $0; sub(/:.*/, "", p); if (!(p in ok)) print "token " $0 }'
 
-    { git grep -n -I -i -E -e 'git ?graph|git-graph|git_graph' -- . ":(exclude)$SELF" || true; } |
+    { git grep -n -I -E -e '[Gg][Ii][Tt][ _-]?[Gg][Rr][Aa][Pp][Hh]' -- . ":(exclude)$SELF" || true; } |
       awk -v allow="$NAME_ALLOW" -v credit="$README_CREDIT" '
         BEGIN { split(allow, a, "|"); okpath = a[1]; oktext = a[2] }
         {

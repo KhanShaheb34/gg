@@ -39,12 +39,19 @@ crop() {
 
 crop graph graph-branchy 1280 800 0 0
 crop graph-narrow graph-branchy 600 640 0 0
-crop search small-search 900 400 0 0 # stops above the details' author line (an email address)
-crop menu menu-branch 560 320 0 80
-crop notice notice-merge-push 410 164 870 636
+crop search small-search 900 390 0 0 # stops above the details' parent and author lines (an email address)
+crop menu menu-branch 560 370 0 80
+crop worktrees worktrees 1280 490 0 40 # the toolbar, the graph and the side panel
+crop worktrees-narrow worktrees 300 450 980 80 # the side panel alone, for phones
+crop commit small-commit 900 520 0 40 # the small window: the uncommitted row and the commit panel
+crop commit-narrow small-commit 240 480 660 80 # the commit panel alone, for phones
+crop prs prs-dialog 570 474 355 98
+crop notice notice-merge-push 410 164 568 630
 crop force dialog-force-push 490 214 395 98
-crop conflict small-banner-merge-partly 900 146 0 80
-crop log small-log-open 900 144 0 416
+crop conflict small-banner-merge-partly 660 180 0 80
+crop log small-log-open 660 144 0 416
+crop settings settings 830 424 225 37 # down to the line above Tools
+crop shortcuts shortcuts 850 674 215 37
 
 # The same graph, its top rows in the light theme and the rest in the dark one.
 for scale in 1 2; do

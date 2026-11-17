@@ -1385,6 +1385,27 @@ async fn a_bare_repository_inside_an_ignored_folder_is_never_removed_with_it() {
     assert!(bare.join("HEAD").exists() && bare.join("objects").is_dir());
 }
 
+/// Re-review N3: a marked file with a staged change (which status shows) and an edit after
+/// it (which it does not) is one file, listed once.
+#[tokio::test]
+async fn a_marked_file_with_a_staged_change_is_counted_once() {
+    let (repo, _origin, wt) = pushed_worktree();
+    fs::write(wt.join("a.txt"), "staged\n").unwrap();
+    git_in(&wt, &["add", "a.txt"]);
+    git_in(&wt, &["update-index", "--assume-unchanged", "a.txt"]);
+    fs::write(wt.join("a.txt"), "staged, then edited\n").unwrap();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeWithWork).await;
+    assert!(
+        danger.message.contains("has uncommitted changes to 1 file"),
+        "{}",
+        danger.message
+    );
+    let detail = danger.detail.as_deref().unwrap();
+    assert_eq!(detail.matches("a.txt").count(), 1, "{detail}");
+}
+
 // ---- Removing with the branch ----
 
 #[tokio::test]

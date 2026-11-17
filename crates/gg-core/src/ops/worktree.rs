@@ -779,7 +779,10 @@ async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Res
     work.marked = marked_changes(ctx, wt).await?;
     let mut names = Vec::new();
     for (path, why) in &work.marked {
-        work.changed.push(path.clone());
+        // A marked file with a staged change is in git's status already: once (re-review N3).
+        if !work.changed.contains(path) {
+            work.changed.push(path.clone());
+        }
         names.extend_from_slice(path.as_bytes());
         names.push(0);
         names.extend_from_slice(why.as_bytes());

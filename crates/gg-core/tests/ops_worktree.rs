@@ -1289,6 +1289,102 @@ async fn a_worktree_that_is_not_what_the_dialog_showed_is_not_deleted() {
     assert!(!wt.exists());
 }
 
+/// Re-review N1: a large ignored folder (a monorepo's node_modules, a Rust target/) is no
+/// reason to refuse: above the wave's first bound (200,000 entries) it is looked through and
+/// the worktree deleted under the ordinary question about ignored files.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ignored_folder_above_the_old_bound_is_looked_through_and_deleted() {
+    let (repo, _origin, wt) = pushed_worktree();
+    // 420 folders of 499 files: 210,000 entries.
+    let big = wt.join("build/node_modules");
+    for d in 0..420 {
+        let dir = big.join(format!("p{d}"));
+        fs::create_dir_all(&dir).unwrap();
+        for f in 0..499 {
+            fs::write(dir.join(format!("f{f}")), "").unwrap();
+        }
+    }
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let danger = asked(&h, id, &wt, DangerKind::RemoveWorktreeIgnoredFiles).await;
+    let out = h
+        .run_with(id, remove(&wt, false), &confirmed(&[danger]))
+        .await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert!(!wt.exists());
+}
+
+/// Re-review N2: every repository found inside is named at once (a tool's folder of
+/// checkouts), not one per attempt.
+#[tokio::test]
+async fn every_repository_inside_is_named_at_once() {
+    let (repo, _origin, wt) = pushed_worktree();
+    for inner in [
+        "build/checkouts/one",
+        "build/checkouts/two",
+        "build/deep/x/three",
+    ] {
+        let inner = wt.join(inner);
+        fs::create_dir_all(&inner).unwrap();
+        git_in(&inner, &["init", "-q"]);
+    }
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, remove(&wt, false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(
+        out.message.starts_with(&format!(
+            "Nothing was deleted: {} contains 3 other repositories, which git would delete with \
+             it:",
+            real(&wt)
+        )),
+        "{}",
+        out.message
+    );
+    for name in [
+        "build/checkouts/one",
+        "build/checkouts/two",
+        "build/deep/x/three",
+    ] {
+        assert!(
+            out.message.contains(&native(name)),
+            "{name}: {}",
+            out.message
+        );
+    }
+    assert!(wt.join("build/checkouts/one/.git").exists());
+}
+
+/// Re-review N6: a bare repository (HEAD, objects/ and refs/, no .git) inside an ignored
+/// folder is a repository too.
+#[tokio::test]
+async fn a_bare_repository_inside_an_ignored_folder_is_never_removed_with_it() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let bare = wt.join("build/fixtures/origin.git");
+    fs::create_dir_all(&bare).unwrap();
+    git_in(&bare, &["init", "-q", "--bare"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let says = format!(
+        "{} contains another repository, at {} inside it",
+        real(&wt),
+        native("build/fixtures/origin.git")
+    );
+    let mark = h.last_log_id();
+    let out = h
+        .run_confirmed(
+            id,
+            remove(&wt, false),
+            &[DangerKind::RemoveWorktreeIgnoredFiles],
+        )
+        .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert!(out.message.contains(&says), "{}", out.message);
+    assert!(h.writes_since(mark).is_empty(), "nothing ran");
+    assert!(bare.join("HEAD").exists() && bare.join("objects").is_dir());
+}
+
 // ---- Removing with the branch ----
 
 #[tokio::test]

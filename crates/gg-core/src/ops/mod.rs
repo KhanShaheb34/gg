@@ -68,6 +68,10 @@ pub enum Step {
 /// What an operation's body works with: the repository, a runner that logs as this
 /// operation, the worktree to run in (the active one; the main one for the worktree
 /// operations) and the operation's id.
+/// A walk of a worktree's ignored folders: (the worktree, a hash of the status read it
+/// walked from) and what a refusal says of what it found (`None`: nothing).
+pub(crate) type HeldWalk = ((PathBuf, u64), Option<String>);
+
 pub(crate) struct OpCtx<'a> {
     pub repo: &'a Arc<Repo>,
     /// The manager, for what an operation does to the repository's state beside git
@@ -84,6 +88,10 @@ pub(crate) struct OpCtx<'a> {
     /// A read the operation's turn made that its later steps in the turn reuse (the worktree
     /// removal's status with ignored files: the folder read, and git's output).
     pub(crate) held_read: std::sync::Mutex<Option<(PathBuf, Vec<u8>)>>,
+    /// What the walk of a worktree's ignored folders for other repositories found in the
+    /// operation's turn, keyed by the worktree and a hash of the status read it walked from
+    /// (the body takes it again when it reads the same and no switch came between).
+    pub(crate) held_walk: std::sync::Mutex<Option<HeldWalk>>,
     /// The worktree the operation made (its canonical path, as the snapshot lists it).
     pub(crate) created: Arc<std::sync::Mutex<Option<String>>>,
     /// The commit the operation made (its full hash), once made.
@@ -1101,6 +1109,7 @@ impl RepoManager {
             net_limit: self.net_limit(),
             kept: std::sync::atomic::AtomicBool::new(false),
             held_read: std::sync::Mutex::new(None),
+            held_walk: std::sync::Mutex::new(None),
             created: made.0.clone(),
             committed: made.1.clone(),
             turn_in_progress: std::sync::OnceLock::new(),
@@ -1690,6 +1699,7 @@ mod tests {
             net_limit: m.net_limit(),
             kept: std::sync::atomic::AtomicBool::new(false),
             held_read: std::sync::Mutex::new(None),
+            held_walk: std::sync::Mutex::new(None),
             created: Arc::default(),
             committed: Arc::default(),
             turn_in_progress: std::sync::OnceLock::new(),

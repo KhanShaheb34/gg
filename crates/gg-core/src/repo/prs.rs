@@ -376,11 +376,6 @@ impl RepoManager {
         )
     }
 
-    /// The repository `remote` names, when its host is GitHub: github.com and `*.ghe.com` by
-    /// name ([`is_known_github`]); any other host only when `gh` has credentials stored for
-    /// exactly that host ([`Gh::has_stored_credentials`], asked once per host per run of the
-    /// app, through `runner`). Otherwise `None`: no `gh` command runs for it, no `GH_HOST`
-    /// names it, and no compare page is made for it.
     /// The web hosts (`host[:port]`) the browser may be sent to for repository `repo`:
     /// github.com, and the GitHub host of each of its remotes on GitHub, as
     /// [`RepoManager::on_github`] resolves it (final boundary review M1).
@@ -401,6 +396,11 @@ impl RepoManager {
         hosts
     }
 
+    /// The repository `remote` names, when its host is GitHub: github.com and `*.ghe.com` by
+    /// name ([`is_known_github`]); any other host only when `gh` has credentials stored for
+    /// exactly that host ([`Gh::has_stored_credentials`], asked once per host per run of the
+    /// app, through `runner`). Otherwise `None`: no `gh` command runs for it, no `GH_HOST`
+    /// names it, and no compare page is made for it.
     pub(crate) async fn on_github(
         &self,
         repo: &Repo,

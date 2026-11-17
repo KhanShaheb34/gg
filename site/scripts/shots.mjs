@@ -29,7 +29,7 @@ const grep = [
 const source = readFileSync(path.join(root, "e2e", "screens.spec.ts"), "utf8");
 const edits = [
   [
-    'const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");',
+    'const OUT = path.resolve(import.meta.dirname, "..", ".screens");',
     `const OUT = path.join(${JSON.stringify(shots)}, process.env.GG_SHOTS_SCALE + "x");`,
   ],
   ["deviceScaleFactor: 1 }", "deviceScaleFactor: Number(process.env.GG_SHOTS_SCALE) }"],

@@ -315,7 +315,7 @@ test("show_log_in_a_small_window_shows_the_operation_above_the_details", async (
       await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
       await page.mouse.move(1000, 20);
       await page.waitForTimeout(500);
-      await page.screenshot({ path: `docs/perf/screens/small-log-show-${scheme}.png` });
+      await page.screenshot({ path: `.screens/small-log-show-${scheme}.png` });
     }
   }
   rmSync(path.join(dir, ".git/index.lock"));

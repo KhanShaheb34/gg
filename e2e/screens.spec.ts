@@ -1,11 +1,12 @@
-// Screenshots for the visual check, written to docs/perf/screens/. Run on demand:
+// Screenshots for the visual check, written to .screens/ (git-ignored; the README's shots in
+// docs/screens/ are picked from them by hand). Run on demand:
 //   GG_SCREENS=1 pnpm e2e screens
 import { chmodSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, makeRepo, otherClone, runOp, test } from "./fixtures";
 
-const OUT = path.resolve(import.meta.dirname, "..", "docs", "perf", "screens");
+const OUT = path.resolve(import.meta.dirname, "..", ".screens");
 
 test.skip(!process.env.GG_SCREENS, "set GG_SCREENS=1 to take screenshots");
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });

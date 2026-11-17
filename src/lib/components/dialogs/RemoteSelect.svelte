@@ -1,6 +1,6 @@
 <!--
   The "Remote" list of a dialog that sends something to a remote (push, push tag, delete
-  tag). While nothing is chosen in it (several remotes, none of them origin: R29), it says
+  tag). While nothing is chosen in it (several remotes, none of them origin), it says
   to choose one, and the dialog's primary button stays disabled.
 -->
 <script lang="ts">

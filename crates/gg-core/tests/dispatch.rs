@@ -787,7 +787,7 @@ async fn launch_path_is_reported() {
             "homeDir": home,
             "settingsProblem": null,
             "settingsFile": none.config.path().join("state.json").to_string_lossy(),
-            // The git installed here is new enough (M3).
+            // The git installed here is new enough.
             "gitProblem": null,
             "version": env!("CARGO_PKG_VERSION")
         })
@@ -1379,7 +1379,7 @@ async fn open_external_opens_only_https_pages() {
     assert_eq!(recorded(&file).len(), 1);
 }
 
-/// R36: a credential in a URL (the `user:password@` part) never reaches the UI, wherever git
+/// A credential in a URL (the `user:password@` part) never reaches the UI, wherever git
 /// or the config put it: a failed operation's message and output, the fetch state, errors.
 /// git hides credentials in the URLs it prints itself; a hook or a helper does not, so a
 /// pre-push hook and an upload-pack print one here.
@@ -1664,7 +1664,7 @@ async fn worktree_files_and_commit_via_dispatch() {
             ],
             "truncated": false,
             "mergeMessage": null,
-            // No remote: nowhere to push (final boundary review M7).
+            // No remote: nowhere to push.
             "pushRemote": null,
         })
     );

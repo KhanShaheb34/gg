@@ -86,7 +86,7 @@
 
   /**
    * F6 (Shift+F6 back) moves between the window's regions: the graph, the newest notice, the
-   * side panel. From outside them it goes to the newest notice first (R30), else the graph.
+   * side panel. From outside them it goes to the newest notice first, else the graph.
    */
   function cycleRegion(delta: 1 | -1) {
     const graph = document.querySelector<HTMLElement>('#repo-panel [role="grid"]');

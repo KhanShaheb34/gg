@@ -194,7 +194,7 @@ describe("runOp", () => {
     (await confirmation(1)).onConfirm();
     const again = await confirmation(2);
     expect(again.dangers[0].message).toBe("origin/main has 3 commits main does not.");
-    // Asked again: the confirmation says what it is about changed (R39).
+    // Asked again: the confirmation says what it is about changed.
     expect(lastDialog().again).toBe(true);
     again.onConfirm();
     await run;
@@ -205,7 +205,7 @@ describe("runOp", () => {
     ]);
   });
 
-  it("confirms every danger with the token it was shown with, the request unchanged (R39)", async () => {
+  it("confirms every danger with the token it was shown with, the request unchanged", async () => {
     const drop: OpRequest = { op: "stash_drop", stash: "d".repeat(40), expectWorktree: "/r" };
     vi.mocked(ipc.api.runOp)
       .mockResolvedValueOnce(outcome({ status: "needs_confirmation", dangers: [danger({ kind: "drop_stash", token: "d".repeat(40) })] }))
@@ -337,7 +337,7 @@ describe("hint buttons", () => {
     expect(app.app.toasts[0].until).toBeUndefined();
   });
 
-  it("goes when the outcome of a later operation on that repository arrives (review item 4)", async () => {
+  it("goes when the outcome of a later operation on that repository arrives", async () => {
     const push = { kind: "push", branch: "main", remote: "origin" } as const;
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 9, hints: [push] }));
     await ops.runOp(1, RESET);
@@ -388,7 +388,7 @@ describe("hint buttons", () => {
     await vi.waitFor(() => expect(view.applySnapshot).toHaveBeenCalledWith(after));
   });
 
-  it("remove_index_lock: offers to remove the stale lock, in the worktree it is in, through the core's red confirmation (M5)", async () => {
+  it("remove_index_lock: offers to remove the stale lock, in the worktree it is in, through the core's red confirmation", async () => {
     const [remove] = await buttonsFor([{ kind: "remove_index_lock", path: "/r/.git/index.lock", worktree: "/r/wt" }], "failed");
     expect(remove.label).toBe("Remove the lock file…");
     expect(remove.danger).toBe(true);
@@ -442,7 +442,7 @@ describe("hint buttons", () => {
     );
   });
 
-  it("a rejected push to the upstream of another name offers the force push there, named (R38)", async () => {
+  it("a rejected push to the upstream of another name offers the force push there, named", async () => {
     const [force] = await buttonsFor([{ kind: "force_push", branch: "feature", remote: "origin", to: "main" }], "failed");
     expect(force.label).toBe("Force push feature to origin/main…");
     await force.run();
@@ -453,7 +453,7 @@ describe("hint buttons", () => {
     );
   });
 
-  it("skip: a continue that came out empty offers to skip that commit, by its hash (R40)", async () => {
+  it("skip: a continue that came out empty offers to skip that commit, by its hash", async () => {
     const commit = "e".repeat(40);
     const [skip] = await buttonsFor([{ kind: "skip", commit }], "failed");
     expect(skip.label).toBe("Skip this commit");
@@ -465,7 +465,7 @@ describe("hint buttons", () => {
     );
   });
 
-  it("the Skip notice holds only while git is stopped on that commit (R40)", async () => {
+  it("the Skip notice holds only while git is stopped on that commit", async () => {
     const commit = "e".repeat(40);
     const stoppedOn = (c: string | null) =>
       snap({

@@ -5,7 +5,7 @@
 //! Programs run as argument arrays, never through a shell (no `cmd.exe` is ever given an
 //! argument that comes from a repository), in a process group of their own, not waited for.
 //! No file of a repository is ever handed to the system's default application, which picks a
-//! program by file type and could run it (R19). The user's own commands (editor, terminal)
+//! program by file type and could run it. The user's own commands (editor, terminal)
 //! are split into words with simple quotes, and the path is one argument.
 
 use std::ffi::{OsStr, OsString};
@@ -112,7 +112,7 @@ impl RepoManager {
                 return Err(bad("A web page is opened by its address, not a path."));
             }
             let url = web_address(url.ok_or_else(|| bad("No web address to open."))?)?;
-            // Only the repository's GitHub host, or github.com (final boundary review M1).
+            // Only the repository's GitHub host, or github.com.
             let host = web_host(&url);
             if !self.github_web_hosts(&repo).await.contains(&host) {
                 return Err(bad(&format!(
@@ -826,9 +826,9 @@ fn split_command(command: &str, setting: &str) -> Result<Vec<String>> {
 /// name in an absolute entry of `path` (the given `PATH`, else the app's; see
 /// [`crate::platform::find_program`]). A relative entry (`.`, `bin`, an empty one) is
 /// skipped: the editor runs in the worktree, where it would find a program of the
-/// repository's (branch review Minor 7). A name with a folder in it is the user's own
+/// repository's. A name with a folder in it is the user's own
 /// choice, taken as it is, except that on Windows a script (`code.cmd`, a `.bat`) is never
-/// run: `cmd.exe` would parse its arguments, a path among them, again (R19).
+/// run: `cmd.exe` would parse its arguments, a path among them, again.
 fn resolve_program(program: &OsStr, path: Option<&OsString>) -> Lookup {
     let name = Path::new(program);
     if name.components().count() != 1 || name.is_absolute() {
@@ -1010,7 +1010,7 @@ mod tests {
     use super::*;
 
     /// A bare program name is never found through a relative `PATH` entry, which would
-    /// resolve inside the worktree the editor runs in (branch review Minor 7).
+    /// resolve inside the worktree the editor runs in.
     #[cfg(unix)]
     #[test]
     fn a_program_is_never_found_through_a_relative_path_entry() {
@@ -1522,13 +1522,13 @@ vim",
             "pwsh -Command {path}",
             "powershell -encodedcommand {path}",
             "my-term -C {path}",
-            // Task 9 review minor 6: short flags run together, ending in c; --command.
+            // Short flags run together, ending in c; --command.
             "bash -lc {path}",
             "zsh -ic {path}",
             "bash -lic {path}",
             "fish --command {path}",
             "my-term --COMMAND {path}",
-            // Task 10 review minor 5: `c` anywhere among the flags (bash -cl runs its
+            // `c` anywhere among the flags (bash -cl runs its
             // first argument).
             "bash -cl {path}",
             "bash -ci {path}",

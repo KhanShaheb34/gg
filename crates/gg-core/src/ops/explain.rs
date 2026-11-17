@@ -68,7 +68,7 @@ pub fn explain(args: &[&str], out: &GitOutput) -> Step {
         out.stderr.clone()
     };
     let all = format!("{}\n{}", out.stderr, out.text());
-    // The branch is checked out in another worktree (spec §5.4): offer to make that one
+    // The branch is checked out in another worktree: offer to make that one
     // active.
     let hints: Vec<OpHint> = checked_out_elsewhere(&all)
         .map(|(_, worktree)| OpHint::MakeActive {
@@ -583,7 +583,7 @@ mod tests {
     }
 
     /// Every refusal over a branch checked out in another worktree says which one, and offers
-    /// to make it active (spec §5.4).
+    /// to make it active.
     #[test]
     fn a_branch_checked_out_elsewhere_offers_its_worktree() {
         let cases: [(&[&str], &str); 5] = [
@@ -616,7 +616,7 @@ mod tests {
             };
             assert!(message.contains(&at), "{args:?}: {message}");
             assert!(message.contains("\u{201c}f\u{201d}"), "{args:?}: {message}");
-            // Worktrees are deleted, in the app's words (P3-R20), never "removed".
+            // Worktrees are deleted, in the app's words, never "removed".
             assert!(
                 !message.to_lowercase().contains("remove"),
                 "{args:?}: {message}"

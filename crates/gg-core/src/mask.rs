@@ -1,5 +1,5 @@
 //! Credentials in URLs (`https://user:token@host/…`) are hidden from everything the core hands
-//! the UI (R36): git's messages and output in outcomes, the fetch state, errors, events and
+//! the UI: git's messages and output in outcomes, the fetch state, errors, events and
 //! the command log. git hides them in the URLs it prints itself, but hooks, helpers and the
 //! config (a remote's address) do not.
 //!

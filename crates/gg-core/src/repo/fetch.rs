@@ -3,7 +3,7 @@
 //!
 //! A fetch the user asks for runs like one in a terminal, hooks included, and runs for as long
 //! as git keeps reporting progress. A scheduled fetch happens without anyone asking, so it
-//! runs no auto-maintenance and writes no commit-graph (R42),
+//! runs no auto-maintenance and writes no commit-graph,
 //! never runs the repository's hooks and is killed after a fixed time.
 
 use std::sync::atomic::Ordering;
@@ -32,7 +32,7 @@ const MAX_DETAIL: usize = 8 * 1024;
 /// Where scheduled fetches look for hooks: nowhere.
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 /// What a scheduled fetch sets besides, so that it writes into the repository nothing but
-/// what it fetched (R18, R42): git's auto-maintenance (gc, repack, a commit-graph), which a
+/// what it fetched: git's auto-maintenance (gc, repack, a commit-graph), which a
 /// fetch otherwise runs past its thresholds, and the commit-graph `fetch.writeCommitGraph`
 /// asks for. With `--no-auto-maintenance` after `fetch` (git 2.29 and later).
 const NO_MAINTENANCE: [&str; 6] = [
@@ -196,7 +196,7 @@ impl RepoManager {
     async fn fetch_by(self: &Arc<Self>, repo_id: u32, initiator: Initiator) -> Result<()> {
         let repo = self.get(repo_id)?;
         // A git too old for the scheduled fetch's options would fail every time; the app says
-        // so once (M3) instead.
+        // so once instead.
         if initiator == Initiator::Schedule && self.git_problem().is_some() {
             return Ok(());
         }

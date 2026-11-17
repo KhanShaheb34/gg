@@ -215,7 +215,7 @@ test("push a branch without an upstream: it gets one; the target is said plainly
   expect(gg.git("routine", "rev-parse", "--abbrev-ref", "topic@{upstream}").trim()).toBe("origin/topic");
 });
 
-test("push a branch whose upstream has another name: the branch of the same name, unless the upstream is picked (R38)", async ({
+test("push a branch whose upstream has another name: the branch of the same name, unless the upstream is picked", async ({
   gg,
 }) => {
   const { page } = gg;
@@ -360,7 +360,7 @@ test("a menu stays open while the repository refreshes behind it, and closes whe
   await expect(menus(page)).toHaveCount(0);
 });
 
-test("a menu's Pull is for the branch the menu was built on: checked out meanwhile, it is refused, not merged (M2)", async ({
+test("a menu's Pull is for the branch the menu was built on: checked out meanwhile, it is refused, not merged", async ({
   gg,
 }) => {
   const { page } = gg;

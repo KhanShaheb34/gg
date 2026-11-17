@@ -490,7 +490,7 @@ async fn hooks_run_and_see_the_temporary_index() {
 }
 
 /// The message is taken as written (a leading `-` is no option), trailing blank lines
-/// trimmed; a line starting with `#` ("#123 fixes …") is kept (P3-R17).
+/// trimmed; a line starting with `#` ("#123 fixes …") is kept.
 #[tokio::test]
 async fn the_message_is_taken_as_written() {
     let repo = three_files();
@@ -529,7 +529,7 @@ async fn a_missing_identity_is_explained() {
     assert_eq!(porcelain(repo.path()), [" M a.txt"]);
 }
 
-/// A signing program that wants a passphrase on the terminal fails at once (R41: git runs
+/// A signing program that wants a passphrase on the terminal fails at once (git runs
 /// with no terminal), said with the README pointer.
 #[cfg(unix)]
 #[tokio::test]
@@ -692,7 +692,7 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
 }
 
 /// While a rebase (or cherry-pick, revert) is stopped, a commit is refused: Continue makes
-/// its commit (R17').
+/// its commit.
 #[tokio::test]
 async fn a_commit_is_refused_while_a_rebase_is_stopped() {
     let repo = TestRepo::new();
@@ -716,7 +716,7 @@ async fn a_commit_is_refused_while_a_rebase_is_stopped() {
 
 // ---- Bound to what the user saw ----
 
-/// A commit runs only on the HEAD and in the worktree it was asked for (R39).
+/// A commit runs only on the HEAD and in the worktree it was asked for.
 #[tokio::test]
 async fn a_commit_runs_only_on_the_head_and_worktree_it_was_asked_for() {
     let repo = three_files();
@@ -784,7 +784,7 @@ async fn a_linked_worktree_commits_with_an_index_beside_its_own() {
     assert!(scratch_left(&git_dir).is_empty());
 }
 
-/// Stopped while a hook hangs (R41): nothing committed, the user's index as it was, the
+/// Stopped while a hook hangs: nothing committed, the user's index as it was, the
 /// temporary files gone.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -841,7 +841,7 @@ async fn a_stopped_commit_leaves_no_temporary_files_and_the_index_as_it_was() {
 // ---- Commit and push ----
 
 /// With `push`, the branch goes to the branch of the same name on its remote after the
-/// commit (R38), getting it as its upstream when it has none.
+/// commit, getting it as its upstream when it has none.
 #[tokio::test]
 async fn commit_and_push_sends_the_branch_to_its_namesake() {
     let repo = three_files();
@@ -869,8 +869,8 @@ async fn commit_and_push_sends_the_branch_to_its_namesake() {
     );
 }
 
-/// A commit without the push on a branch that has somewhere to go offers the push (R30, to
-/// the branch of the same name, R38); with no remote, or on a detached HEAD, nothing.
+/// A commit without the push on a branch that has somewhere to go offers the push (to
+/// the branch of the same name); with no remote, or on a detached HEAD, nothing.
 #[tokio::test]
 async fn a_commit_without_the_push_offers_it() {
     let repo = three_files();
@@ -1113,8 +1113,6 @@ async fn the_file_list_is_for_the_repositorys_worktrees_only() {
     let err = h.m.worktree_files(id, &gone).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::PathMissing);
 }
-
-// ---- Task 5 review fixes ----
 
 /// The temporary index starts from the user's index's stat data (`read-tree --reset
 /// --index-output`), so git hashes only what is staged there: a clean filter (LFS, say) runs
@@ -1440,8 +1438,8 @@ async fn a_stop_during_the_push_keeps_the_commit_and_offers_the_push() {
     assert!(porcelain(repo.path()).is_empty());
 }
 
-/// Concluding a merge needs every tracked changed file; untracked ones may stay out
-/// (P3-R17). git's own comment lines in the message (`# Conflicts:`) are removed then.
+/// Concluding a merge needs every tracked changed file; untracked ones may stay out.
+/// git's own comment lines in the message (`# Conflicts:`) are removed then.
 #[tokio::test]
 async fn a_merge_is_concluded_without_the_untracked_files_and_without_comment_lines() {
     let repo = TestRepo::new();
@@ -1464,7 +1462,7 @@ async fn a_merge_is_concluded_without_the_untracked_files_and_without_comment_li
 }
 
 /// A name that is not valid UTF-8 is listed, marked as not committable with the reason, and
-/// a commit that ticks it is refused (P3-R17).
+/// a commit that ticks it is refused.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_name_that_is_not_utf8_is_listed_but_not_committable() {
@@ -1515,7 +1513,7 @@ async fn a_name_that_is_not_utf8_is_listed_but_not_committable() {
 }
 
 /// Temporary folders left by a gg that crashed are removed at the next commit, once their
-/// process is gone; those of a process still running are left alone (P3-R17).
+/// process is gone; those of a process still running are left alone.
 #[cfg(unix)]
 #[tokio::test]
 async fn temporary_folders_of_a_gone_process_are_removed_at_the_next_commit() {
@@ -1539,7 +1537,7 @@ async fn temporary_folders_of_a_gone_process_are_removed_at_the_next_commit() {
     fs::remove_dir_all(&alive).unwrap();
 }
 
-/// Task 6 review: a folder older than a day goes whatever its pid says (another program may
+/// A folder older than a day goes whatever its pid says (another program may
 /// have that pid by now); a fresh one of a running process stays.
 #[cfg(unix)]
 #[tokio::test]
@@ -1569,7 +1567,7 @@ async fn temporary_folders_older_than_a_day_are_removed_whatever_their_pid() {
     fs::remove_dir_all(&fresh).unwrap();
 }
 
-/// Task 6 review: when another program holds the index a moment after the commit (an
+/// When another program holds the index a moment after the commit (an
 /// editor's `git status`), the staging area is updated on a second try 300 ms later; when it
 /// still holds it, the commit stands and the notice says how to update the staging area.
 #[cfg(unix)]
@@ -1635,7 +1633,7 @@ async fn a_held_index_lock_after_the_commit_is_waited_for_once_then_explained() 
     assert_eq!(changed_by(repo.path(), &new), set(&["a.txt", "it's.txt"]));
 }
 
-/// Task 6 review: git ending with an error after it made the commit (here killed by a
+/// Git ending with an error after it made the commit (here killed by a
 /// post-commit hook), with a push asked for: the commit stands, and the push did not run.
 #[cfg(unix)]
 #[tokio::test]
@@ -1669,7 +1667,7 @@ async fn a_push_does_not_run_after_git_failed_once_the_commit_was_made() {
     );
 }
 
-/// Task 6 review: paths go to `update-index` in runs that keep each command line short, by
+/// Paths go to `update-index` in runs that keep each command line short, by
 /// count and by length: 250 long names, added and deleted, all committed exactly.
 #[tokio::test]
 async fn many_long_paths_are_staged_in_short_command_lines() {
@@ -1706,7 +1704,7 @@ async fn many_long_paths_are_staged_in_short_command_lines() {
     }
 }
 
-/// Task 8 review: anything that goes wrong after the commit was made (an error of what
+/// Anything that goes wrong after the commit was made (an error of what
 /// follows it, or the body ending abruptly) is said as done, with the commit, never as a
 /// bare error that would hide it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1747,7 +1745,7 @@ async fn trouble_after_the_commit_is_made_is_said_with_the_commit() {
 }
 
 /// The merge message's comment lines are those of the repository's comment character
-/// (`core.commentChar`), not always `#` (Task 8 review); `auto` is `#`.
+/// (`core.commentChar`), not always `#`; `auto` is `#`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_merge_message_loses_the_lines_of_the_repositorys_comment_character() {
     let repo = TestRepo::new();
@@ -1774,9 +1772,7 @@ async fn the_merge_message_loses_the_lines_of_the_repositorys_comment_character(
     );
 }
 
-// ---- Final review fixes ----
-
-/// Final review M5: concluding a merge stages the ticked files into the user's own index
+/// Concluding a merge stages the ticked files into the user's own index
 /// before `git commit`; when a hook refuses the commit, that index is put back as it was
 /// (an untracked file ticked is not left staged).
 #[cfg(unix)]
@@ -1819,7 +1815,7 @@ async fn a_refused_merge_conclusion_leaves_the_users_index_as_it_was() {
     assert!(!in_git_dir(&repo, "index.lock"));
 }
 
-/// Final review M6: what is in progress is read once, in the turn; a merge that starts
+/// What is in progress is read once, in the turn; a merge that starts
 /// between the turn and the body (a terminal) stops the commit instead of concluding a
 /// merge the user did not ask to conclude with files they never ticked.
 #[tokio::test]
@@ -1864,7 +1860,7 @@ async fn a_merge_started_after_the_turn_stops_the_commit() {
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
 }
 
-/// Final boundary review M7: Commit & Push and Create pull request push a branch to the
+/// Commit & Push and Create pull request push a branch to the
 /// same remote, by git's own rule (`branch.<b>.pushRemote`, then `remote.pushDefault`, then
 /// its upstream's remote): in a triangular workflow, the fork. The panel is told it with
 /// the file list, so its button names it.

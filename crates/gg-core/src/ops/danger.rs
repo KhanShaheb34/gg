@@ -3,7 +3,7 @@
 //! branch, dropping a stash, aborting what git is stopped in, removing a worktree with work
 //! in it; see `worktree` for that one). Checked by the core, in the
 //! operation's turn, so the state looked at is the state the operation runs on. Each danger
-//! carries a token of that state (R39): a confirmation counts only with the same token.
+//! carries a token of that state: a confirmation counts only with the same token.
 
 use crate::dto::{Danger, DangerKind, InProgressKind, OpRequest, ResetMode};
 use crate::error::Result;
@@ -143,7 +143,7 @@ const MAX_COMMITS_LISTED: &str = "10";
 /// [`push_target`]) with the local branch. The message counts the commits there that the
 /// local branch lacks, as of the last fetch, which a force push discards (the detail lists
 /// them). Its token is that remote-tracking commit (empty when there is none) and the local
-/// branch's tip, on two lines (M1): the push runs only if it is confirmed with both, pushes
+/// branch's tip, on two lines: the push runs only if it is confirmed with both, pushes
 /// that tip, and leases the remote branch on that commit, so git refuses unless it is still
 /// there. A local branch moved since (a queued reset) is asked about again.
 async fn force_push(
@@ -229,7 +229,7 @@ async fn force_push(
 /// message says how many of its commits (as last fetched) are on no local branch here, and
 /// whether it is the remote's default branch. Its token is the remote-tracking commit the
 /// count was made from (none if it was never fetched): the delete is a lease on it, so git
-/// refuses it if someone pushed to the branch since the last fetch (I1).
+/// refuses it if someone pushed to the branch since the last fetch.
 async fn remote_branch_deleted(ctx: &OpCtx<'_>, remote: &str, branch: &str) -> Result<Danger> {
     let tracking = format!("refs/remotes/{remote}/{branch}");
     let gone = format!(
@@ -290,7 +290,7 @@ pub(crate) const MAX_LOST_LISTED: usize = 20;
 /// `hard_reset`, always: it discards the uncommitted changes, which the message counts and
 /// the detail lists (MAX_LOST_LISTED files, then how many more). Untracked files are kept,
 /// except those at a path the target commit tracks and HEAD does not: git overwrites them
-/// with the commit's version (O1), and the message and detail name them. Its token is HEAD
+/// with the commit's version, and the message and detail name them. Its token is HEAD
 /// (branch and commit) and the files it would discard or overwrite: confirmed for another
 /// branch, another commit or other files, it is asked again.
 async fn hard_reset(ctx: &OpCtx<'_>, hash: &str) -> Result<Danger> {
@@ -476,7 +476,7 @@ async fn aborted(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
 /// has it (a cherry-pick's or revert's skip keeps the changes it does not touch). So changes
 /// beyond the stopped step's conflicted files (an edit made after continuing came out empty,
 /// say) go with it: the message counts them, the detail lists them, and they are confirmed
-/// first (R40). Its token is HEAD and those files.
+/// first. Its token is HEAD and those files.
 async fn skip_discards(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
     let kind = state_files(&ctx.runner, &ctx.cwd)
         .await?

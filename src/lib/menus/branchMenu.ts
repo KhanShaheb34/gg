@@ -1,5 +1,4 @@
-// The menu of a branch label, local or remote (spec §5.2, "Branch (local)" and "Branch
-// (remote)"), with its pull request (§5.5).
+// The menu of a branch label, local or remote, with its pull request.
 
 import type { CommitRow, RefLabel, RepoSnapshot } from "../types";
 import {
@@ -36,7 +35,7 @@ function localMenu(label: RefLabel, snap: RepoSnapshot): MenuItem[] {
       : undefined;
   const noCurrent = noCurrentBranchReason(snap);
   const tracked = label.upstream !== null;
-  // Ahead counts against the upstream; a push goes to the branch of the same name (R38), so
+  // Ahead counts against the upstream; a push goes to the branch of the same name, so
   // the count is only that push's when the upstream has that name.
   const upstreamRemote = label.upstream === null ? null : remoteOf(label.upstream, snap.remotes);
   const sameNamed = upstreamRemote !== null && label.upstream!.slice(upstreamRemote.length + 1) === label.name;

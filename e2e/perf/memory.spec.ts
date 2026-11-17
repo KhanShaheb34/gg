@@ -1,4 +1,4 @@
-// What the page keeps after scrolling a large repository top to bottom (plan 1, task 13), in
+// What the page keeps after scrolling a large repository top to bottom, in
 // Chromium against a release gg-devserver. Runs only with GG_PERF=1 (see playwright.config.ts):
 //
 //   GG_PERF=1 pnpm e2e e2e/perf/memory.spec.ts

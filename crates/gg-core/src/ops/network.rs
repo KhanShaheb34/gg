@@ -38,7 +38,7 @@ pub(crate) struct PushTarget {
     pub short: String,
 }
 
-/// Where pushing `branch` to `remote` goes (R38): the branch of the same name there, or
+/// Where pushing `branch` to `remote` goes: the branch of the same name there, or
 /// `to`, a branch of another name there (only the branch's upstream: see
 /// [`not_its_upstream`]). Never to an upstream the user did not name: git's own default
 /// (`push.default=simple`) refuses that too.
@@ -180,7 +180,7 @@ pub(crate) async fn push(
 ) -> Result<Step> {
     let set_upstream = upstream(ctx, branch).await?.is_none();
     let target = push_target(branch, remote, to);
-    // A force push sends the tip that was confirmed (M1), unless it sets the upstream, which
+    // A force push sends the tip that was confirmed, unless it sets the upstream, which
     // takes the branch's name (the tip was checked in this turn all the same).
     let source = match tip {
         Some(tip) if force && !set_upstream => tip.to_owned(),
@@ -479,7 +479,7 @@ pub(crate) async fn fetch_into_local(
 /// refs/heads/<branch>` (only once confirmed; see the `delete_remote_branch` danger, whose
 /// token is `lease`): git deletes it only if it is still where it was last fetched (with no
 /// lease: only if it is not there at all), so commits pushed since are never deleted
-/// unseen (I1). The local branch of that name is left alone.
+/// unseen. The local branch of that name is left alone.
 pub(crate) async fn delete_remote_branch(
     ctx: &OpCtx<'_>,
     remote: &str,
@@ -508,7 +508,7 @@ pub(crate) async fn delete_remote_branch(
     let Step::Failed { detail, .. } = step else {
         return Ok(step);
     };
-    // Without a lease commit it was never fetched here (M4): nothing of it has been seen.
+    // Without a lease commit it was never fetched here: nothing of it has been seen.
     let message = if lease.is_none_or(str::is_empty) {
         format!(
             "Branch \u{201c}{branch}\u{201d} on {remote} has not been fetched here, so it was \

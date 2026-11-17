@@ -276,7 +276,7 @@ export function onEvent<T>(name: EventName, handler: (payload: T) => void): () =
 }
 
 /**
- * This page load's name for the numbers below (R28): a reload, or another window, numbers
+ * This page load's name for the numbers below: a reload, or another window, numbers
  * from 1 again under a new one, so the core never waits for numbers it will not get.
  */
 const clientId =
@@ -284,7 +284,7 @@ const clientId =
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-/** The number of the last operation sent to each repository (R28); a new id starts at 1. */
+/** The number of the last operation sent to each repository; a new id starts at 1. */
 const clientSeqs = new Map<number, number>();
 
 function nextClientSeq(repoId: number): number {
@@ -351,12 +351,12 @@ export const api = {
   /**
    * Runs an operation once the ones before it on that repository are done. Each is numbered
    * in the order it is sent, per repository, so that the core queues them in that order
-   * even when two reach it in the other (R28).
+   * even when two reach it in the other.
    */
   runOp: (repoId: number, request: OpRequest, confirmed: Confirmed[] = []) =>
     call<OpOutcome>("run_op", { repoId, request, confirmed, clientId, clientSeq: nextClientSeq(repoId) }),
   /**
-   * Stops operation `opId` of repository `repoId` if it still runs (R41): the git command it
+   * Stops operation `opId` of repository `repoId` if it still runs: the git command it
    * runs is ended with what it started, and its `runOp` resolves as failed, "Stopped.".
    * Resolves to whether it was running.
    */

@@ -1,4 +1,4 @@
-// Scrolling speed on a large repository (plan 1, task 10), in Chromium against a release
+// Scrolling speed on a large repository, in Chromium against a release
 // gg-devserver. Runs only with GG_PERF=1 (see playwright.config.ts):
 //
 //   GG_PERF=1 GG_PERF_R100K=~/.cache/gg-perf/r100k pnpm e2e e2e/perf --headed --repeat-each=5

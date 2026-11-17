@@ -341,7 +341,7 @@ describe("RepoView.applySnapshot", () => {
     expect(view.snapshot.totalRows).toBe(1001);
   });
 
-  it("drops a snapshot whose seq is lower than the one it holds, whatever else it says (R14)", async () => {
+  it("drops a snapshot whose seq is lower than the one it holds, whatever else it says", async () => {
     const view = await openView(0);
     const op = { id: 3, title: "Merge feature/x into main", startedAtMs: 1, queued: 0 };
     await view.applySnapshot(snapshot({ seq: 5, op }));

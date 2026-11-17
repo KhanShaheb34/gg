@@ -520,7 +520,7 @@ export class RepoView {
    */
   async applySnapshot(s: RepoSnapshot): Promise<void> {
     if (this.disposed || s.repoId !== this.repoId) return;
-    // The core numbers its snapshots of a repository (R14): an older one (an operation's
+    // The core numbers its snapshots of a repository: an older one (an operation's
     // outcome overtaken by an event, say) would undo what a newer one showed.
     if (s.seq < this.snapshot.seq || (this.incoming !== null && s.seq < this.incoming.seq)) return;
     if (!this.restoreChecked && s.rootPath) this.restoreOptions(s);

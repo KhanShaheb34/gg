@@ -179,8 +179,8 @@ async fn an_operation_refreshes_once() {
     assert_eq!(out.snapshot.generation, refreshed[0]["generation"]);
 }
 
-/// Ruling R1: Task 1 has no operation that uses the index, so the explanation is checked
-/// on git's real output for a command run against a held `index.lock`.
+/// The explanation of a held `index.lock` is checked on git's real output for a command run
+/// against one.
 #[tokio::test]
 async fn index_lock_held_fails_with_an_explanation() {
     let repo = TestRepo::new();
@@ -626,7 +626,7 @@ async fn close_is_refused_while_an_operation_runs_or_waits() {
 
 /// A title that names the current branch is made in the operation's turn: a merge queued
 /// behind a checkout names the branch the checkout switched to. It was asked for on main,
-/// though, so it does not run there (R39, I2): nothing is merged, and the notice says why.
+/// though, so it does not run there: nothing is merged, and the notice says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
     let repo = TestRepo::new();
@@ -685,7 +685,7 @@ async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
     );
 }
 
-/// Ruling 7: a `refresh` asked for while an operation runs (the UI sends one when the
+/// A `refresh` asked for while an operation runs (the UI sends one when the
 /// window regains focus) is folded into the operation's final refresh: it returns the
 /// current snapshot at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -760,7 +760,7 @@ async fn needs_confirmation_publishes_and_refreshes_nothing() {
     );
 }
 
-// ---- The outcome's snapshot and the working tree's status (ruling R4) ----
+// ---- The outcome's snapshot and the working tree's status ----
 
 /// `main` ignores `build.log`, which is in the working tree; `plain` has no `.gitignore`, so
 /// checking it out turns `build.log` into an untracked file.
@@ -892,7 +892,7 @@ async fn snapshot_seq_increases_with_every_change() {
     assert_eq!(h.m.snapshot(id).await.unwrap().seq, *all.last().unwrap());
 }
 
-/// R28: requests the UI numbers reach the queue in their numbers' order, whatever order they
+/// Requests the UI numbers reach the queue in their numbers' order, whatever order they
 /// arrive in: one whose predecessor has not arrived waits for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn numbered_requests_arriving_out_of_order_run_in_order() {
@@ -953,10 +953,10 @@ async fn numbered_requests_arriving_out_of_order_run_in_order() {
 
 /// A numbered request that waited less than this for its turn waited for no earlier number
 /// (a missing one is waited for 500 ms). The turn wait is recorded by the order itself, so
-/// git's own time, long and uneven on a slow machine, does not count (Task 12 review minor 7).
+/// git's own time, long and uneven on a slow machine, does not count.
 const AT_ONCE: Duration = Duration::from_millis(100);
 
-/// R28: a request whose predecessor never arrives waits for it 500 ms, then runs; the gap
+/// A request whose predecessor never arrives waits for it 500 ms, then runs; the gap
 /// is not waited for again, and the late predecessor runs at once when it comes. Numbers
 /// start again when the repository is opened again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -999,7 +999,7 @@ async fn a_gap_in_the_numbers_is_waited_for_then_skipped() {
     assert!(again < AT_ONCE, "numbers start again: {again:?}");
 }
 
-/// R28: a request refused before it is queued (a bad name) still lets the next number in.
+/// A request refused before it is queued (a bad name) still lets the next number in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_numbered_request_lets_the_next_one_in() {
     let repo = TestRepo::new();
@@ -1110,7 +1110,7 @@ async fn a_run_op_that_cannot_be_read_lets_the_next_one_in() {
     assert!(waited < AT_ONCE, "waited {waited:?}");
 }
 
-/// R41: a hook that never ends (here, one that sleeps) holds the repository only until the
+/// A hook that never ends (here, one that sleeps) holds the repository only until the
 /// user stops it: Stop ends git and the hook (its process group), the operation fails as
 /// "Stopped.", the repository is refreshed once and free for the next operation.
 #[cfg(unix)]

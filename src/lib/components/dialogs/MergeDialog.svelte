@@ -17,7 +17,7 @@
     target: MergeTarget;
     /** The current branch. */
     into: string;
-    /** HEAD as the menu showed it: the merge is into that branch (R39). */
+    /** HEAD as the menu showed it: the merge is into that branch. */
     head: HeadInfo;
     /** The active worktree it was opened for: what it asks for runs only there. */
     worktree: string;

@@ -1,6 +1,6 @@
 <!--
   Continue what git stopped in. With every file resolved: the files that are staged as they
-  are now, and what happens then. `force` ("Continue anyway…", R31): a red confirmation that
+  are now, and what happens then. `force` ("Continue anyway…"): a red confirmation that
   names, apart, the files that still contain conflict markers (committed with them) and those
   git kept one side of (binary, or deleted on one side: what is in the folder now is taken);
   confirming tells the core to go ahead (`evenWithMarkers`).
@@ -20,7 +20,7 @@
     fileCount: number;
     /** Go ahead although not every file is resolved. */
     force?: boolean;
-    /** HEAD as the banner showed it: what is continued is the stop there (R39). */
+    /** HEAD as the banner showed it: what is continued is the stop there. */
     head: HeadInfo;
     /** The active worktree it was opened for: what it asks for runs only there. */
     worktree: string;

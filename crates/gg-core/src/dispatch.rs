@@ -109,9 +109,9 @@ struct RunOpArgs {
     request: OpRequest,
     /// The dangers the user confirmed, each with its token.
     confirmed: Vec<Confirmed>,
-    /// The page load (or window) that numbers its requests (R28).
+    /// The page load (or window) that numbers its requests.
     client_id: String,
-    /// The UI's number for this request, per repository and client (R28).
+    /// The UI's number for this request, per repository and client.
     client_seq: u64,
 }
 

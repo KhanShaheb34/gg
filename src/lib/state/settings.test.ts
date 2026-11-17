@@ -105,7 +105,7 @@ describe("saving a setting", () => {
     expect(app.settings.terminalCommand).toBe("wezterm start --cwd {path}");
   });
 
-  it("a settings file that cannot be written is said once, for the whole sheet; a save that works clears it (Task 10 review minor 11)", async () => {
+  it("a settings file that cannot be written is said once, for the whole sheet; a save that works clears it", async () => {
     const { CoreError } = ipc;
     const cannot = () =>
       new CoreError({ code: "io", message: "Could not save settings to /cfg", detail: "Permission denied (os error 13)" });

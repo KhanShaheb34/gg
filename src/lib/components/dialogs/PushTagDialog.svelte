@@ -1,6 +1,6 @@
 <!--
   Push a tag to a remote: the only one, or origin, chosen to begin with; among several without
-  origin, none until one is chosen (R29). (The menu item is disabled when there is no remote.)
+  origin, none until one is chosen. (The menu item is disabled when there is no remote.)
 -->
 <script lang="ts">
   import { defaultRemote, shown } from "../../menus/common";

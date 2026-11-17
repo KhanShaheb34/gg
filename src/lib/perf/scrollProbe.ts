@@ -1,4 +1,4 @@
-// Scroll measurement for performance runs (plan 1, task 10). Dormant unless a run asks for
+// Scroll measurement for performance runs. Dormant unless a run asks for
 // it: `window.__GG_PROBE__` (an object) turns on the graph's probe, and
 // `window.__GG_PERF_SCROLL__ = true` makes the graph run `runScrollProbe` once its
 // repository has fully loaded. The Playwright perf spec sets both in Chromium; the Tauri app

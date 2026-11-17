@@ -884,7 +884,7 @@ fn coming(state: Option<InProgress>, incoming: &str, rebasing: Option<&str>) -> 
     })
 }
 
-/// `state`, stopped on commit `commit` (R40).
+/// `state`, stopped on commit `commit`.
 fn on(state: Option<InProgress>, commit: &str) -> Option<InProgress> {
     state.map(|s| InProgress {
         commit: Some(commit.to_owned()),
@@ -1068,7 +1068,7 @@ async fn revert_in_progress_is_read() {
     );
 }
 
-/// R32: what a merge brings in is named by the refs at that commit, a local branch before a
+/// What a merge brings in is named by the refs at that commit, a local branch before a
 /// remote one before a tag, else its 8-character hash. Started outside the app.
 #[tokio::test]
 async fn a_merge_names_what_comes_in() {
@@ -1479,8 +1479,7 @@ fn in_git_dir_has(repo: &TestRepo, name: &str) -> bool {
 
 /// A cherry-pick or revert sequence whose current commit was committed by hand is still
 /// in progress (git status says so): its kind comes from the sequencer's next command. Its
-/// subject is unknown: the sequencer's current line names the commit already made by hand
-/// (Task 5 review, item 9).
+/// subject is unknown: the sequencer's current line names the commit already made by hand.
 #[tokio::test]
 async fn sequence_committed_by_hand_is_still_in_progress() {
     for (verb, kind) in [

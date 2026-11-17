@@ -95,8 +95,8 @@ test("tooltips are built when hovered: full hash, date, author and a cut-off sub
   // A subject that fits gets no tooltip; one that is cut off gets its full text.
   await subject(r).hover();
   await expect(subject(r)).not.toHaveAttribute("title", /./);
-  // Squeezed by the Commit column: Author and Date give their room back to the description
-  // (final review I2), Commit does not.
+  // Squeezed by the Commit column: Author and Date give their room back to the description;
+  // Commit does not.
   const handle = page.getByRole("separator", { name: "Resize Commit column" });
   const box = (await handle.boundingBox())!;
   await page.mouse.move(box.x + 4, box.y + 10);

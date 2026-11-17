@@ -1,4 +1,4 @@
-// The staging routine of spec §5.3, end to end against the real core and a local bare remote
+// The staging routine, end to end against the real core and a local bare remote
 // (the `routine` fixture: `staging` 2 behind `origin/staging`, a second clone that moves the
 // remote): check out staging (fast-forwarding it), merge a feature branch, push; a rejected
 // push and what follows it; a force push and its confirmation; the merge dialog's memory;
@@ -222,7 +222,7 @@ test("force_push_needs_the_second_confirmation", async ({ gg }) => {
   await armed(page);
   await confirm.getByRole("button", { name: "Force push" }).click();
   await expect(confirm.getByTestId("dangers")).toContainText("discarding 3 commits there");
-  // Asked again, it says so (R39).
+  // Asked again, it says so.
   await expect(confirm.getByTestId("confirm-again")).toHaveText("This changed since you confirmed it. Here it is as it is now.");
   await armed(page);
   await confirm.getByRole("button", { name: "Force push" }).click();
@@ -300,7 +300,7 @@ test("the merge dialog never writes the default over a stored choice it has not 
   expect(await prefs()).toBe(false);
 
   // Changed by hand, but the core refuses the request before it runs: nothing is saved.
-  // Diagnosis of a rare flake (Task 9 review minor 10): the right-click below once waited
+  // Diagnosis of a rare flake: the right-click below once waited
   // 30 s for the label to be "stable". Tell a page that stopped drawing frames from a label
   // that keeps moving.
   const frame = await page.evaluate(
@@ -371,7 +371,7 @@ test("actions_queue_while_one_runs", async ({ gg }) => {
   writeFileSync(hook, "#!/bin/sh\nsleep 2\n", { mode: 0o755 });
 
   // Check out feature/login, and in the same instant staging, fast-forwarding it: they run
-  // in the order they were sent (R28), the second waiting behind the first.
+  // in the order they were sent, the second waiting behind the first.
   const outcomes = page.evaluate(async () => {
     const ops = await import("/src/lib/state/ops.svelte.ts");
     const { app } = await import("/src/lib/state/app.svelte.ts");

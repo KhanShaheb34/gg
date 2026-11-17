@@ -185,7 +185,7 @@ async fn apply_keeps_and_pop_removes() {
 
 /// Apply and pop put the stash's changes into the branch checked out: asked for on one
 /// branch, they never land on another that was checked out meanwhile (in a terminal, say),
-/// nor in another worktree made active since; nothing runs and the stash stays (O2, R39).
+/// nor in another worktree made active since; nothing runs and the stash stays.
 #[tokio::test]
 async fn apply_and_pop_run_only_on_the_branch_and_worktree_they_were_asked_for() {
     let repo = repo_with_notes();
@@ -501,7 +501,7 @@ async fn saving_a_stash_does_not_end_a_stopped_merge() {
     assert!(stashes(&repo).is_empty());
 }
 
-/// Task 5 review, item 7: the branch is made and checked out, but the stash does not apply
+/// The branch is made and checked out, but the stash does not apply
 /// (uncommitted changes in the way): the outcome says the branch exists and is checked out,
 /// and that the stash is kept.
 #[tokio::test]

@@ -1679,7 +1679,7 @@ async fn stashes_hidden_by_view_option() {
     assert_eq!(row(&rows, &w).labels, [label(RefKind::Stash, "stash@{0}")]);
 }
 
-/// Task 5 review, item 5: stashes put in memory sit where `git log --date-order` puts them,
+/// Stashes put in memory sit where `git log --date-order` puts them,
 /// which goes by committer time: after a commit amended later than the stash, though it was
 /// authored before it. Hiding and showing them gives the rows of a fresh load.
 #[tokio::test]
@@ -1731,7 +1731,7 @@ fn stashes_on_two_branches(repo: &TestRepo) -> [String; 5] {
     [c1, c2, s1, on_main, on_side]
 }
 
-/// R21: with a branch selection, the stashes whose base is a commit of the selection are
+/// With a branch selection, the stashes whose base is a commit of the selection are
 /// shown (and only those), without the stashes becoming tips of the log; stashes can be
 /// hidden and shown in that mode too; back to all branches, the rows are those of a fresh
 /// load.
@@ -1801,7 +1801,7 @@ async fn a_branch_selection_shows_the_stashes_on_its_commits() {
     );
 }
 
-/// Task 5 review, item 8: stashes that cannot be read (a corrupt `refs/stash`) do not stop
+/// Stashes that cannot be read (a corrupt `refs/stash`) do not stop
 /// the repository opening or refreshing: there are no stash rows, and `repo-error` says so
 /// once.
 #[tokio::test]
@@ -1840,7 +1840,7 @@ async fn unreadable_stashes_leave_the_repository_usable_and_are_reported_once() 
     );
 }
 
-/// Task 5 review, item 11: several stashes on one base are each a row on that base, newest
+/// Several stashes on one base are each a row on that base, newest
 /// first, whether they come with the log or are put in memory.
 #[tokio::test]
 async fn several_stashes_on_one_base() {

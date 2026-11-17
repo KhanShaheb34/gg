@@ -24,7 +24,7 @@ describe("commitMenu", () => {
     expect(find(items, "worktree.create").label).toBe("Create worktree here…");
   });
 
-  it("disables what the core refuses while files still have conflicts nothing in progress explains (R20')", () => {
+  it("disables what the core refuses while files still have conflicts nothing in progress explains", () => {
     const conflicted = { status: { changed: 1, untracked: 0, conflicted: 1, conflictedPaths: ["a.txt"] } };
     const items = commitMenu(row(), snap(conflicted));
     expect(disabled(items)).toEqual(["checkout", "cherry_pick", "revert"]);

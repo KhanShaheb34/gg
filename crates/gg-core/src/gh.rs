@@ -5,7 +5,7 @@
 //! `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `NO_COLOR=1`, and `GH_HOST` only for a
 //! host other than github.com. It runs in the main worktree, and every call names the
 //! repository the app chose with `--repo` (`GH_REPO` removed), so the app and `gh` never pick
-//! different ones (P3-R26). `gh` runs `git` there itself: that git gets the
+//! different ones. `gh` runs `git` there itself: that git gets the
 //! protection the app's own git children have, through the environment
 //! ([`crate::git::runner::git_protection_env`]).
 //!
@@ -624,7 +624,7 @@ impl PrData {
         )
     }
 
-    /// The open pull request of local branch `branch` (pushed to its namesake, R38).
+    /// The open pull request of local branch `branch` (pushed to its namesake).
     pub(crate) fn of_branch(&self, branch: &str) -> Option<&PullRequest> {
         self.on(self.facts.push_remote(branch), branch)
     }
@@ -718,7 +718,7 @@ pub(crate) fn humanise(branch: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Task 9 review I2: with a tool `PATH` set (tests, the devserver), `gh` and `ssh` come
+    /// With a tool `PATH` set (tests, the devserver), `gh` and `ssh` come
     /// from its first folder only, in every build: a real `gh` in a later folder (`/usr/bin`,
     /// say) never runs. Without one, the login `PATH` is searched as usual.
     #[cfg(unix)]
@@ -927,7 +927,7 @@ mod tests {
         ];
         assert_eq!(facts(&three, &[]).base_remote(), Some("upstream"));
         assert_eq!(facts(&three, &[("zz", "base")]).base_remote(), Some("zz"));
-        // Task 9 review minor 3: an OWNER/REPO value names the repository, whichever remote
+        // An OWNER/REPO value names the repository, whichever remote
         // carries the mark; one no remote names leaves the marked remote.
         assert_eq!(
             facts(&three, &[("zz", "O/R")]).base_remote(),

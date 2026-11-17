@@ -1,7 +1,7 @@
 <!--
-  The commit panel (spec §5.4), the side panel's second view: the changed files of one
+  The commit panel, the side panel's second view: the changed files of one
   worktree, each with a box, all ticked to begin with, and a message; Commit, and Commit &
-  Push naming where the push goes (R38). Commits run in the active worktree: shown another,
+  Push naming where the push goes. Commits run in the active worktree: shown another,
   the panel lists its files and offers to make it active, one click.
 
   The list (sorted by path, as the core gives it) draws only the rows in view, so 5,000 files
@@ -9,12 +9,12 @@
   path cut in the middle so the file name stays (a rename "old → new"). A conflicted file, or
   one whose name git cannot take (not UTF-8), cannot be ticked: it says why, under it. The
   list takes the keys: arrows move, Space ticks, Cmd+A ticks every file. While a merge is
-  concluded, every tracked file is ticked and stays so (P3-R17); new files are up to the user.
+  concluded, every tracked file is ticked and stays so; new files are up to the user.
 
   The list follows the worktree as it changes, keeping ticks and the message; the message is
   kept per worktree while the app runs, closed or not. Cmd+Enter in the message commits.
   What stops a commit is said under the buttons. A commit made clears the message and the
-  ticks (the notice offers the push when it was not pushed, R30); with nothing left, the panel
+  ticks (the notice offers the push when it was not pushed); with nothing left, the panel
   goes back to the worktree list. A failure (a hook's output) is a notice with Show log, and
   the message stays.
 -->
@@ -70,7 +70,7 @@
     if (!f.committable) return f.reason ?? "git cannot take this name.";
     return null;
   }
-  /** A sentence of its own said after a colon: its first letter lower-cased (final review M12). */
+  /** A sentence of its own said after a colon: its first letter lower-cased. */
   const midSentence = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
   /** Ticked and kept so: a tracked file while a merge is concluded. */
   const locked = (f: FileEntry) => merging && f.status !== "?" && blocked(f) === null;
@@ -265,9 +265,8 @@
   // ---- Committing ----
 
   /**
-   * Where Commit & Push sends the branch (R38: its namesake), or why it cannot say: the remote
-   * the core named with the file list (git's push rule, the one Create pull request uses too:
-   * final review M7).
+   * Where Commit & Push sends the branch (its namesake), or why it cannot say: the remote
+   * the core named with the file list (git's push rule, the one Create pull request uses too).
    */
   const pushTo = $derived.by((): { remote: string; branch: string } | { why: string } | null => {
     const branch = snap.head.branch;
@@ -346,7 +345,7 @@
   }
 
   // Asked to (Cmd+K, opening): the focus goes to the message, once per request. Shown again
-  // (back to its tab) it leaves the focus where it is (final review M10).
+  // (back to its tab) it leaves the focus where it is.
   $effect(() => {
     const request = panel.commitFocus;
     if (request === panel.commitFocusDone) return;
@@ -404,7 +403,7 @@
   }}
 >
   {#if !active}
-    <!-- Why it cannot be made active now, as the worktree row says (final review M11). -->
+    <!-- Why it cannot be made active now, as the worktree row says. -->
     {@const why = wt ? makeActiveReason(wt, snap) : undefined}
     <div class="elsewhere" data-testid="commit-elsewhere">
       <p>Commits run in the active worktree. Make this one active to commit its changes.</p>

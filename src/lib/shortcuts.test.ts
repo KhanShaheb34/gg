@@ -115,7 +115,7 @@ describe("region and panel shortcuts", () => {
   });
 });
 
-describe("Task 10 shortcuts", () => {
+describe("settings, worktree and help shortcuts", () => {
   it("Cmd+, opens the settings (Ctrl+, elsewhere)", () => {
     expect(shortcutFor(key(",", { metaKey: true }), true)).toEqual({ kind: "settings" });
     expect(shortcutFor(key(",", { ctrlKey: true }), false)).toEqual({ kind: "settings" });
@@ -131,7 +131,7 @@ describe("Task 10 shortcuts", () => {
     expect(shortcutFor(key("/"), true)).toBeNull();
   });
 
-  it("F1 (Windows, Linux) and Cmd+/ (macOS) show them too, even while typing: ? needs AltGr on some layouts (Task 10 review minor 13)", () => {
+  it("F1 (Windows, Linux) and Cmd+/ (macOS) show them too, even while typing: ? needs AltGr on some layouts", () => {
     expect(shortcutFor(key("F1"), false)).toEqual({ kind: "help" });
     expect(shortcutFor(key("F1"), false, true)).toEqual({ kind: "help" });
     expect(shortcutFor(key("F1", { ctrlKey: true }), false)).toBeNull();

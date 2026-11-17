@@ -57,8 +57,8 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
         // environment or starts a child (the runtime's workers are idle).
         unsafe { std::env::set_var(var, format!("env-value-of-{var}")) };
     }
-    // A repository and host gh would otherwise take from the environment (Task 8 review:
-    // every command names the repository the app chose; GH_HOST only as the app sets it).
+    // A repository and host gh would otherwise take from the environment: every
+    // command names the repository the app chose; GH_HOST only as the app sets it.
     for (var, value) in [("GH_REPO", "evil/repo"), ("GH_HOST", "evil.example")] {
         // SAFETY: as above.
         unsafe { std::env::set_var(var, value) };
@@ -86,7 +86,7 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
     load(&h, net_id).await;
     let calls = gh.calls();
     let argv: Vec<&[String]> = calls.iter().map(|c| c.argv.as_slice()).collect();
-    // A "no" is asked again on each refresh the user makes (Task 9 review minor 2); the
+    // A "no" is asked again on each refresh the user makes; the
     // suggestion between them used the answer kept. Nothing else ran.
     assert_eq!(
         argv,

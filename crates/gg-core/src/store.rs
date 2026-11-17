@@ -1537,7 +1537,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::BadRequest);
         assert!(err.message.contains("{branch}"), "{}", err.message);
         assert_eq!(store.settings().worktree_pattern, "../wt/{repo}-{branch}");
-        // Inside the repository's folder: refused (Task 4 review).
+        // Inside the repository's folder: refused.
         for inside in [
             "wt/{branch}",
             "./{branch}",

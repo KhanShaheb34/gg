@@ -20,8 +20,7 @@ export class PanelState {
   commitFocus = $state(0);
   /**
    * The `commitFocus` request the commit panel last followed: kept here, not in the panel,
-   * so a panel shown again (back to its tab) does not take the focus once more (final
-   * review M10).
+   * so a panel shown again (back to its tab) does not take the focus once more.
    */
   commitFocusDone = 0;
   /** The user chose since the view opened: the remembered choice no longer applies. */

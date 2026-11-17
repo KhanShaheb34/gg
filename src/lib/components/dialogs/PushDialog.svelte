@@ -1,7 +1,7 @@
 <!--
   Push a local branch: to which remote (its upstream's to begin with, else origin, else the
-  only one; among several without origin, none until one is chosen: R29), and where on it
-  that goes, said plainly (R38): the branch of the same name ("origin/feature"). When the
+  only one; among several without origin, none until one is chosen), and where on it
+  that goes, said plainly: the branch of the same name ("origin/feature"). When the
   branch's upstream is on that remote under another name, the user can pick it instead, and
   the destination line names it; the same name stays chosen to begin with. A branch without
   an upstream gets the branch pushed to as its upstream (the core sets it); an existing

@@ -1,4 +1,4 @@
-//! A stale `index.lock` (M5): an operation that fails on it names it; one older than ten
+//! A stale `index.lock`: an operation that fails on it names it; one older than ten
 //! minutes, with no git of the app's running, is offered for removal, which is confirmed in
 //! red with a token of the file as seen, removes exactly that file and nothing else, and
 //! never a fresh lock or a symlink.
@@ -225,7 +225,7 @@ async fn the_lock_is_the_active_worktrees_own() {
 
 /// A `git commit` waiting in its editor (in a terminal, say) holds `index.lock` for as long
 /// as the editor is open, however old the lock gets: it is never offered for removal, and a
-/// removal asked for anyway is refused, naming the git process (Task 10 review Important 1).
+/// removal asked for anyway is refused, naming the git process.
 /// Where gg can look for running git processes (macOS, Linux).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]

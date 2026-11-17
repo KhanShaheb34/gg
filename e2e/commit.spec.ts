@@ -93,7 +93,7 @@ test("a subset is committed: exactly the ticked files, the rest stay; the notice
   await expect(page.getByTestId("commit-count")).toHaveText("0 of 2 files ticked");
   await expect(message(page)).toHaveValue("");
   expect(gg.git("commit", "status", "--porcelain").split("\n").filter((l) => l !== "").sort()).toEqual([" M src/app.ts", "?? todo.md"]);
-  // Not pushed: the notice offers it, naming where it goes (R30, R38).
+  // Not pushed: the notice offers it, naming where it goes.
   const push = notice(page, /Committed 4 files/).getByRole("button", { name: "Push main to origin/main" });
   await push.click();
   await expect.poll(() => gg.gitAt(path.join(path.dirname(repo), "commit-origin.git"), "rev-parse", "main").trim()).toBe(
@@ -126,7 +126,7 @@ test("Commit & Push names where it goes and sends the branch there; with nothing
   await expect(pushButton(page)).toHaveCount(0);
 });
 
-test("Commit & Push goes where git pushes the branch, as Create pull request does: remote.pushDefault sends it to the fork (final review M7)", async ({ gg }) => {
+test("Commit & Push goes where git pushes the branch, as Create pull request does: remote.pushDefault sends it to the fork", async ({ gg }) => {
   const { page } = gg;
   const repo = gg.repoPath("commit");
   const fork = path.join(path.dirname(repo), "commit-fork.git");
@@ -143,7 +143,7 @@ test("Commit & Push goes where git pushes the branch, as Create pull request doe
   expect(gg.gitAt(fork, "rev-parse", "main").trim()).toBe(gg.git("commit", "rev-parse", "HEAD").trim());
 });
 
-test("back to a tab whose commit panel is open, the focus stays where it was (final review M10)", async ({ gg }) => {
+test("back to a tab whose commit panel is open, the focus stays where it was", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("commit"));
@@ -242,7 +242,7 @@ test("the ways in: the menu, the row's changes, the uncommitted row; another wor
   await page.getByRole("button", { name: "Make it active" }).click();
   await expect(page.getByTestId("commit-elsewhere")).toHaveCount(0);
   await expect(page.getByTestId("active-worktree")).toContainText("topic");
-  // No upstream yet: Commit & Push sends it to origin's namesake (R38).
+  // No upstream yet: Commit & Push sends it to origin's namesake.
   await expect(pushButton(page)).toHaveText("Commit & Push to origin/topic");
   await commitButton(page).click();
   await expect(notice(page, /Committed 1 file to topic/)).toBeVisible();
@@ -394,7 +394,7 @@ test("only the worktree shown commits, and only while it is active: elsewhere, a
   await expect(page.getByTestId("active-worktree")).toContainText("main");
   await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
   await expect(page.getByRole("button", { name: "Make it active" })).toBeDisabled();
-  // Said why, as the worktree row says it (final review M11).
+  // Said why, as the worktree row says it.
   await expect(page.getByTestId("commit-elsewhere-why")).toHaveText("Its folder is missing.");
   await message(page).press("ControlOrMeta+Enter");
   await page.waitForTimeout(500);
@@ -450,12 +450,12 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   // Still conflicted: the row says why it cannot be ticked, to the eye and in its name; the
   // panel says it up front, and why Commit cannot be pressed.
   await expect(file(page, "shared.txt")).toHaveAttribute("aria-selected", "false");
-  // An option is selected, not checked (final review M13).
+  // An option is selected, not checked.
   await expect(file(page, "shared.txt")).not.toHaveAttribute("aria-checked");
   await expect(file(page, "shared.txt")).toHaveAccessibleName(/shared\.txt.*Resolve its conflicts first\./);
   await expect(page.getByTestId("commit-merge")).toContainText("shared.txt");
   await expect(reason(page)).toHaveText("Resolve the conflicts in your editor, then continue: commit here, or Continue in the banner.");
-  // Said mid-sentence, lower-cased (final review M12).
+  // Said mid-sentence, lower-cased.
   await expect(page.getByTestId("commit-merge")).toContainText("shared.txt cannot go in yet: resolve its conflicts first.");
   // Resolved and staged.
   writeFileSync(path.join(topic, "shared.txt"), "both\n");

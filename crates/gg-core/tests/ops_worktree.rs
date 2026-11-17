@@ -286,7 +286,7 @@ async fn ignored_files_alone_need_the_ordinary_confirmation_that_names_them() {
 }
 
 /// Ignored files inside a folder git does not ignore whole are listed by that folder, with
-/// a count, not one by one (Task 4 review).
+/// a count, not one by one.
 #[tokio::test]
 async fn ignored_files_are_listed_by_their_top_level_folder() {
     let (repo, _origin, wt) = pushed_worktree();
@@ -330,7 +330,7 @@ async fn ignored_files_beside_other_work_are_a_line_of_the_red_danger() {
 }
 
 /// Removing a worktree never deletes its branch: commits on no remote stay on it, so they
-/// are no danger, only a line in a dialog shown for something else (Task 4 review).
+/// are no danger, only a line in a dialog shown for something else.
 #[tokio::test]
 async fn unpushed_commits_on_a_branch_are_kept_by_it_and_need_no_confirmation() {
     let (repo, _origin, wt) = pushed_worktree();
@@ -506,7 +506,7 @@ async fn a_confirmation_for_another_state_asks_again() {
     assert!(!wt.exists());
 }
 
-/// An edit to a file already listed, after the dialog, asks again (Task 4 review): the
+/// An edit to a file already listed, after the dialog, asks again: the
 /// token has the files' sizes and times. So does an ignored entry that changes.
 #[tokio::test]
 async fn a_listed_file_edited_after_the_dialog_asks_again() {
@@ -583,7 +583,7 @@ async fn remove_during_switch(
     out
 }
 
-/// Final review M1: the re-read before removing covers the whole of what was confirmed, not
+/// The re-read before removing covers the whole of what was confirmed, not
 /// only the files. A commit made in a clean detached worktree during the switch would be
 /// lost with it: the removal stops.
 #[tokio::test]
@@ -615,7 +615,7 @@ async fn a_commit_made_in_a_clean_detached_worktree_during_the_switch_stops_the_
     assert!(wt.is_dir());
 }
 
-/// Final review M1, confirmed: HEAD moving during the switch (a commit, an amend, a reset)
+/// Confirmed: HEAD moving during the switch (a commit, an amend, a reset)
 /// is not what was confirmed.
 #[tokio::test]
 async fn head_moving_during_the_switch_after_a_confirmation_stops_the_removal() {
@@ -651,7 +651,7 @@ fn break_rev_list(repo: &TestRepo) {
     .unwrap();
 }
 
-/// Final review M3: when git cannot list the commits a detached worktree would lose, that
+/// When git cannot list the commits a detached worktree would lose, that
 /// is not "none": the delete is red and says gg could not tell.
 #[tokio::test]
 async fn commits_that_cannot_be_counted_on_delete_are_red() {
@@ -671,7 +671,7 @@ async fn commits_that_cannot_be_counted_on_delete_are_red() {
     );
 }
 
-/// Final review M3, prune: an entry whose lost commits cannot be counted is red too.
+/// Prune: an entry whose lost commits cannot be counted is red too.
 #[tokio::test]
 async fn commits_that_cannot_be_counted_on_prune_are_red() {
     let (repo, _origin, wt) = pushed_worktree();
@@ -693,7 +693,7 @@ async fn commits_that_cannot_be_counted_on_prune_are_red() {
     );
 }
 
-/// Final review M9: a worktree's danger is bound to the worktree: its token names the path,
+/// A worktree's danger is bound to the worktree: its token names the path,
 /// so one worktree's confirmation is never taken for another's in the same state.
 #[tokio::test]
 async fn a_worktree_danger_names_its_worktree() {
@@ -706,7 +706,7 @@ async fn a_worktree_danger_names_its_worktree() {
     assert_eq!(token.lines().next(), Some(real(&wt).as_str()), "{token}");
 }
 
-/// Final review C1: git's `status` (and git's own check before a plain `worktree remove`)
+/// Git's `status` (and git's own check before a plain `worktree remove`)
 /// skips files marked assume-unchanged or skip-worktree, so edits to them were deleted
 /// without a word. They are uncommitted changes: red, listed with why git hides them, and
 /// removed only with a confirmed `--force`.
@@ -989,7 +989,7 @@ async fn the_active_worktree_is_removed_after_main_becomes_active() {
     assert!(gone.is_empty(), "{gone:?}");
 }
 
-/// Task 4 review: removing the active worktree switches to main first, which takes a moment;
+/// Removing the active worktree switches to main first, which takes a moment;
 /// a file written meanwhile is not deleted unconfirmed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_written_while_main_becomes_active_stops_the_removal() {
@@ -1031,7 +1031,7 @@ async fn a_file_written_while_main_becomes_active_stops_the_removal() {
 }
 
 /// A worktree with a submodule checked out: git refuses to delete even a clean one, so gg
-/// refuses it before anything runs (no switch, no remove), never forced. Final review M2:
+/// refuses it before anything runs (no switch, no remove), never forced. And
 /// what a forced delete in a terminal would lose is still read and shown (git's
 /// `submodule deinit` does not make the delete possible, so it is not suggested).
 #[tokio::test]
@@ -1134,7 +1134,7 @@ async fn refused_for(h: &Harness, id: u32, wt: &Path, inner: &Path, says: &str) 
     assert!(inner.join(".git").exists(), "{} is kept", inner.display());
 }
 
-/// Critical (Task 4 review): `git worktree remove` deletes whatever is inside the folder,
+/// Critical: `git worktree remove` deletes whatever is inside the folder,
 /// another worktree included; one in an ignored folder showed only as `! build/`.
 #[tokio::test]
 async fn a_worktree_inside_an_ignored_folder_is_never_removed_with_it() {
@@ -1214,7 +1214,7 @@ async fn another_repository_inside_is_never_removed_with_it() {
     refused_for(&h, id, &wt, &plain, "contains another repository, at").await;
 }
 
-/// Final review I1 (P3-R12): git lists an ignored folder as one entry, so a repository two
+/// Git lists an ignored folder as one entry, so a repository two
 /// or more levels inside it (`tmp/refs/nested`) was deleted under the ordinary dialog for
 /// ignored files. Found at any depth now, in an ignored folder and in an untracked one.
 #[tokio::test]
@@ -1252,7 +1252,7 @@ async fn a_repository_at_any_depth_inside_an_ignored_folder_is_never_removed_wit
     refused_for(&h, id, &wt, &inner, "contains another repository, at").await;
 }
 
-/// Final boundary review M6: the dialog names the branch and commit it showed; a worktree
+/// The dialog names the branch and commit it showed; a worktree
 /// that is another one by now (removed and made again at that path, or another branch
 /// checked out there) is not deleted, and neither is that other branch.
 #[tokio::test]
@@ -1289,7 +1289,7 @@ async fn a_worktree_that_is_not_what_the_dialog_showed_is_not_deleted() {
     assert!(!wt.exists());
 }
 
-/// Re-review N1: a large ignored folder (a monorepo's node_modules, a Rust target/) is no
+/// A large ignored folder (a monorepo's node_modules, a Rust target/) is no
 /// reason to refuse: above the wave's first bound (200,000 entries) it is looked through and
 /// the worktree deleted under the ordinary question about ignored files.
 #[cfg(unix)]
@@ -1315,7 +1315,7 @@ async fn an_ignored_folder_above_the_old_bound_is_looked_through_and_deleted() {
     assert!(!wt.exists());
 }
 
-/// Re-review N2: every repository found inside is named at once (a tool's folder of
+/// Every repository found inside is named at once (a tool's folder of
 /// checkouts), not one per attempt.
 #[tokio::test]
 async fn every_repository_inside_is_named_at_once() {
@@ -1356,7 +1356,7 @@ async fn every_repository_inside_is_named_at_once() {
     assert!(wt.join("build/checkouts/one/.git").exists());
 }
 
-/// Re-review N6: a bare repository (HEAD, objects/ and refs/, no .git) inside an ignored
+/// A bare repository (HEAD, objects/ and refs/, no .git) inside an ignored
 /// folder is a repository too.
 #[tokio::test]
 async fn a_bare_repository_inside_an_ignored_folder_is_never_removed_with_it() {
@@ -1385,7 +1385,7 @@ async fn a_bare_repository_inside_an_ignored_folder_is_never_removed_with_it() {
     assert!(bare.join("HEAD").exists() && bare.join("objects").is_dir());
 }
 
-/// Re-review N3: a marked file with a staged change (which status shows) and an edit after
+/// A marked file with a staged change (which status shows) and an edit after
 /// it (which it does not) is one file, listed once.
 #[tokio::test]
 async fn a_marked_file_with_a_staged_change_is_counted_once() {
@@ -1471,7 +1471,7 @@ async fn an_unmerged_unpushed_branch_and_the_work_are_asked_about_together() {
             )
             .as_str()
         ),
-        "R9: the branch's tip, and (final review M9) the branch it is"
+        "the branch's tip, and the branch it is"
     );
     assert!(
         !out.dangers[0].message.contains("not pushed"),
@@ -1584,7 +1584,7 @@ async fn a_branch_that_cannot_be_deleted_after_its_worktree_is_said_in_a_done_ou
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "-q", "refs/heads/feature"]));
 }
 
-/// The path git keeps for a worktree must be its own folder (Task 4 review): not a link to
+/// The path git keeps for a worktree must be its own folder: not a link to
 /// another worktree's, nor one of two entries leading to the same folder.
 #[cfg(unix)]
 #[tokio::test]
@@ -1654,7 +1654,7 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     fs::remove_dir_all(&locked).unwrap();
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    // Asked first (Task 4 review): an ordinary confirmation naming what git forgets.
+    // Asked first: an ordinary confirmation naming what git forgets.
     let mark = h.last_log_id();
     let asked = h.run(id, OpRequest::WorktreePrune {}).await;
     assert_eq!(asked.status, OpStatus::NeedsConfirmation, "{asked:#?}");
@@ -1704,7 +1704,7 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     );
 }
 
-/// Final review M4: `git worktree prune` also removes entries `worktree list` does not show
+/// `git worktree prune` also removes entries `worktree list` does not show
 /// (a `gitdir` file missing), whose HEAD gg cannot check: then nothing is pruned, and the
 /// refusal names them.
 #[tokio::test]
@@ -2184,7 +2184,7 @@ async fn the_default_location_follows_the_pattern_and_skips_taken_folders() {
             .unwrap();
     assert_eq!(path.path, native(&format!("{base}/flat/repo-worktree")));
     // One that lands inside the main worktree, a linked one or the git dir: the default
-    // pattern instead (Task 4 review).
+    // pattern instead.
     let other = repo.add_worktree("other");
     for inside in [
         format!("{base}/repo/inside/{{branch}}"),
@@ -2224,8 +2224,6 @@ async fn refusals_over_a_branch_checked_out_elsewhere_offer_to_make_it_active() 
     );
     assert_eq!(out.hints, hint);
 }
-
-// ---- Task 5 review fixes ----
 
 /// A clean worktree needs no confirmation, but what is removed must still be what was read:
 /// files that appear while the main worktree becomes active (a build's `build/`) stop it.

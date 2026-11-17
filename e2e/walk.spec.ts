@@ -1,4 +1,4 @@
-// Plan 3's walk (src/lib/perf/worktreeWalkProbe.ts) in the browser build, at both sizes and in
+// The worktree walk (src/lib/perf/worktreeWalkProbe.ts) in the browser build, at both sizes and in
 // both themes: the very probe the release app runs with GG_PERF_SCROLL=walk3, driven the way
 // scripts/walk.sh drives it there (its `walk-need` marks answered by changing files; its
 // `walk-shot` marks screenshotted), on the repository scripts/walk-fixture.sh --github makes,
@@ -35,7 +35,7 @@ for (const [size, width, height] of [
   ["900x560", 900, 560],
 ] as const)
   for (const theme of ["light", "dark"] as const) {
-    test(`the plan 3 walk, ${size}, ${theme}`, async ({ gg }) => {
+    test(`the worktree walk, ${size}, ${theme}`, async ({ gg }) => {
       test.setTimeout(240_000);
       const { page } = gg;
       await page.setViewportSize({ width, height });

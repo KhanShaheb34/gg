@@ -190,7 +190,7 @@ async fn merge_stopped_on_two_files(repo: &TestRepo) -> (Harness, u32) {
 }
 
 /// Continue never stages a file that still has conflict markers unless told to: it is
-/// refused, and nothing is staged. The refusal comes with the repository read again (R33):
+/// refused, and nothing is staged. The refusal comes with the repository read again:
 /// the file resolved meanwhile (nothing git watches changed) shows as resolved.
 #[tokio::test]
 async fn continue_is_refused_while_a_file_has_conflict_markers() {
@@ -263,7 +263,7 @@ async fn continue_is_refused_while_git_kept_one_side_of_a_file() {
     assert_eq!(repo.git(&["show", "HEAD:gone.txt"]), "feature");
 }
 
-/// R31: told to, continue stages files with conflict markers as they are (a line that only
+/// Told to, continue stages files with conflict markers as they are (a line that only
 /// looks like a marker must never trap the user).
 #[tokio::test]
 async fn continue_even_with_markers_stages_them_as_they_are() {
@@ -425,7 +425,7 @@ async fn continue_that_comes_out_empty_explains() {
     let p = out.snapshot.in_progress.expect("still in progress");
     assert_eq!(p.kind, InProgressKind::CherryPick);
     assert!(p.files.is_empty());
-    // The core says the step is empty, and which commit it is (R40).
+    // The core says the step is empty, and which commit it is.
     assert!(p.empty, "{p:?}");
     assert_eq!(p.commit.as_deref(), Some(one.as_str()));
     // The notice offers the way past it: skipping that commit.
@@ -505,7 +505,7 @@ async fn skip_moves_a_rebase_on_and_is_refused_for_a_merge() {
     assert_eq!(read(&repo, "clash.txt"), "feature 2\n");
 }
 
-/// R40: a skip is for the commit git was stopped on when it was offered. Once git has moved
+/// A skip is for the commit git was stopped on when it was offered. Once git has moved
 /// on (here, the user skipped it in a terminal and git stopped on the next), the skip is
 /// refused and nothing runs.
 #[tokio::test]
@@ -553,7 +553,7 @@ async fn looked_again(h: &Harness, id: u32) -> gg_core::dto::RepoSnapshot {
     h.m.snapshot(id).await.unwrap()
 }
 
-/// R40: skipping a rebase's commit puts every tracked file back as HEAD has it. An edit
+/// Skipping a rebase's commit puts every tracked file back as HEAD has it. An edit
 /// made after the step came out empty survives unless the user confirms that it goes; the
 /// core reports the empty step (read-only), and the skip is done once confirmed.
 #[tokio::test]
@@ -641,7 +641,7 @@ async fn continue_with_nothing_in_progress_is_nothing_to_do() {
     assert_eq!(h.changes(id).len(), events, "nothing was published");
 }
 
-// ---- What comes in (R32) ----
+// ---- What comes in ----
 
 /// A merge or rebase the app started names what comes in as the user asked for it, even
 /// where another ref points at the same commit (`feature` sorts before `feature-copy`).
@@ -758,8 +758,8 @@ fn clashing_with_changes(repo: &TestRepo) {
 
 /// A rebase with `rebase.autoStash` stops on a conflict; once it is continued or the commit
 /// skipped, git puts the auto-stashed changes back, they conflict with the result (`other.txt`),
-/// and git keeps them in the stash and exits 0: the outcome says so (Task 12 review I2). With
-/// git's words ignored, the stash's state alone tells it (review minor 2).
+/// and git keeps them in the stash and exits 0: the outcome says so. With
+/// git's words ignored, the stash's state alone tells it.
 #[tokio::test]
 async fn continue_and_skip_say_when_auto_stashed_changes_stay_in_the_stash() {
     for (how, by_state) in [("continue", false), ("skip", false), ("continue", true)] {
@@ -795,7 +795,7 @@ async fn continue_and_skip_say_when_auto_stashed_changes_stay_in_the_stash() {
 
 /// `merge --abort` puts auto-stashed changes back too: when a file they change was edited
 /// meanwhile, git cannot, keeps them in the stash, and the abort says so instead of "back as
-/// it was" (Task 12 review I2). An abort whose auto-stash comes back cleanly says nothing of it.
+/// it was". An abort whose auto-stash comes back cleanly says nothing of it.
 #[tokio::test]
 async fn abort_says_when_auto_stashed_changes_stay_in_the_stash() {
     for edited_meanwhile in [true, false] {

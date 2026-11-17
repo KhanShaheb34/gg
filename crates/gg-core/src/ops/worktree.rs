@@ -1,5 +1,5 @@
 //! Worktree operations: add, remove and prune, and where a new worktree goes by default.
-//! They run from the main worktree and name the worktree they are about (P3-R5).
+//! They run from the main worktree and name the worktree they are about.
 //!
 //! Removing is the one place the app deletes a whole folder, and it never does so itself:
 //! only `git worktree remove` does, for a path git lists as a linked worktree of this
@@ -29,7 +29,7 @@ use crate::repo::{RepoManager, canonical, canonical_paths};
 const MAX_SUFFIX: u32 = 1000;
 
 /// Said when a worktree holds submodules: git refuses to remove it, even a clean one, and
-/// still does after `git submodule deinit` (final review M2), so nothing is suggested that
+/// still does after `git submodule deinit`, so nothing is suggested that
 /// would not work; only a forced delete does, and it skips every check.
 const SUBMODULES: &str = "Nothing was deleted: git does not delete a worktree that contains \
                           submodules, even a clean one, so gg does not either. Only a forced \
@@ -322,8 +322,7 @@ async fn remove_refused(
         )));
     };
     let shown = &wt.path;
-    // The worktree the dialog showed, not another one at that path by now (final boundary
-    // review M6).
+    // The worktree the dialog showed, not another one at that path by now.
     if let Some(seen) = expect_head
         && (seen.branch != wt.branch || seen.hash != wt.head)
     {
@@ -690,7 +689,7 @@ struct Work {
     commits: Vec<String>,
     commit_count: usize,
     commits_hash: u64,
-    /// Detached only: git could not list them (final review M3), so they may be lost.
+    /// Detached only: git could not list them, so they may be lost.
     commits_unknown: bool,
     /// On a branch: its commits on no remote, which the branch keeps (removing a worktree
     /// never deletes its branch), said in a line, never a danger of their own.
@@ -721,7 +720,7 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Result<Wo
     let (mut commit_count, mut commits_hash, mut commits) = (0, 0, Vec::new());
     let (mut unpushed, mut commits_unknown) = (0, false);
     if let (Some(head), Some(_)) = (&wt.head, &wt.branch) {
-        // Only a line (its branch keeps them, P3-R13): not said when git cannot count them.
+        // Only a line (its branch keeps them): not said when git cannot count them.
         let out = ctx
             .read(&["rev-list", "--count", head, "--not", "--remotes"])
             .await?;
@@ -737,7 +736,7 @@ async fn read_work(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Result<Wo
             commit_count = out.text().lines().filter(|l| !l.is_empty()).count();
             commits_hash = fnv1a(&out.stdout);
         } else {
-            // Not "none": they may be lost (final review M3).
+            // Not "none": they may be lost.
             commits_unknown = true;
             commits_hash = fnv1a(b"unknown");
         }
@@ -774,12 +773,12 @@ async fn read_files_held(ctx: &OpCtx<'_>, wt: &WorktreeInfo, reuse: bool) -> Res
     let raw = status_with_ignored(ctx, wt, reuse).await?;
     let mut work = parse_status(&raw);
     work.raw = raw;
-    // Edits git's status does not show (final review C1): in the list, the token and the
+    // Edits git's status does not show: in the list, the token and the
     // re-check before removing, as any other change.
     work.marked = marked_changes(ctx, wt).await?;
     let mut names = Vec::new();
     for (path, why) in &work.marked {
-        // A marked file with a staged change is in git's status already: once (re-review N3).
+        // A marked file with a staged change is in git's status already: once.
         if !work.changed.contains(path) {
             work.changed.push(path.clone());
         }
@@ -1078,7 +1077,7 @@ fn section(lines: &mut Vec<String>, title: &str, items: &[String], total: usize)
 
 /// The danger of removing the worktree `wt`, holding `work`: none when it holds nothing;
 /// `remove_worktree_ignored_files` (ordinary) when ignored files are all it holds (git
-/// deletes them without asking, P3-R6); else the red `remove_worktree_with_work`, with the
+/// deletes them without asking); else the red `remove_worktree_with_work`, with the
 /// ignored files as a line of it. Commits its branch keeps are no danger (removing a worktree
 /// never deletes its branch): a line in either, unless the branch goes too (`delete_branch`:
 /// its own danger says what is lost). Its token is the worktree's path and HEAD, what is in progress
@@ -1260,7 +1259,7 @@ pub(crate) async fn remove(
     };
     let shown = wt.path.clone();
     // git refuses a worktree with submodules: refused before anything runs, with what a
-    // forced delete would lose (final review M2).
+    // forced delete would lose.
     if has_submodules(ctx, &wt).await? {
         let work = read_work(ctx, &wt, true).await?;
         let mut message = SUBMODULES.to_owned();
@@ -1302,7 +1301,7 @@ pub(crate) async fn remove(
         })
     };
     // Read all of it again now (after the switch, for the active one), as the turn did: what
-    // is removed must be what was confirmed (final review M1: HEAD, what is in progress and
+    // is removed must be what was confirmed (HEAD, what is in progress and
     // the commits lost too, not only the files).
     let (Some(now_wt), list) = find(ctx, path).await? else {
         return refuse(format!(
@@ -1415,7 +1414,7 @@ pub(crate) async fn remove(
 
 /// Said with every prune confirmation: a folder that is only out of reach for now, or one
 /// that was moved (git calls it prunable too; once pruned, `git worktree repair` can no
-/// longer reconnect it, final review M4).
+/// longer reconnect it).
 fn disconnected(n: usize) -> &'static str {
     if n == 1 {
         "If it is on a disconnected drive, reconnect it or lock the worktree instead. If its \
@@ -1428,7 +1427,7 @@ fn disconnected(n: usize) -> &'static str {
     }
 }
 
-/// Why pruning cannot run as asked, if it cannot (final review M4): `git worktree prune`
+/// Why pruning cannot run as asked, if it cannot: `git worktree prune`
 /// would remove an entry `worktree list` does not show as prunable (one whose `gitdir` file
 /// is missing or unreadable, which `list` leaves out), whose HEAD gg cannot check. Read from
 /// git's own dry run, so it is exactly what git would remove.
@@ -1513,7 +1512,7 @@ pub(crate) async fn prune_dangers(ctx: &OpCtx<'_>) -> Result<Option<Danger>> {
                 .then(|| out.text().trim().parse::<usize>().ok())
                 .flatten()
             else {
-                // Not "none": they may be lost (final review M3).
+                // Not "none": they may be lost.
                 unknown += 1;
                 token.push_str("unknown\n");
                 continue;
@@ -1801,7 +1800,7 @@ mod tests {
         );
     }
 
-    /// Re-review N1: the time is the real bound; the count lets millions through.
+    /// The time is the real bound; the count lets millions through.
     #[test]
     fn the_walk_is_bounded_by_time_more_than_by_count() {
         const { assert!(MAX_WALKED >= 2_000_000) };
@@ -1825,7 +1824,7 @@ mod tests {
         );
     }
 
-    /// Re-review N1: when the walk stops, the folder being walked and the ignored ones not
+    /// When the walk stops, the folder being walked and the ignored ones not
     /// reached are named, not one taken at random.
     #[test]
     fn the_folders_left_unchecked_are_all_named() {
@@ -1850,7 +1849,7 @@ mod tests {
         assert!(said.contains("Delete those folders first"), "{said}");
     }
 
-    /// Re-review N2 and N6: every repository is found, bare ones too, none looked inside;
+    /// Every repository is found, bare ones too, none looked inside;
     /// past [`MAX_NAMED`], the rest are counted.
     #[test]
     fn every_repository_is_found_and_the_many_are_counted() {

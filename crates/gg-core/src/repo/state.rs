@@ -81,7 +81,7 @@ pub struct RepoState {
     detached: HashMap<String, Vec<String>>,
     /// Commit of each stash shown → its base: a stash's row has that one parent. With all
     /// branches shown, every stash (they are tips of the log); with a branch selection, the
-    /// stashes whose base is a loaded commit (R21), put in memory.
+    /// stashes whose base is a loaded commit, put in memory.
     stash_bases: HashMap<String, String>,
     /// The index and untracked commits of the stashes shown, which never become rows.
     stash_helpers: HashSet<String>,
@@ -226,7 +226,7 @@ impl RepoState {
             };
             let base = base as usize;
             // `--date-order` goes by committer time; for equal times git keeps the order of
-            // the tips it was given, the stashes newest first (R33): above an older stash.
+            // the tips it was given, the stashes newest first: above an older stash.
             let at = self.commits[..base]
                 .iter()
                 .position(|c| {
@@ -266,7 +266,7 @@ impl RepoState {
         let view = normalize_view(view.clone(), info);
         let old = tips(&self.info, &self.view);
         let new = tips(info, &view);
-        // With a branch selection, stashes are no tips: they come and go in memory (R21).
+        // With a branch selection, stashes are no tips: they come and go in memory.
         let old_stashes: BTreeSet<&str> = tip_stashes(&self.info, &self.view)
             .iter()
             .map(|s| s.hash.as_str())
@@ -533,7 +533,7 @@ impl RepoState {
     }
 
     /// Puts in the rows of the stashes a branch selection shows now that its log has been
-    /// read whole: those whose base is one of its commits (R21). Returns whether the rows
+    /// read whole: those whose base is one of its commits. Returns whether the rows
     /// changed. With all branches shown the stashes came with the log: nothing to do.
     pub fn log_read(&mut self) -> bool {
         if self.view.branches.is_none() {
@@ -632,7 +632,7 @@ pub fn normalize_view(mut view: ViewOptions, info: &RepoInfo) -> ViewOptions {
 }
 
 /// The stashes that are tips of the log for `view`: all of them when it shows all branches
-/// and stashes, else none (a branch selection shows stashes in memory; R21).
+/// and stashes, else none (a branch selection shows stashes in memory).
 fn tip_stashes<'a>(info: &'a RepoInfo, view: &ViewOptions) -> &'a [Stash] {
     if view.branches.is_none() && view.show_stashes {
         &info.stashes
@@ -1646,7 +1646,7 @@ mod tests {
         assert!(loaded(info()).needs_reload(&i, &all(), false));
     }
 
-    /// R33: stashes saved in the same second (equal committer times) are ordered by their
+    /// Stashes saved in the same second (equal committer times) are ordered by their
     /// place in the stash list, newest first, whether put in memory or loaded with the log
     /// (git keeps the order of the tips it is given for equal times; the newest is given
     /// first).

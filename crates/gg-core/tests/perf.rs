@@ -1,4 +1,4 @@
-//! Speed targets for the core on large synthetic repositories (spec §7, plan task 10).
+//! Speed targets for the core on large synthetic repositories.
 //!
 //! Ignored by default and meaningful only in a release build:
 //!

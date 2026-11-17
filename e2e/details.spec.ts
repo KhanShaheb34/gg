@@ -314,8 +314,6 @@ test("a commit with ten thousand files shows at once and draws only the rows in 
   expect(await p.getByRole("list", { name: "Changed files" }).locator("[data-row]").count()).toBeLessThan(100);
 });
 
-// --- Fix round 1 ---------------------------------------------------------------------------
-
 test("git text is isolated from its neighbours and controls in paths are shown", async ({ gg }) => {
   const { page } = gg;
   const RLO = "‮";

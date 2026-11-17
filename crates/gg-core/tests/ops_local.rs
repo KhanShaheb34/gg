@@ -267,7 +267,7 @@ async fn delete_merged_branch_runs_without_confirmation() {
     );
 }
 
-/// Final review M9: the confirmation of one unmerged branch is not taken for another at the
+/// The confirmation of one unmerged branch is not taken for another at the
 /// same tip (`git branch b2 b1`): the token names the branch.
 #[tokio::test]
 async fn a_confirmation_for_one_branch_is_not_taken_for_another_at_the_same_tip() {
@@ -748,7 +748,7 @@ async fn merge_hints_push_when_there_is_somewhere_to_push() {
         }]
     );
 
-    // An upstream of another name (C1, R38): a push of main goes to origin/main, not to
+    // An upstream of another name: a push of main goes to origin/main, not to
     // the upstream, so no one-click push is offered.
     repo.git(&["reset", "-q", "--hard", &main_tip]);
     repo.git(&[
@@ -1519,7 +1519,7 @@ async fn checkout_with_untracked_files_in_the_way_explains() {
     );
 }
 
-/// R20: a squash merge that conflicts leaves no MERGE_HEAD, so nothing could continue or
+/// A squash merge that conflicts leaves no MERGE_HEAD, so nothing could continue or
 /// abort it: the core puts the working tree and index back as they were (an unrelated
 /// uncommitted change survives) and fails with a plain line, git's output below it.
 #[tokio::test]
@@ -1587,7 +1587,7 @@ fn unmerged_from_a_stash_pop(repo: &TestRepo) {
     repo.write("notes", "the user's own edit\n");
 }
 
-/// Task 5 review, item 1: unmerged entries that nothing in progress explains are refused
+/// Unmerged entries that nothing in progress explains are refused
 /// before any operation that would touch them runs, so nothing (a squash's `reset --merge`
 /// above all) can throw away the user's edit of a conflicted file.
 #[tokio::test]
@@ -1794,7 +1794,7 @@ async fn a_branch_deleted_underneath_fails_plainly_and_touches_nothing_else() {
 }
 
 /// A file named exactly like the commit a reset, checkout or cherry-pick names cannot make git
-/// take the hash for a path (branch review Minor 5): it goes after `--end-of-options`, and
+/// take the hash for a path: it goes after `--end-of-options`, and
 /// before `--` where git takes paths.
 #[tokio::test]
 async fn a_file_named_like_the_commit_is_no_ambiguity() {

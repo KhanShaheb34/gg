@@ -3,7 +3,7 @@ import { DESCRIPTION_ROOM, fitColumns, MIN_W } from "./graphColumns.svelte";
 
 const wide = { graph: 60, date: 140, author: 150, hash: 84 };
 
-describe("fitColumns (final boundary review I2)", () => {
+describe("fitColumns", () => {
   it("leaves the widths as they are when the description has its room", () => {
     expect(fitColumns(wide, 1280)).toEqual(wide);
     // Exactly the room: nothing gives way.

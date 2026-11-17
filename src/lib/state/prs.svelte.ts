@@ -1,4 +1,4 @@
-// Pull requests in the UI (spec §5.5): how a marker reads (its tooltip, whether the list it
+// Pull requests in the UI: how a marker reads (its tooltip, whether the list it
 // comes from is stale), opening a pull request (only through `open_external`, only at
 // addresses the core gave), and the Create pull request dialog (which also opens GitHub's
 // compare page, after pushing, when gh cannot make one).

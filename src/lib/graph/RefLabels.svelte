@@ -150,7 +150,7 @@
     align-items: center;
     gap: 4px;
     /* A long name gives way (cut at its end) before its pull-request marker is cut off by
-       the cell, once the subject beside it has none left (Task 9 review minor 5). */
+       the cell, once the subject beside it has none left. */
     flex: 0 1 auto;
     min-width: 0;
     /* Squeezed below what it holds (a narrow description column), it cuts its own end rather

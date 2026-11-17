@@ -8,7 +8,7 @@
 //     feedback), and -> it is gone (action-closed-*: the operation and its refresh);
 //   - the operation's outcome received -> the new branch's label painted in the graph
 //     (action-graph-*), and Enter -> label (action-total-*);
-//   - the toolbar's busy indicator, if it showed (it shows only after 150 ms by design, R23).
+//   - the toolbar's busy indicator, if it showed (it shows only after 150 ms by design).
 // It creates branches `perf-<n>-<k>`; the repository is meant to be thrown away.
 
 import { api } from "../ipc";

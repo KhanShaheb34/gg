@@ -23,7 +23,7 @@
 
   let list: HTMLElement | undefined = $state();
 
-  /** The folder a tab's operations run in (its active worktree), as its tooltip says (R42). */
+  /** The folder a tab's operations run in (its active worktree), as its tooltip says. */
   function worktreeOf(tab: { repoId: number; path: string }): string {
     return findRepoView(tab.repoId)?.snapshot.activeWorktree ?? tab.path;
   }

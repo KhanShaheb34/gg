@@ -1,7 +1,7 @@
 <!--
   Delete a tag here and, if asked, on a remote too (the remote goes first: if it cannot be
   reached, nothing changes). With one remote the choice names it; with several, a list
-  (origin chosen to begin with; without origin, none until one is chosen: R29). Without
+  (origin chosen to begin with; without origin, none until one is chosen). Without
   remotes, only the local tag is deleted.
 -->
 <script lang="ts">

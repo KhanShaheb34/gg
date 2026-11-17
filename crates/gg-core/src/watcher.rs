@@ -384,7 +384,7 @@ struct Batch {
     /// More such folders than that: every folder is watched again.
     named_all: bool,
     /// A folder went: where folders are watched one by one, the watches follow, so a folder
-    /// made again later counts as new (Task 12 review I1).
+    /// made again later counts as new.
     folder_gone: bool,
 }
 
@@ -904,7 +904,7 @@ mod tests {
     }
 
     /// Linux's per-folder watch: every folder but `.git`, what git ignores and what is only
-    /// reached through a link (Task 11; Task 3 review concern 3).
+    /// reached through a link.
     #[test]
     fn folders_watched_one_by_one_leave_out_git_and_ignored_ones() {
         let dir = tempfile::tempdir().unwrap();
@@ -1059,7 +1059,7 @@ mod tests {
             &mut only_removed,
         );
         assert!(only_removed.folder_gone && !only_removed.reread);
-        // ... and that alone makes the watches follow (Task 13 review minor 3: the sync is
+        // ... and that alone makes the watches follow (the sync is
         // decided by `moves_folders`, which a removal-only batch must turn on).
         assert!(only_removed.moves_folders());
         let mut a_file = Batch::default();
@@ -1081,7 +1081,7 @@ mod tests {
 
     /// `new/sub` removed in one batch (`git stash -u`) and made again in a later one (`git
     /// stash pop`): only `new` is named then, `sub` having been made before `new` was watched;
-    /// both are watched again (Task 12 review I1).
+    /// both are watched again.
     #[test]
     fn folders_inside_a_named_one_are_watched_again() {
         let dir = tempfile::tempdir().unwrap();

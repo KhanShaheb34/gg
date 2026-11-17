@@ -1,4 +1,4 @@
-//! A stale `index.lock` (M5). git takes the lock of a worktree's staging area by creating
+//! A stale `index.lock`. git takes the lock of a worktree's staging area by creating
 //! `index.lock` beside it, and removes it when done; a git that crashed (or was killed)
 //! leaves it behind, and every later command that needs the staging area fails with
 //! "Unable to create '…/index.lock': File exists". git says nothing of who holds it.
@@ -11,7 +11,7 @@
 //! [`crate::platform::git_running_in`]; where that cannot be looked at, the messages say
 //! so), it is offered for removal (`remove_index_lock`): a red confirmation names
 //! the file, its age and the warning that another git or an editor may still be using the
-//! repository, with a token of the file as seen (path, modification time, size; R39). The
+//! repository, with a token of the file as seen (path, modification time, size). The
 //! removal deletes exactly the active worktree's `index.lock` (`git rev-parse --git-path
 //! index.lock`), only a regular file (never a symlink, never anything else), and only the
 //! file the user confirmed. Nothing is ever removed silently, and a fresh lock is never
@@ -44,7 +44,7 @@ pub(crate) struct LockFile {
 
 impl LockFile {
     /// What a confirmation is bound to: the file (its path and identity), its time and its
-    /// size (R39).
+    /// size.
     pub fn token(&self) -> String {
         let nanos = self
             .modified
@@ -101,7 +101,7 @@ async fn lock_path(ctx: &OpCtx<'_>) -> Result<Option<PathBuf>> {
 
 /// The lock's path from `git rev-parse --git-path`'s output `text`, made absolute against
 /// `cwd`, spelt as the platform does (`windows`: git writes `/` there, which the messages and
-/// the hint would otherwise show, or mix with the worktree's `\`; Task 12 review minor 10).
+/// the hint would otherwise show, or mix with the worktree's `\`).
 fn lock_path_from(text: &str, cwd: &Path, windows: bool) -> Option<PathBuf> {
     let text = text.trim_end_matches(['\n', '\r']);
     if text.is_empty() {

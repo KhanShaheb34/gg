@@ -129,7 +129,7 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   {
     group: "Repositories",
     does: "Keyboard shortcuts (this sheet)",
-    // F1 and ⌘/ also while typing, and where ? needs AltGr (Task 10 review minor 13).
+    // F1 and ⌘/ also while typing, and where ? needs AltGr.
     keys: [["?"], ["F1"]],
     macKeys: [["?"], ["Mod", "/"]],
     where: "? when no text field has the focus",

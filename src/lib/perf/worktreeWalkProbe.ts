@@ -1,5 +1,6 @@
-// Performance runs only (GG_PERF_SCROLL=walk3 or walk3-dark, loaded with import()): uses plan 3's
-// features in the real window the way a person would, on the walk's throwaway repository
+// Performance runs only (GG_PERF_SCROLL=walk3 or walk3-dark, loaded with import()): uses the
+// worktrees, the commit panel, pull requests and settings in the real window the way a person
+// would, on the walk's throwaway repository
 // (scripts/walk-fixture.sh; `origin` is https://github.com/octo/cat.git to the app, which git's
 // insteadOf sends to the bare repository beside it, and `gh` is the driver's recording fake).
 // The settings first (the theme the run asks for, the date format), the staging routine, then
@@ -120,7 +121,7 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
     return `fetch ${saved.fetchIntervalSecs} s; editor runs "${runs}"; test: ${tested}; ${where}`;
   });
 
-  // --- The staging routine (plan 2) still works ----------------------------------------------
+  // --- The staging routine still works -----------------------------------------------------
   await stagingRoutine(k);
 
   // --- Worktrees -----------------------------------------------------------------------------

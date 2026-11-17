@@ -24,7 +24,7 @@ pub(crate) enum Lookup {
     Program(PathBuf),
     /// No program, but a script of that name that Windows would run through another program
     /// (`git.cmd`, a `.bat` shim: `cmd.exe`), which the app never does: it runs `.exe` (and
-    /// `.com`) programs only, since `cmd.exe` would parse the arguments again (R19).
+    /// `.com`) programs only, since `cmd.exe` would parse the arguments again.
     ScriptOnly(PathBuf),
     /// Nothing of that name.
     Missing,
@@ -282,7 +282,7 @@ pub(crate) fn spawn(
 }
 
 /// Sets what every child of the app's gets from the start (see the module docs): on Unix a
-/// session of its own, so no controlling terminal and its own process group (R15, R41); on
+/// session of its own, so no controlling terminal and its own process group; on
 /// Windows no console window. [`spawn`] adds the rest.
 pub(crate) fn child_flags(cmd: &mut tokio::process::Command) {
     #[cfg(unix)]

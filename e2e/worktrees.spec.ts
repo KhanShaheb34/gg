@@ -473,7 +473,7 @@ test("squeezed ref labels keep what does not fit inside their own pill, never ov
   for (let i = 1; i < boxes.length; i++) expect(boxes[i][0]).toBeGreaterThanOrEqual(boxes[i - 1][1] - 0.5);
 });
 
-test("at 900 px beside the docked panel the description keeps 280 px: Author gives way first, then Date (final review I2)", async ({ gg }) => {
+test("at 900 px beside the docked panel the description keeps 280 px: Author gives way first, then Date", async ({ gg }) => {
   const { page } = gg;
   await page.setViewportSize({ width: 900, height: 560 });
   await page.goto("/");

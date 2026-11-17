@@ -16,10 +16,10 @@
 # `open -n -a gg.app --env ...`, the way a user's launch goes through LaunchServices.
 # Every launch gets its own empty config folder (GG_CONFIG_DIR), so the user's own app state
 # is never read or changed and no saved session adds tabs. The bundle is built under its own
-# identifier, com.shakirul.gg.perf (Task 13 review I2): it shares no WebKit storage,
+# identifier, com.shakirul.gg.perf: it shares no WebKit storage,
 # single-instance identity or LaunchServices registration with an installed gg
-# (com.shakirul.gg, whose shipped identifier this never changes), which may run meanwhile
-# (P3-R34). The script refuses to run while a copy of the perf build runs, and refuses a
+# (com.shakirul.gg, whose shipped identifier this never changes), which may run meanwhile.
+# The script refuses to run while a copy of the perf build runs, and refuses a
 # bundle that is not the perf one.
 #
 # The app runs git without the user's global and system config (GIT_CONFIG_GLOBAL is an
@@ -98,7 +98,7 @@ fi
 repo=$(cd "$1" && pwd)
 root=$(cd "$(dirname "$0")/.." && pwd)
 # The walk and the actions probe change the repository (branches, pushes, deletes on its
-# origin): only on a throwaway one scripts/walk-fixture.sh made, never on the user's (R43).
+# origin): only on a throwaway one scripts/walk-fixture.sh made, never on the user's.
 for mode in $modes; do
   case $mode in
     walk | actions | walk3 | walk3-dark)
@@ -119,7 +119,7 @@ app=$bundle/Contents/MacOS/gg-desktop
 bundle_id=com.shakirul.gg.perf
 
 # Only a running copy of this perf build stops the run: an installed gg (com.shakirul.gg)
-# may run beside it (P3-R34) and is never signalled or touched; only pids this script started
+# may run beside it and is never signalled or touched; only pids this script started
 # are killed.
 if [ -n "$(lsappinfo find bundleid=$bundle_id)" ] || pgrep -f "^$app" > /dev/null; then
   echo "the perf build ($bundle_id) is running; quit it first" >&2

@@ -282,7 +282,7 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
 
 /// Why a skip for `commit` cannot run, if it cannot: git is not stopped on that commit (it
 /// has moved on since the skip was offered, in a terminal say), so skipping would leave out
-/// another (R40).
+/// another.
 pub(crate) async fn skip_refused(ctx: &OpCtx<'_>, commit: &str) -> Result<Option<String>> {
     let Some(files) = state_files(&ctx.runner, &ctx.cwd).await? else {
         return Ok(None);
@@ -451,7 +451,7 @@ mod tests {
         })
         .unwrap();
         assert!(why.starts_with("A rebase is in progress"), "{why}");
-        // Saving would take the stopped operation's state with it (R17, revised).
+        // Saving would take the stopped operation's state with it.
         assert!(
             refused(OpRequest::StashSave {
                 message: None,

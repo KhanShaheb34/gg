@@ -349,7 +349,7 @@ for (const [prefix, width, height] of SIZES)
   });
 }
 
-// The dialogs of commit and tag actions (Task 7).
+// The dialogs of commit and tag actions.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
   test(`commit and tag dialogs, ${width}x${height}, ${theme}`, async ({ gg }) => {
@@ -428,7 +428,7 @@ for (const [prefix, width, height] of SIZES)
   });
 }
 
-// The dialogs of branch actions and the staging routine's notices (Task 8).
+// The dialogs of branch actions and the staging routine's notices.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
   test(`branch dialogs and the staging routine, ${width}x${height}, ${theme}`, async ({ gg }) => {
@@ -533,7 +533,7 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-// The conflict banner (spec §5.6) in each of its states, and the dialogs of continue and of
+// The conflict banner in each of its states, and the dialogs of continue and of
 // stashes.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
@@ -646,7 +646,7 @@ for (const [prefix, width, height] of SIZES)
   });
 }
 
-// The command log (Task 10): closed, open, a failed operation reached from its notice, the
+// The command log: closed, open, a failed operation reached from its notice, the
 // background reads, at 1280×800 and 900×560.
 for (const theme of ["light", "dark"] as const) {
   for (const size of [
@@ -685,7 +685,7 @@ for (const theme of ["light", "dark"] as const) {
       await park(page);
       await shot("log-open");
 
-      // Task 10 review minor 6: the time column in the Relative and System date formats.
+      // The time column in the Relative and System date formats.
       for (const [name, label] of [["relative", "Relative"], ["locale", "System"], ["standard", "Standard"]]) {
         await page.getByTestId("open-settings").click();
         await page.getByTestId("settings-dates").getByRole("radio", { name: label }).click();
@@ -715,7 +715,7 @@ for (const theme of ["light", "dark"] as const) {
   }
 }
 
-// Task 9 review item 2: the smallest window, the many-files banner, the details panel as tall as
+// The smallest window, the many-files banner, the details panel as tall as
 // it goes: the graph keeps its rows.
 for (const theme of ["light", "dark"] as const) {
   test(`small window, banner and tall details, ${theme}`, async ({ gg }) => {
@@ -751,7 +751,7 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 // The menus and confirmations not shot above, the remaining notice kinds, and the menus,
-// dialogs, notices and busy state at 900×560 (Task 11).
+// dialogs, notices and busy state at 900×560.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
   test(`remaining menus, confirmations and notices, ${width}x${height}, ${theme}`, async ({ gg }) => {
@@ -892,7 +892,7 @@ for (const [prefix, width, height] of SIZES)
     expect(failed.status).toBe("failed");
     await park(page);
     await page.waitForTimeout(200);
-    // The banner offers Skip too (R40).
+    // The banner offers Skip too.
     await expect(page.getByTestId("conflict-banner").getByRole("button", { name: "Skip this commit" })).toBeVisible();
     await page.screenshot({ path: path.join(OUT, `${prefix}notice-skip-${theme}.png`) });
   });
@@ -1116,7 +1116,7 @@ for (const [prefix, width, height] of SIZES)
 
 const LONG = "feature/rework-the-parser-error-recovery-for-unterminated-strings";
 
-// Pull requests (Task 9): markers beside labels with ahead/behind counts and long names, on
+// Pull requests: markers beside labels with ahead/behind counts and long names, on
 // worktree rows, stale ones; the branch menu; the Create pull request dialog loading, filled,
 // waiting on the push, failed, and for a branch that has one already.
 for (const [prefix, width, height] of SIZES)
@@ -1232,7 +1232,7 @@ for (const [prefix, width, height] of SIZES)
     });
   }
 
-// Settings and keyboard shortcuts (Task 10): the sheet at its top, a refused command with the
+// Settings and keyboard shortcuts: the sheet at its top, a refused command with the
 // one beside it running, the lower sections, the reset confirmation; the shortcuts sheet; the
 // busy indicator with git's progress; a stale index.lock's notice.
 for (const [prefix, width, height] of SIZES)

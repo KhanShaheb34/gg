@@ -1,5 +1,5 @@
 //! Opening a pull request (`pr_create`) through `gh`, as the owner's routine ends: push the
-//! branch to its namesake on its remote (R38) when that is missing or behind, then `gh pr
+//! branch to its namesake on its remote when that is missing or behind, then `gh pr
 //! create --head <branch> --base <base> --title <title> --body-file - [--draft]`, the
 //! description written to `gh`'s stdin. Runs from the main worktree; needs no working tree.
 //! When `gh` cannot make it (not installed, signed out), the branch is still pushed and the
@@ -142,7 +142,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         Some(owner) => format!("{owner}:{branch}"),
         None => branch.to_owned(),
     };
-    // The compare page, with what the form had in it (final boundary review M8): nothing
+    // The compare page, with what the form had in it: nothing
     // typed is lost when it ends there after all. Not when the dialog showed no form.
     let page = compare_url(&on, base, branch, fork.as_deref());
     let page = if compare_page {
@@ -157,7 +157,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
 
     // gh looked for before anything is pushed: without it, or signed out (as the list last
     // said), the branch is still pushed and the pull request is finished on GitHub's compare
-    // page. Never when the dialog promised that page (final boundary review I1): gh found
+    // page. Never when the dialog promised that page: gh found
     // since would make a pull request the user never saw the form of.
     let signed_out = ctx.repo.prs_unavailable().await == Some(PrUnavailable::SignedOut);
     let gh = if signed_out || compare_page {
@@ -166,7 +166,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         ctx.manager.gh(ctx.repo, &ctx.runner, &on)
     };
 
-    // Pushed first (R38) when its namesake there is missing or behind (`push_plan`, as the
+    // Pushed first when its namesake there is missing or behind (`push_plan`, as the
     // suggestion said).
     let mut pushed = String::new();
     if behind {
@@ -256,7 +256,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
                     format!("{pushed}{branch} has a pull request open already{number}."),
                 ));
             }
-            // Not signed in: as without gh, finished on the compare page (Task 9 review I5).
+            // Not signed in: as without gh, finished on the compare page.
             if matches!(failure, GhFailure::SignedOut(_)) {
                 return Ok(on_github_instead(compare));
             }

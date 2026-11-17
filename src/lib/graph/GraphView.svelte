@@ -465,7 +465,7 @@
     const snap = view.snapshot;
     /**
      * The repository as it is when an item is picked, but with HEAD as the menu showed it:
-     * the request is for the branch the menu named (M2; the core refuses it if HEAD has moved).
+     * the request is for the branch the menu named (the core refuses it if HEAD has moved).
      */
     const picked = (): RepoSnapshot => ({ ...view.snapshot, head: snap.head });
     const single = (target: MenuTarget): Menu => ({
@@ -530,7 +530,7 @@
   }
 
   /**
-   * Whether `targets` are all still there, as far as known (R26): each row's commit is still
+   * Whether `targets` are all still there, as far as known: each row's commit is still
    * in the graph, with its labels on it where its row is loaded. Asked when the rows change.
    */
   function stillThere(targets: MenuTarget[]): () => Promise<boolean> {
@@ -561,7 +561,7 @@
 
   /**
    * The menu key or Shift+F10: the selected row's menu, below the start of its description.
-   * The row is the selected commit's, found by its hash (I6, R42): the selection's index can
+   * The row is the selected commit's, found by its hash: the selection's index can
    * point at another commit for a moment after the rows change. Its drawn row must show that
    * commit too; if it does not (yet), no menu opens.
    */
@@ -622,7 +622,7 @@
     lanes.readColors(document.documentElement);
     const resize = new ResizeObserver((entries) => {
       const rect = entries[entries.length - 1].contentRect;
-      // Below its room, the description takes from Author, then Date (final review I2).
+      // Below its room, the description takes from Author, then Date.
       columns.available = rect.width;
       onResize(rect.height);
     });
@@ -824,7 +824,7 @@
     height: var(--row-h);
     contain: layout paint style;
     /* The simple text path: no kerning or ligatures. Measured in WKWebView, it leaves the
-       web process about 20 MB less 30 s after a full scroll (docs/perf, task 13 fix round). */
+       web process about 20 MB less 30 s after a full scroll. */
     font-kerning: none;
     font-variant-ligatures: none;
     text-rendering: optimizeSpeed;

@@ -1,5 +1,5 @@
 <!--
-  Checking out a branch that is behind its upstream and has nothing of its own (spec §5.3):
+  Checking out a branch that is behind its upstream and has nothing of its own:
   fast-forward it to the upstream first? Yes checks it out and brings it up to date; No checks
   it out as it is; Cancel does neither.
 -->

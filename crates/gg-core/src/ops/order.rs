@@ -1,4 +1,4 @@
-//! The order numbered requests join a repository's operation queue in (R28). The UI numbers
+//! The order numbered requests join a repository's operation queue in. The UI numbers
 //! each `run_op` it sends to a repository (1, 2, 3…) under a client id of its own (one per
 //! page load: a reload or another window starts again from 1 under a new id), because two
 //! requests sent in the same instant can reach the core in either order. A request joins

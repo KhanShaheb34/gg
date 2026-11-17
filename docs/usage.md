@@ -1,0 +1,230 @@
+# Using gg
+
+A reference to what gg does and how it behaves, for when the [README](../README.md)'s
+overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
+
+## The basics
+
+- Open a repository folder with the + button, ⌘O, by dropping the folder on the window, or
+  by launching the app with the folder as its argument. Open tabs come back at the next start.
+- ⌘1…⌘8 go to a tab, ⌘9 to the last one, Ctrl+Tab / Ctrl+Shift+Tab to the next or previous
+  one; ⌘W closes the tab (with no tab open, the window). On a focused tab, ←/→ move and
+  Delete closes it.
+- In the graph: ↑/↓, Page Up/Down, Home/End select commits; Esc clears the selection.
+  Clicking a short hash copies the full one.
+- ⌘F searches subjects, authors and hashes (Enter / Shift+Enter: next / previous hit),
+  ⌘⇧F fetches from all remotes, ⌘R re-reads the repository. On Windows and Linux, Ctrl
+  stands for ⌘.
+- The command log (⌘⇧L, or the terminal button in the toolbar) shows the git commands the app
+  ran for the repository: each operation under its title, with each command's line, time,
+  duration, exit code and output; "Background reads" adds the reads the app makes by itself.
+  "Show log" on a failed operation's notice opens it there. Credentials in URLs
+  (`https://user:token@host/…`) are shown as `***` here and in every message, notice and
+  error the app shows from git.
+- A conflict banner above the graph shows when git stops in a merge, rebase, cherry-pick or
+  revert (started in the app or in a terminal): what is coming in, each conflicted file
+  ("Conflict markers", "Check this file" for one with no markers to go by, "Resolved"; a file
+  opens in your editor from there), Abort…, Open in editor and Continue…. Continue is enabled
+  once every file is resolved; "Continue anyway…" goes ahead after listing what is not. The
+  app never edits a conflicted file. When the commit being applied has no changes left (they
+  are already there), the banner and the notice of the continue offer "Skip this commit"
+  instead (rebase, cherry-pick, revert). Skip leaves out that commit only: if git has moved
+  on to another, it is refused. Skipping a rebase's commit puts every tracked file back as
+  HEAD has it, so with other uncommitted changes it asks first, listing them.
+- Opening a folder of another worktree of a repository already open shows that
+  repository's tab with that worktree made active (if an action is running there, a notice
+  says the tab still works where it was).
+- Git 2.29 or newer is needed. With an older one the app says so once, when it starts, and
+  skips the background fetch; some actions fail until git is updated.
+- git is looked up on your login shell's `PATH` (read when the app starts), falling back
+  to the app's own `PATH`, so a git your shell finds is the one used even when the app is
+  started from the Finder.
+
+## Worktrees, committing and pull requests
+
+- The side panel (⌘B, or the button at the right of the toolbar) lists the repository's
+  worktrees as git does, including ones made in a terminal or by another tool: each with its
+  branch, its uncommitted changes (kept up to date as files change), how it stands with its
+  upstream, and what is unusual (locked, folder missing, a merge stopped there). In a window
+  narrower than 840 px it lies over the graph. The **active** worktree, where every action
+  runs, is marked there and named in the toolbar; double-click another (or "Make active")
+  to switch. ⌘⌥1…⌘⌥9 switch to a worktree by its place in the list (Ctrl+Shift+1…9 on
+  Windows and Linux).
+- **Add worktree…** (the panel's + or menu, or a branch or commit menu) makes a folder for a
+  new or existing branch, by default beside the repository in `<repo>.worktrees/<branch>`
+  (set the pattern in Settings).
+- **Delete…** removes a worktree. A clean one goes after one plain question (files git
+  ignores, if any, are listed in it); one with uncommitted changes (edits to files marked
+  `assume-unchanged` or `skip-worktree` included, which `git status` does not show), untracked
+  files or commits on no branch needs a red confirmation listing them. One holding another
+  worktree or repository inside it, at any depth, is refused, and so is one with submodules
+  (git does not delete it; the notice says what a forced delete in a terminal would lose).
+  Its branch is deleted only if you tick that. **Prune** forgets worktrees whose folder is
+  gone, after a confirmation naming them; if you moved a worktree's folder, run
+  `git worktree repair <new path>` instead.
+- The **commit panel** (⌘K, or a worktree's change count) commits the files you tick, with
+  **Commit & Push** to the branch's upstream; when a merge is being concluded, its message is
+  filled in. The notice after a commit offers the push. Known limit: if the app quits or
+  crashes between making a commit and updating the staging area (during a slow
+  `post-commit` hook, say), the staging area still holds the committed files as they were
+  before the commit, so `git status` shows staged changes that would undo it; `git reset`
+  puts the staging area back as HEAD has it (your files are not touched).
+- **Create pull request…** (a branch's or worktree's menu) needs `gh`, signed in: it suggests a
+  title and description from the commits, pushes the branch first when it needs to, and
+  says so on its button. Without `gh`, it pushes and opens GitHub's compare page. Open pull
+  requests show as markers beside their branches and worktrees, loaded with each fetch (at
+  most once a minute). The app never reads or stores a GitHub token. Note that `gh`, by its
+  own design, sends a token it finds in your environment (`GH_TOKEN`, `GITHUB_TOKEN`) to
+  github.com and to any `*.ghe.com` host (GitHub's own enterprise cloud): a repository whose
+  remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
+  token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
+  than github.com, but leaves these two to gh.
+- **Settings** (⌘,): theme (system, light or dark), date format, background fetch, the
+  editor and terminal the worktree menu opens, the worktree location pattern, and the `gg`
+  command. **?** lists the keyboard shortcuts.
+
+## Actions
+
+Right-click a commit, a branch or tag label, or a stash (or press the menu key or Shift+F10
+on the selected row) for its menu. Items that cannot run say why when you point at them
+(for example "HEAD is detached: there is no current branch").
+
+| On | Items |
+| --- | --- |
+| A commit | Check out this commit · Create branch here… · Create tag here… · Cherry-pick… · Revert… · Reset *current* to here (Soft, Mixed, Hard) · Copy hash · Copy message |
+| A local branch | Check out · Rename… · Delete… · Merge *it* into *current*… · Rebase *current* onto *it*… · Push… · Pull · Copy name |
+| A remote branch | Check out as a local branch… · Fetch into a local branch… · Merge *it* into *current*… · Delete from *remote*… · Copy name |
+| A tag | Push… · Delete… · Copy name |
+| A stash | Apply · Pop · Create branch from stash… · Drop… |
+| The uncommitted row | Stash changes… |
+
+- **Check out** a branch that is behind its upstream asks whether to fast-forward it first.
+  Double-clicking a local branch's label checks it out too.
+- **Merge** offers "Create a merge commit even if fast-forward is possible" (remembered per
+  repository), "Squash the commits" and "No commit". After a merge, the notice offers
+  **Push** *branch* **to** *remote/branch*; a push the remote rejects offers Fetch, Pull and
+  a separate Force push…. So the staging routine is: check out `staging`, merge your branch
+  into it, push — three clicks from the graph.
+- **Push** goes to the branch of the same name on the remote, like git's own default
+  (`push.default=simple`). A branch whose upstream has another name (made with
+  `git switch -c feature origin/main`, say) is pushed there only if you pick it in the Push
+  dialog, which names where the push goes; the merge notice then offers no one-click push.
+  A branch without an upstream gets the branch pushed to as its upstream; an existing
+  upstream is never changed.
+- **Pull** on a branch that has diverged from its upstream asks whether to merge or rebase.
+- Actions on one repository run one at a time, in the order asked; a second waits (the
+  toolbar shows what runs and how many wait). A busy indicator shows when one takes more
+  than 150 ms. An action on the current branch (reset, merge, rebase, cherry-pick, revert,
+  pull, continue, abort, skip) runs only on the branch it was asked for: if another branch
+  was checked out meanwhile (by an action queued before it, or in a terminal), it is refused
+  with a plain notice and nothing changes.
+- **Stop** appears beside the busy indicator once an action has run for 5 seconds (a hook
+  that hangs, say): it ends the git command and everything it started, and the action fails
+  as "Stopped.". git runs without a terminal and without input, so it never waits for a
+  password or a prompt there.
+- Because git runs without a terminal, anything that would ask on one fails at once instead,
+  even when the app was started from a terminal: commit signing with a loopback pinentry
+  (`pinentry-mode loopback`), an SSH signing key whose passphrase is not in an agent, and
+  hooks that read `/dev/tty`. Use an agent (gpg-agent, ssh-agent, 1Password) or a GUI
+  pinentry such as pinentry-mac; credential helpers and askpass programs keep working.
+- Names (branches, tags) are checked as you type and again by the core: a name git would
+  refuse, one that is taken, or one starting with `-` is refused before git runs.
+- Network actions (push, pull, fetch into a branch, deleting on a remote) stop after 120 s
+  without output or 2 hours in all; git never waits for a password prompt in a terminal.
+
+## Safety confirmations
+
+These run only after a red confirmation that says what would be lost; the core refuses them
+otherwise, whatever the UI sends:
+
+| Action | Why it is confirmed |
+| --- | --- |
+| Force push | It replaces the remote branch's commits; the confirmation lists the commits that would be lost there. It always uses `--force-with-lease` pinned to the remote commit you were shown: if the remote moved meanwhile, it asks again. |
+| Reset hard | Uncommitted changes to tracked files are discarded and cannot be got back, and an untracked file where the target commit has a file is overwritten. The confirmation lists both; other untracked files are kept. |
+| Delete a branch that is not merged | Its commits would be reachable from no branch (they stay in the reflog for a while). The confirmation says when they are safe in the current branch. |
+| Delete a branch on a remote | Other people's clones lose it at their next fetch. The delete is pinned to the remote commit you were shown: if someone pushed to it since your last fetch, it is refused. |
+| Delete a tag on a remote | Other people's clones lose it at their next fetch. |
+| Drop a stash | Its changes are gone from the stash list. |
+| Abort a merge, rebase, cherry-pick or revert | The changes made to resolve its conflicts are lost. |
+| Skip a rebase's commit with other changes | git puts every tracked file back: those changes go too. |
+
+Each confirmation is for what it showed: if the branch, the commit or the files it is about
+changed before the action ran, it asks again with them as they are now (or, for another
+branch checked out, refuses).
+
+While git is stopped in a merge, rebase, cherry-pick or revert, actions that would start
+another one, check out something else, apply a stash or save one are refused with a plain
+reason; reset stays allowed (it is a way out). The same actions are refused (and their
+menu items disabled, saying why) while files still have conflicts from an earlier step,
+such as a stash that did not apply cleanly.
+
+## Keyboard shortcuts
+
+The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux).
+
+| Keys | Does |
+| --- | --- |
+| ⌘O | Open a repository |
+| ⌘W | Close the tab (with none open, the window) |
+| Ctrl+Tab, Ctrl+Shift+Tab | Next, previous tab |
+| ⌘1…⌘8, ⌘9 | A tab, the last tab |
+| ⌘, | Settings |
+| ?, ⌘/ (F1 on Windows and Linux) | Keyboard shortcuts |
+| ⌘F | Search commits (Enter, Shift+Enter: next, previous match) |
+| ↑/↓, Page Up/Down, Home/End | Select commits in the graph |
+| Shift+F10, Menu key | The selected commit's menu (arrow keys, Enter, Esc in it) |
+| Esc | Clear the selection, close the search, a dialog, a menu or a panel |
+| ⌘⇧F | Fetch from all remotes |
+| ⌘R | Refresh (and the pull requests) |
+| ⌘K | The commit panel, its message focused |
+| ⌘Enter | Commit what is ticked (in the commit message) |
+| Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |
+| ⌘B | Show or hide the side panel (worktrees) |
+| ⌘⇧L | Show or hide the command log |
+| F6, Shift+F6 | Next region (graph, newest notice, side panel), the region before |
+| ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the side panel |
+
+In the command log: ↑/↓, Home/End move between rows, Enter or Space opens one, C copies its
+command line.
+
+## The `gg` command
+
+`gg` in a terminal opens the repository you are in; `gg <path>` the one that holds `path`
+(a subfolder opens its repository, a linked worktree opens as itself, and `gg -- <path>`
+takes a path that starts with `-`). It returns at once. If gg is already running, the
+repository opens there (or its tab comes to the front) and the window comes forward; only
+one copy of the app runs. `gg --help` and `gg --version` say what they say.
+
+To install the command, choose **gg → Install ‘gg’ Command…** on macOS or **File → Install
+‘gg’ Command…** on Windows and Linux (or "Install the command…" on the welcome screen, or
+**Settings → Command line**). Pick one of the offered folders: they are already on your login shell's
+`PATH`, writable by you and not inside a repository (`~/.local/bin`, `/opt/homebrew/bin` and
+`/usr/local/bin` first). The app writes one small script there, named `gg`, and changes
+nothing else: no administrator rights, no edits to your shell files. It never replaces a
+`gg` it did not write, and the same dialog removes the one it did. If no folder is offered,
+add one such as `~/.local/bin` to your `PATH` in your shell's profile and open the dialog
+again.
+
+If your shell already has a `gg` (an alias such as Oh My Zsh's `gg` for `git gui
+citool`, a function, or another program earlier on `PATH`), the dialog says so: that one
+wins until you remove it or rename it. Past an alias or a function, `command gg` reaches
+this command anyway. The dialog learns this by asking your login shell (zsh, bash or a
+POSIX sh); with fish it cannot tell, so no warning is shown there: run `type gg` in fish to
+check.
+
+Two `gg` commands run within the same instant while the app is not running yet can each
+start a window of their own; once the app runs, every `gg` goes to it.
+
+On macOS the command finds the app by its identifier, wherever it is. On Linux it starts the
+app from where it was when the command was installed; after moving the app, install the
+command again (the command says so when it cannot find the app). On Windows the command is
+`gg.cmd`, written into a folder of your own that is already on your `PATH` (such as
+`%LOCALAPPDATA%\Microsoft\WindowsApps`); it too starts the app from where it was installed.
+
+## Upgrading from a build made before the rename
+
+The app was renamed to gg, which gives it a new identity on macOS. Your settings, recent
+repositories and open tabs are copied over once, but column widths, panel sizes and each repository's
+view filters start fresh, and macOS asks again before the app may read folders such as
+Documents or Desktop.
+

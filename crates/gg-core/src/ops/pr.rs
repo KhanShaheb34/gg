@@ -1,4 +1,4 @@
-//! Opening a pull request (`pr_create`) through `gh`, as the owner's routine ends: push the
+//! Opening a pull request (`pr_create`) through `gh`, at the end of the everyday routine: push the
 //! branch to its namesake on its remote when that is missing or behind, then `gh pr
 //! create --head <branch> --base <base> --title <title> --body-file - [--draft]`, the
 //! description written to `gh`'s stdin. Runs from the main worktree; needs no working tree.

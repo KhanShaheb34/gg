@@ -42,7 +42,7 @@ fn the_tauri_configs_take_the_cargo_version() {
 }
 
 /// About and `gg --version` say gg-core's version: every crate takes the workspace's, none
-/// a version of its own (Task 12 review minor 11).
+/// a version of its own.
 #[test]
 fn every_crate_takes_the_workspace_version() {
     for rel in [
@@ -69,8 +69,8 @@ fn every_crate_takes_the_workspace_version() {
     }
 }
 
-/// The shipped identifier is com.shakirul.gg, in normal and release builds alike (Task 13
-/// review I2): only the perf/walk build (scripts/perf.sh) is made under its own,
+/// The shipped identifier is com.shakirul.gg, in normal and release builds alike: only the
+/// perf/walk build (scripts/perf.sh) is made under its own,
 /// com.shakirul.gg.perf, through a `--config` overlay on the command line. No config file
 /// and no release or CI build names another, and the `gg` launcher finds the shipped one.
 #[test]

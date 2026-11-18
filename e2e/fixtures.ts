@@ -248,7 +248,7 @@ const REPOS: Record<string, RepoScript> = {
     commit({ "greeting.txt": "hello from main\n" }, "Greet from main");
   },
   /**
-   * Conflicts (spec §5.6). 40 commits of history first ("Earlier work 1".."40", so the graph
+   * Conflicts. 40 commits of history first ("Earlier work 1".."40", so the graph
    * scrolls), then "Base" with `app.txt`, `style.css` and `src/module-01.ts`..`12.ts`.
    * From Base: `feature/x` changes `app.txt` and `style.css` ("Rework the feature");
    * `wide` changes every module ("Rename across modules"); `topic` has five commits, "Topic
@@ -297,7 +297,7 @@ const REPOS: Record<string, RepoScript> = {
     );
   },
   /**
-   * The staging routine (spec §5.3), with a bare `origin` beside it (`routine-origin.git`)
+   * The staging routine, with a bare `origin` beside it (`routine-origin.git`)
    * and a second clone of that (`routine-other`, see `otherClone`) that pushes to it, to move
    * the remote. Oldest first: "Initial commit" on `main`; "Prepare staging" on `staging`;
    * "Add login form" and "Validate login" on `feature/login` (from `staging`); all three
@@ -888,7 +888,7 @@ type Unplaced<R> = R extends { expectWorktree: unknown }
 /**
  * A request as a test writes it: one on the current branch may leave out `expectHead`, and one
  * that runs in a worktree `expectWorktree`, which `runOp` fills in with HEAD and the active
- * worktree as the active tab shows them when the request is sent, as a menu would (R39).
+ * worktree as the active tab shows them when the request is sent, as a menu would.
  */
 export type Asked = Unplaced<Unheaded<OpRequest>>;
 

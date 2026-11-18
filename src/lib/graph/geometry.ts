@@ -106,7 +106,7 @@ export function edgePath(edge: Edge, rowTop: number, rowH: number): Line | Curve
   return record((path) => traceEdge(path, edge, rowTop, rowH))!;
 }
 
-// --- Lane changes across two rows (R17) ------------------------------------------------------
+// --- Lane changes across two rows ------------------------------------------------------
 // The core changes lane within half a row: a `bottom` half in one row, or a `top` half in the
 // next. Drawn as they are, a change across two lanes squeezes into 13 px. Where exactly one
 // change meets exactly one straight edge of the neighbouring row at the row boundary, the

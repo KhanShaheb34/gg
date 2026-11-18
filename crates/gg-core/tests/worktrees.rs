@@ -675,7 +675,7 @@ async fn measure_opening_with_twenty_worktrees() {
     }
 }
 
-/// A view change while a switch of worktree is underway (Task 3 review, item 1): no snapshot
+/// A view change while a switch of worktree is underway: no snapshot
 /// shows the new active worktree with the old one's HEAD, and the switch still lands with
 /// the new worktree's status.
 #[tokio::test]
@@ -728,7 +728,7 @@ async fn a_view_change_racing_a_switch_never_mixes_the_two_worktrees() {
 
 /// The commits on no remote of another worktree are counted again only when its HEAD or a
 /// remote-tracking branch moved, and the window gaining focus reads a worktree at most once
-/// every 30 s (Task 3 review, item 2).
+/// every 30 s.
 #[tokio::test]
 async fn focus_reads_other_worktrees_sparingly() {
     let repo = TestRepo::new();
@@ -767,7 +767,7 @@ async fn focus_reads_other_worktrees_sparingly() {
 }
 
 /// The active worktree removed while an operation runs: at the operation's end the main
-/// worktree is active, and its files are the ones watched (Task 3 review, item 3).
+/// worktree is active, and its files are the ones watched.
 #[tokio::test]
 async fn the_fallback_at_an_operations_end_watches_main() {
     let repo = TestRepo::new();
@@ -817,7 +817,7 @@ async fn the_fallback_at_an_operations_end_watches_main() {
 
 /// A bare main repository: it cannot be made active, and when the active worktree goes,
 /// the first linked worktree with its folder stands in for the main one; with none left,
-/// that is said once (Task 3 review, item 5).
+/// that is said once.
 #[tokio::test]
 async fn a_bare_main_repository_is_never_made_active() {
     let source = TestRepo::new();
@@ -886,7 +886,7 @@ async fn a_bare_main_repository_is_never_made_active() {
 }
 
 /// The active worktree's folder replaced by a plain folder, outside the app: a request
-/// asked for there is refused before anything is read there (Task 3 review, item 6).
+/// asked for there is refused before anything is read there.
 #[tokio::test]
 async fn a_request_for_a_folder_that_is_no_longer_a_worktree_is_refused() {
     let repo = TestRepo::new();
@@ -952,7 +952,7 @@ async fn a_request_for_a_folder_that_is_no_longer_a_worktree_is_refused() {
 }
 
 /// Two switches in quick succession: the last one is what is remembered, however the
-/// writes are scheduled (Task 3 review, item 7).
+/// writes are scheduled.
 #[tokio::test]
 async fn the_last_of_two_quick_switches_is_remembered() {
     use std::sync::{Arc, Mutex};
@@ -993,7 +993,7 @@ async fn the_last_of_two_quick_switches_is_remembered() {
 
 /// More changes at once than a batch keeps by name (5,000 files in a folder that appears
 /// now, ignored by a pattern): judged by their folders against what git ignores, read again
-/// first, they read no status (Task 3 review, item 4).
+/// first, they read no status.
 #[tokio::test]
 async fn thousands_of_files_in_a_new_ignored_folder_read_no_status() {
     let repo = TestRepo::new();

@@ -253,16 +253,16 @@ pub(crate) struct Repo {
     pub(crate) op_queue: tokio::sync::Mutex<()>,
     /// Operations waiting for their turn.
     pub(crate) op_waiting: AtomicU32,
-    /// The order numbered requests join `op_queue` in (R28).
+    /// The order numbered requests join `op_queue` in.
     pub(crate) op_order: crate::ops::order::ClientOrders,
-    /// How the app named the commit coming in to the merge or rebase it started last (R32).
+    /// How the app named the commit coming in to the merge or rebase it started last.
     pub(crate) incoming_name: Mutex<Option<crate::git::progress::KnownIncoming>>,
-    /// The operation running its body, by id, and its Stop (R41).
+    /// The operation running its body, by id, and its Stop.
     pub(crate) running_stop: Mutex<Option<(u64, Arc<crate::git::runner::Stop>)>>,
     /// A fetch the user asked for is waiting for its turn or running; another one asked for
     /// meanwhile returns at once.
     pub(super) user_fetch: AtomicBool,
-    /// Stops the scheduled fetch running now, if any (R13).
+    /// Stops the scheduled fetch running now, if any.
     pub(super) scheduled_cancel: Mutex<Option<Arc<Notify>>>,
     /// Held by a scheduled fetch from before it shows as running until it ends;
     /// cancelling one waits for it.
@@ -684,7 +684,7 @@ impl Repo {
 }
 
 impl RepoManager {
-    /// Why the git found is too old for the app (M3), if it is.
+    /// Why the git found is too old for the app, if it is.
     pub fn git_problem(&self) -> Option<String> {
         self.runner.version_problem()
     }

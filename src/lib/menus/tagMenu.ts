@@ -1,4 +1,4 @@
-// The menu of a tag label (spec §5.2, "Tag").
+// The menu of a tag label.
 
 import type { RefLabel, RepoSnapshot } from "../types";
 import { item, noRemoteReason, SEPARATOR } from "./common";

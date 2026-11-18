@@ -1,4 +1,4 @@
-// The command log panel (spec §5.7), end to end against the real core: operations with their
+// The command log panel, end to end against the real core: operations with their
 // commands and output, "Show log" from a failed operation's notice, background reads behind a
 // toggle, no requests while closed, and the keyboard.
 import { rmSync, writeFileSync } from "node:fs";
@@ -315,7 +315,7 @@ test("show_log_in_a_small_window_shows_the_operation_above_the_details", async (
       await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
       await page.mouse.move(1000, 20);
       await page.waitForTimeout(500);
-      await page.screenshot({ path: `docs/perf/screens/small-log-show-${scheme}.png` });
+      await page.screenshot({ path: `.screens/small-log-show-${scheme}.png` });
     }
   }
   rmSync(path.join(dir, ".git/index.lock"));
@@ -432,7 +432,7 @@ test("the banner appearing over the details and the log lays out without a Resiz
   expect(heights.graph).toBeGreaterThanOrEqual(160);
 });
 
-test("a merge that stopped on conflicts shows in the log as stopped, in amber, not as failed (task 11 review, minor 3)", async ({
+test("a merge that stopped on conflicts shows in the log as stopped, in amber, not as failed", async ({
   gg,
 }) => {
   const { page } = gg;
@@ -457,7 +457,7 @@ test("a merge that stopped on conflicts shows in the log as stopped, in amber, n
   await expect(merge.locator(".exit")).not.toHaveClass(/bad/);
 });
 
-// Task 10 review minor 6: the time column is as wide as its text in every date format
+// The time column is as wide as its text in every date format
 // ("10:05:07 PM" in System, "13 days ago" in Relative), never cut or spilling over.
 test("the time column fits its text in every date format", async ({ gg }) => {
   const { page } = gg;

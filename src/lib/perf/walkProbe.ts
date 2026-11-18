@@ -66,7 +66,7 @@ export function walkKit(view: RepoView, scroller: HTMLElement) {
    * Opens the menu of what `el` finds. Scrolling it into view can redraw the rows: the
    * element found before the frame may by then show another commit or label (its slot reused
    * for another row). So it is looked up again after the frame and right-clicked only once it
-   * shows the same name it did; and the menu must open on that same name (R43).
+   * shows the same name it did; and the menu must open on that same name.
    */
   async function menuOn(el: () => HTMLElement | null | undefined, what: string): Promise<void> {
     const first = await until(what, el);

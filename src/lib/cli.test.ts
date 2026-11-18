@@ -5,7 +5,7 @@ describe("launcherPath", () => {
   it("puts gg in the folder with the folder's own separator", () => {
     expect(launcherPath("/Users/ada/.local/bin")).toBe("/Users/ada/.local/bin/gg");
     expect(launcherPath("/usr/local/bin/")).toBe("/usr/local/bin/gg");
-    // Windows: the launcher is gg.cmd (Task 11).
+    // Windows: the launcher is gg.cmd.
     expect(launcherPath("C:\\Users\\ada\\bin")).toBe("C:\\Users\\ada\\bin\\gg.cmd");
     expect(launcherPath("C:\\")).toBe("C:\\gg.cmd");
   });

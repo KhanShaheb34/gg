@@ -7,9 +7,9 @@
 #
 #   scripts/walk.sh [--mode walk | walk3 | walk3-dark] [--size WxH] [--via-gg] <outdir>
 #
-# --mode walk (default): plan 2's walk (src/lib/perf/walkProbe.ts). walk3, walk3-dark: plan
-#   3's (worktreeWalkProbe.ts): settings, the staging routine, worktrees, the commit panel, a
-#   pull request and `gg` into the running app, in the light or the dark theme (set through
+# --mode walk (default): the actions walk (src/lib/perf/walkProbe.ts). walk3, walk3-dark: the
+#   worktree walk (worktreeWalkProbe.ts): settings, the staging routine, worktrees, the commit
+#   panel, a pull request and `gg` into the running app, in the light or the dark theme (set through
 #   the app's settings). Its repository's `origin` is a github.com URL that git sends to a bare
 #   repository beside it; `gh` is a recording fake.
 # --size: the window's size in logical pixels (GG_PERF_WINDOW), e.g. 900x560.
@@ -60,7 +60,7 @@ if [ "$id" != "$perf_id" ]; then
   exit 1
 fi
 # Only another copy of this perf build stops the run: an installed gg (com.shakirul.gg) may
-# run beside it (P3-R34) and is never signalled, focused or otherwise touched; the driver
+# run beside it and is never signalled, focused or otherwise touched; the driver
 # kills only the pid it started.
 if pgrep -f "^$app" > /dev/null; then
   echo "the perf build at $app is running; quit it first" >&2
@@ -204,7 +204,7 @@ for d in range(600):
           ;;
         "walk-need gg other")
           # A second launch hands the folder to the running app and exits: the real
-          # launcher path, `open -n -b com.shakirul.gg.perf` (Task 13 review minor 1: only
+          # launcher path, `open -n -b com.shakirul.gg.perf` (only
           # while the first is still there, so this launch never becomes the app).
           if kill -0 "$pid" 2> /dev/null; then
             (cd "$W" && env -i HOME="$HOME" PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" \

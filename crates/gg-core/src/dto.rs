@@ -1,5 +1,5 @@
-//! Types that cross the boundary to the UI. Their JSON shapes are fixed by the Boundary
-//! Types section of the plan and mirrored in `src/lib/types.ts`.
+//! Types that cross the boundary to the UI. Their JSON shapes are fixed, and mirrored by hand
+//! in `src/lib/types.ts`.
 
 use serde::{Deserialize, Serialize};
 
@@ -209,7 +209,7 @@ pub struct FileEntry {
     /// files).
     pub unstaged: bool,
     /// It can be ticked: false when its name (or a rename's other name) is not valid UTF-8,
-    /// which the app cannot hand back to git exactly (P3-R17).
+    /// which the app cannot hand back to git exactly.
     pub committable: bool,
     /// Why it cannot be ticked, when `committable` is false.
     pub reason: Option<String>,
@@ -418,7 +418,7 @@ pub struct InProgress {
     pub total: Option<u32>,
     /// What is being applied: the incoming branch or the commit's subject.
     pub subject: Option<String>,
-    /// What comes in (R32): for a merge, the branch or ref being merged (as the app asked
+    /// What comes in: for a merge, the branch or ref being merged (as the app asked
     /// for it when it started the merge, else the first local branch, remote branch or tag
     /// at that commit, else its 8-character hash); for a rebase, what it goes onto (found the
     /// same way); for a cherry-pick or revert, the 8-character hash of the commit applied.
@@ -426,7 +426,7 @@ pub struct InProgress {
     /// Rebase only: the branch being rebased (git's `head-name`), if it is one.
     pub rebasing: Option<String>,
     /// Rebase, cherry-pick or revert: the commit git stopped on, in full (`REBASE_HEAD`,
-    /// `CHERRY_PICK_HEAD`, `REVERT_HEAD`), which a skip leaves out (R40); `None` for a merge,
+    /// `CHERRY_PICK_HEAD`, `REVERT_HEAD`), which a skip leaves out; `None` for a merge,
     /// or when git keeps none.
     pub commit: Option<String>,
     /// The commit stopped on has no changes left: nothing is conflicted, and the index and
@@ -669,7 +669,7 @@ pub enum PullMode {
 ///
 /// A request on the branch checked out (reset, merge, rebase, cherry-pick, revert, pull of
 /// it, stash apply and pop, commit, continue, abort, skip) carries `expect_head`: HEAD as the UI showed it when
-/// the user asked (R39). The core refuses it, running nothing, when HEAD is on another branch
+/// the user asked. The core refuses it, running nothing, when HEAD is on another branch
 /// (or detached, or another commit while detached) by its turn; reset, commit, continue,
 /// abort and skip also when the commit moved.
 ///
@@ -776,7 +776,7 @@ pub enum OpRequest {
         name: String,
         remote: String,
     },
-    /// Pushes `branch` to the branch of the same name on `remote` (R38), or to `to`, a
+    /// Pushes `branch` to the branch of the same name on `remote`, or to `to`, a
     /// branch of another name there, which must be the branch's upstream (the user picked it
     /// in the Push dialog). A branch without an upstream gets this one; an existing upstream
     /// is never changed.
@@ -837,7 +837,7 @@ pub enum OpRequest {
     },
     /// Stages the conflicted files as they are and continues. Refused while a file still
     /// has conflict markers, unless `even_with_markers` (the user saw those files and went
-    /// ahead: a line that only looks like a marker must not trap them; R31).
+    /// ahead: a line that only looks like a marker must not trap them).
     Continue {
         even_with_markers: bool,
         expect_head: HeadInfo,
@@ -852,7 +852,7 @@ pub enum OpRequest {
     },
     /// Leaves out the commit a rebase, cherry-pick or revert is stopped on and goes on with
     /// the next (`<kind> --skip`): the way past a commit that came out empty. A merge has
-    /// none to skip. `commit`: the commit it is for (`InProgress.commit`, R40): refused if
+    /// none to skip. `commit`: the commit it is for (`InProgress.commit`): refused if
     /// git is stopped on another. A rebase skip puts every tracked file back as HEAD has it:
     /// with other changes there, the `skip_discards` danger first.
     Skip {
@@ -879,7 +879,7 @@ pub enum OpRequest {
         path: String,
         delete_branch: bool,
         /// The branch and commit the dialog showed for it: the worktree there must still be
-        /// on them, else nothing is deleted (final boundary review M6).
+        /// on them, else nothing is deleted.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect_head: Option<HeadInfo>,
     },
@@ -889,7 +889,7 @@ pub enum OpRequest {
     /// Commits exactly `paths` (relative to the worktree, as `worktree_files` lists them;
     /// either side of a rename stands for both) as they are in the working tree in the
     /// operation's turn, with `message`, on the branch checked out; then, with `push`, pushes
-    /// that branch to the branch of the same name on its remote (R38). Other changes,
+    /// that branch to the branch of the same name on its remote. Other changes,
     /// staged or not, are left as they are. While a merge with no conflicts left is in
     /// progress, it concludes the merge, and `paths` must then be every changed file.
     Commit {
@@ -900,7 +900,7 @@ pub enum OpRequest {
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
     },
-    /// Removes the active worktree's stale `index.lock` (M5): only one at least 10 minutes
+    /// Removes the active worktree's stale `index.lock`: only one at least 10 minutes
     /// old, while no git of the app's runs for the repository, a regular file, and only once
     /// the `remove_index_lock` danger is confirmed with its token (the file as seen).
     RemoveIndexLock {
@@ -909,11 +909,11 @@ pub enum OpRequest {
     },
     /// Opens a pull request of `branch` into `base`, a branch on remote `base_remote` (the
     /// base repository; `None`: the one `pr_suggest` names), through `gh`, with `title` (one
-    /// line) and `body` (any text), as a draft with `draft`. The branch is pushed first (R38)
+    /// line) and `body` (any text), as a draft with `draft`. The branch is pushed first
     /// when its namesake on its remote is missing or behind. Uses no working directory (runs
     /// from the main worktree). With `compare_page` (the dialog said gh cannot make it, and
     /// showed no form), the branch is only pushed and the outcome is GitHub's compare page:
-    /// gh is never run, even if it can be by now (final boundary review I1).
+    /// gh is never run, even if it can be by now.
     PrCreate {
         branch: String,
         base: String,
@@ -1163,7 +1163,7 @@ pub enum DangerKind {
     /// Removing a worktree whose only work is ignored files, which git deletes with it
     /// without asking. An ordinary confirmation, not red.
     RemoveWorktreeIgnoredFiles,
-    /// Deleting, after its worktree, a branch that `branch -d` would refuse (R9). Red.
+    /// Deleting, after its worktree, a branch that `branch -d` would refuse. Red.
     DeleteUnmergedBranchWithWorktree,
     /// Pruning forgets the worktree entries whose folders are gone (one on a disconnected
     /// drive too). An ordinary confirmation, not red.
@@ -1171,7 +1171,7 @@ pub enum DangerKind {
     /// Pruning, when an entry to forget is a detached HEAD with commits on no branch, tag or
     /// remote: they are lost with it. Red.
     PruneWorktreesLosesCommits,
-    /// Removing a stale `index.lock` (M5): another git or an editor may still be using the
+    /// Removing a stale `index.lock`: another git or an editor may still be using the
     /// repository. Red; its token is the file as seen (path, modification time, size).
     RemoveIndexLock,
 }
@@ -1183,7 +1183,7 @@ pub struct Danger {
     pub kind: DangerKind,
     pub message: String,
     pub detail: Option<String>,
-    /// The state the message was worked out from (R39): `force_push`, the remote-tracking
+    /// The state the message was worked out from: `force_push`, the remote-tracking
     /// commit (empty without one), which is the lease git checks, and the local tip pushed,
     /// on two lines; `delete_remote_branch`, the remote-tracking commit (`null` without one),
     /// which is also the lease; `hard_reset`, HEAD and the files it would discard (names,
@@ -1541,7 +1541,7 @@ mod tests {
             None,
             "only those that run in one"
         );
-        // The worktree operations name their target and run from the main worktree (P3-R5).
+        // The worktree operations name their target and run from the main worktree.
         for bad in [
             json!({"op": "worktree_prune", "expectWorktree": "/w"}),
             json!({"op": "worktree_remove", "path": "/w", "deleteBranch": false, "expectWorktree": "/w"}),
@@ -1560,7 +1560,7 @@ mod tests {
                 "{bad}"
             );
         }
-        // A request on the current branch says which HEAD it was asked for (R39).
+        // A request on the current branch says which HEAD it was asked for.
         assert_eq!(
             serde_json::from_value::<OpRequest>(
                 json!({"op": "reset", "hash": "h", "mode": "hard", "expectWorktree": "/w"})

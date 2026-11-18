@@ -40,7 +40,7 @@ describe("dialogs", () => {
     expect(overlays.openDialog(Form, {})).not.toBe(overlays.openDialog(Form, {}));
   });
 
-  it("a native menu's command is ignored while a dialog is open, as the keys are (Task 10 review minor 9)", () => {
+  it("a native menu's command is ignored while a dialog is open, as the keys are", () => {
     const action = vi.fn();
     overlays.fromAppMenu(action);
     expect(action).toHaveBeenCalledTimes(1);

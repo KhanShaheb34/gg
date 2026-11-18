@@ -53,7 +53,7 @@ describe("branchMenu, local branch", () => {
     expect(find(items, "pull").label).toBe("Pull");
   });
 
-  it("ahead of an upstream of another name, the push goes elsewhere: no count (R38)", () => {
+  it("ahead of an upstream of another name, the push goes elsewhere: no count", () => {
     const items = branchMenu(label({ upstream: "origin/main", ahead: 2 }), row(), snap());
     expect(find(items, "push").label).toBe("Push…");
   });
@@ -157,7 +157,7 @@ describe("branchMenu, pull requests", () => {
     expect(find(items, "pr.create").disabledReason).toBeUndefined();
   });
 
-  it("gh signed out: still Create pull request…, whose dialog says it pushes and opens the compare page (Task 10 review minor 8)", () => {
+  it("gh signed out: still Create pull request…, whose dialog says it pushes and opens the compare page", () => {
     const signedOut = { prs: prs("unavailable", "signed_out") };
     for (const l of [label(), label({ upstream: "origin/feature/x", ahead: 0 }), label({ upstream: "origin/feature/x", ahead: 2 })]) {
       const items = branchMenu(l, row(), snap({ ...signedOut, remoteBranches: ["origin/feature/x"] }));

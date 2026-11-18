@@ -74,7 +74,7 @@ describe("HTTP transport", () => {
     await expect(api.openInEditor(1, null)).resolves.toBeNull();
   });
 
-  it("numbers each repository's operations in the order they are sent (R28)", async () => {
+  it("numbers each repository's operations in the order they are sent", async () => {
     const ABORT = { op: "abort", expectHead: { branch: "main", hash: null }, expectWorktree: "/r" } as const;
     const fetchMock = respond({ ok: null });
     vi.stubGlobal("fetch", fetchMock);

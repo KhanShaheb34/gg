@@ -91,7 +91,7 @@ fn parse(url: &str) -> Option<(RemoteRepo, Option<String>)> {
     let written = lower_host(&host);
     let host = normal_host(&host);
     // Only a plain host name is a hosting site's: `x?.ghe.com` ends like one, but git and
-    // `gh` read another host out of it (Task 9 review I1).
+    // `gh` read another host out of it.
     if !is_plain_host(&written) || !is_plain_host(&host) {
         return None;
     }
@@ -159,7 +159,7 @@ pub fn is_plain_host(host: &str) -> bool {
 /// (`*.ghe.com`). Any other host (an Enterprise Server's) is taken for GitHub only when `gh`
 /// already has credentials stored for exactly that host (`RepoManager::on_github`), never by
 /// its name (`github.example.net` may be anyone's): otherwise `gh` would be pointed at it
-/// with `GH_HOST` and could send it a token. Other hosts are not supported (spec §5.5).
+/// with `GH_HOST` and could send it a token. Other hosts are not supported.
 /// Case and one trailing dot do not matter; a host that is not a plain name
 /// ([`is_plain_host`]) never is GitHub.
 pub fn is_known_github(host: &str) -> bool {
@@ -407,7 +407,7 @@ mod tests {
         }
     }
 
-    /// Security (Task 9 review I1): a host that is not a plain name is no hosting site's,
+    /// Security: a host that is not a plain name is no hosting site's,
     /// whatever it ends with: `x?.ghe.com` would pass a suffix test while git and gh read
     /// another host. Case and one trailing dot do not matter.
     #[test]

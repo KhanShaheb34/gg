@@ -1,5 +1,5 @@
-//! Serves gg-core over HTTP so the UI can run in a plain browser, where Playwright and agents
-//! can drive it. A development and test tool only: the app never includes it.
+//! Serves gg-core over HTTP so the UI can run in a plain browser, where Playwright and other
+//! tools can drive it. A development and test tool only: the app never includes it.
 //!
 //! - `POST /invoke` with `{cmd, args}` as `application/json` → 200 `{ok: value}` or 200
 //!   `{err: CoreErrorDto}`; any other content type → 415.

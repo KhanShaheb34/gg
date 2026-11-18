@@ -45,9 +45,9 @@ export const SEPARATOR: MenuItem = { separator: true };
 
 /**
  * Why HEAD- or tree-changing items cannot run now, as the core refuses them: git is stopped
- * in a merge, rebase, cherry-pick or revert, until it is continued or aborted (R17); or files
+ * in a merge, rebase, cherry-pick or revert, until it is continued or aborted; or files
  * still have conflicts nothing in progress explains (a stash pop's), until they are resolved
- * and staged (R20'). Undefined if neither.
+ * and staged. Undefined if neither.
  */
 export function inProgressReason(snap: RepoSnapshot): string | undefined {
   if (snap.inProgress) return `A ${snap.inProgress.kind} is in progress`;
@@ -102,7 +102,7 @@ export function remoteOf(name: string, remotes: string[]): string | null {
 /**
  * The remote a dialog chooses to begin with: `preferred` (a branch's upstream's) if it is
  * one, else origin, else the only one. Among several remotes none of which is origin,
- * nothing ("") is chosen: the user picks one before the dialog can go ahead (R29).
+ * nothing ("") is chosen: the user picks one before the dialog can go ahead.
  */
 export function defaultRemote(remotes: string[], preferred: string | null = null): string {
   if (preferred !== null && remotes.includes(preferred)) return preferred;
@@ -110,7 +110,7 @@ export function defaultRemote(remotes: string[], preferred: string | null = null
   return remotes.length === 1 ? remotes[0] : "";
 }
 
-/** Said under a remote list while nothing is chosen in it (R29). */
+/** Said under a remote list while nothing is chosen in it. */
 export const CHOOSE_REMOTE = "Choose the remote.";
 
 /** Why pull requests cannot be made through gh, as items and dialogs say it. */
@@ -125,7 +125,7 @@ export const PR_REASONS: Record<Exclude<PrUnavailable, "failed">, string> = {
  * `pr`: "Open pull request #N" when there is one; else "Create pull request…", whose dialog
  * decides what it can do and says so (when the pull requests are not known yet, or gh is
  * missing or signed out: it pushes first when needed, then opens GitHub's compare page). The
- * menu promises no more than that (Task 10 review minor 8); disabled, with the reason,
+ * menu promises no more than that; disabled, with the reason,
  * without a branch, a remote, or a remote on GitHub.
  */
 export function pullRequestItem(branch: string | null, pr: PullRequest | null, snap: RepoSnapshot): MenuItem {

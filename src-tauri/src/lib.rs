@@ -79,7 +79,7 @@ async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
     #[cfg(feature = "perf")]
     core.set_perf_log(std::env::var_os("GG_PERF_LOG").map(PathBuf::from));
     // Performance runs only: editors, terminals and the browser are recorded to this file,
-    // never started (the walks must reach no program and no web page; Task 13 review I1).
+    // never started (the walks must reach no program and no web page).
     #[cfg(feature = "perf")]
     if let Some(file) = std::env::var_os("GG_PERF_LAUNCHES").filter(|v| !v.is_empty()) {
         core.record_launches_to(Some(PathBuf::from(file)));

@@ -1,4 +1,4 @@
-// Scrolling with a search active (task 11 review): the same top-to-bottom scroll as
+// Scrolling with a search active: the same top-to-bottom scroll as
 // scroll.spec.ts, on r20k, once without a search and once with a broad one ("e", which hits
 // about 97% of the rows, each with its match marked), in Chromium against a release
 // gg-devserver. Runs only with GG_PERF=1:

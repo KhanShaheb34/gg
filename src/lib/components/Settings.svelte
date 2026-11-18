@@ -273,7 +273,7 @@
         >
       </div>
       <div class="note" id="settings-{kind}-note">
-        <!-- The specific reason first, then what it means for Test (final review M12). -->
+        <!-- The specific reason first, then what it means for Test. -->
         {#if field.status === "error" && field.error}
           <p class="problem" role="alert">{field.error}</p>
         {/if}

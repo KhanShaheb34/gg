@@ -1,5 +1,5 @@
 <!--
-  The command log (spec §5.7): every git command the app ran for this repository, newest
+  The command log: every git command the app ran for this repository, newest
   last, so the user can see how and why things work. By default the operations they asked
   for, each under its title with its commands; "Background reads" shows the reads the app
   makes by itself too. A command shows its time, its command line (quoted as a shell would

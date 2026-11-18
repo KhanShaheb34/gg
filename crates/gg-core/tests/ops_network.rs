@@ -268,8 +268,8 @@ async fn force_push_needs_confirmation_and_uses_lease() {
         h.writes_since(mark)
     );
     assert_ne!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
-    // The token is the remote-tracking commit the count was made from and the local tip
-    // (M1): the count and the list name those commits, not the refs, which could move
+    // The token is the remote-tracking commit the count was made from and the local tip:
+    // the count and the list name those commits, not the refs, which could move
     // between the reads.
     let token = rev(&repo, "refs/remotes/origin/main");
     let local = rev(&repo, "main");
@@ -351,7 +351,7 @@ async fn force_with_lease_fails_when_remote_moved_since_fetch() {
     assert_eq!(rev(&origin, "refs/heads/main"), newer);
 }
 
-/// The reviewer's scenario: the user sees the danger, someone pushes, a background fetch
+/// The user sees the danger, someone pushes, a background fetch
 /// moves the tracking branch, and the user confirms what they saw. A bare lease would
 /// pass (it compares with the tracking branch as now fetched) and discard the commit
 /// nobody saw; the lease token makes the core ask again, with the new count.
@@ -398,7 +398,7 @@ async fn confirming_with_an_old_lease_asks_again() {
     assert_eq!(rev(&origin, "refs/heads/main"), rev(&repo, "main"));
 }
 
-/// M1: the confirmation counted what the remote would lose against the local tip it saw. If
+/// The confirmation counted what the remote would lose against the local tip it saw. If
 /// the local branch moves before the confirmation arrives (a queued reset, a terminal), the
 /// core asks again with the new count, and nothing is pushed.
 #[tokio::test]
@@ -996,7 +996,7 @@ async fn delete_remote_branch_needs_confirmation() {
         )
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
-    // A lease on the commit the confirmation counted from (I1).
+    // A lease on the commit the confirmation counted from.
     let lease = format!(
         "--force-with-lease=refs/heads/topic:{}",
         rev(&repo, "topic")
@@ -1027,7 +1027,7 @@ async fn delete_remote_branch_needs_confirmation() {
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/topic"]));
 }
 
-/// I1: someone pushed to the branch after the last fetch here. Deleting it, confirmed with
+/// Someone pushed to the branch after the last fetch here. Deleting it, confirmed with
 /// what was fetched, is refused by git (the lease), with a plain line; their commit stays.
 #[tokio::test]
 async fn deleting_a_remote_branch_that_moved_since_the_fetch_is_refused() {
@@ -1515,7 +1515,7 @@ async fn network_operations_fail_plainly_on_an_empty_repository() {
     }
 }
 
-// ---- fetches and the operation queue (ruling R5) ----
+// ---- fetches and the operation queue ----
 
 /// Records of `git fetch` (scheduled or asked for) logged so far.
 fn fetch_records(h: &Harness) -> Vec<CommandRecord> {
@@ -1652,7 +1652,7 @@ async fn a_user_fetch_just_after_a_scheduled_one_starts_still_fetches() {
     assert!(snap.fetch.last_error.is_none());
 }
 
-/// Task 5 review, item 2: a scheduled fetch passes its "nothing waits" check, then a user's
+/// A scheduled fetch passes its "nothing waits" check, then a user's
 /// fetch takes its turn and finds no scheduled fetch to cancel yet; the scheduled one then
 /// shows as running. The user's fetch must not take that `running` as covering it: it
 /// cancels the scheduled fetch, waits for it and fetches. The interleaving is forced with
@@ -1710,7 +1710,7 @@ async fn a_user_fetch_is_not_covered_by_a_scheduled_one_that_started_behind_its_
     assert!(snap.fetch.last_error.is_none());
 }
 
-/// R13: a scheduled fetch that is running when an operation or a fetch the user asked for
+/// A scheduled fetch that is running when an operation or a fetch the user asked for
 /// takes its turn is cancelled: its git and what git started are stopped, no error is
 /// shown, and the operation does not wait for it.
 #[cfg(unix)]
@@ -1982,7 +1982,7 @@ async fn pulling_the_branch_being_rebased_here_says_a_rebase_is_in_progress() {
     );
 }
 
-/// Task 5 review, item 6: fetching into the branch checked out here, with nothing in
+/// Fetching into the branch checked out here, with nothing in
 /// progress, says what git's refusal means (no talk of an operation in progress).
 #[tokio::test]
 async fn fetching_into_the_branch_checked_out_here_with_nothing_stopped_says_why_plainly() {
@@ -2040,7 +2040,7 @@ async fn fetching_into_the_branch_being_rebased_here_says_to_fetch_afterwards() 
     );
 }
 
-/// M4: a remote branch never fetched here cannot be deleted from the app (its lease is "not
+/// A remote branch never fetched here cannot be deleted from the app (its lease is "not
 /// there"); the refusal says it has not been fetched, not that it changed.
 #[tokio::test]
 async fn deleting_a_remote_branch_never_fetched_says_so() {

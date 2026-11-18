@@ -31,7 +31,7 @@ describe("uncommittedMenu", () => {
     expect(disabled(items)).toEqual([]);
   });
 
-  it("is disabled while a merge is in progress (R17: saving would end the merge)", () => {
+  it("is disabled while a merge is in progress (saving would end the merge)", () => {
     const resolved = snap({ ...inProgress("merge"), status: { changed: 1, untracked: 0, conflicted: 0, conflictedPaths: [] } });
     expect(find(uncommittedMenu(resolved), "stash.save").disabledReason).toBe("A merge is in progress");
   });

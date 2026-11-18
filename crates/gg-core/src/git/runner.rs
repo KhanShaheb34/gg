@@ -221,7 +221,7 @@ pub fn parse_git_version(text: &str) -> Option<(u32, u32, u32)> {
     ))
 }
 
-/// Why `version` is too old for the app (M3), if it is.
+/// Why `version` is too old for the app, if it is.
 pub fn version_problem(version: (u32, u32, u32)) -> Option<String> {
     ((version.0, version.1) < MIN_GIT).then(|| {
         format!(
@@ -235,7 +235,7 @@ pub fn version_problem(version: (u32, u32, u32)) -> Option<String> {
 /// Said for a command (and an operation) the user stopped.
 pub const STOPPED: &str = "Stopped.";
 
-/// The user's Stop for one operation's git commands (R41): once stopped, the command running
+/// The user's Stop for one operation's git commands: once stopped, the command running
 /// is ended with everything it started (its process group: SIGTERM, then SIGKILL after
 /// [`CANCEL_GRACE`]), and no further command starts. Cheap to share.
 #[derive(Default)]
@@ -658,7 +658,7 @@ pub const BATCH_SSH_COMMAND: &str = "ssh -o BatchMode=yes";
 
 /// `GIT_SSH_COMMAND` for the git children of a repository: on Windows, where a child has no
 /// terminal to fail on but a hidden console that ssh would wait on until the time limit,
-/// [`BATCH_SSH_COMMAND`], so a fetch, pull or push that needs an answer fails at once (R41);
+/// [`BATCH_SSH_COMMAND`], so a fetch, pull or push that needs an answer fails at once;
 /// `None` when the user chose their ssh already (`GIT_SSH_COMMAND` or `GIT_SSH` in the
 /// environment, `has_env`; `core.sshCommand` set for the repository, `configured`), and
 /// elsewhere (no terminal: ssh fails at once by itself).
@@ -804,7 +804,7 @@ impl GitRunner {
         runner
     }
 
-    /// Why the git found is too old for the app (M3), if it is; checked once, at start.
+    /// Why the git found is too old for the app, if it is; checked once, at start.
     pub fn version_problem(&self) -> Option<String> {
         self.version.and_then(version_problem)
     }
@@ -1119,7 +1119,7 @@ impl GitRunner {
     }
 
     /// Every git child: the environment and leading options above, stdin null, and (Unix)
-    /// a session of its own (R15, R41): no controlling terminal, so nothing git starts (a
+    /// a session of its own: no controlling terminal, so nothing git starts (a
     /// hook, ssh, a signing program) can open `/dev/tty` and wait there when the app was
     /// started from a terminal; it fails at once instead. The session leader (git) also leads
     /// a new process group whose id is its pid: what a time limit or a Stop ends.
@@ -1168,7 +1168,7 @@ impl GitRunner {
 /// Windows `None`, found by name through that `PATH` at each start; on Windows found here,
 /// by the app, as a full path (Windows would otherwise look in the folder git runs in, a
 /// repository, before `PATH`), and only as a program: a `git.cmd` shim alone is refused
-/// with a message saying so, since it would run through `cmd.exe` (R19).
+/// with a message saying so, since it would run through `cmd.exe`.
 fn git_program(path: Option<&OsString>) -> Result<Option<PathBuf>> {
     if !cfg!(windows) {
         return Ok(None);
@@ -1193,7 +1193,7 @@ fn git_program(path: Option<&OsString>) -> Result<Option<PathBuf>> {
 
 /// The spawn path every child of the app's shares (git and the other tools): `program` in
 /// `cwd`, with `path` as its `PATH` when known (and found with it), stdin null, killed when
-/// dropped, and (Unix) in a session of its own (R15, R41), so without a controlling terminal
+/// dropped, and (Unix) in a session of its own, so without a controlling terminal
 /// and leading its own process group; (Windows) without a console window, and put in a job
 /// object of its own when started with [`crate::platform::spawn`], as every child is. Without the variables an enclosing git process (a
 /// hook) exports, which would point it, or the git it runs, at another repository.
@@ -1432,7 +1432,7 @@ async fn exec_limited(
         let read_out = async {
             if let Some(p) = stdout_pipe.as_mut() {
                 // On the heap: kept in the future, the buffers would make every runner future
-                // 16 KiB larger (and a debug build's stack overflow; Task 9 review minor 8).
+                // 16 KiB larger (and a debug build's stack overflow).
                 let mut buf = vec![0u8; READ_CHUNK];
                 while let Ok(n @ 1..) = p.read(&mut buf).await {
                     lock_tail(&out).push(&buf[..n]);
@@ -1750,7 +1750,7 @@ pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Op
 
     let deadline = Instant::now() + timeout;
     let mut cmd = std::process::Command::new(shell);
-    // In the home folder, as a new terminal starts (final boundary review M4): never in the
+    // In the home folder, as a new terminal starts: never in the
     // folder the app was started in (the repository `gg .` was run in), where the user's
     // interactive start-up files (directory-env plugins, prompt helpers) would act on it.
     let home = std::env::var_os("HOME")
@@ -1827,7 +1827,7 @@ pub(crate) fn between_markers<'a>(out: &'a [u8], marker: &[u8]) -> Option<&'a [u
 mod tests {
     use super::*;
 
-    /// Final review M8: every variable git itself calls local to a repository
+    /// Every variable git itself calls local to a repository
     /// (`rev-parse --local-env-vars`) is removed from every child, except the config ones the
     /// app keeps on purpose (a user's `-c` settings), and so are the others that point git at
     /// another namespace, object store or discovery boundary.
@@ -1893,7 +1893,7 @@ mod tests {
         assert!(text.ends_with("line 19999\n"));
     }
 
-    /// R15: a command run with a time limit (every network command) runs in a session of
+    /// A command run with a time limit (every network command) runs in a session of
     /// its own, so it has no controlling terminal: ssh cannot open `/dev/tty` and wait there
     /// when the app was started from a terminal. Seen from a shell git starts (an alias),
     /// which shares git's session.
@@ -1962,8 +1962,7 @@ mod tests {
     }
 
     /// The read buffers live on the heap: a runner future stays small, so the futures that
-    /// hold it (an operation's, a load's) do not overflow a debug build's stack (Task 9
-    /// review minor 8).
+    /// hold it (an operation's, a load's) do not overflow a debug build's stack.
     #[test]
     fn a_limited_run_is_a_small_future() {
         let git = GitRunner {
@@ -1996,8 +1995,7 @@ mod tests {
     /// The git another program runs gets every setting the app gives its own git (each
     /// `-c` of the leading options), plus no hooks, and git's environment. The settings go
     /// into `GIT_CONFIG_PARAMETERS` after whatever was inherited there (the last of a key
-    /// wins), and the user's own `GIT_CONFIG_COUNT` settings are left alone (Task 9 review
-    /// minor 1).
+    /// wins), and the user's own `GIT_CONFIG_COUNT` settings are left alone.
     #[test]
     fn the_protection_for_another_programs_git_follows_the_apps_own() {
         let env = protection_env_after(Some("'core.fsmonitor=evil' 'user.name=it'\\''s'"));
@@ -2226,7 +2224,7 @@ mod tests {
         assert_eq!(out.limit, Expired::Cancelled);
     }
 
-    /// M3: the version is read from `git --version`, and one older than 2.29 is a problem
+    /// The version is read from `git --version`, and one older than 2.29 is a problem
     /// said once, plainly.
     #[test]
     fn git_versions_are_read_and_old_ones_said() {
@@ -2249,7 +2247,7 @@ mod tests {
         );
     }
 
-    /// R41: every git child, not only network ones, runs in a session of its own (no
+    /// Every git child, not only network ones, runs in a session of its own (no
     /// controlling terminal: a hook or a signing program that would wait on `/dev/tty`
     /// fails at once), with stdin null.
     #[cfg(unix)]
@@ -2351,7 +2349,7 @@ mod tests {
     }
 
     /// A runner with no log of interest, for the time-limit tests.
-    /// The app's git children are counted per repository while they run (M5: a lock is
+    /// The app's git children are counted per repository while they run (a lock is
     /// never taken for stale while one of them may hold it), by every clone of the runner.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2407,7 +2405,7 @@ mod tests {
 
     /// The idle limit counts from the last output: a command that keeps writing (to stderr,
     /// as git's progress) for longer than it runs to its end. Limits generous against a slow
-    /// start (Task 6 review: the end-to-end tests were flaky).
+    /// start (the end-to-end tests were flaky).
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_command_that_keeps_writing_is_not_idle() {
@@ -2945,7 +2943,7 @@ mod tests {
             );
         }
 
-        /// Final boundary review M4: the login shell starts in the home folder (or `/`),
+        /// The login shell starts in the home folder (or `/`),
         /// never in the folder the app inherited (the repository `gg .` was run in), so the
         /// user's interactive start-up files run where a new terminal's would.
         #[test]

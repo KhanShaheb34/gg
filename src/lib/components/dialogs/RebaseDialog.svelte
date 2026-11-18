@@ -14,7 +14,7 @@
     onto: string;
     /** The current branch, rebased. */
     branch: string;
-    /** HEAD as the menu showed it: the rebase is of that branch (R39). */
+    /** HEAD as the menu showed it: the rebase is of that branch. */
     head: HeadInfo;
     /** The active worktree it was opened for: what it asks for runs only there. */
     worktree: string;

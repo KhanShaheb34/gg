@@ -96,7 +96,7 @@ pub(crate) struct OpCtx<'a> {
     pub(crate) created: Arc<std::sync::Mutex<Option<String>>>,
     /// The commit the operation made (its full hash), once made.
     pub(crate) committed: Arc<std::sync::Mutex<Option<String>>>,
-    /// What git was stopped in when the operation's turn read it (final review M6).
+    /// What git was stopped in when the operation's turn read it.
     pub(crate) turn_in_progress: std::sync::OnceLock<Option<InProgressKind>>,
 }
 
@@ -517,7 +517,7 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 body(move |ctx, dangers| {
                     Box::pin(async move {
                         // Confirmed with the token the user saw: the remote commit it leases on
-                        // (R11) and the local tip it pushes (M1).
+                        // and the local tip it pushes.
                         let token = token_of(dangers, DangerKind::ForcePush);
                         let (lease, tip) = token
                             .and_then(|t| t.split_once('\n'))
@@ -803,7 +803,7 @@ struct Turn {
     confirmed: Vec<Confirmed>,
     title: Title,
     body: Body,
-    /// A numbered request's turn to join the queue (R28): released once it has joined.
+    /// A numbered request's turn to join the queue: released once it has joined.
     numbered: Option<NumberedTurn>,
 }
 
@@ -860,7 +860,7 @@ impl RepoManager {
         self.run_numbered(repo_id, None, request, confirmed).await
     }
 
-    /// Stops operation `op_id` of repository `repo_id` if it is running (R41): the git
+    /// Stops operation `op_id` of repository `repo_id` if it is running: the git
     /// command it runs, with everything that command started, is ended, nothing further
     /// runs, and the operation ends as failed ("Stopped."), with the usual refresh. Whether
     /// it was running.
@@ -897,7 +897,7 @@ impl RepoManager {
     }
 
     /// Like [`RepoManager::run_op`], for request number `n` of client `client`'s requests to
-    /// the repository (R28): it joins the queue only after the ones numbered before it,
+    /// the repository: it joins the queue only after the ones numbered before it,
     /// waiting up to [`order::ORDER_WAIT`] for one that has not arrived (see [`order`]).
     pub async fn run_op_in_order(
         self: &Arc<Self>,
@@ -962,7 +962,7 @@ impl RepoManager {
         repo.op_waiting.fetch_sub(1, Ordering::SeqCst);
         // Numbered when its turn comes, so ids follow the order operations run in.
         let op_id = self.next_op_id();
-        // Nothing of ours runs beside an operation (R13).
+        // Nothing of ours runs beside an operation.
         self.cancel_scheduled_fetch(&repo).await;
         if repo.is_closed().await {
             return Err(unknown_repo(repo.identity.repo_id));
@@ -991,7 +991,7 @@ impl RepoManager {
             },
             ran => ran,
         };
-        // A refused continue is read again too (R33): the files it names were edited outside
+        // A refused continue is read again too: the files it names were edited outside
         // the app, where nothing git watches changes, and the banner must show them as they are.
         let refused_continue = continuing && matches!(ran, Ok((_, Ran::Refused(_))));
         let snapshot = if started.load(Ordering::SeqCst) || refused_continue {
@@ -1147,7 +1147,7 @@ impl RepoManager {
         ) {
             return Err(progress::nothing_in_progress());
         }
-        // A request on the branch checked out acts on the one the user saw (R39).
+        // A request on the branch checked out acts on the one the user saw.
         if let Some((expected, strict)) = expected_head(&request, head.as_deref()) {
             let now = HeadInfo {
                 branch: head.clone(),
@@ -1163,7 +1163,7 @@ impl RepoManager {
                     return Ok((title, Ran::Refused(why)));
                 }
                 // Continuing stages the conflicted files: never one the user has not resolved,
-                // unless they saw it listed and went ahead (R31).
+                // unless they saw it listed and went ahead.
                 if matches!(
                     request,
                     OpRequest::Continue {
@@ -1243,10 +1243,10 @@ impl RepoManager {
         }
         let step = body(&ctx, &dangers).await;
         *repo.running_stop.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        // Stopped by the user (R41): whatever the body made of it, the operation failed, with
+        // Stopped by the user: whatever the body made of it, the operation failed, with
         // what git said before it was ended; unless the body says what was done before the
         // Stop that stands (a commit made).
-        // A staging-area lock in the way is named, and offered for removal when stale (M5).
+        // A staging-area lock in the way is named, and offered for removal when stale.
         let step = match step {
             Ok(step) if !stop.is_stopped() => lock::explain_failure(&ctx, step).await,
             step => step,
@@ -1297,7 +1297,7 @@ impl RepoManager {
 }
 
 /// Whether every danger in `dangers` is confirmed: `confirmed` has its kind with the same
-/// token, so the user saw the state it is about as it is now (R11, R39).
+/// token, so the user saw the state it is about as it is now.
 fn all_confirmed(dangers: &[Danger], confirmed: &[Confirmed]) -> bool {
     dangers.iter().all(|d| {
         confirmed
@@ -1498,7 +1498,7 @@ mod tests {
                 yes(DangerKind::ForcePush, None),
             ]
         ));
-        // Every danger is confirmed only with the token the user saw (R11, R39).
+        // Every danger is confirmed only with the token the user saw.
         let reset = [danger(DangerKind::HardReset, Some("main\nabc\n0"))];
         assert!(!all_confirmed(
             &reset,
@@ -1654,7 +1654,7 @@ mod tests {
         );
     }
 
-    /// The second line behind the refusal of unexplained conflicts (Task 5 review, item 1b):
+    /// The second line behind the refusal of unexplained conflicts:
     /// a squash merge reached directly, over unmerged entries it did not make, fails as git
     /// says and is not undone with `reset --merge`, which would take the user's edit of the
     /// conflicted file with it.

@@ -18,7 +18,7 @@ pub(crate) fn short(hash: &str) -> &str {
 }
 
 /// Remembers `name` as how the user named the commit coming in to the merge or rebase that
-/// just ran, if git stopped in it (R32): the banner says it so.
+/// just ran, if git stopped in it: the banner says it so.
 async fn remember_incoming(ctx: &OpCtx<'_>, name: &str) -> Result<()> {
     if let Some(hash) = incoming_commit(&ctx.runner, &ctx.cwd).await? {
         *ctx.repo
@@ -246,7 +246,7 @@ pub(crate) fn stopped_without_conflicts(kind: InProgressKind) -> String {
 
 /// The branch HEAD is on, or `None` when detached (or unborn and unreadable): the full ref
 /// with `refs/heads/` taken off, as the snapshot names it (`read_head`). Not `--short`, which
-/// gives `heads/main` when a tag is also named `main` (N1).
+/// gives `heads/main` when a tag is also named `main`.
 pub(crate) async fn current_branch(ctx: &OpCtx<'_>) -> Result<Option<String>> {
     let out = ctx.read(&["symbolic-ref", "-q", "HEAD"]).await?;
     let text = out.text();
@@ -386,7 +386,7 @@ pub(crate) async fn merge(
     autostash_note(ctx, step, &out, stash_before).await
 }
 
-/// Said when a squash merge conflicts (R20).
+/// Said when a squash merge conflicts.
 const SQUASH_CONFLICTS: &str = "This squash merge has conflicts. A squash can't be continued \
                                 here, so nothing was changed. Merge normally, or squash in a \
                                 terminal.";
@@ -395,7 +395,7 @@ const SQUASH_CONFLICTS: &str = "This squash merge has conflicts. A squash can't 
 /// left conflicts (git leaves no MERGE_HEAD for a squash, so it could be neither continued
 /// nor aborted) is undone with `reset --merge`,
 /// which puts the index and the files the merge touched back and keeps the uncommitted
-/// changes it did not touch; the step then says so (R20), with git's output.
+/// changes it did not touch; the step then says so, with git's output.
 async fn squash_failed(ctx: &OpCtx<'_>, step: Step) -> Result<Step> {
     let Step::Failed { detail, hints, .. } = &step else {
         return Ok(step);
@@ -496,7 +496,7 @@ pub(crate) async fn autostash_note(
     })
 }
 
-/// Push for `branch` after it got new commits, to the branch of the same name (R38): on
+/// Push for `branch` after it got new commits, to the branch of the same name: on
 /// its upstream's remote when the upstream has that name, or, without an upstream, on the
 /// repository's only remote (where the push then sets it). `None` otherwise: a branch whose
 /// upstream has another name (or is a local branch) is pushed from the Push dialog, which

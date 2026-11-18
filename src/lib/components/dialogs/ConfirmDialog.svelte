@@ -6,7 +6,7 @@
   stale entries prune forgets: see dangers.ts) is asked in the ordinary style: no red, no
   warning mark; one red danger makes the whole round red.
   For an operation on a repository other than the active tab's, `repository` names it. Asked
-  again (`again`: the user confirmed, but what it is about changed before it ran, R39), it
+  again (`again`: the user confirmed, but what it is about changed before it ran), it
   says so above the dangers, which are as they are now.
 -->
 <script lang="ts">

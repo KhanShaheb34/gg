@@ -28,7 +28,7 @@ fn reset_hard(hash: &str, expect_head: HeadInfo) -> OpRequest {
     }
 }
 
-/// The reviewer's scenario (C2): Reset main to here (hard) is asked for and its confirmation
+/// Reset main to here (hard) is asked for and its confirmation
 /// shown; meanwhile a queued checkout switches to `feature`, which has uncommitted changes.
 /// The confirmation then arrives: it was for main, so nothing is reset, and feature's tip and
 /// changes are as they were.
@@ -136,7 +136,7 @@ async fn a_hard_reset_confirmed_before_more_files_changed_is_asked_again() {
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), first);
 }
 
-/// A file already listed and edited again after the dialog asks again too (Task 4 review):
+/// A file already listed and edited again after the dialog asks again too:
 /// the token has the files' sizes and times, not only their names.
 #[tokio::test]
 async fn a_hard_reset_asks_again_when_a_listed_file_is_edited_again() {
@@ -193,7 +193,7 @@ async fn a_reset_does_not_run_once_the_branch_has_moved() {
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), moved);
 }
 
-/// A cherry-pick asked for on main does not land on the branch checked out since (I2);
+/// A cherry-pick asked for on main does not land on the branch checked out since;
 /// several asked for one after another on the same branch all run.
 #[tokio::test]
 async fn a_cherry_pick_runs_on_the_branch_it_was_asked_for() {
@@ -323,7 +323,7 @@ async fn an_abort_confirmed_for_a_merge_does_not_abort_a_cherry_pick() {
     assert!(in_git_dir(&repo, "CHERRY_PICK_HEAD"));
 }
 
-/// N1: a tag named like the branch checked out must not make the core read the branch as
+/// A tag named like the branch checked out must not make the core read the branch as
 /// `heads/main` (what `symbolic-ref --short` gives then): requests carry HEAD as the snapshot
 /// shows it (`main`), and continue and abort of a stopped merge still run.
 #[tokio::test]
@@ -388,7 +388,7 @@ async fn a_tag_named_like_the_branch_does_not_block_current_branch_actions() {
 /// paths are read in (150: more than one run of 100). That a run also stays under Windows'
 /// 32 KiB command line is pinned by `ops::commit`'s unit test
 /// `paths_go_in_runs_short_by_count_and_by_length`: here, 100 paths cannot pass 32 KiB on
-/// Windows, whose paths stop at 260 characters (Task 12 review minor 8).
+/// Windows, whose paths stop at 260 characters.
 #[tokio::test]
 async fn a_hard_reset_counts_many_long_named_files_it_overwrites() {
     let repo = TestRepo::new();
@@ -414,7 +414,7 @@ async fn a_hard_reset_counts_many_long_named_files_it_overwrites() {
     );
 }
 
-/// O1: a hard reset overwrites an untracked file at a path the target commit tracks. The
+/// A hard reset overwrites an untracked file at a path the target commit tracks. The
 /// confirmation names it as overwritten (and the other untracked files as kept), and a file
 /// made there after the confirmation was shown makes the core ask again.
 #[tokio::test]

@@ -1,4 +1,4 @@
-// What git stopped in (spec §5.6): the banner above the graph, its files, Abort, Open in
+// What git stopped in: the banner above the graph, its files, Abort, Open in
 // editor and Continue, end to end against the real core. The devserver records editor
 // launches instead of starting an editor (fixtures: `launches`).
 import { writeFileSync } from "node:fs";
@@ -57,7 +57,7 @@ test("merge_conflict_shows_banner_with_files", async ({ gg }) => {
   await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
 
   await expect(banner(page)).toBeVisible();
-  // What comes in is named (R32); the merge message under it would only repeat it.
+  // What comes in is named; the merge message under it would only repeat it.
   await expect(banner(page).getByRole("heading")).toHaveText("Merging feature/x into main");
   await expect(banner(page)).not.toContainText("Merge branch 'feature/x'");
   await expect(banner(page)).toContainText("2 files have conflicts");
@@ -119,7 +119,7 @@ test("abort_returns_to_before", async ({ gg }) => {
   expect((await runOp(page, MERGE_FEATURE)).status).toBe("stopped");
   resolve(gg, "app.txt");
 
-  // The core asks to confirm, saying what goes back (R39).
+  // The core asks to confirm, saying what goes back.
   await banner(page).getByRole("button", { name: "Abort…" }).click();
   const confirm = page.getByRole("alertdialog");
   await expect(confirm.getByRole("heading")).toHaveText("Abort the merge");
@@ -344,7 +344,7 @@ test("a cherry-pick that comes out empty is skipped from its notice", async ({ g
   expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(head);
 });
 
-test("a commit with no changes left: the banner says so and offers Skip; the notice's Skip goes once git moves on (R40)", async ({
+test("a commit with no changes left: the banner says so and offers Skip; the notice's Skip goes once git moves on", async ({
   gg,
 }) => {
   const { page } = gg;

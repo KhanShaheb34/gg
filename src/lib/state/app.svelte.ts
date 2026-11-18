@@ -471,7 +471,7 @@ export async function init(): Promise<void> {
     if (e instanceof CoreError && e.code === "git_not_found") app.gitMissing = true;
   });
   if (state.settingsProblem) reportSettingsProblem(state.settingsProblem);
-  // A git too old for the app: said once, plainly, rather than by each action failing (M3).
+  // A git too old for the app: said once, plainly, rather than by each action failing.
   if (state.gitProblem) notify({ kind: "error", message: state.gitProblem, persistent: true });
   app.recents = state.recents;
   app.settings = state.settings;

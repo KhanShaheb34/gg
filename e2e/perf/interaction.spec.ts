@@ -1,5 +1,5 @@
-// Click feedback and refresh latency on a 20,000-commit repository (plan 1, task 10, spec
-// §7), in Chromium against a release gg-devserver. Runs only with GG_PERF=1:
+// Click feedback and refresh latency on a 20,000-commit repository, in
+// Chromium against a release gg-devserver. Runs only with GG_PERF=1:
 //
 //   GG_PERF=1 pnpm e2e e2e/perf/interaction.spec.ts
 //

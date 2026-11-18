@@ -1,4 +1,4 @@
-// The menu of a commit row (spec §5.2, "Commit").
+// The menu of a commit row.
 
 import type { CommitRow, RepoSnapshot } from "../types";
 import { firstReason, inProgressReason, item, SEPARATOR, shown } from "./common";

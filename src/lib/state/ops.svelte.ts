@@ -18,7 +18,7 @@ import { findRepoView } from "./repo.svelte";
  * Runs `request` on repository `repoId` (queued behind the operations before it, by the
  * core). When the core finds dangers in it, nothing has run yet: the user is shown them and,
  * on confirming, the request is sent again with them confirmed, each with the token of the
- * state it was shown (R39), as often as the core asks (it asks again, with the state as it
+ * state it was shown, as often as the core asks (it asks again, with the state as it
  * is then, if anything it was about changed meanwhile); cancelling ends it there. The
  * outcome's snapshot is applied to the repository's view. The notice: `done`, its message
  * with a button per hint; `failed`, its message with git's text folded below, the hints, and
@@ -115,7 +115,7 @@ function confirm(repoId: number, outcome: OpOutcome, again: boolean): Promise<bo
 
 /**
  * What every outcome does besides its notice: a stopped operation is marked so for the log,
- * and notices whose buttons may no longer hold go (R30).
+ * and notices whose buttons may no longer hold go.
  */
 function settle(repoId: number, outcome: OpOutcome): void {
   if (outcome.status === "stopped") markStopped(outcome.opId);
@@ -128,7 +128,7 @@ function report(repoId: number, outcome: OpOutcome, request: OpRequest): void {
   // Where the operation ran: the worktree it was asked for, not whichever is active by the
   // time its outcome arrives (one that names none ran from the active one).
   const ranIn = "expectWorktree" in request ? request.expectWorktree : outcome.snapshot.activeWorktree;
-  // What earlier notices offered may no longer hold once a later operation ran there (R30):
+  // What earlier notices offered may no longer hold once a later operation ran there:
   // its snapshot may never have shown it running.
   settle(repoId, outcome);
   const choose = outcome.hints.find((h) => h.kind === "choose_pull_mode");
@@ -149,7 +149,7 @@ function report(repoId: number, outcome: OpOutcome, request: OpRequest): void {
   const detail = outcome.detail ?? undefined;
   // A notice that offers what to do next waits for the user, until the next operation there.
   const until = actions.length > 0 ? { repoId, opId: outcome.opId } : undefined;
-  // A Skip applies while git is stopped on the commit it is for (R40).
+  // A Skip applies while git is stopped on the commit it is for.
   const skip = outcome.hints.find((h) => h.kind === "skip");
   const holds = skip ? () => findRepoView(repoId)?.snapshot.inProgress?.commit === skip.commit : undefined;
   if (outcome.status === "done") {
@@ -239,7 +239,7 @@ function hintActions(repoId: number, hint: OpHint, worktree: string): ToastActio
       return [{ label, run: () => void openExternal(repoId, { target: "url", url }) }];
     }
     case "remove_index_lock":
-      // The core asks to confirm, in red, naming the file and its age (M5).
+      // The core asks to confirm, in red, naming the file and its age.
       return [
         {
           label: "Remove the lock file…",

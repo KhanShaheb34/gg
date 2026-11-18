@@ -1,6 +1,6 @@
 // Checking out a local branch, the same way from its menu, a double click on its label and
 // the "check it out instead" of the remote branch dialog: a branch behind its upstream and
-// not ahead of it asks whether to fast-forward it first (spec §5.3); one level with its
+// not ahead of it asks whether to fast-forward it first; one level with its
 // upstream, or diverged from it, or without one, is checked out directly.
 
 import FastForwardDialog from "../components/dialogs/FastForwardDialog.svelte";

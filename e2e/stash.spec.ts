@@ -1,4 +1,4 @@
-// Stashes (spec §5.2): saving one from the uncommitted-changes row, and a stash row's apply,
+// Stashes: saving one from the uncommitted-changes row, and a stash row's apply,
 // pop, drop and create-branch, end to end against the real core.
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -140,7 +140,7 @@ test("stash_untracked_option: untracked files go into the stash only when asked"
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("?? scratch.txt");
 
   await stashChanges(page, "With untracked", true);
-  // Newest on top, even saved in the same second as the first (R33).
+  // Newest on top, even saved in the same second as the first.
   await expect(row(page, 0).locator('[data-ref="stash@{0}"]')).toBeVisible();
   await expect(subject(page, 0)).toHaveText(/With untracked/);
   await expect(row(page, 1).locator('[data-ref="stash@{1}"]')).toBeVisible();
@@ -150,7 +150,7 @@ test("stash_untracked_option: untracked files go into the stash only when asked"
   expect(gg.git("small", "show", "--name-only", "--format=", "stash@{0}^3").trim()).toBe("scratch.txt");
 });
 
-// A stale index.lock (M5), here in the way of checking out a commit: the failure names it, and
+// A stale index.lock, here in the way of checking out a commit: the failure names it, and
 // "Remove the lock file…" removes it after a red confirmation; a fresh one is not offered.
 test("a stale index.lock is named, and removed only through a red confirmation", async ({ gg }) => {
   const { page } = gg;

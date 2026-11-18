@@ -115,7 +115,7 @@ impl RepoManager {
     /// Re-reads the repository as [`RepoManager::refresh`] does, for the user: also loads
     /// the pull requests (in the background, at most once every 60 s).
     pub async fn refresh_by_user(self: &Arc<Self>, repo_id: u32) -> Result<RepoSnapshot> {
-        // A "no" is asked again (Task 9 review minor 2): the user may have signed in to the
+        // A "no" is asked again: the user may have signed in to the
         // host meanwhile, or fixed the ssh config.
         lock(&self.gh_hosts).retain(|_, stored| *stored);
         lock(&self.ssh_hosts).retain(|_, real| real.is_some());
@@ -129,7 +129,7 @@ impl RepoManager {
     async fn load_prs(self: &Arc<Self>, repo: &Arc<Repo>, trigger: PrTrigger) {
         // After "no gh" or "signed out", the user's own refresh asks again at once (the
         // pull-request dialog does it when it opens): they may have installed gh or signed
-        // in a moment ago (final boundary review I1).
+        // in a moment ago.
         let asked_again = trigger == PrTrigger::User && repo.prs_unavailable().await.is_some();
         {
             let mut gate = lock(&repo.prs_gate);
@@ -265,7 +265,7 @@ impl RepoManager {
         };
         let Some(on) = self.on_github(repo, &repo.runner, &facts, remote).await else {
             // A host that only gh could vouch for, and gh is not there to ask: gh is what is
-            // missing (Task 9 review minor 2).
+            // missing.
             let unknown_host = facts
                 .repo_of(remote)
                 .is_some_and(|on| is_plain_host(&on.host) && !is_known_github(&on.host));
@@ -378,7 +378,7 @@ impl RepoManager {
 
     /// The web hosts (`host[:port]`) the browser may be sent to for repository `repo`:
     /// github.com, and the GitHub host of each of its remotes on GitHub, as
-    /// [`RepoManager::on_github`] resolves it (final boundary review M1).
+    /// [`RepoManager::on_github`] resolves it.
     pub(crate) async fn github_web_hosts(&self, repo: &Repo) -> Vec<String> {
         let mut hosts = vec!["github.com".to_owned()];
         let Ok(facts) = self.remote_facts(repo, &repo.runner, &repo.root).await else {
@@ -409,7 +409,7 @@ impl RepoManager {
         remote: &str,
     ) -> Option<RemoteRepo> {
         let on = facts.repo_of(remote)?;
-        // Only a plain host name is ever GitHub, asked about or named to `gh` (I1).
+        // Only a plain host name is ever GitHub, asked about or named to `gh`.
         if !is_plain_host(&on.host) {
             return None;
         }

@@ -17,7 +17,7 @@
     hash: string;
     subject: string;
     parents: string[];
-    /** HEAD as the menu showed it: the new commit goes there (R39). */
+    /** HEAD as the menu showed it: the new commit goes there. */
     head: HeadInfo;
     /** The active worktree it was opened for: what it asks for runs only there. */
     worktree: string;

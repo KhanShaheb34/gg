@@ -1,13 +1,13 @@
 <!--
-  The banner above the graph while git is stopped in a merge, rebase, cherry-pick or revert
-  (spec §5.6), started here or outside the app: what is in progress ("Merging feature/x into
+  The banner above the graph while git is stopped in a merge, rebase, cherry-pick or revert,
+  started here or outside the app: what is in progress ("Merging feature/x into
   main", "Rebasing topic onto main, step 2 of 5"), the conflicted files with how far each is
   resolved (each opens in the editor; the list scrolls, fading at its bottom edge), and Abort,
   Open in editor and Continue. Continue is enabled once every file is resolved; until then it
   says why, and a quieter "Continue anyway…" asks first, naming the files that still have
-  markers and those git kept one side of (R31). When the commit being applied has no changes
+  markers and those git kept one side of. When the commit being applied has no changes
   left (the core's `empty`: continuing would be refused), the banner says so and offers Skip
-  (that commit) in place of Continue (R40). The app never edits the files.
+  (that commit) in place of Continue. The app never edits the files.
 
   A quieter form shows conflicts nothing is in progress for (left by applying a stash): the
   files and Open in editor only, and what clears them.
@@ -47,7 +47,7 @@
   const resolved = $derived(files.filter((f) => f.state === "resolved").length);
   /** Every file is resolved (and every one was looked at). */
   const ready = $derived(progress !== null && unnamed === 0 && resolved === files.length);
-  /** The commit being applied has no changes left: the way on is to skip it (R40). */
+  /** The commit being applied has no changes left: the way on is to skip it. */
   const empty = $derived(progress !== null && progress.empty && progress.commit !== null);
 
   const files_ = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
@@ -117,7 +117,7 @@
     if (progress !== null && !ready) view.recheck();
   }
 
-  /** The core asks to confirm, saying what goes back (R39): no dialog of its own. */
+  /** The core asks to confirm, saying what goes back: no dialog of its own. */
   function abort() {
     if (progress) runOp(view.repoId, { op: "abort", expectHead: snap.head, expectWorktree: snap.activeWorktree }).catch(() => {}); // reported by runOp
   }

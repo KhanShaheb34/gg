@@ -1,5 +1,5 @@
 <!--
-  Create pull request (spec §5.5) for a local branch. Opens at once and asks the core what to
+  Create pull request for a local branch. Opens at once and asks the core what to
   offer (`pr_suggest`: a title and description from the branch's commits, the base, any open
   pull request of the branch, GitHub's compare page), which can take a few seconds: it says
   what it waits for, and Cancel works meanwhile. The fields can be filled in already; a
@@ -7,14 +7,14 @@
 
   Then, as the answer and the repository's pull-request state say: the form (title, description,
   base among the remote branches, draft), with a primary button that names the push it makes
-  first when one is needed (R38); "Pull request #N already exists" with Open and Copy link; or
+  first when one is needed; "Pull request #N already exists" with Open and Copy link; or
   why nothing can be made (not GitHub). Without gh, or signed out, the branch is pushed and
   the compare page opens to finish there. Where it pushes, whether it must, and the base
   repository come from the core (`pr_suggest`), worked out as `pr_create` will.
 
-  While the request is out, Cancel is off and the step is said (pushing, creating; R27). A
+  While the request is out, Cancel is off and the step is said (pushing, creating). A
   failure stays here, inline, with Show log; success closes it and leaves a notice with Open
-  and Copy link (R30).
+  and Copy link.
 -->
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
@@ -67,7 +67,7 @@
   /**
    * The remote of the repository the pull request goes into: the base repository the core
    * chose (the same rule as the list's). Only its branches can be the base, so changing the
-   * base never changes the repository (Task 9 review minor 4).
+   * base never changes the repository.
    */
   const baseRemote = $derived(suggestion ? suggestion.baseRemote : guessRemote);
 
@@ -91,7 +91,7 @@
   void (async () => {
     // Not known yet whether gh can be asked, or it could not be (not installed, signed out:
     // the user may have fixed that a moment ago): a refresh the user would have asked for
-    // loads them, and asks gh again at once (final boundary review I1).
+    // loads them, and asks gh again at once.
     if (prs?.status === "unknown" || prs?.status === "unavailable") {
       api.refresh(repoId, true).then(
         (s) => view?.applySnapshot(s),
@@ -101,7 +101,7 @@
     await suggest();
   })();
 
-  /** Asks the core what to offer; a failure is said with Try again (final review M9). */
+  /** Asks the core what to offer; a failure is said with Try again. */
   async function suggest() {
     suggestFailed = null;
     try {
@@ -136,11 +136,11 @@
   );
   /**
    * gh cannot make it here (not installed, or signed out), but GitHub can: the branch is
-   * pushed and GitHub's compare page opens to finish there (Task 9 review I5).
+   * pushed and GitHub's compare page opens to finish there.
    */
   const compareOnly = $derived(unavailable === "no_gh" || unavailable === "signed_out");
 
-  // --- The push it makes first (R38), as the core will make it ----------------------------
+  // --- The push it makes first, as the core will make it ----------------------------
 
   /** Where the branch is pushed ("fork/x"), as `pr_create` will push it; null until known. */
   const pushTo = $derived(suggestion?.pushTo ?? null);
@@ -205,7 +205,7 @@
     return titleProblem === null && baseRemote !== null && base !== "" && pushTo !== null;
   });
 
-  // Task 9 review I4: the form's fields gone (the pull request exists, or none can be made),
+  // The form's fields gone (the pull request exists, or none can be made),
   // the focus is not lost with them: Enter and Escape keep working.
   let frame: Dialog | undefined = $state();
   $effect(() => {
@@ -267,7 +267,7 @@
           body,
           draft,
           // What the dialog shows is what is done: the compare page it promised never turns
-          // into a pull request made through gh (final boundary review I1).
+          // into a pull request made through gh.
           comparePage: compareOnly,
         },
         { ownErrors: ["bad_request", "bad_name"], ownOutcome: true },

@@ -6,7 +6,7 @@
   it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
   behind it show as a count. Once it has run for a second, git's latest progress line (or the
   step it is at) shows beside its title, cut in the middle. One that has run for
-  STOP_AFTER_MS offers Stop (R41): a hook that hangs, or git waiting on something that never
+  STOP_AFTER_MS offers Stop: a hook that hangs, or git waiting on something that never
   comes, must not hold the repository.
 -->
 <script lang="ts">
@@ -178,7 +178,7 @@
     (on) => view.setViewOptions({ showTags: on }),
     "M2.6 7.8V3.4c0-.45.35-.8.8-.8h4.4l5.9 5.9-5.2 5.2zM5.6 5.4h.01",
   )}
-  <!-- Stacked boxes: stashes. With a branch selection, the stashes on its commits show (R21). -->
+  <!-- Stacked boxes: stashes. With a branch selection, the stashes on its commits show. -->
   {@render toggle(
     "Stashes",
     view.viewOptions.showStashes,

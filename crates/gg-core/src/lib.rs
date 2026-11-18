@@ -107,7 +107,7 @@ impl Core {
         runner: Result<GitRunner>,
     ) -> Arc<Self> {
         let store = Arc::new(Store::load(&config_dir));
-        // Every event leaves the core with credentials in URLs masked (R36).
+        // Every event leaves the core with credentials in URLs masked.
         let sink: Arc<dyn EventSink> = Arc::new(mask::MaskingSink(sink));
         let repos = runner.map(|runner| {
             let repos = RepoManager::new(runner, sink.clone());

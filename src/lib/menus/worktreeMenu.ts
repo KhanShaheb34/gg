@@ -1,4 +1,4 @@
-// The menu of a worktree in the side panel (spec §5.4), and the panel's own menu. Like the
+// The menu of a worktree in the side panel, and the panel's own menu. Like the
 // other builders, a pure function of the worktree and the snapshot the panel shows (and, for
 // the file manager's name, the platform).
 

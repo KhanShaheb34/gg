@@ -207,7 +207,7 @@ test("the keyboard opens, moves through and picks from the menu", async ({ gg })
   await expect(page.getByRole("status").filter({ hasText: "Copied the hash" })).toBeVisible();
 });
 
-test("the keyboard menu acts on the selected commit, by its hash, even when its index points elsewhere (I6, R42)", async ({
+test("the keyboard menu acts on the selected commit, by its hash, even when its index points elsewhere", async ({
   gg,
 }) => {
   const { page } = gg;
@@ -338,7 +338,7 @@ test("the menu stays open while the graph refreshes, and closes when an operatio
   await expect(menus(page)).toHaveCount(1);
   await page.keyboard.press("Escape");
 
-  // An operation that starts and ends closes it (R26).
+  // An operation that starts and ends closes it.
   await rowOf(page, "Add part 18").locator(".subject").click({ button: "right" });
   await expect(menu(page)).toBeVisible();
   await runOp(page, { op: "checkout_commit", hash: gg.git("small", "rev-parse", "HEAD~1").trim() });
@@ -511,7 +511,7 @@ test("the toolbar shows the running operation and how many wait behind it", asyn
   chmodSync(hook, 0o755);
 
   const busy = page.getByTestId("busy");
-  // Both in the same instant: the core queues them in the order they were sent (R28).
+  // Both in the same instant: the core queues them in the order they were sent.
   const first = runOp(page, { op: "checkout_branch", branch: "fix/typo", fastForward: false });
   const second = runOp(page, { op: "checkout_branch", branch: "main", fastForward: false });
   await expect(busy).toBeVisible();
@@ -533,7 +533,7 @@ test("the toolbar shows the running operation and how many wait behind it", asyn
   expect(gg.git("small", "branch", "--show-current").trim()).toBe("main");
 });
 
-test("the busy indicator shows only once an operation has run for 150 ms (R23), quick or slow", async ({ gg }) => {
+test("the busy indicator shows only once an operation has run for 150 ms, quick or slow", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   const dir = gg.repoPath("small");
@@ -622,7 +622,7 @@ test("a menu acts on the label the user right-clicked, even if the row's data mo
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("branchy"));
-  // Defensive (R43): the app does not reach this state by itself (a row's element and its
+  // Defensive: the app does not reach this state by itself (a row's element and its
   // data change together, in one frame); the test fakes it, a drawn row still showing
   // develop's commit and label while the data under it is another row's, to check that the
   // guard acts on what the element shows.

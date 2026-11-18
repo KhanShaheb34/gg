@@ -503,7 +503,7 @@ test("push a tag with several remotes: origin is chosen, another can be", async 
   expect(gg.git("small", "ls-remote", "--tags", "backup").trim()).toContain("refs/tags/v1");
 });
 
-test("several remotes, none named origin: nothing is chosen until the user picks one (R29)", async ({ gg }) => {
+test("several remotes, none named origin: nothing is chosen until the user picks one", async ({ gg }) => {
   const { page } = gg;
   const dir = gg.repoPath("small");
   gg.git("small", "remote", "rename", "origin", "upstream");
@@ -605,14 +605,14 @@ test("a dialog whose request waits behind another: a name dialog says so and can
   await expect(d).toHaveCount(0);
   await expect(busy).toContainText("+1");
   // The revert was asked for on queued; the checkout before it moved HEAD to main, so it does
-  // not run there (R39), and says so.
+  // not run there, and says so.
   await expect(
     failure(page, "Nothing was done: it was asked for on queued, but main is checked out now."),
   ).toBeVisible({ timeout: 10_000 });
   expect(gg.git("small", "log", "-1", "--format=%s", "main").trim()).not.toMatch(/^Revert/);
 });
 
-test("an operation that hangs (a hook that sleeps) offers Stop after 5 s; Stop ends it as failed (R41)", async ({ gg }) => {
+test("an operation that hangs (a hook that sleeps) offers Stop after 5 s; Stop ends it as failed", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   const dir = gg.repoPath("small");

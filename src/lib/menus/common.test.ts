@@ -41,14 +41,14 @@ describe("shown", () => {
 });
 
 describe("defaultRemote", () => {
-  it("is the preferred one, else origin, else the only one (R29)", () => {
+  it("is the preferred one, else origin, else the only one", () => {
     expect(defaultRemote(["backup", "origin"], "backup")).toBe("backup");
     expect(defaultRemote(["backup", "origin"], "gone")).toBe("origin");
     expect(defaultRemote(["upstream"])).toBe("upstream");
     expect(defaultRemote([])).toBe("");
   });
 
-  it("chooses nothing among several remotes without origin (R29)", () => {
+  it("chooses nothing among several remotes without origin", () => {
     expect(defaultRemote(["backup", "upstream"])).toBe("");
     expect(defaultRemote(["backup", "upstream"], "gone")).toBe("");
   });

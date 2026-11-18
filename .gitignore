@@ -3,6 +3,9 @@ dist/
 target/
 .superpowers/
 test-results/
+# Screenshots e2e/screens.spec.ts takes (GG_SCREENS=1), and perf logs kept locally.
+.screens/
+perf-logs/
 playwright-report/
 .DS_Store
 src-tauri/gen/

@@ -17,8 +17,8 @@
 //! git allows no partial commit while a merge is in progress: a merge with no conflicts
 //! left is concluded with all its files, in the user's index. That index is saved first and
 //! put back when no commit is made (a hook refused it), so a failure leaves it as it was
-//! there too (final review M5). What is in progress is the turn's read: one that changed
-//! since (a merge started in a terminal) stops the commit (final review M6).
+//! there too. What is in progress is the turn's read: one that changed
+//! since (a merge started in a terminal) stops the commit.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -45,7 +45,7 @@ const NO_IDENTITY: &str = "Nothing was committed: git does not know who you are.
                            name and email (git config --global user.name \"Your Name\", and \
                            user.email), then commit again.";
 
-/// Said when the signing program failed (R41): without a terminal, a passphrase prompt
+/// Said when the signing program failed: without a terminal, a passphrase prompt
 /// fails at once.
 const SIGNING_FAILED: &str = "Nothing was committed: the commit could not be signed. gg runs \
                               git without a terminal, so a signing program that asks for a \
@@ -270,7 +270,7 @@ pub(crate) async fn refused(
                 file_list(&left)
             )));
         }
-        // Every tracked change: git commits the whole index then (P3-R17).
+        // Every tracked change: git commits the whole index then.
         if !entries
             .iter()
             .filter(|e| e.status != EntryStatus::Untracked)
@@ -318,9 +318,9 @@ pub(crate) async fn refused(
     Ok(None)
 }
 
-/// The remote a commit's push goes to (R38: the branch of the same name there): where git
+/// The remote a commit's push goes to (the branch of the same name there): where git
 /// pushes `branch` (its `pushRemote`, `remote.pushDefault`, its upstream's remote, origin,
-/// the only one), the rule `pr_create` uses too (final boundary review M7).
+/// the only one), the rule `pr_create` uses too.
 async fn push_remote(ctx: &OpCtx<'_>, branch: &str) -> Result<Option<String>> {
     branch_push_remote(&ctx.runner, &ctx.cwd, branch).await
 }
@@ -428,7 +428,7 @@ impl Scratch {
 }
 
 /// Removes the temporary folders in `dir` that a gg process which is gone left (it crashed
-/// mid-commit): `gg-commit-<pid>-…` of a process no longer running (P3-R17; where that
+/// mid-commit): `gg-commit-<pid>-…` of a process no longer running (where that
 /// cannot be told, not Unix, none), and any older than a day. Failures are ignored: the
 /// folders are only clutter.
 fn remove_left_over(dir: &Path) {
@@ -928,14 +928,14 @@ async fn changed_count(
 }
 
 /// Commits `paths` with `message` on the branch checked out (see the module comment), then,
-/// with `push`, pushes the branch (R38) and says how that went separately.
+/// with `push`, pushes the branch and says how that went separately.
 pub(crate) async fn commit(
     ctx: &OpCtx<'_>,
     paths: &[String],
     message: &str,
     push: bool,
 ) -> Result<Step> {
-    // What is in progress is the turn's read (final review M6): one that changed since stops
+    // What is in progress is the turn's read: one that changed since stops
     // the commit, never turns a partial commit into a merge's conclusion or back.
     let in_progress = read_kind(&ctx.runner, &ctx.cwd).await?;
     if let Some(&seen) = ctx.turn_in_progress.get()
@@ -966,7 +966,7 @@ pub(crate) async fn commit(
     let scratch = Scratch::new(ctx).await?;
     let message_file = scratch.message(message)?;
     // The message as written, blank lines trimmed (a line starting with `#` is kept); git's
-    // own comment lines of a merge's message (`# Conflicts:`) go (P3-R17).
+    // own comment lines of a merge's message (`# Conflicts:`) go.
     let cleanup = if in_merge {
         "--cleanup=strip"
     } else {
@@ -975,7 +975,7 @@ pub(crate) async fn commit(
     let commit_args = ["commit", cleanup, "-F", message_file.as_str()];
 
     // A merge is committed whole, in the user's index: saved first, put back if no commit is
-    // made (final review M5).
+    // made.
     let saved = if in_merge {
         Some(scratch.save_index()?)
     } else {
@@ -1049,7 +1049,7 @@ pub(crate) async fn commit(
     }
     // Where a push goes, worked out before anything is committed (a Stop later ends every
     // command but those that follow a commit made). Without `push` too: the notice of a
-    // commit on a branch with somewhere to push it offers the push (R30).
+    // commit on a branch with somewhere to push it offers the push.
     let push_to = match current_branch(ctx).await? {
         Some(branch) => push_remote(ctx, &branch)
             .await?
@@ -1201,7 +1201,7 @@ pub(crate) async fn commit(
     Ok(push_after(ctx, branch, committed).await)
 }
 
-/// Pushes `branch` after its commit (described by `committed`), as a push of it does (R38),
+/// Pushes `branch` after its commit (described by `committed`), as a push of it does,
 /// and says how that went: a failure says the commit was made, with git's output and a push
 /// to try again.
 async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) -> Step {

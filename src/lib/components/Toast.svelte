@@ -33,7 +33,7 @@
     }
   });
   // One whose offer depends on the repository's state goes once that no longer holds (a
-  // Skip once git has moved on: R40).
+  // Skip once git has moved on).
   $effect(() => {
     for (const toast of app.toasts) if (toast.holds && !toast.holds()) dismissToast(toast.id);
   });

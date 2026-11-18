@@ -157,7 +157,7 @@ fn merge_message_text(raw: &str, comment: &str) -> String {
 pub(crate) fn parse_files(out: &[u8]) -> Vec<FileEntry> {
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     // A name that is not valid UTF-8 is shown as best it can be, which is not its name: it
-    // cannot be handed back to git to commit (P3-R17).
+    // cannot be handed back to git to commit.
     let named = |mut entry: FileEntry, raw: &[&[u8]]| {
         if raw.iter().any(|r| std::str::from_utf8(r).is_err()) {
             entry.committable = false;

@@ -1,4 +1,4 @@
-// The settings sheet and the keyboard shortcuts sheet (Task 10), end to end against the real
+// The settings sheet and the keyboard shortcuts sheet, end to end against the real
 // core: every field saves as it changes and survives a relaunch, the core's refusals show
 // inline without losing the text, Test and the links are recorded launches (nothing is
 // started), and the keys the sheet lists do what it says.
@@ -173,7 +173,7 @@ test("the keyboard shortcuts sheet lists every group, opens with ? but not while
   await expect(page.getByTestId("active-worktree")).toHaveAttribute("title", new RegExp(`${path.basename(repo)}\\b`));
 });
 
-// Task 10 review minor 7: a dialog over the settings sheet (Reset, Install gg) gives the focus
+// A dialog over the settings sheet (Reset, Install gg) gives the focus
 // back to the control that opened it when it closes, and nothing behind the sheet (the tab
 // bar, the repository) can be reached with Tab while the sheet is open.
 test("a dialog over the settings gives the focus back, and Tab never leaves the sheet", async ({ gg }) => {
@@ -206,7 +206,7 @@ test("a dialog over the settings gives the focus back, and Tab never leaves the 
   await expect(page.locator('[data-testid="app-root"] > .behind').first()).toHaveAttribute("inert", "");
 });
 
-// Task 10 review minor 10: a Test button that cannot be pressed says why, in words on the
+// A Test button that cannot be pressed says why, in words on the
 // sheet that the button is described by (not only in a tooltip).
 test("a disabled Test button says why, visibly", async ({ gg }) => {
   const { page } = gg;
@@ -227,8 +227,7 @@ test("a disabled Test button says why, visibly", async ({ gg }) => {
   await page.getByTestId("open-settings").click();
   await expect(sheet(page).getByTestId("settings-editor-test")).toBeEnabled();
   await expect(sheet(page).getByTestId("settings-editor-test-why")).toHaveCount(0);
-  // A command the core refuses: its own reason first, then what it means for Test (final
-  // review M12).
+  // A command the core refuses: its own reason first, then what it means for Test.
   await sheet(page).getByTestId("settings-editor").fill("code x{path}");
   await sheet(page).getByTestId("settings-editor").blur();
   const note = sheet(page).locator("#settings-editor-note p");

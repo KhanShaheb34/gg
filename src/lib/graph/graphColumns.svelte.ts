@@ -11,7 +11,7 @@ export const NAMES: Record<Column, string> = { graph: "Graph", date: "Date", aut
 export const RIGHT_COLUMNS: Column[] = ["date", "author", "hash"];
 /**
  * The room the description (the subject, after its labels) keeps before other columns give
- * way: below it, Author narrows first, then Date (final boundary review I2).
+ * way: below it, Author narrows first, then Date.
  */
 export const DESCRIPTION_ROOM = 280;
 

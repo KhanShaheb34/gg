@@ -120,10 +120,10 @@ export type InProgress = {
   step: number | null; // rebase only
   total: number | null; // rebase only
   subject: string | null; // what is being applied: the incoming branch or the commit's subject
-  // what comes in (R32): merge, the branch or ref merged; rebase, what it goes onto; cherry-pick/revert, the 8-char hash
+  // what comes in: merge, the branch or ref merged; rebase, what it goes onto; cherry-pick/revert, the 8-char hash
   incoming: string | null;
   rebasing: string | null; // rebase only: the branch being rebased
-  // rebase, cherry-pick or revert: the commit git stopped on, in full (what a skip is for, R40)
+  // rebase, cherry-pick or revert: the commit git stopped on, in full (what a skip is for)
   commit: string | null;
   // that commit has no changes left (nothing conflicted, everything as HEAD has it): continuing
   // would be refused as empty; skip it, or abort
@@ -240,7 +240,7 @@ export type CliState = {
 /**
  * One git command the core ran (`command_log`); `args` excludes the injected `-c` options. The
  * userinfo of URLs in `args`, `stdout` and `stderr` is masked by the core ("https://***@host/…"),
- * as in every message, outcome, event and error it hands the UI (R36).
+ * as in every message, outcome, event and error it hands the UI.
  */
 export type CommandRecord = {
   id: number;
@@ -265,7 +265,7 @@ export type HeadInfo = RepoSnapshot["head"];
 
 /**
  * One operation for `run_op`. A request on the branch checked out carries `expectHead`: HEAD as
- * the UI showed it when the user asked (R39); the core refuses it, running nothing, if another
+ * the UI showed it when the user asked; the core refuses it, running nothing, if another
  * branch is checked out by its turn (reset, continue, abort and skip: also if the commit moved).
  * Every request that runs in a working directory (all but push, push_tag, delete_tag,
  * delete_remote_branch and fetch_into_local) carries `expectWorktree`: the `activeWorktree` of
@@ -286,9 +286,9 @@ export type OpRequest =
   | { op: "create_tag"; name: string; hash: string; message: string | null; expectWorktree: string }
   | { op: "delete_tag"; name: string; remote: string | null } // remote set = also delete there
   | { op: "push_tag"; name: string; remote: string }
-  // to: null = the branch of the same name on the remote (R38); else the branch's upstream there,
+  // to: null = the branch of the same name on the remote; else the branch's upstream there,
   // picked in the Push dialog. An existing upstream is never changed; one is set if there is none.
-  // force: with lease, the force_push danger's token once confirmed (R11)
+  // force: with lease, the force_push danger's token once confirmed
   | { op: "push"; branch: string; remote: string; to: string | null; force: boolean }
   | { op: "pull"; branch: string; mode: "default" | "merge" | "rebase"; expectHead: HeadInfo; expectWorktree: string }
   | { op: "fetch_into_local"; remoteBranch: string; localName: string }
@@ -300,9 +300,9 @@ export type OpRequest =
   | { op: "continue"; evenWithMarkers: boolean; expectHead: HeadInfo; expectWorktree: string } // R31: true = go ahead though files still have conflict markers
   | { op: "abort"; expectHead: HeadInfo; expectWorktree: string } // always the abort danger first
   // leaves out the commit a rebase, cherry-pick or revert stopped on (not a merge): `commit`, else
-  // refused (R40); a rebase's skip with other uncommitted changes asks first (skip_discards)
+  // refused; a rebase's skip with other uncommitted changes asks first (skip_discards)
   | { op: "skip"; expectHead: HeadInfo; commit: string; expectWorktree: string }
-  // The worktree operations run from the main worktree and name their target (no expectWorktree, P3-R5).
+  // The worktree operations run from the main worktree and name their target (no expectWorktree).
   // path: absolute or relative to the main worktree; a new or empty folder; the new worktree is not made active
   | { op: "worktree_add"; path: string; branch: WorktreeBranch }
   // path: a linked worktree git lists (re-checked in its turn); its work is confirmed first; the active one: main becomes active first
@@ -316,12 +316,12 @@ export type OpRequest =
   | { op: "worktree_prune" }
   // Commits exactly `paths` (as worktree_files lists them; either side of a rename stands for both) as they
   // are in the working tree in its turn, in a fresh temporary index: other changes, staged or not, stay as
-  // they are. push: then pushes the branch to the same-named branch on its remote (R38). While a merge with
+  // they are. push: then pushes the branch to the same-named branch on its remote. While a merge with
   // no conflicts left is in progress, it concludes the merge, and `paths` must be every changed file.
   // Empty paths: nothing_to_do; blank message: bad_request.
   | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string }
   // base: a branch on baseRemote, the repository it goes to (null: the one pr_suggest names); every gh command names it
-  | { op: "remove_index_lock"; expectWorktree: string } // the active worktree's stale index.lock, once confirmed (M5)
+  | { op: "remove_index_lock"; expectWorktree: string } // the active worktree's stale index.lock, once confirmed
   | {
       op: "pr_create";
       branch: string;
@@ -341,7 +341,7 @@ export type WorktreeBranch = { existing: string } | { create: string; at: string
  * ("?" untracked, "U" conflicted; "D" also for a file added to the index and deleted since); `origPath`
  * the other side of a rename or copy; `staged`: the index differs from HEAD; `unstaged`: the working
  * tree differs from the index. `committable` false (with `reason`): it cannot be ticked, its name not
- * being valid UTF-8 (P3-R17); the core refuses a commit that ticks it.
+ * being valid UTF-8; the core refuses a commit that ticks it.
  */
 export type FileEntry = {
   path: string;
@@ -373,12 +373,12 @@ export type DangerKind =
   | "skip_discards"
   | "remove_worktree_with_work" // red: changed or untracked files go (--force), or a detached HEAD's commits
   | "remove_worktree_ignored_files" // an ordinary confirmation, not red: only ignored files, which git deletes
-  | "delete_unmerged_branch_with_worktree" // red: the branch deleted after its worktree (R9)
+  | "delete_unmerged_branch_with_worktree" // red: the branch deleted after its worktree
   | "prune_worktrees" // an ordinary confirmation: the stale entries prune forgets
   | "prune_worktrees_loses_commits" // red: a stale detached entry's commits on no branch, tag or remote go
   | "remove_index_lock"; // red: a stale index.lock; another git or an editor may still be using the repository
 /**
- * token: the state the message was worked out from (R39); confirming sends it back with the
+ * token: the state the message was worked out from; confirming sends it back with the
  * kind (`Confirmed`), and the core asks again if the state has changed since.
  */
 export type Danger = { kind: DangerKind; message: string; detail: string | null; token: string | null };
@@ -393,7 +393,7 @@ export type OpHint =
   | { kind: "skip"; commit: string } // continuing came out empty: skip that commit
   | { kind: "make_active"; worktree: string } // the branch needed is checked out in that worktree
   | { kind: "open_url"; url: string; label: string } // an https page: the pull request, or the compare page
-  | { kind: "remove_index_lock"; path: string; worktree: string }; // a stale staging-area lock of that worktree (M5)
+  | { kind: "remove_index_lock"; path: string; worktree: string }; // a stale staging-area lock of that worktree
 
 /** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
 export type OpOutcome = {

@@ -814,7 +814,7 @@ async fn a_helper_that_outlives_git_is_killed_on_timeout() {
 /// and at the absolute cap (2 h in the app) in any case, saying which limit it hit; a
 /// scheduled fetch keeps the hard timeout. Here the remote's upload-pack writes to git's
 /// stderr forever. The idle and cap logic itself is tested at the runner (`runner.rs`);
-/// this one end-to-end test has generous limits against a slow git start (Task 6 review).
+/// this one end-to-end test has generous limits against a slow git start.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_user_fetch_that_keeps_reporting_runs_to_the_cap_but_a_scheduled_one_does_not() {

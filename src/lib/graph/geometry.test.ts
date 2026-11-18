@@ -134,12 +134,12 @@ describe("layout constants (single source)", () => {
   });
 });
 
-// R17: a lane change split across two rows (a `bottom` half in one, a straight continuation
+// A lane change split across two rows (a `bottom` half in one, a straight continuation
 // in the next, or a straight lower half followed by a `top` change) is drawn as one S-curve
 // between the two rows' centres.
 const E = (half: Edge["half"], from: number, to = from, color = 0): Edge => ({ half, from, to, color });
 
-describe("edgeShape / shapePath (R17)", () => {
+describe("edgeShape / shapePath", () => {
   it("merge-in: a bottom lane change continued straight below becomes one full-row S-curve", () => {
     const row = [E("top", 0), E("bottom", 0), E("bottom", 0, 1, 1)];
     const next = [E("top", 0), E("bottom", 0), E("full", 1, 1, 1)];

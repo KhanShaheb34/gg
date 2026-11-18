@@ -24,7 +24,7 @@ describe("worktreeMenu", () => {
     const detached = worktreeMenu(worktree({ branch: null }), snap());
     expect(find(detached, "pr.create").disabledReason).toBe("HEAD is detached there: there is no branch to propose");
     const signedOut = snap({ prs: { status: "unavailable", reason: "signed_out", loadedAtMs: null, partial: false } });
-    // Task 10 review minor 8: the dialog decides (and says) whether it pushes first.
+    // The dialog decides (and says) whether it pushes first.
     expect(find(worktreeMenu(worktree(), signedOut), "pr.create").label).toBe("Create pull request…");
     const pushed = worktree({ upstream: { name: "origin/feature/x", ahead: 0, behind: 0 } });
     expect(find(worktreeMenu(pushed, signedOut), "pr.create").label).toBe("Create pull request…");

@@ -1,4 +1,4 @@
-//! Pull requests through `gh` (Task 8, Review Focus 4), against a recording fake `gh` on the
+//! Pull requests through `gh`, against a recording fake `gh` on the
 //! tool `PATH` (`gg_core::testutil::FakeGh`): no test reaches a network host. The
 //! repositories' remotes are GitHub addresses that `url.<bare>.insteadOf` sends to a local
 //! bare repository, so fetches and pushes stay on disk while the app sees GitHub.
@@ -649,7 +649,7 @@ fn create_on_compare_page(branch: &str) -> OpRequest {
     }
 }
 
-/// Final boundary review I1: the dialog said the compare page (gh was not there when the
+/// The dialog said the compare page (gh was not there when the
 /// list was loaded); gh installed since must not make a pull request the user never saw.
 /// The request carries the mode, and the core never runs gh in that mode.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -670,7 +670,7 @@ async fn the_compare_page_the_dialog_promised_never_runs_gh() {
     assert!(s.gh.calls_of(&["pr", "create"]).is_empty(), "gh never ran");
 }
 
-/// Final boundary review I1: after "no gh" (or signed out), the user's own refresh asks gh
+/// After "no gh" (or signed out), the user's own refresh asks gh
 /// again at once, whatever the minute between loads says: the dialog does it when it opens,
 /// so a gh installed or signed in meanwhile shows the real form.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -694,7 +694,7 @@ async fn a_users_refresh_asks_gh_again_at_once_after_it_was_unavailable() {
     );
 }
 
-/// Final boundary review M8: gh signed out at create time, after the form was filled in:
+/// `gh` signed out at create time, after the form was filled in:
 /// the compare page gets the title and description typed, so nothing is lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_compare_page_fallback_keeps_the_title_and_description() {
@@ -747,7 +747,7 @@ impl gg_core::repo::WorktreeMemory for Memory {
     }
 }
 
-/// `pr_create`: a branch with no namesake on the remote is pushed first (R38, with its
+/// `pr_create`: a branch with no namesake on the remote is pushed first (with its
 /// upstream set), then `gh pr create --head <b> --base <base> --title <t> --body-file -`
 /// (`--draft` when asked) with the description on its stdin, byte for byte; the outcome
 /// carries the address and an `open_url` hint; the base is remembered; the list reloads at
@@ -947,7 +947,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     let out =
         s.h.run(s.id, create("feature", "main", "T", "b", false))
             .await;
-    // Without gh (Task 8 review): pushed all the same (R38), and done: finished on GitHub.
+    // Without gh: pushed all the same, and done: finished on GitHub.
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
@@ -956,7 +956,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     assert_eq!(
         out.hints,
         [OpHint::OpenUrl {
-            // The form's title and description go with it (final boundary review M8).
+            // The form's title and description go with it.
             url: "https://github.com/octo/cat/compare/main...feature?expand=1&title=T&body=b"
                 .into(),
             label: "Open the compare page".into()
@@ -977,7 +977,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
         "feature is on origin/feature already. Finish on GitHub:"
     );
 
-    // Signed out (Task 9 review I5): as without gh, done, finished on the compare page.
+    // Signed out: as without gh, done, finished on the compare page.
     s.h.m.set_tool_path(Some(s.gh.path()));
     s.gh.reply(
         "pr-create",
@@ -1137,7 +1137,7 @@ async fn the_git_gh_runs_is_protected_as_the_apps_own() {
     }
 }
 
-/// One choice of repository (Task 8 review): every `gh` command names the repository the
+/// One choice of repository: every `gh` command names the repository the
 /// app chose (`--repo`), never left to `gh`. In a fork workflow, remotes `fork` (ada's, the
 /// branch's upstream) and `main-repo` (octo's), with the base on `main-repo`: the pull
 /// request goes to octo/cat from `ada:topic`; when `gh` cannot make it, the compare page is
@@ -1220,7 +1220,7 @@ async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
     }
 }
 
-/// Task 9 review I3: the suggestion says where `pr_create` will push and whether it must,
+/// The suggestion says where `pr_create` will push and whether it must,
 /// worked out by the same code: `remote.pushDefault=fork` sends the branch to the fork
 /// (not the base repository's remote); a namesake there that is behind needs a push; one
 /// that is up to date does not. It also names the base repository.
@@ -1276,7 +1276,7 @@ async fn the_suggestion_says_where_the_branch_is_pushed_and_whether_it_must_be()
     );
 }
 
-/// ssh aliases (Task 8 review): `git@github.com-work:me/r.git` and `git@gh-work:me/r.git`
+/// ssh aliases: `git@github.com-work:me/r.git` and `git@gh-work:me/r.git`
 /// stand for github.com in the user's ssh config; the real host is asked of `ssh -G` (once
 /// per alias per run), and the GitHub check, `--repo` and the compare page use it. When ssh
 /// cannot tell, the host as written is kept (not GitHub, no credentials stored for it).
@@ -1347,7 +1347,7 @@ async fn a_test_build_runs_only_the_fake_tools() {
     assert_eq!(snap.prs.status, PrStatus::Unavailable);
 }
 
-/// `gh pr create` made it but printed no address the app takes (Task 8 review): done, said
+/// `gh pr create` made it but printed no address the app takes: done, said
 /// so, the list reloaded at once. An address on the host with another port is taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pull_request_made_without_an_address_printed_is_done() {
@@ -1420,7 +1420,7 @@ async fn ssh_is_never_asked_about_a_host_that_is_not_a_plain_name() {
     assert_eq!(s.gh.ssh_calls().len(), 1);
 }
 
-/// Security (Task 9 review I1): a remote whose host is not a plain name is not on GitHub,
+/// Security: a remote whose host is not a plain name is not on GitHub,
 /// whatever it ends with (`x?.ghe.com` passes a suffix test, but git and gh read `x`):
 /// neither the fake `gh` nor the fake `ssh` is ever run for it, not even to ask for stored
 /// credentials.
@@ -1454,7 +1454,7 @@ async fn a_host_that_only_ends_like_github_never_runs_gh_or_ssh() {
     );
 }
 
-/// Task 9 review minor 2: a "no" is not kept for the whole run: no credentials stored for a
+/// A "no" is not kept for the whole run: no credentials stored for a
 /// host, and an `ssh -G` that failed, are asked again when the user refreshes (after `gh
 /// auth login`, or a fixed ssh config); a "yes" is kept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1485,7 +1485,7 @@ async fn a_no_is_asked_again_when_the_user_refreshes() {
     assert_eq!(s.gh.ssh_calls().len(), 2);
 }
 
-/// Task 9 review minor 2: an Enterprise host while `gh` is not installed cannot be checked
+/// An Enterprise host while `gh` is not installed cannot be checked
 /// for credentials: the reason is that gh is missing, not that the remote is not GitHub.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_enterprise_host_without_gh_says_gh_is_missing() {
@@ -1497,7 +1497,7 @@ async fn an_enterprise_host_without_gh_says_gh_is_missing() {
     assert_eq!(snap.prs.reason, Some(PrUnavailable::NoGh), "{:?}", snap.prs);
 }
 
-/// No flicker (Task 8 review): a repository known not to be on GitHub, or without `gh`, is
+/// No flicker: a repository known not to be on GitHub, or without `gh`, is
 /// never shown as loading on its way to unavailable; one that can load is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn loading_is_shown_only_when_gh_will_be_asked() {
@@ -1530,8 +1530,8 @@ async fn loading_is_shown_only_when_gh_will_be_asked() {
     assert_eq!(loading(&s), 1, "gh asked");
 }
 
-/// `pr_suggest` asks gh for the default branch and for the branch's pull request at once
-/// (Task 8 review), under one time limit: two slow answers take the time of one.
+/// `pr_suggest` asks gh for the default branch and for the branch's pull request at once,
+/// under one time limit: two slow answers take the time of one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_suggestion_asks_gh_both_questions_at_once() {
     let s = setup().await;
@@ -1553,7 +1553,7 @@ async fn a_suggestion_asks_gh_both_questions_at_once() {
     let suggested = s.h.m.pr_suggest(s.id, "feature").await.unwrap();
     assert_eq!(suggested.base, "main");
     assert_eq!(suggested.existing.map(|p| p.number), Some(3));
-    // Each started before the other had answered (Task 9 review minor 7: by the fake's own
+    // Each started before the other had answered (by the fake's own
     // record, not the wall clock of a loaded machine).
     let view = &s.gh.calls_of(&["repo", "view"])[0];
     let list = &s
@@ -1566,7 +1566,7 @@ async fn a_suggestion_asks_gh_both_questions_at_once() {
     );
 }
 
-/// Final boundary review M1: the browser opens only the repository's GitHub web host (as
+/// The browser opens only the repository's GitHub web host (as
 /// the pull requests resolve it) or github.com, never another site a future UI path might
 /// turn repository text into.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

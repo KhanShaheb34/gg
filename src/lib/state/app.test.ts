@@ -265,7 +265,7 @@ describe("init", () => {
     expect(s.app.ready).toBe(true);
   });
 
-  it("says once, plainly, that the git found is too old (M3)", async () => {
+  it("says once, plainly, that the git found is too old", async () => {
     const said = "Git 2.29 or newer is needed; found 2.25.1. Some actions and the background fetch fail with it: install a newer git, then restart the app.";
     vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ gitProblem: said }));
     await s.init();

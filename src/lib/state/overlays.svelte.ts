@@ -57,7 +57,7 @@ let nextId = 1;
  * keyboard (the menu key), so its first item is made active. `repoId`: the repository its
  * items act on; the menu closes when an operation starts or ends there, or when its rows
  * change and `alive` then says its target is gone. A background refresh alone (a scheduled
- * fetch, the working tree's status) leaves it open (R26).
+ * fetch, the working tree's status) leaves it open.
  */
 export function openMenu(
   at: { x: number; y: number },

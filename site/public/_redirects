@@ -2,3 +2,7 @@
 # repository moves, this is the only place to change.
 /github    https://github.com/KhanShaheb34/gg         302
 /github/*  https://github.com/KhanShaheb34/gg/:splat  302
+
+# 0.1.0's download (Apple silicon only) was this file; links to it get the current release,
+# which runs on Apple silicon too.
+/download/gg-macos-arm64.dmg  /download/gg-macos-universal.dmg  302

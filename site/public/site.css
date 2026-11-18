@@ -142,12 +142,27 @@ pre {
 
 p code,
 li code,
-dd code {
+dd code,
+h3 code {
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--chrome);
   border: 1px solid var(--line);
   font-size: 0.82em;
+}
+
+/* A key, as the app's shortcuts sheet draws one. */
+kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 0.82em;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .sr-only {
@@ -501,7 +516,7 @@ dd code {
 
 .ways > div {
   display: grid;
-  grid-template-columns: 5.2rem minmax(0, 1fr);
+  grid-template-columns: 6.4rem minmax(0, 1fr);
   gap: 6px 12px;
   padding: 11px 0;
   border-top: 1px solid var(--line);
@@ -571,7 +586,12 @@ dd code {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* The checksum on a line of its own: 64 characters do not fit after the label. */
 .sha code {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 4px;
   word-break: break-all;
 }
 
@@ -720,6 +740,16 @@ h3 {
 
 .term .ps {
   color: var(--term-muted);
+}
+
+.terminal .fine {
+  max-width: 62ch;
+  margin-top: 22px;
+}
+
+.fine b {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 /* ---- Speed ------------------------------------------------------------------------------ */
@@ -936,6 +966,15 @@ h3 {
   .download {
     width: 100%;
     justify-content: center;
+  }
+
+  /* The details wrap here: spaced apart, so no separator starts a line. */
+  .get-meta {
+    gap: 2px 14px;
+  }
+
+  .get-meta > span + span::before {
+    content: none;
   }
 
   .ways > div {

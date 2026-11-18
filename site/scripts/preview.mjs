@@ -1,5 +1,5 @@
 // Screenshots the locally served site and checks its images, into site/.preview/:
-// at device scale 1 and 2, widths 2560 to 375, light and dark. For each page it reports
+// at device scale 1 and 2, widths 2560 to 375 (390: a current iPhone), light and dark. For each page it reports
 // horizontal overflow, the bytes loaded (all images scrolled into view), where the hero
 // screenshot sits, and for each <img> whether it has enough pixels: the file's width >=
 // displayed width × devicePixelRatio.
@@ -40,10 +40,10 @@ async function visit({ scale, width, scheme, toggle = false }) {
   // Scroll through so the lazy images load, then back to the top.
   await page.evaluate(async () => {
     for (let y = 0; y < document.body.scrollHeight; y += 500) {
-      window.scrollTo(0, y);
+      window.scrollTo({ top: y, behavior: "instant" }); // the page scrolls smoothly: that would lag behind
       await new Promise((r) => setTimeout(r, 80));
     }
-    window.scrollTo(0, 0);
+    window.scrollTo({ top: 0, behavior: "instant" });
   });
   await page.waitForLoadState("networkidle");
   await page.evaluate(() => Promise.all([...document.images].map((i) => i.decode().catch(() => {}))));
@@ -98,7 +98,7 @@ async function visit({ scale, width, scheme, toggle = false }) {
 }
 
 for (const scale of [1, 2])
-  for (const width of [2560, 1920, 1680, 1440, 1280, 768, 375])
+  for (const width of [2560, 1920, 1680, 1440, 1280, 768, 390, 375])
     for (const scheme of ["light", "dark"]) await visit({ scale, width, scheme });
 // The page's own toggle, against the system's preference.
 await visit({ scale: 2, width: 1440, scheme: "light", toggle: true });

@@ -24,6 +24,10 @@ const grep = [
   "conflict banner and stash dialogs, 900x560", // small-banner-merge-partly
   "command log, 900x560", // small-log-open
   "remaining menus, confirmations and notices, 1280x800", // dialog-force-push
+  "worktrees, 1280x800", // worktrees
+  "commit panel, 900x560", // small-commit
+  "pull requests, 1280x800", // prs-dialog
+  "settings and shortcuts, 1280x800", // settings, shortcuts
 ].join("|");
 
 const source = readFileSync(path.join(root, "e2e", "screens.spec.ts"), "utf8");

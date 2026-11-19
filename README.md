@@ -27,6 +27,15 @@ branches (or several tools) are at work at once.
 1. Download gg from **https://gg.shakirul.com** (one disk image for Apple silicon and Intel).
 2. Open the download and drag **gg** to **Applications**.
 
+Or with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask khanshaheb34/tap/gg
+```
+
+(Newer versions of Homebrew ask you to trust a third-party tap first. If the install is
+refused for that reason, run `brew trust khanshaheb34/tap` and install again.)
+
 Requires macOS 12 or later.
 
 gg is not notarized by Apple: that needs a paid Apple developer account, which this project

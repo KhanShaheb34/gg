@@ -2,11 +2,14 @@
 //! writes, when the user asks, into a folder already on their login `PATH`. `gg [path]` then
 //! opens the repository holding `path` in the app.
 //!
-//! The installed launcher is a copy, not a link, carrying a marker line ([`MARKER`]): the app
-//! only ever replaces or removes a `gg` that has it. It never needs administrator rights and
-//! never edits shell files, the `PATH` or the registry; when the user's shell already has a
-//! `gg` (an alias, a function, another program earlier on `PATH`), the app says so
-//! ([`shadowed_by`]).
+//! The launcher the app installs is a copy, not a link, carrying a marker line ([`MARKER`]):
+//! the app only ever replaces or removes a plain file that has it. A link to a launcher (the
+//! one in the macOS app bundle, `gg.app/Contents/Resources/gg`, which a Homebrew cask links
+//! into its `bin`) is the command too, but it belongs to whoever made it: the app shows it as
+//! installed and never replaces, removes or writes through it. The app never needs
+//! administrator rights and never edits shell files, the `PATH` or the registry; when the
+//! user's shell already has a `gg` (an alias, a function, another program earlier on `PATH`),
+//! the app says so ([`shadowed_by`]).
 //!
 //! On Windows the launcher is `gg.cmd` (`src-tauri/resources/gg.cmd`), written into a folder
 //! of the user's own already on their `PATH` (`%LOCALAPPDATA%\Microsoft\WindowsApps`, which
@@ -21,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::Core;
-use crate::dto::CliState;
+use crate::dto::{CliLink, CliState};
 use crate::error::{CoreError, ErrorCode, Result};
 
 /// The launcher, with `@GG_VERSION@` and `@GG_APP@` to fill in (see [`launcher_script`]).
@@ -277,13 +280,63 @@ fn in_repository(dir: &Path) -> bool {
         .any(|p| p.ancestors().any(|d| d.join(".git").exists()))
 }
 
-/// The first launcher the app wrote on `search_path`, if any: a plain file with the marker,
-/// never a link to one (which uninstall would not remove either).
-pub fn installed(search_path: &OsStr) -> Option<PathBuf> {
-    path_dirs(search_path)
-        .into_iter()
-        .map(|d| d.join(COMMAND))
-        .find(|f| fs::symlink_metadata(f).is_ok_and(|m| m.is_file()) && has_marker(f))
+/// The `gg` command on the `PATH` that is gg's: where it is, and who made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub path: PathBuf,
+    /// `None`: a launcher the app wrote; else a link to one, made outside the app.
+    pub link: Option<CliLink>,
+}
+
+/// The first `gg` on `search_path` that is gg's, if any: a plain file with the marker (a
+/// launcher the app wrote), or a link that leads to one (a Homebrew cask's link to the
+/// launcher in the app bundle, say), which install and uninstall leave alone. Another `gg`
+/// before it is passed over: the shell check names that one.
+pub fn installed(search_path: &OsStr) -> Option<Installed> {
+    path_dirs(search_path).into_iter().find_map(|d| {
+        let path = d.join(COMMAND);
+        launcher_at(&path).map(|link| Installed { path, link })
+    })
+}
+
+/// Whether `file` is gg's launcher: `Some(None)` for a plain file with the marker (one the app
+/// wrote), `Some(Some(_))` for a link that leads, through any number of links, to a plain file
+/// with the marker; `None` for anything else (no file, a folder, a link that leads nowhere or
+/// to something else).
+fn launcher_at(file: &Path) -> Option<Option<CliLink>> {
+    let meta = fs::symlink_metadata(file).ok()?;
+    if meta.is_file() {
+        return has_marker(file).then_some(None);
+    }
+    if !meta.file_type().is_symlink() {
+        return None;
+    }
+    let target = dunce::canonicalize(file).ok()?;
+    let lands_on_launcher = fs::metadata(&target).is_ok_and(|m| m.is_file()) && has_marker(&target);
+    lands_on_launcher.then(|| Some(link_maker(file, &target)))
+}
+
+/// Who made `link`, a link to gg's launcher at `target` (where it really is): Homebrew when the
+/// link is in a Homebrew prefix's `bin` (the prefix has a `Caskroom`, where casks are kept)
+/// and leads into an app bundle (`….app/Contents/Resources/gg`), as a cask's `binary` stanza
+/// makes it; anyone else otherwise.
+fn link_maker(link: &Path, target: &Path) -> CliLink {
+    let in_prefix = link
+        .parent()
+        .and_then(Path::parent)
+        .is_some_and(|prefix| prefix.join("Caskroom").is_dir());
+    let in_bundle = target.parent().is_some_and(|resources| {
+        resources.ends_with("Contents/Resources")
+            && resources
+                .parent()
+                .and_then(Path::parent)
+                .is_some_and(|app| app.extension().is_some_and(|e| e == "app"))
+    });
+    if in_prefix && in_bundle {
+        CliLink::Homebrew
+    } else {
+        CliLink::Other
+    }
 }
 
 /// Writes `script` as `gg` (mode 0755; `gg.cmd` on Windows) in `dir` and returns its path. A
@@ -354,6 +407,21 @@ pub fn install(dir: &Path, script: &str) -> Result<PathBuf> {
 
 /// The refusal to touch `target` in `dir`, a `gg` the app did not write, saying what it is.
 fn not_ours(dir: &Path, target: &Path, meta: &fs::Metadata) -> CoreError {
+    // A link to gg's launcher is the command already, kept by whoever made it.
+    if let Some(Some(link)) = launcher_at(target) {
+        let made_by = match link {
+            CliLink::Homebrew => ", made by Homebrew",
+            CliLink::Other => "",
+        };
+        return CoreError::new(
+            ErrorCode::BadRequest,
+            format!(
+                "There is already a gg in {}{made_by}: {}, gg's launcher. gg leaves it alone; choose another folder.",
+                dir.display(),
+                what_is_there(target, meta)
+            ),
+        );
+    }
     CoreError::new(
         ErrorCode::BadRequest,
         format!(
@@ -501,7 +569,8 @@ fn describe(answer: &str) -> Option<String> {
         .and_then(|p| p.strip_suffix(')'))
         .unwrap_or(what);
     if Path::new(program).is_absolute() {
-        if has_marker(Path::new(program)) {
+        // gg's launcher, or a link to it, is not something else.
+        if launcher_at(Path::new(program)).is_some() {
             return None;
         }
         return Some(format!("the program {program}"));
@@ -627,8 +696,12 @@ impl Core {
     /// The `gg` command's state as it is now (the shell's answer as last known).
     pub(crate) fn cli_state(&self) -> CliState {
         let cli = crate::lock_ignoring_poison(&self.cli);
+        let found = installed(&cli.search_path);
         CliState {
-            installed: installed(&cli.search_path).map(|p| p.to_string_lossy().into_owned()),
+            installed: found
+                .as_ref()
+                .map(|f| f.path.to_string_lossy().into_owned()),
+            link: found.and_then(|f| f.link),
             shadowed_by: cli.shadowed_by.clone(),
             candidates: candidates(&cli.search_path, cli.home.as_deref())
                 .into_iter()
@@ -1015,7 +1088,7 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["gg"]);
-        assert_eq!(installed(&path_of(&[dir.path()])), Some(path));
+        assert_eq!(installed(&path_of(&[dir.path()])), Some(written(&path)));
     }
 
     /// The temp file is made new: a stale one of ours is replaced, and a link planted under
@@ -1088,7 +1161,7 @@ mod tests {
         install(&again, &script).unwrap();
         fs::write(theirs.join("gg"), "#!/bin/sh\necho theirs\n").unwrap();
         let search = path_of(&[&theirs, &ours, &again]);
-        assert_eq!(installed(&search), Some(ours.join("gg")));
+        assert_eq!(installed(&search), Some(written(&ours.join("gg"))));
         assert_eq!(
             uninstall(&search).unwrap(),
             [ours.join("gg"), again.join("gg")]
@@ -1098,14 +1171,173 @@ mod tests {
         assert_eq!(installed(&search), None);
         // Nothing left to remove: fine.
         assert!(uninstall(&search).unwrap().is_empty());
-        // A link to a launcher is not one the app wrote there: neither installed nor removed.
+        // A link to a launcher is not one the app wrote there: it is the command, but it is
+        // never removed.
         install(&ours, &script).unwrap();
         let linked = mkdir(&root.path().join("linked"));
         std::os::unix::fs::symlink(ours.join("gg"), linked.join("gg")).unwrap();
         let search = path_of(&[&linked]);
-        assert_eq!(installed(&search), None);
+        assert_eq!(
+            installed(&search),
+            Some(Installed {
+                path: linked.join("gg"),
+                link: Some(CliLink::Other),
+            })
+        );
         assert!(uninstall(&search).unwrap().is_empty());
         assert!(ours.join("gg").exists());
+        assert!(is_link(&linked.join("gg")));
+    }
+
+    /// The launcher the app wrote, as [`installed`] finds it.
+    #[cfg(unix)]
+    fn written(path: &Path) -> Installed {
+        Installed {
+            path: path.to_path_buf(),
+            link: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn is_link(path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    /// A stand-in Homebrew install under `root`: a prefix (`brew`, with its `Caskroom`) whose
+    /// `bin/gg` links to the launcher inside an app bundle in `root/Applications`, as a cask's
+    /// `binary "#{appdir}/gg.app/Contents/Resources/gg"` makes it. Returns (the prefix's
+    /// `bin`, the launcher in the bundle).
+    #[cfg(unix)]
+    fn homebrew_link(root: &Path) -> (PathBuf, PathBuf) {
+        let resources = mkdir(&root.join("Applications/gg.app/Contents/Resources"));
+        let launcher = resources.join("gg");
+        fs::write(&launcher, launcher_script("0.3.1", None)).unwrap();
+        set_executable(&launcher);
+        let bin = mkdir(&root.join("brew/bin"));
+        mkdir(&root.join("brew/Caskroom/gg/0.3.1"));
+        std::os::unix::fs::symlink(&launcher, bin.join("gg")).unwrap();
+        (bin, launcher)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_homebrew_made_to_the_bundled_launcher_is_the_command() {
+        let root = tempfile::tempdir().unwrap();
+        let (bin, _) = homebrew_link(root.path());
+        let homebrew = Installed {
+            path: bin.join("gg"),
+            link: Some(CliLink::Homebrew),
+        };
+        assert_eq!(installed(&path_of(&[&bin])), Some(homebrew.clone()));
+        // A relative link, and a folder of the prefix reached through a link, count too.
+        let relative = mkdir(&root.path().join("rel/brew/bin"));
+        mkdir(&root.path().join("rel/brew/Caskroom"));
+        std::os::unix::fs::symlink(
+            "../../../Applications/gg.app/Contents/Resources/gg",
+            relative.join("gg"),
+        )
+        .unwrap();
+        assert_eq!(
+            installed(&path_of(&[&relative])).unwrap().link,
+            Some(CliLink::Homebrew)
+        );
+        // The first gg of the app's on PATH: an unknown gg before it is passed over (the
+        // shell check names it), a launcher the app wrote after it is not the command.
+        let other = mkdir(&root.path().join("other"));
+        fs::write(other.join("gg"), "#!/bin/sh\necho other\n").unwrap();
+        let mine = mkdir(&root.path().join("mine"));
+        install(&mine, &launcher_script("0.3.1", None)).unwrap();
+        assert_eq!(installed(&path_of(&[&other, &bin, &mine])), Some(homebrew));
+        assert_eq!(
+            installed(&path_of(&[&mine, &bin])),
+            Some(written(&mine.join("gg")))
+        );
+    }
+
+    /// Who made a link is told only when both signs agree: it lives in a Homebrew prefix's
+    /// `bin` (a `Caskroom` beside it) and leads into an app bundle. Any other link to the
+    /// launcher is just a link to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_the_launcher_made_by_someone_else_is_just_a_link() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, launcher) = homebrew_link(root.path());
+        // Into the bundle, from a folder that is not a Homebrew prefix's.
+        let bin = mkdir(&root.path().join("home/bin"));
+        std::os::unix::fs::symlink(&launcher, bin.join("gg")).unwrap();
+        assert_eq!(
+            installed(&path_of(&[&bin])),
+            Some(Installed {
+                path: bin.join("gg"),
+                link: Some(CliLink::Other),
+            })
+        );
+        // From a Homebrew prefix, to a launcher the app wrote (not in a bundle).
+        let local = mkdir(&root.path().join("home/.local/bin"));
+        install(&local, &launcher_script("0.3.1", None)).unwrap();
+        let prefix = mkdir(&root.path().join("prefix2/bin"));
+        mkdir(&root.path().join("prefix2/Caskroom"));
+        std::os::unix::fs::symlink(local.join("gg"), prefix.join("gg")).unwrap();
+        assert_eq!(
+            installed(&path_of(&[&prefix])).unwrap().link,
+            Some(CliLink::Other)
+        );
+    }
+
+    /// A link that leads nowhere, to a file without the marker, or to a folder is not the
+    /// app's, exactly like any other gg.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_anything_else_is_not_the_command() {
+        let root = tempfile::tempdir().unwrap();
+        let (bin, launcher) = homebrew_link(root.path());
+        let search = path_of(&[&bin]);
+        fs::write(&launcher, "#!/bin/sh\necho someone else\n").unwrap();
+        assert_eq!(installed(&search), None);
+        fs::remove_file(&launcher).unwrap();
+        assert_eq!(installed(&search), None, "dangling");
+        fs::create_dir(&launcher).unwrap();
+        assert_eq!(installed(&search), None, "a folder");
+        // A link to a link to the launcher: followed to the end.
+        fs::remove_dir(&launcher).unwrap();
+        let real = root.path().join("real-gg");
+        fs::write(&real, launcher_script("0.3.1", None)).unwrap();
+        std::os::unix::fs::symlink(&real, &launcher).unwrap();
+        assert_eq!(installed(&search).unwrap().link, Some(CliLink::Other));
+    }
+
+    /// The app never replaces or removes a link to its launcher, never writes through it,
+    /// and says what it is when asked to install there.
+    #[cfg(unix)]
+    #[test]
+    fn install_and_uninstall_leave_a_link_to_the_launcher_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let (bin, launcher) = homebrew_link(root.path());
+        let bundled = fs::read(&launcher).unwrap();
+        let link = bin.join("gg");
+        let err = install(&bin, &launcher_script("9.9.9", None)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(
+            err.message,
+            format!(
+                "There is already a gg in {}, made by Homebrew: a link to {}, gg's launcher. gg leaves it alone; choose another folder.",
+                bin.display(),
+                launcher.display()
+            )
+        );
+        assert!(is_link(&link));
+        assert_eq!(fs::read_link(&link).unwrap(), launcher);
+        assert_eq!(fs::read(&launcher).unwrap(), bundled);
+        // Removing the app's launchers leaves the link and the bundle's file; one the app
+        // wrote elsewhere on PATH still goes.
+        let mine = mkdir(&root.path().join("mine"));
+        install(&mine, &launcher_script("0.3.1", None)).unwrap();
+        let search = path_of(&[&bin, &mine]);
+        assert_eq!(uninstall(&search).unwrap(), [mine.join("gg")]);
+        assert!(is_link(&link));
+        assert_eq!(fs::read_link(&link).unwrap(), launcher);
+        assert_eq!(fs::read(&launcher).unwrap(), bundled);
+        assert_eq!(installed(&search).unwrap().link, Some(CliLink::Homebrew));
     }
 
     /// A stand-in login shell: a POSIX sh script that runs `setup` and then the command it
@@ -1150,6 +1382,25 @@ mod tests {
         fs::remove_file(other.join("gg")).unwrap();
         install(&other, &launcher_script("0.1.0", None)).unwrap();
         assert_eq!(shadowed_by(&shell), None);
+
+        // Nor is a link to the launcher (Homebrew's); a link that leads nowhere, or to
+        // something else, is another gg.
+        let (bin, launcher) = homebrew_link(&dir.path().join("brew-root"));
+        let shell = fake_shell(
+            dir.path(),
+            &format!("PATH='{}':/usr/bin:/bin", bin.display()),
+        );
+        assert_eq!(shadowed_by(&shell), None);
+        fs::write(&launcher, "#!/bin/sh\necho someone else\n").unwrap();
+        assert_eq!(
+            shadowed_by(&shell).unwrap(),
+            format!("the program {}", bin.join("gg").display())
+        );
+        fs::remove_file(&launcher).unwrap();
+        assert_eq!(
+            describe(&format!("gg is {}", bin.join("gg").display())).unwrap(),
+            format!("the program {}", bin.join("gg").display())
+        );
 
         // Nothing called gg.
         let shell = fake_shell(dir.path(), "PATH=/usr/bin:/bin");

@@ -327,6 +327,9 @@
       // Made, whatever followed (a push that failed, a Stop after it): the form starts afresh.
       // (The outcome's snapshot may still show HEAD as it was until the graph has reloaded.)
       if (outcome.committed !== null) {
+        // HEAD has moved: no commit until the files are read on the new one (one sent
+        // before would name the old HEAD, and be refused).
+        filesHead = null;
         message = "";
         allowEmpty = false;
         ticked = new Set();

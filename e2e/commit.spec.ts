@@ -145,6 +145,12 @@ test("with nothing ticked, Commit with no changes makes an empty commit, pushed 
   await expect(commitButton(page)).toBeDisabled();
   await empty.check();
   await expect(reason(page)).toHaveCount(0);
+  // The file list read slowly (as on a busy machine): after a commit, Commit waits for the
+  // files on the new HEAD instead of sending the old one.
+  await page.route("**/invoke", async (route) => {
+    if ((route.request().postData() ?? "").includes('"worktree_files"')) await new Promise((r) => setTimeout(r, 500));
+    await route.continue();
+  });
   const before = gg.git("commit", "rev-parse", "HEAD").trim();
   const status = gg.git("commit", "status", "--porcelain");
   await commitButton(page).click();

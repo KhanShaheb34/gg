@@ -27,6 +27,19 @@ fn commit(paths: &[&str], message: &str, push: bool) -> OpRequest {
         paths: paths.iter().map(|p| (*p).to_owned()).collect(),
         message: message.to_owned(),
         push,
+        empty: false,
+        expect_head: here(),
+        expect_worktree: here_wt(),
+    }
+}
+
+/// An empty commit with `message`, asked for on HEAD and in the worktree as they are.
+fn empty_commit(message: &str, push: bool) -> OpRequest {
+    OpRequest::Commit {
+        paths: Vec::new(),
+        message: message.to_owned(),
+        push,
+        empty: true,
         expect_head: here(),
         expect_worktree: here_wt(),
     }
@@ -1899,4 +1912,123 @@ async fn commit_and_push_goes_where_git_pushes_the_branch() {
         files_of(&h, id, repo.path()).await.push_remote.as_deref(),
         Some("origin")
     );
+}
+
+// ---- Empty commits ----
+
+/// An empty commit has HEAD's tree whatever is changed or staged: the staged file and the
+/// edited one stay as they were, in the index and the working tree.
+#[tokio::test]
+async fn an_empty_commit_takes_nothing_staged_or_changed() {
+    let repo = three_files();
+    repo.write("a.txt", "staged\n");
+    repo.git(&["add", "a.txt"]);
+    repo.write("b.txt", "edited\n");
+    repo.write("new.txt", "untracked\n");
+    let parent = repo.git(&["rev-parse", "HEAD"]);
+    let index = index_state(repo.path());
+    let status = porcelain(repo.path());
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, empty_commit("Trigger CI", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(out.title, "Make an empty commit on main");
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        out.message,
+        format!("Made an empty commit on main ({}).", &new[..8])
+    );
+    assert_eq!(out.committed.as_deref(), Some(new.as_str()));
+    assert_eq!(repo.git(&["rev-parse", "HEAD^"]), parent);
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD^{tree}"]),
+        repo.git(&["rev-parse", "HEAD^^{tree}"])
+    );
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "Trigger CI");
+    assert_eq!(index_state(repo.path()), index);
+    assert_eq!(porcelain(repo.path()), status);
+    assert!(scratch_left(&repo.path().join(".git")).is_empty());
+}
+
+/// On a branch with no commit yet, an empty commit is a first commit with nothing in it.
+#[tokio::test]
+async fn an_empty_first_commit_has_nothing_in_it() {
+    let repo = TestRepo::new();
+    repo.write("a.txt", "a\n");
+    repo.git(&["add", "a.txt"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, empty_commit("root", false)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert!(changed_by(repo.path(), &new).is_empty());
+    assert_eq!(repo.git(&["ls-tree", "HEAD"]), "");
+    assert_eq!(porcelain(repo.path()), ["A  a.txt"]);
+}
+
+/// An empty commit names no files, and needs a message: refused before git runs.
+#[tokio::test]
+async fn an_empty_commit_with_files_or_no_message_is_refused_before_git_runs() {
+    let repo = three_files();
+    repo.write("a.txt", "edited\n");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+    let mut with_files = empty_commit("m", false);
+    if let OpRequest::Commit { paths, .. } = &mut with_files {
+        paths.push("a.txt".into());
+    }
+    let err = run_err(&h, id, with_files).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert_eq!(
+        err.message,
+        "An empty commit takes no files: untick them, or commit them."
+    );
+    let err = run_err(&h, id, empty_commit(" \n", false)).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert_eq!(h.last_log_id(), mark, "git never ran");
+}
+
+/// While a merge is in progress an empty commit is refused: it would conclude the merge.
+#[tokio::test]
+async fn an_empty_commit_is_refused_while_a_merge_is_in_progress() {
+    let repo = TestRepo::new();
+    conflicting(&repo);
+    assert!(!repo.git_succeeds(&["merge", "feature"]));
+    repo.write("clash.txt", "both\n");
+    repo.git(&["add", "clash.txt"]);
+    let before = repo.git(&["rev-parse", "HEAD"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let mark = h.last_log_id();
+    let out = h.run(id, empty_commit("not the merge", false)).await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(
+        out.message,
+        "Nothing was committed: a merge is in progress, and an empty commit cannot conclude \
+         it. Commit the merge's files, or abort it."
+    );
+    assert!(h.writes_since(mark).is_empty());
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
+    assert!(in_git_dir(&repo, "MERGE_HEAD"));
+}
+
+/// An empty commit and push: the usual way to run a branch's CI again.
+#[tokio::test]
+async fn an_empty_commit_can_be_pushed() {
+    let repo = three_files();
+    let origin = repo.clone_as_remote();
+    repo.git(&["checkout", "-q", "-b", "topic"]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let out = h.run(id, empty_commit("again", true)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(out.title, "Make an empty commit on topic and push");
+    let new = repo.git(&["rev-parse", "HEAD"]);
+    assert!(
+        out.message.starts_with("Made an empty commit on topic ("),
+        "{}",
+        out.message
+    );
+    assert_eq!(origin.git(&["rev-parse", "refs/heads/topic"]), new);
 }

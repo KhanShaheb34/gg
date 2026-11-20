@@ -143,7 +143,8 @@ that is the case.
 
 Press ⌘K (or click a worktree's change count) to commit the files you tick, with
 **Commit & Push** to send the branch upstream in the same step. Files you staged but did not
-tick stay staged and out of the commit. When a merge is being concluded, its message is filled
+tick stay staged and out of the commit. With nothing ticked, **Commit with no changes** makes an
+empty commit (to run CI again, say). When a merge is being concluded, its message is filled
 in for you.
 
 **Pull requests**

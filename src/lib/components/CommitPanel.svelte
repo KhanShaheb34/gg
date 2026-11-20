@@ -13,6 +13,9 @@
 
   The list follows the worktree as it changes, keeping ticks and the message; the message is
   kept per worktree while the app runs, closed or not. Cmd+Enter in the message commits.
+  With no file ticked (and no merge to conclude), "Commit with no changes" under the buttons
+  makes both buttons make an empty commit (git commit --allow-empty): the usual way to run a
+  branch's CI again. It is off until asked for, so an unticked list never commits by mistake.
   What stops a commit is said under the buttons. A commit made clears the message and the
   ticks (the notice offers the push when it was not pushed); with nothing left, the panel
   goes back to the worktree list. A failure (a hook's output) is a notice with Show log, and
@@ -62,6 +65,8 @@
   let tickNew = true;
   let message = $state(untrack(() => commitDrafts.get(path) ?? ""));
   let pending: "commit" | "push" | null = $state(null);
+  /** The user asked for a commit with no changes ("Commit with no changes"). */
+  let allowEmpty = $state(false);
   let switching = $state(false);
 
   /** Why a file cannot be ticked, or null. */
@@ -80,6 +85,10 @@
   const chosen = $derived((files ?? []).filter(isTicked));
   const conflicts = $derived((files ?? []).filter((f) => f.status === "U").length);
   /** Tracked files a merge needs that cannot go in yet, with why (said up front). */
+  /** "Commit with no changes" is offered: nothing ticked, nothing stopped here. */
+  const emptyOffered = $derived(active && files !== null && stopped === null && chosen.length === 0);
+  /** The commit asked for is an empty one. */
+  const emptyCommit = $derived(emptyOffered && allowEmpty);
   const mergeBlocked = $derived(merging ? (files ?? []).filter((f) => f.status !== "?" && blocked(f) !== null) : []);
 
   // ---- Reading the files ----
@@ -287,8 +296,10 @@
       return `A ${KIND[stopped.kind]} is stopped here: Continue, in the banner, commits its changes (or abort it).`;
     if (merging && conflicts > 0) return "Resolve the conflicts in your editor, then continue: commit here, or Continue in the banner.";
     if (merging && truncated) return "More than 5,000 files changed: conclude this merge in a terminal.";
-    if (files.length === 0) return "Nothing to commit: no file has changed.";
-    if (chosen.length === 0) return "Tick the files to commit.";
+    if (!emptyCommit) {
+      if (files.length === 0) return "Nothing to commit: no file has changed. To commit anyway, tick Commit with no changes.";
+      if (chosen.length === 0) return "Tick the files to commit.";
+    }
     if (message.trim() === "") return "Write a commit message.";
     return null;
   });
@@ -303,9 +314,10 @@
     if (reason !== null || pending || (push && (pushTo === null || "why" in pushTo))) return;
     const request: OpRequest = {
       op: "commit",
-      paths: chosen.map((f) => f.path),
+      paths: emptyCommit ? [] : chosen.map((f) => f.path),
       message,
       push,
+      empty: emptyCommit,
       expectHead: filesHead,
       expectWorktree: path,
     };
@@ -315,7 +327,11 @@
       // Made, whatever followed (a push that failed, a Stop after it): the form starts afresh.
       // (The outcome's snapshot may still show HEAD as it was until the graph has reloaded.)
       if (outcome.committed !== null) {
+        // HEAD has moved: no commit until the files are read on the new one (one sent
+        // before would name the old HEAD, and be refused).
+        filesHead = null;
         message = "";
+        allowEmpty = false;
         ticked = new Set();
         tickNew = false;
         backWhenEmpty = true;
@@ -531,7 +547,7 @@
         <button
           class="button primary"
           disabled={reason !== null || pending !== null}
-          title="Commit the ticked files ({COMMIT_KEYS})"
+          title="{emptyCommit ? 'Make an empty commit' : 'Commit the ticked files'} ({COMMIT_KEYS})"
           onclick={() => void commit(false)}
           data-testid="commit-button">{pending === "commit" ? "Committing…" : "Commit"}</button
         >
@@ -552,6 +568,18 @@
           </button>
         {/if}
       </div>
+      {#if emptyOffered}
+        <label class="empty-row" title="A commit that changes no file (git commit --allow-empty), to run CI again, say">
+          <input
+            class="checkbox"
+            type="checkbox"
+            bind:checked={allowEmpty}
+            disabled={pending !== null}
+            data-testid="commit-empty"
+          />
+          <span>Commit with no changes</span>
+        </label>
+      {/if}
       {#if (reason ?? pushReason) !== null && pending === null}
         <p class="reason" data-testid="commit-reason">
           <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
@@ -903,6 +931,18 @@
     gap: 0.3em;
     min-width: 0;
     overflow: hidden;
+  }
+
+  .empty-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: fit-content;
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    cursor: default;
+    user-select: none;
   }
 
   .reason {

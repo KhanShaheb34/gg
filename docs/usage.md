@@ -64,7 +64,8 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   `git worktree repair <new path>` instead.
 - The **commit panel** (⌘K, or a worktree's change count) commits the files you tick, with
   **Commit & Push** to the branch's upstream; when a merge is being concluded, its message is
-  filled in. The notice after a commit offers the push. Known limit: if the app quits or
+  filled in. With nothing ticked, **Commit with no changes** makes an empty commit
+  (`git commit --allow-empty`), with or without the push. The notice after a commit offers the push. Known limit: if the app quits or
   crashes between making a commit and updating the staging area (during a slow
   `post-commit` hook, say), the staging area still holds the committed files as they were
   before the commit, so `git status` shows staged changes that would undo it; `git reset`

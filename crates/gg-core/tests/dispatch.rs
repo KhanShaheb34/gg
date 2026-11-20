@@ -1744,7 +1744,7 @@ async fn worktree_files_and_commit_via_dispatch() {
             json!({
                 "repoId": id, "clientId": "t", "clientSeq": 1, "confirmed": [],
                 "request": {
-                    "op": "commit", "paths": ["new file.txt"], "message": "add it", "push": false,
+                    "op": "commit", "paths": ["new file.txt"], "message": "add it", "push": false, "empty": false,
                     "expectHead": first["head"], "expectWorktree": wt,
                 },
             }),

@@ -682,20 +682,27 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
             paths,
             message,
             push,
+            empty,
             ..
         } => {
-            commit::check(&paths, &message)?;
-            let files = commit::files(paths.len());
+            commit::check(&paths, &message, empty)?;
+            let what = if empty {
+                "Make an empty commit".to_owned()
+            } else {
+                format!("Commit {}", commit::files(paths.len()))
+            };
             (
                 on_head(move |head| {
                     if push {
-                        format!("Commit {files} on {head} and push")
+                        format!("{what} on {head} and push")
                     } else {
-                        format!("Commit {files} on {head}")
+                        format!("{what} on {head}")
                     }
                 }),
                 body(move |ctx, _| {
-                    Box::pin(async move { commit::commit(ctx, &paths, &message, push).await })
+                    Box::pin(
+                        async move { commit::commit(ctx, &paths, &message, push, empty).await },
+                    )
                 }),
             )
         }
@@ -1219,9 +1226,11 @@ impl RepoManager {
                 },
             ));
         }
-        if let OpRequest::Commit { paths, push, .. } = &request
+        if let OpRequest::Commit {
+            paths, push, empty, ..
+        } = &request
             && let Some(why) =
-                commit::refused(&ctx, paths, *push, in_progress, head.as_deref()).await?
+                commit::refused(&ctx, paths, *push, *empty, in_progress, head.as_deref()).await?
         {
             return Ok((title, Ran::Refused(why)));
         }

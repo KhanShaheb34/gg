@@ -1,5 +1,5 @@
 // The commit panel against the real core: committing a subset of the changed files, Commit &
-// Push to a local bare remote, a failing hook (its output shown, the message kept), the list
+// Push to a local bare remote, an empty commit, a failing hook (its output shown, the message kept), the list
 // cut at 5,000 files, the ways in (the shortcut, the worktree menu and its row, the graph's
 // uncommitted row), another worktree made active in one click, the keyboard, what stops a
 // commit said under the buttons, and the worktree menu's launchers (recorded, never started).
@@ -124,6 +124,61 @@ test("Commit & Push names where it goes and sends the branch there; with nothing
   await expect(files(page).getByRole("option")).toHaveCount(1);
   await expect(commitButton(page)).toBeVisible();
   await expect(pushButton(page)).toHaveCount(0);
+});
+
+test("with nothing ticked, Commit with no changes makes an empty commit, pushed or not", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("commit");
+  await open(page, repo);
+  await page.keyboard.press("ControlOrMeta+k");
+  const empty = page.getByTestId("commit-empty");
+  // Files ticked: not offered.
+  await expect(files(page).getByRole("option")).toHaveCount(6);
+  await expect(empty).toHaveCount(0);
+  // Nothing ticked: offered, off; Commit says to tick files.
+  await page.getByTestId("tick-all").click();
+  await expect(page.getByTestId("commit-count")).toHaveText("0 of 6 files ticked");
+  await expect(empty).not.toBeChecked();
+  await message(page).fill("Run CI again");
+  await expect(reason(page)).toHaveText("Tick the files to commit.");
+  await expect(commitButton(page)).toBeDisabled();
+  await empty.check();
+  await expect(reason(page)).toHaveCount(0);
+  // The file list read slowly (as on a busy machine): after a commit, Commit waits for the
+  // files on the new HEAD instead of sending the old one.
+  await page.route("**/invoke", async (route) => {
+    if ((route.request().postData() ?? "").includes('"worktree_files"')) await new Promise((r) => setTimeout(r, 500));
+    await route.continue();
+  });
+  const before = gg.git("commit", "rev-parse", "HEAD").trim();
+  const status = gg.git("commit", "status", "--porcelain");
+  await commitButton(page).click();
+  await expect(notice(page, /Made an empty commit on main \(/)).toBeVisible();
+  expect(gg.git("commit", "rev-parse", "HEAD^").trim()).toBe(before);
+  expect(gg.git("commit", "rev-parse", "HEAD^{tree}").trim()).toBe(gg.git("commit", "rev-parse", "HEAD^^{tree}").trim());
+  expect(gg.git("commit", "log", "-1", "--format=%s").trim()).toBe("Run CI again");
+  // The changes stay as they were; the form starts afresh, the box off again.
+  expect(gg.git("commit", "status", "--porcelain")).toBe(status);
+  await expect(message(page)).toHaveValue("");
+  await expect(empty).not.toBeChecked();
+
+  // A clean worktree: Commit says how to commit anyway; with the push, the branch goes too.
+  await message(page).fill("Everything");
+  await page.getByTestId("tick-all").click();
+  await commitButton(page).click();
+  await expect(panel(page)).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByText("No changes: everything here is committed.")).toBeVisible();
+  await message(page).fill("Deploy again");
+  await expect(reason(page)).toHaveText("Nothing to commit: no file has changed. To commit anyway, tick Commit with no changes.");
+  await expect(pushButton(page)).toBeDisabled();
+  await empty.check();
+  await pushButton(page).click();
+  await expect(notice(page, /Made an empty commit on main \(.*\)\. Pushed main to origin\/main/)).toBeVisible();
+  const origin = path.join(path.dirname(repo), "commit-origin.git");
+  expect(gg.gitAt(origin, "rev-parse", "main").trim()).toBe(gg.git("commit", "rev-parse", "HEAD").trim());
+  expect(gg.git("commit", "log", "-1", "--format=%s").trim()).toBe("Deploy again");
 });
 
 test("Commit & Push goes where git pushes the branch, as Create pull request does: remote.pushDefault sends it to the fork", async ({ gg }) => {

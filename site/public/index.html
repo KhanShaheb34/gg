@@ -48,7 +48,7 @@
       <li><a href="#features">Features</a></li>
       <li><a href="#terminal">Terminal</a></li>
       <li><a href="#speed">Speed</a></li>
-      <li><a href="#next">Coming next</a></li>
+      <li><a href="#next">Windows and Linux</a></li>
     </ul>
   </nav>
   <a class="top-link" href="/github">GitHub</a>
@@ -83,9 +83,14 @@
             <span data-latest="size">8.1 MB</span>
           </p>
         </div>
+        <div class="alt">
+          <p class="alt-label">Or with Homebrew, which skips the first-launch step below:</p>
+          <span class="cmd"><code id="brew">brew install --cask khanshaheb34/tap/gg</code><button class="copy" type="button" data-copy="brew" aria-live="polite">Copy</button></span>
+          <p class="alt-others">Also for <a href="/github/releases/latest/download/gg-windows-x64-setup.exe">Windows</a> and Linux (<a href="/github/releases/latest/download/gg-linux-amd64.deb">.deb</a>, <a href="/github/releases/latest/download/gg-linux-x86_64.AppImage">AppImage</a>), <a href="#next">built and tested automatically only</a>.</p>
+        </div>
         <div class="install" role="group" aria-labelledby="install-title">
-          <p class="install-title" id="install-title">Opening gg the first time</p>
-          <p class="install-why">gg is not notarized by Apple, so macOS stops it the first time you open it. Do one of these once; after that it opens like any other app.</p>
+          <p class="install-title" id="install-title">Opening gg the first time on macOS</p>
+          <p class="install-why">gg is not notarized by Apple, so macOS stops a downloaded copy the first time you open it. Do one of these once; after that it opens like any other app. Installed with Homebrew, it opens straight away.</p>
           <dl class="ways">
             <div>
               <dt>macOS 15+</dt>
@@ -325,14 +330,15 @@
 
   <section class="block section-head next" id="next" aria-labelledby="next-title">
     <span class="node" aria-hidden="true"></span>
-    <h2 id="next-title">Coming next</h2>
-    <p class="section-lede">Built, not offered here yet.</p>
+    <h2 id="next-title">Windows and Linux</h2>
+    <p class="section-lede">Built and tested automatically with every release. Not yet used day to day.</p>
     <div class="branch">
       <svg class="fork" viewBox="0 0 24 32" aria-hidden="true" preserveAspectRatio="none"><path d="M1 0C1 18 23 12 23 32"/></svg>
       <ul class="next-list">
-        <li><b>Windows</b> An installer is built, and gg's tests run, on Windows in CI. Nobody has used it there by hand yet, so it is not offered for download.</li>
-        <li><b>Linux</b> A <code>.deb</code> and an AppImage are built, and gg's tests run, on Linux in CI. Not tried by hand yet either, so not offered for download.</li>
+        <li><b>Windows</b> <a href="/github/releases/latest/download/gg-windows-x64-setup.exe">Download the installer</a> for 64-bit Windows 10 and 11. It is built, and gg's tests pass, on Windows in CI. Nobody has used it there by hand yet.</li>
+        <li><b>Linux</b> <a href="/github/releases/latest/download/gg-linux-amd64.deb">Download the .deb</a> for Debian and Ubuntu, or <a href="/github/releases/latest/download/gg-linux-x86_64.AppImage">the AppImage</a> for other distributions. Both are built, and gg's tests pass, on Linux in CI. Not tried by hand yet either.</li>
       </ul>
+      <p class="fine">gg is used every day on macOS only, so expect rough edges on these two. <a href="/github/issues">Reports of what works and what does not</a> are very welcome. Checksums for every file are on the <a href="/github/releases/latest">release page</a>.</p>
     </div>
   </section>
 

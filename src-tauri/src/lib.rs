@@ -7,6 +7,13 @@ use std::sync::{Arc, Mutex};
 
 use gg_core::{Core, CoreError, ErrorCode, EventSink};
 
+/// gg updating itself through Tauri's updater plugin.
+#[cfg(desktop)]
+mod update;
+/// Performance builds only: a local test source for updates (scripts/update-proof.sh).
+#[cfg(feature = "perf")]
+mod update_hook;
+
 // A release build of the app never carries gg-core's test helpers and hooks. (Test builds of
 // the workspace can: cargo unifies the features of gg-core's own dev-dependency on itself.)
 #[cfg(not(debug_assertions))]
@@ -46,18 +53,20 @@ impl EventSink for TauriSink {
 struct CoreSlot {
     app: AppHandle,
     core: OnceCell<Result<Arc<Core>, CoreError>>,
+    /// gg updates itself (always, but in a performance build given no test source).
+    updates: bool,
 }
 
 impl CoreSlot {
     async fn get(&self) -> Result<Arc<Core>, CoreError> {
         self.core
-            .get_or_init(|| start_core(self.app.clone()))
+            .get_or_init(|| start_core(self.app.clone(), self.updates))
             .await
             .clone()
     }
 }
 
-async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
+async fn start_core(app: AppHandle, updates: bool) -> Result<Arc<Core>, CoreError> {
     // Before the store loads: the settings saved under the app's old name are copied over.
     let config_dir = gg_core::store::config_dir(|| {
         app.path().app_config_dir().map_err(|e| {
@@ -66,7 +75,14 @@ async fn start_core(app: AppHandle) -> Result<Arc<Core>, CoreError> {
         })
     })?;
     let launch = launch_path(std::env::args_os().nth(1), std::env::var_os("GG_OPEN"));
-    let core = Core::new(config_dir, launch, Arc::new(TauriSink(app))).await?;
+    let core = Core::new(config_dir, launch, Arc::new(TauriSink(app.clone()))).await?;
+    // Checks start once the UI has shown its first rows (`start_update_checks`).
+    #[cfg(desktop)]
+    if updates {
+        core.set_update_backend(Arc::new(update::TauriUpdates::new(app)));
+    }
+    #[cfg(not(desktop))]
+    let _ = (app, updates);
     // The `gg` command: the login shell is asked (in the background) whether it has a `gg`
     // of its own.
     core.start_cli(gg_core::cli::CliSetup {
@@ -330,7 +346,8 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 /// through its menus, dialogs, banner and log (`walkProbe.ts`; a throwaway repository made by
 /// its driver only); `walk3` and `walk3-dark` use the worktree, commit, pull-request and
 /// settings features the same way (the second in the dark theme, set through the settings);
-/// `worktrees` times opening the side panel and switching worktrees. Every mode also records the page's errors, unhandled rejections, CSP
+/// `worktrees` times opening the side panel and switching worktrees; `update` follows an
+/// update through to the restart (`updateProbe.ts`, for scripts/update-proof.sh). Every mode also records the page's errors, unhandled rejections, CSP
 /// violations and console errors and warnings in `window.__GG_PAGE_ERRORS__`, which the
 /// probe reports as `page-error` marks. `None` otherwise.
 #[cfg(any(test, feature = "perf"))]
@@ -346,6 +363,7 @@ fn perf_scroll_script(gg_perf_scroll: Option<OsString>) -> Option<String> {
         "walk3" => "\"walk3\"",
         "walk3-dark" => "\"walk3-dark\"",
         "worktrees" => "\"worktrees\"",
+        "update" => "\"update\"",
         _ => return None,
     };
     Some(format!(
@@ -381,9 +399,25 @@ const PAGE_ERRORS_SCRIPT: &str = r#"(() => {
   }
 })();"#;
 
+/// The app's config and assets, as compiled in (tauri.conf.json and the platform's overlay).
+fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Performance builds: the environment a restart to update must keep (see update_hook).
+    #[cfg(feature = "perf")]
+    update_hook::load_env();
     perf_mark!("native-run");
+    #[allow(unused_mut)]
+    let mut context = context();
+    // The update source is the config's (tauri.conf.json, compiled in); only a performance
+    // build is given a local test one, and without it does not update at all.
+    #[cfg(feature = "perf")]
+    let updates = update_hook::apply(&mut context);
+    #[cfg(not(feature = "perf"))]
+    let updates = true;
     // First of all: a second launch (`gg <path>` starts a new instance) hands its folders to
     // the running app and exits here, during plugin set-up, before the app's own set-up, so
     // it never reads or writes the config folder or migrates anything. The running app opens
@@ -446,6 +480,10 @@ pub fn run() {
     } else {
         builder
     };
+    // gg updating itself: the plugin's state only (its commands are not granted to the
+    // page; the core drives it through `update::TauriUpdates`).
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
         .plugin(tauri_plugin_dialog::init())
         .on_page_load(|_, payload| match payload.event() {
@@ -456,7 +494,7 @@ pub fn run() {
                 perf_mark!("native-page-load-finished");
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             perf_mark!("native-setup");
             // Only the instance that stays gets here (a second one has exited during plugin
             // set-up, having run nothing). The core starts after the window and webview are
@@ -472,6 +510,7 @@ pub fn run() {
             let slot = Arc::new(CoreSlot {
                 app: app.handle().clone(),
                 core: OnceCell::new(),
+                updates,
             });
             app.manage(slot.clone());
             tauri::async_runtime::spawn(async move {
@@ -482,7 +521,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![invoke_core])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Ready = event {
@@ -503,9 +542,44 @@ pub fn run() {
         });
 }
 
+/// The one place the app looks for updates (tauri.conf.json's `plugins.updater`).
+pub const UPDATE_ENDPOINT: &str =
+    "https://github.com/KhanShaheb34/gg/releases/latest/download/latest.json";
+/// The public key updates must be signed with (minisign, base64, as the config has it).
+pub const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2REVFQTcxNUUzQjRGOTUKUldTVlR6dGVjZXJlaG5HSnhwNWVIQUNFdkswUW9aZXZ1dUovQnJHNzVlNnZVdXdiRUxXTmtsMWcK";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The config compiled into the app (any overlay given to the build included) names one
+    /// update source, over HTTPS, and gg's public key; nothing loosens the checks. A normal
+    /// build has nothing that changes it at run time (`update_hook` is the perf build's).
+    #[test]
+    fn the_app_checks_one_update_source_signed_with_gg_s_key() {
+        let context = context();
+        let updater = context
+            .config()
+            .plugins
+            .0
+            .get("updater")
+            .expect("the updater is configured");
+        assert_eq!(updater["endpoints"], serde_json::json!([UPDATE_ENDPOINT]));
+        assert!(UPDATE_ENDPOINT.starts_with("https://github.com/"));
+        assert_eq!(updater["pubkey"], UPDATE_PUBKEY);
+        assert_eq!(updater["requireSignedVersion"], true);
+        let keys: Vec<&String> = updater.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            ["endpoints", "pubkey", "requireSignedVersion", "windows"],
+            "no other updater setting (no dangerous* flag, no allowDowngrades)"
+        );
+        assert_eq!(
+            updater["windows"],
+            serde_json::json!({"installMode": "passive"})
+        );
+        assert_eq!(context.config().identifier, "com.shakirul.gg");
+    }
 
     #[test]
     fn opened_urls_give_existing_folders_only() {
@@ -595,7 +669,7 @@ mod tests {
         assert!(actions.contains("__GG_PERF_SCROLL__ = \"actions\""));
         let walk = perf_scroll_script(Some("walk".into())).unwrap();
         assert!(walk.contains("__GG_PERF_SCROLL__ = \"walk\""));
-        for mode in ["walk3", "walk3-dark", "worktrees"] {
+        for mode in ["walk3", "walk3-dark", "worktrees", "update"] {
             let script = perf_scroll_script(Some(mode.into())).unwrap();
             assert!(
                 script.contains(&format!("__GG_PERF_SCROLL__ = \"{mode}\"")),

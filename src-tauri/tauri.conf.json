@@ -26,6 +26,16 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2REVFQTcxNUUzQjRGOTUKUldTVlR6dGVjZXJlaG5HSnhwNWVIQUNFdkswUW9aZXZ1dUovQnJHNzVlNnZVdXdiRUxXTmtsMWcK",
+      "endpoints": ["https://github.com/KhanShaheb34/gg/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app"],

@@ -1432,7 +1432,7 @@ mod tests {
                 "session": {"tabs": ["/r"], "active": null},
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                              "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
-                             "dateFormat": "standard"},
+                             "dateFormat": "standard", "checkForUpdates": true},
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,

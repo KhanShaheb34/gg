@@ -12,7 +12,12 @@ vi.mock("../ipc", async (importOriginal) => {
 
 type Ipc = typeof import("../ipc");
 
-const before: CliState = { installed: null, shadowedBy: "an alias for git log", candidates: ["/h/.local/bin", "/h/bin"] };
+const before: CliState = {
+  installed: null,
+  link: null,
+  shadowedBy: "an alias for git log",
+  candidates: ["/h/.local/bin", "/h/bin"],
+};
 const after: CliState = { ...before, installed: "/h/bin/gg" };
 
 describe("the gg command's state", () => {
@@ -86,5 +91,27 @@ describe("the gg command's state", () => {
     expect(app.cli).toEqual(after);
     await cli.openCliDialog();
     expect(overlays.overlays.dialogs).toHaveLength(1);
+  });
+
+  it("opens no dialog for a command Homebrew linked, and says where it is and who looks after it", async () => {
+    const homebrew: CliState = { ...before, installed: "/opt/homebrew/bin/gg", link: "homebrew", shadowedBy: null };
+    vi.mocked(ipc.api.getAppState).mockResolvedValue({ cli: homebrew } as never);
+    await cli.openCliDialog();
+    expect(overlays.overlays.dialogs).toHaveLength(0);
+    expect(app.toasts.map((t) => [t.kind, t.message, t.detail])).toEqual([
+      [
+        "info",
+        "The gg command is already installed by Homebrew at /opt/homebrew/bin/gg.",
+        "Homebrew made it, a link to the launcher inside gg.app, and removes it when you uninstall gg with Homebrew; gg leaves it alone.",
+      ],
+    ]);
+    // Anyone else's link: the same, without naming who.
+    vi.mocked(ipc.api.getAppState).mockResolvedValue({ cli: { ...homebrew, installed: "/usr/local/bin/gg", link: "other" } } as never);
+    await cli.openCliDialog();
+    expect(overlays.overlays.dialogs).toHaveLength(0);
+    expect(app.toasts.at(-1)).toMatchObject({
+      message: "The gg command is already installed at /usr/local/bin/gg, a link to gg’s launcher.",
+      detail: "gg did not make this link and leaves it alone.",
+    });
   });
 });

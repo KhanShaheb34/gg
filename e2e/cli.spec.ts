@@ -1,6 +1,6 @@
 // The `gg` terminal command, installed from the welcome screen into the test's own home
 // folder (the devserver looks for it there only, and asks a stand-in shell what `gg` is).
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
@@ -84,6 +84,39 @@ test("leaves a gg it did not write alone and says what it is", async ({ gg }) =>
   await box.getByRole("button", { name: "Install", exact: true }).click();
   await expect(box).toHaveCount(0);
   expect(existsSync(path.join(home, ".local", "bin", "gg"))).toBe(true);
+});
+
+test("a gg command Homebrew linked into the app bundle is shown as Homebrew's and left alone", async ({ gg }) => {
+  const { page, home } = gg;
+  // As a cask's `binary` makes it: a link in the prefix's bin (a Caskroom beside it) to the
+  // launcher inside gg.app. Here the test's home folder stands for the prefix.
+  const resources = path.join(home, "Applications", "gg.app", "Contents", "Resources");
+  mkdirSync(resources, { recursive: true });
+  mkdirSync(path.join(home, "Caskroom", "gg"), { recursive: true });
+  const bundled = path.join(resources, "gg");
+  writeFileSync(bundled, "#!/bin/sh\n# gg launcher, installed by gg 0.3.1\n", { mode: 0o755 });
+  const link = path.join(home, "bin", "gg");
+  symlinkSync(bundled, link);
+
+  await page.goto("/");
+  const hint = page.getByTestId("cli-hint");
+  await expect(hint).toHaveText("gg command installed by Homebrew in ~/bin");
+  await expect(hint.getByRole("button")).toHaveCount(0);
+  // The app menu's "Install ‘gg’ Command…": nothing to install, only where it is.
+  await openFromMenu(page);
+  await expect(page.getByText("The gg command is already installed by Homebrew at ~/bin/gg.")).toBeVisible();
+  await expect(dialog(page)).toHaveCount(0);
+  // Settings: where and whose, and no Install or Remove.
+  await page.keyboard.press("ControlOrMeta+,");
+  const settings = page.getByTestId("settings");
+  await expect(settings.getByTestId("settings-cli-state")).toHaveText("Installed by Homebrew at ~/bin/gg");
+  await expect(settings.getByTestId("settings-cli-link")).toHaveText(
+    "Homebrew made it, a link to the launcher inside gg.app, and removes it when you uninstall gg with Homebrew; gg leaves it alone.",
+  );
+  await expect(settings.getByTestId("settings-cli-install")).toHaveCount(0);
+  await expect(settings.getByTestId("settings-cli-remove")).toHaveCount(0);
+  expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  expect(readlinkSync(link)).toBe(bundled);
 });
 
 test.describe("with a shell that has its own gg", () => {

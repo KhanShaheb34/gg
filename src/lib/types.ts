@@ -230,9 +230,13 @@ export type AppState = {
   version: string; // gg's own ("0.1.0")
 };
 
+/** Who made the link that is the `gg` command: a Homebrew cask (into the app bundle), or someone the app cannot tell. */
+export type CliLink = "homebrew" | "other";
+
 /** The `gg` terminal command (`install_cli`, `uninstall_cli`). */
 export type CliState = {
-  installed: string | null; // the launcher the app wrote, first on the login PATH; null when none
+  installed: string | null; // the gg command that is gg's, first on the login PATH (a launcher the app wrote, or a link to one); null when none
+  link: CliLink | null; // `installed` is a link to gg's launcher made outside the app, which it never replaces or removes; null when the app wrote it (or none)
   shadowedBy: string | null; // what the login shell runs for `gg` instead ("an alias for …"); null when nothing or not known
   candidates: string[]; // folders it can be written to, best first (on PATH, writable, not in a repository)
 };

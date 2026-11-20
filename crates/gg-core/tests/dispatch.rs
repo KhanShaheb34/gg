@@ -1510,6 +1510,7 @@ async fn the_gg_command_installs_and_uninstalls() {
     let s = |p: &Path| p.to_string_lossy().into_owned();
     let expected = json!({
         "installed": null,
+        "link": null,
         "shadowedBy": "an alias for git log",
         "candidates": [s(&local), s(&bin)],
     });
@@ -1562,8 +1563,70 @@ async fn the_gg_command_without_a_shell_check() {
     let cli = h.call("get_app_state", json!({})).await["cli"].clone();
     assert_eq!(
         cli,
-        json!({ "installed": null, "shadowedBy": null, "candidates": [] })
+        json!({ "installed": null, "link": null, "shadowedBy": null, "candidates": [] })
     );
+}
+
+/// A link Homebrew made to the launcher in the app bundle is the command: reported as
+/// installed, by Homebrew, and never replaced or removed (nor called another gg).
+#[cfg(unix)]
+#[tokio::test]
+async fn the_gg_command_linked_by_homebrew() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    // A Homebrew prefix under the home folder, so its bin is a candidate the app may be
+    // asked to install into.
+    let prefix = home.join("homebrew");
+    let bin = prefix.join("bin");
+    let resources = root.path().join("Applications/gg.app/Contents/Resources");
+    for dir in [&bin, &prefix.join("Caskroom/gg"), &resources] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let bundled = resources.join("gg");
+    let launcher = gg_core::cli::launcher_script("0.3.1", None);
+    std::fs::write(&bundled, &launcher).unwrap();
+    std::fs::set_permissions(&bundled, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = bin.join("gg");
+    std::os::unix::fs::symlink(&bundled, &link).unwrap();
+    let shell = root.path().join("fake-shell");
+    let setup = format!("PATH='{}':/usr/bin:/bin", bin.display());
+    std::fs::write(&shell, format!("#!/bin/sh\n{setup}\neval \"$2\"\n")).unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(bin.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+
+    let s = |p: &Path| p.to_string_lossy().into_owned();
+    let expected = json!({
+        "installed": s(&link),
+        "link": "homebrew",
+        "shadowedBy": null,
+        "candidates": [s(&bin)],
+    });
+    assert_eq!(h.call("get_app_state", json!({})).await["cli"], expected);
+
+    let err = h.fail("install_cli", json!({ "dir": bin })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("a link to"), "{}", err.message);
+    let cli = h.call("uninstall_cli", json!({})).await;
+    assert_eq!(cli["removed"], json!([]));
+    assert_eq!(cli["installed"], s(&link));
+    assert_eq!(cli["link"], "homebrew");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_link(&link).unwrap(), bundled);
+    assert_eq!(std::fs::read_to_string(&bundled).unwrap(), launcher);
+    // The shell, asked again by both, found the link and did not call it another gg.
+    assert_eq!(cli["shadowedBy"], Value::Null);
 }
 
 /// `worktree_default_path` follows the `worktreePattern` setting; the worktree operations

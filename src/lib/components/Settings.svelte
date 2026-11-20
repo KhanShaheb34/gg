@@ -8,6 +8,7 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { linkNote } from "../cli";
   import { formatDate, formatDateLong, homeInText, shellQuote, shortenPath, type DateFormat } from "../format";
   import { api } from "../ipc";
   import { isMac, isWindows } from "../platform";
@@ -451,7 +452,18 @@
         <div class="name"><span>The <code>gg</code> command</span></div>
         <div class="control">
           <p class="explain">Opens the repository of the folder you are in: <code>gg</code>, or <code>gg path/to/repo</code>.</p>
-          {#if app.cli.installed}
+          {#if app.cli.installed && app.cli.link === "homebrew"}
+            <p class="state" data-testid="settings-cli-state">
+              <span class="dot on" aria-hidden="true"></span>Installed by Homebrew at <code
+                >{shortenPath(app.cli.installed, app.homeDir)}</code
+              >
+            </p>
+          {:else if app.cli.installed && app.cli.link === "other"}
+            <p class="state" data-testid="settings-cli-state">
+              <span class="dot on" aria-hidden="true"></span>Installed at <code>{shortenPath(app.cli.installed, app.homeDir)}</code>,
+              a link to gg’s launcher
+            </p>
+          {:else if app.cli.installed}
             <p class="state" data-testid="settings-cli-state">
               <span class="dot on" aria-hidden="true"></span>Installed at <code>{shortenPath(app.cli.installed, app.homeDir)}</code>
             </p>
@@ -463,14 +475,19 @@
               Your shell already defines <code>gg</code> as {app.cli.shadowedBy}; that wins over this command until you remove it.
             </p>
           {/if}
-          <div class="buttons">
-            <button type="button" class="button" data-testid="settings-cli-install" onclick={() => void openCliDialog()}
-              >{app.cli.installed ? "Install elsewhere…" : "Install…"}</button
-            >
-            {#if app.cli.installed}
-              <button type="button" class="button" data-testid="settings-cli-remove" onclick={() => void removeCli()}>Remove</button>
-            {/if}
-          </div>
+          {#if linkNote(app.cli.link) !== null}
+            <!-- A link made outside the app (Homebrew's): nothing here installs or removes it. -->
+            <p class="explain" data-testid="settings-cli-link">{linkNote(app.cli.link)}</p>
+          {:else}
+            <div class="buttons">
+              <button type="button" class="button" data-testid="settings-cli-install" onclick={() => void openCliDialog()}
+                >{app.cli.installed ? "Install elsewhere…" : "Install…"}</button
+              >
+              {#if app.cli.installed}
+                <button type="button" class="button" data-testid="settings-cli-remove" onclick={() => void removeCli()}>Remove</button>
+              {/if}
+            </div>
+          {/if}
         </div>
       </div>
     </section>

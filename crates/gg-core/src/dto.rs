@@ -1365,8 +1365,13 @@ pub struct AppState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliState {
-    /// The launcher the app wrote, first found on the login `PATH`; `None` when there is none.
+    /// The `gg` command that is gg's, first found on the login `PATH`: a launcher the app
+    /// wrote, or a link to one (see `link`); `None` when there is none.
     pub installed: Option<String>,
+    /// `installed` is a link to gg's launcher, made outside the app (by Homebrew, or by
+    /// someone the app cannot tell), which the app never replaces or removes; `None` when it
+    /// is a launcher the app wrote (or there is none).
+    pub link: Option<CliLink>,
     /// What the login shell runs for `gg` instead of the launcher (an alias, a function, a
     /// program earlier on `PATH`), as the shell describes it; `None` when nothing, or not
     /// known (yet).
@@ -1374,6 +1379,17 @@ pub struct CliState {
     /// The folders the launcher can be written to, best first: on the login `PATH`,
     /// writable, not inside a repository.
     pub candidates: Vec<String>,
+}
+
+/// Who made the link that is the `gg` command (see [`CliState::link`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CliLink {
+    /// A Homebrew cask: the link is in a Homebrew prefix's `bin` and leads to the launcher
+    /// inside the app bundle.
+    Homebrew,
+    /// Someone the app cannot tell.
+    Other,
 }
 
 #[cfg(test)]
@@ -1402,6 +1418,7 @@ mod tests {
             git_problem: None,
             cli: CliState {
                 installed: Some("/b/gg".into()),
+                link: Some(CliLink::Homebrew),
                 shadowed_by: None,
                 candidates: vec!["/b".into()],
             },
@@ -1421,7 +1438,8 @@ mod tests {
                 "settingsProblem": null,
                 "settingsFile": "/c/state.json",
                 "gitProblem": null,
-                "cli": {"installed": "/b/gg", "shadowedBy": null, "candidates": ["/b"]},
+                "cli": {"installed": "/b/gg", "link": "homebrew", "shadowedBy": null,
+                        "candidates": ["/b"]},
                 "version": "0.1.0"
             })
         );

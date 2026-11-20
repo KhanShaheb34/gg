@@ -479,6 +479,26 @@ kbd {
   display: none;
 }
 
+/* Other ways to get gg, under the download button: Homebrew, and the other systems. */
+.alt {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.alt p {
+  margin: 0;
+}
+
+.alt .cmd {
+  width: fit-content;
+  margin-top: 7px;
+}
+
+.alt .alt-others {
+  margin-top: 12px;
+}
+
 /* The first-launch note: a permanent part of the page, set like the app's own banners. */
 .install {
   margin-top: 26px;
@@ -560,7 +580,7 @@ kbd {
   max-width: 100%;
 }
 
-.install .cmd code {
+.cmd code {
   flex: 1;
   min-width: 0;
   padding: 0;

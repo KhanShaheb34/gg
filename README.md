@@ -33,13 +33,15 @@ Or with [Homebrew](https://brew.sh):
 brew install --cask khanshaheb34/tap/gg
 ```
 
+Installed this way gg opens straight away: the cask checks the download against its
+checksum and then removes the quarantine flag that causes the message described below.
 (Newer versions of Homebrew ask you to trust a third-party tap first. If the install is
 refused for that reason, run `brew trust khanshaheb34/tap` and install again.)
 
 Requires macOS 12 or later.
 
 gg is not notarized by Apple: that needs a paid Apple developer account, which this project
-does not have. So the first time you open it, macOS will say it cannot check the app. Open it
+does not have. So the first time you open a copy you downloaded yourself, macOS will say it cannot check the app. Open it
 either way:
 
 - Open **System Settings → Privacy & Security**, scroll down to the message about gg and

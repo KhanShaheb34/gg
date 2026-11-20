@@ -318,8 +318,9 @@ export type OpRequest =
   // are in the working tree in its turn, in a fresh temporary index: other changes, staged or not, stay as
   // they are. push: then pushes the branch to the same-named branch on its remote. While a merge with
   // no conflicts left is in progress, it concludes the merge, and `paths` must be every changed file.
-  // Empty paths: nothing_to_do; blank message: bad_request.
-  | { op: "commit"; paths: string[]; message: string; push: boolean; expectHead: HeadInfo; expectWorktree: string }
+  // empty: no paths, and a commit that changes nothing (git commit --allow-empty); refused while a merge
+  // is in progress. Empty paths without it: nothing_to_do; blank message: bad_request.
+  | { op: "commit"; paths: string[]; message: string; push: boolean; empty: boolean; expectHead: HeadInfo; expectWorktree: string }
   // base: a branch on baseRemote, the repository it goes to (null: the one pr_suggest names); every gh command names it
   | { op: "remove_index_lock"; expectWorktree: string } // the active worktree's stale index.lock, once confirmed
   | {

@@ -101,10 +101,17 @@ pub(crate) fn files(n: usize) -> String {
     }
 }
 
-/// Checks a commit request without git: some path, a message that is not blank, and paths
-/// that name something inside the worktree (relative, no `.` or `..`, no NUL).
-pub(crate) fn check(paths: &[String], message: &str) -> Result<()> {
-    if paths.is_empty() {
+/// Checks a commit request without git: some path (none for an `empty` commit), a message
+/// that is not blank, and paths that name something inside the worktree (relative, no `.`
+/// or `..`, no NUL).
+pub(crate) fn check(paths: &[String], message: &str, empty: bool) -> Result<()> {
+    if empty && !paths.is_empty() {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            "An empty commit takes no files: untick them, or commit them.",
+        ));
+    }
+    if paths.is_empty() && !empty {
         return Err(CoreError::new(
             ErrorCode::NothingToDo,
             "Nothing to commit: no file is ticked.",
@@ -241,15 +248,23 @@ fn unmerged<'e>(entries: &'e [FileEntry], ticked: Option<&BTreeSet<&str>>) -> Ve
 /// Why a commit of `paths` (pushed after, with `push`) cannot run now, if it cannot; checked
 /// in its turn, before anything runs. A ticked file with conflicts is refused; while a merge
 /// is in progress (`in_progress`; the others are refused before), so is any conflict left,
-/// and a commit of less than every changed file. A push needs a branch (`head`) and a remote
-/// to push it to.
+/// and a commit of less than every changed file, and an `empty` one. A push needs a branch
+/// (`head`) and a remote to push it to.
 pub(crate) async fn refused(
     ctx: &OpCtx<'_>,
     paths: &[String],
     push: bool,
+    empty: bool,
     in_progress: Option<InProgressKind>,
     head: Option<&str>,
 ) -> Result<Option<String>> {
+    if empty && in_progress == Some(InProgressKind::Merge) {
+        return Ok(Some(
+            "Nothing was committed: a merge is in progress, and an empty commit cannot \
+             conclude it. Commit the merge's files, or abort it."
+                .to_owned(),
+        ));
+    }
     let entries = changed_files(ctx).await?;
     let ticked: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
     if let Some(odd) = entries
@@ -928,12 +943,15 @@ async fn changed_count(
 }
 
 /// Commits `paths` with `message` on the branch checked out (see the module comment), then,
-/// with `push`, pushes the branch and says how that went separately.
+/// with `push`, pushes the branch and says how that went separately. With `empty` (and no
+/// `paths`), the commit has HEAD's tree: built in the temporary index from HEAD alone, so
+/// nothing the user staged goes in it.
 pub(crate) async fn commit(
     ctx: &OpCtx<'_>,
     paths: &[String],
     message: &str,
     push: bool,
+    empty: bool,
 ) -> Result<Step> {
     // What is in progress is the turn's read: one that changed since stops
     // the commit, never turns a partial commit into a merge's conclusion or back.
@@ -959,7 +977,7 @@ pub(crate) async fn commit(
     let entries = changed_files(ctx).await?;
     let ticked: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
     let mine: Vec<&FileEntry> = entries.iter().filter(|e| is_ticked(e, &ticked)).collect();
-    if mine.is_empty() {
+    if mine.is_empty() && !empty {
         return Err(nothing_to_commit());
     }
     let parent = head_commit(ctx).await?;
@@ -972,7 +990,10 @@ pub(crate) async fn commit(
     } else {
         "--cleanup=whitespace"
     };
-    let commit_args = ["commit", cleanup, "-F", message_file.as_str()];
+    let mut commit_args = vec!["commit", cleanup, "-F", message_file.as_str()];
+    if empty {
+        commit_args.push("--allow-empty");
+    }
 
     // A merge is committed whole, in the user's index: saved first, put back if no commit is
     // made.
@@ -1011,12 +1032,12 @@ pub(crate) async fn commit(
             return Err(e);
         }
     }
-    let stale = if in_merge {
+    let stale = if in_merge || empty {
         Vec::new()
     } else {
         stale_entries(ctx, parent.as_deref(), &mine).await?
     };
-    if !in_merge {
+    if !in_merge && !empty {
         // Nothing differs from HEAD: no commit, and no hook runs for nothing.
         let same: Vec<&str> = match &parent {
             Some(parent) => vec!["diff-index", "--cached", "--quiet", parent.as_str(), "--"],
@@ -1119,7 +1140,13 @@ pub(crate) async fn commit(
         Some(branch) => format!("to {branch}"),
         None => "on the detached HEAD".to_owned(),
     };
-    let committed = if in_merge {
+    let committed = if empty {
+        let on = match &branch {
+            Some(branch) => format!("on {branch}"),
+            None => "on the detached HEAD".to_owned(),
+        };
+        format!("Made an empty commit {on} ({}).", short(&new))
+    } else if in_merge {
         format!(
             "Concluded the merge: committed {} {on} ({}).",
             files(count),
@@ -1392,8 +1419,10 @@ mod tests {
 
     #[test]
     fn requests_are_checked_without_git() {
-        let code =
-            |paths: &[&str], message: &str| check(&strings(paths), message).err().map(|e| e.code);
+        let checked = |paths: &[&str], message: &str, empty: bool| {
+            check(&strings(paths), message, empty).err().map(|e| e.code)
+        };
+        let code = |paths: &[&str], message: &str| checked(paths, message, false);
         assert_eq!(code(&["a"], "m"), None);
         assert_eq!(code(&["-x", "a b/\u{fc}.txt", "*"], "m"), None);
         assert_eq!(code(&[], "m"), Some(ErrorCode::NothingToDo));
@@ -1401,6 +1430,10 @@ mod tests {
         for bad in ["", "/etc/passwd", "../out", "a/../../b", "./a", "a\0b"] {
             assert_eq!(code(&[bad], "m"), Some(ErrorCode::BadRequest), "{bad:?}");
         }
+        // An empty commit: no paths, still a message.
+        assert_eq!(checked(&[], "m", true), None);
+        assert_eq!(checked(&[], " ", true), Some(ErrorCode::BadRequest));
+        assert_eq!(checked(&["a"], "m", true), Some(ErrorCode::BadRequest));
     }
 
     #[test]

@@ -892,10 +892,14 @@ pub enum OpRequest {
     /// that branch to the branch of the same name on its remote. Other changes,
     /// staged or not, are left as they are. While a merge with no conflicts left is in
     /// progress, it concludes the merge, and `paths` must then be every changed file.
+    /// With `empty`, `paths` must be empty: a commit that changes nothing
+    /// (`git commit --allow-empty`), whatever is changed or staged; not while a merge is
+    /// concluded.
     Commit {
         paths: Vec<String>,
         message: String,
         push: bool,
+        empty: bool,
         expect_head: HeadInfo,
         /// The active worktree the UI showed (`activeWorktree`): it runs only there.
         expect_worktree: String,
@@ -1498,6 +1502,9 @@ mod tests {
                    "expectHead": {"branch": null, "hash": "abc"}}),
             json!({"op": "worktree_prune"}),
             json!({"op": "commit", "paths": ["a b", "-x"], "message": "m", "push": true,
+                   "empty": false, "expectHead": {"branch": "main", "hash": null},
+                   "expectWorktree": "/w"}),
+            json!({"op": "commit", "paths": [], "message": "m", "push": false, "empty": true,
                    "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
             json!({"op": "pr_create", "branch": "b", "base": "main", "baseRemote": "up",
                    "title": "t", "body": "x\ny", "draft": true, "comparePage": false}),
@@ -1550,9 +1557,9 @@ mod tests {
             json!({"op": "worktree_add", "path": "/w", "branch": {"create": "b"}}),
             json!({"op": "worktree_add", "path": "/w", "branch": "b"}),
             // A commit says where and on which HEAD it was asked for.
-            json!({"op": "commit", "paths": ["a"], "message": "m", "push": false, "expectHead": {"branch": "main", "hash": null}}),
-            json!({"op": "commit", "paths": ["a"], "message": "m", "push": false, "expectWorktree": "/w"}),
-            json!({"op": "commit", "paths": ["a"], "message": "m", "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
+            json!({"op": "commit", "paths": ["a"], "message": "m", "push": false, "empty": false, "expectHead": {"branch": "main", "hash": null}}),
+            json!({"op": "commit", "paths": ["a"], "message": "m", "push": false, "empty": false, "expectWorktree": "/w"}),
+            json!({"op": "commit", "paths": ["a"], "message": "m", "empty": false, "expectHead": {"branch": "main", "hash": null}, "expectWorktree": "/w"}),
         ] {
             assert_eq!(
                 serde_json::from_value::<OpRequest>(bad.clone()).ok(),

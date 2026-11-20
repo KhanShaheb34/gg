@@ -51,17 +51,19 @@ launcher=Contents/Resources/gg
 sh scripts/fill-launcher.sh "$version" "$app/$launcher"
 
 # Checks the launcher in app bundle $1: a plain executable file, mode 755, every placeholder
-# filled, saying this version.
+# filled, saying this version. (Its variables are named apart from the script's own: sh has
+# no local ones.)
 check_launcher() {
-  file=$1/$launcher
-  [ -f "$file" ] && [ ! -L "$file" ] || fail "$file is missing (or not a plain file)"
-  [ -x "$file" ] || fail "$file is not executable"
-  [ "$(stat -f %Lp "$file")" = 755 ] || fail "$file has mode $(stat -f %Lp "$file"), not 755"
-  if grep -q '@GG_' "$file"; then
-    fail "$file still has a placeholder"
+  cl_file=$1/$launcher
+  [ -f "$cl_file" ] && [ ! -L "$cl_file" ] || fail "$cl_file is missing (or not a plain file)"
+  [ -x "$cl_file" ] || fail "$cl_file is not executable"
+  cl_mode=$(stat -f %Lp "$cl_file")
+  [ "$cl_mode" = 755 ] || fail "$cl_file has mode $cl_mode, not 755"
+  if grep -q '@GG_' "$cl_file"; then
+    fail "$cl_file still has a placeholder"
   fi
-  said=$("$file" --version) || fail "$file --version failed"
-  [ "$said" = "gg $version" ] || fail "$file --version says '$said', not 'gg $version'"
+  cl_said=$("$cl_file" --version) || fail "$cl_file --version failed"
+  [ "$cl_said" = "gg $version" ] || fail "$cl_file --version says '$cl_said', not 'gg $version'"
 }
 check_launcher "$app"
 

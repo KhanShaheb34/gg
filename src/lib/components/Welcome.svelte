@@ -88,6 +88,15 @@
         Open a repository from a terminal with <code>gg</code>.
         <button class="link" onclick={() => void openCliDialog()}>Install the command…</button>
       </p>
+    {:else if app.cli.link === "homebrew"}
+      <!-- Homebrew's link: Homebrew removes it, not gg. -->
+      <p class="cli-hint" data-testid="cli-hint">
+        <code>gg</code> command installed by Homebrew in {shortenPath(folderOf(app.cli.installed), app.homeDir)}
+      </p>
+    {:else if app.cli.link === "other"}
+      <p class="cli-hint" data-testid="cli-hint">
+        <code>gg</code> command installed in {shortenPath(folderOf(app.cli.installed), app.homeDir)}, a link to gg’s launcher
+      </p>
     {:else}
       <p class="cli-hint" data-testid="cli-hint">
         <code>gg</code> command installed in {shortenPath(folderOf(app.cli.installed), app.homeDir)} ·

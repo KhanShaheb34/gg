@@ -38,7 +38,8 @@ a web UI that only renders what the core gives it.
   here, not logic. A second launch (`gg <path>` while the app runs) hands its folders to the
   running app through the single-instance plugin and exits. `src-tauri/resources/` holds the
   `gg` launcher scripts (`gg` for macOS and Linux, `gg.cmd` for Windows) that the app installs
-  on request.
+  on request. The macOS app also carries the launcher, filled in, at
+  `gg.app/Contents/Resources/gg`, for the Homebrew cask to link into its `bin`.
 - **`crates/gg-devserver`**: serves the same core over HTTP on 127.0.0.1 (`POST /invoke`,
   `GET /events` as server-sent events) so the UI runs in a plain browser, where Playwright
   can drive it. Development and tests only; the app never includes it.
@@ -132,5 +133,6 @@ Reads follow the same path without the queue: `get_snapshot`, `get_rows`,
 
 `.github/workflows/release.yml` runs on a version tag that matches `Cargo.toml`'s version and
 a commit CI passed on. It builds the macOS universal disk image (`scripts/release-macos.sh`,
-signed ad hoc, not notarized), the Linux AppImage and `.deb` and the Windows installer, each
+which puts the `gg` launcher in the app with `scripts/fill-launcher.sh`, signed ad hoc, not
+notarized), the Linux AppImage and `.deb` and the Windows installer, each
 with its SHA-256, and puts them on a draft GitHub release that is published by hand.

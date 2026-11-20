@@ -205,6 +205,14 @@ nothing else: no administrator rights, no edits to your shell files. It never re
 add one such as `~/.local/bin` to your `PATH` in your shell's profile and open the dialog
 again.
 
+Installing gg with Homebrew (`brew install --cask khanshaheb34/tap/gg`) sets up the command
+too: the app carries the launcher at `gg.app/Contents/Resources/gg`, and Homebrew links `gg`
+in its `bin` folder (`/opt/homebrew/bin` on Apple silicon, `/usr/local/bin` on Intel) to it,
+then removes the link when you uninstall gg. The app shows the command as installed by
+Homebrew (on the welcome screen and in **Settings → Command line**) and leaves the link
+alone: it offers neither to install over it nor to remove it. A link to the launcher made
+some other way counts as installed too, and is left alone the same way.
+
 If your shell already has a `gg` (an alias such as Oh My Zsh's `gg` for `git gui
 citool`, a function, or another program earlier on `PATH`), the dialog says so: that one
 wins until you remove it or rename it. Past an alias or a function, `command gg` reaches

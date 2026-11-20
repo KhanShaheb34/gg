@@ -2,10 +2,11 @@
 // that does both (the app menu's "Install ‘gg’ Command…", the welcome screen's hint).
 
 import InstallCliDialog from "../components/dialogs/InstallCliDialog.svelte";
+import { installedAt, linkNote } from "../cli";
 import { api } from "../ipc";
 import type { CliState } from "../types";
 import { shortenPath } from "../format";
-import { app, reportError, toast } from "./app.svelte";
+import { app, notify, reportError, toast } from "./app.svelte";
 import { overlays, showDialog } from "./overlays.svelte";
 
 /** Reads the command's state again (it may have changed outside the app); keeps the old one if that fails. */
@@ -55,10 +56,20 @@ export async function removeCli(): Promise<void> {
   toast("info", removedMessage(removed));
 }
 
-/** Shows the install dialog with the command's state read afresh; nothing if one is open. */
+/**
+ * Shows the install dialog with the command's state read afresh; nothing if one is open. When
+ * the command is a link to gg's launcher made outside the app (Homebrew's), there is nothing
+ * for the dialog to do: a notice says where it is and who looks after it.
+ */
 export async function openCliDialog(): Promise<void> {
   if (overlays.dialogs.some((d) => d.component === InstallCliDialog)) return;
   await refreshCli();
   if (overlays.dialogs.some((d) => d.component === InstallCliDialog)) return;
+  const at = installedAt(app.cli, (p) => shortenPath(p, app.homeDir));
+  const note = linkNote(app.cli.link);
+  if (at !== null && note !== null) {
+    notify({ kind: "info", message: `The gg command is already ${at}.`, detail: note });
+    return;
+  }
   showDialog(InstallCliDialog, {});
 }

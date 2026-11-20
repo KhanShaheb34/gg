@@ -34,7 +34,8 @@ brew install --cask khanshaheb34/tap/gg
 ```
 
 Installed this way gg opens straight away: the cask checks the download against its
-checksum and then removes the quarantine flag that causes the message described below.
+checksum and then removes the quarantine flag that causes the message described below. It
+also sets up the `gg` command (see [Open from the terminal](#open-from-the-terminal)).
 (Newer versions of Homebrew ask you to trust a third-party tap first. If the install is
 refused for that reason, run `brew trust khanshaheb34/tap` and install again.)
 
@@ -70,14 +71,19 @@ gg            # opens the repository you are in
 gg path/to/repo
 ```
 
-Install the command from the app: **gg → Install ‘gg’ Command…** on macOS, **File → Install
-‘gg’ Command…** on Windows and Linux, or **Settings → Command line**. It writes one small
-script into a folder already on your `PATH`, needs no administrator rights and edits none of
-your shell files. If gg is already running, the repository opens there.
+If gg is already running, the repository opens there.
+
+If you installed gg with Homebrew, the command is already there: Homebrew links `gg` in its
+`bin` folder to the launcher inside the app, and removes the link when you uninstall gg.
+Otherwise install the command from the app: **gg → Install ‘gg’ Command…** on macOS,
+**File → Install ‘gg’ Command…** on Windows and Linux, or **Settings → Command line**. It
+writes one small script into a folder already on your `PATH`, needs no administrator rights
+and edits none of your shell files.
 
 If your shell already has an alias called `gg` (Oh My Zsh's git plugin defines one, for
 example), the alias wins until you remove it, with `unalias gg` at the end of your
-`~/.zshrc` for instance; the install dialog warns you when that is the case.
+`~/.zshrc` for instance; the install dialog and **Settings → Command line** warn you when
+that is the case.
 
 ## Features
 
@@ -321,7 +327,7 @@ Method, all numbers, the misses, and how to reproduce them:
 
 ## Status
 
-gg is at version 0.3.0. It is used every day on macOS. The Windows and Linux builds are built
+gg is at version 0.3.1. It is used every day on macOS. The Windows and Linux builds are built
 and tested on CI on every change, but have not been used for real yet.
 
 ## Contributing

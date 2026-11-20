@@ -72,7 +72,7 @@ export const app = $state({
   /** The command-log entries asked for last ("Show log" on a notice): from id `from` on. */
   logRequest: null as { repoId: number; from: number } | null,
   /** The `gg` terminal command, as last read (see state/cli.svelte.ts). */
-  cli: { installed: null, shadowedBy: null, candidates: [] } as CliState,
+  cli: { installed: null, link: null, shadowedBy: null, candidates: [] } as CliState,
 });
 
 let nextToastId = 1;

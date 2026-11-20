@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "gg-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dunce",
  "gg-core",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "gg-desktop"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "gg-core",
  "minisign-verify",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "gg-devserver"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "axum",
  "gg-core",
@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "gg-release"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "minisign-verify",

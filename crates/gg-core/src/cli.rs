@@ -1340,6 +1340,49 @@ mod tests {
         assert_eq!(installed(&search).unwrap().link, Some(CliLink::Homebrew));
     }
 
+    /// The bundled launcher is made by `scripts/fill-launcher.sh` at release time; it must be
+    /// byte for byte what [`launcher_script`] makes, executable, and the script must refuse a
+    /// version that is not plain.
+    #[cfg(unix)]
+    #[test]
+    fn the_release_fill_matches_launcher_script() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+        let fill = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fill-launcher.sh");
+        let dir = tempfile::tempdir().unwrap();
+        let run = |version: &str, out: &Path| {
+            Command::new("sh")
+                .arg(&fill)
+                .arg(version)
+                .arg(out)
+                .output()
+                .unwrap()
+        };
+        for version in [env!("CARGO_PKG_VERSION"), "1.2.3-beta.1+build.7"] {
+            let out = dir.path().join(format!("gg-{version}"));
+            let done = run(version, &out);
+            assert!(
+                done.status.success(),
+                "{}",
+                String::from_utf8_lossy(&done.stderr)
+            );
+            assert_eq!(
+                fs::read_to_string(&out).unwrap(),
+                launcher_script(version, None),
+                "{version}"
+            );
+            let mode = fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755);
+            assert!(has_marker(&out));
+        }
+        for bad in ["", "1.0/x", "1.0&", "1 0", "1.0'", "1.0\\1"] {
+            let out = dir.path().join("refused");
+            let done = run(bad, &out);
+            assert!(!done.status.success(), "{bad:?} was accepted");
+            assert!(fs::symlink_metadata(&out).is_err(), "{bad:?} left a file");
+        }
+    }
+
     /// A stand-in login shell: a POSIX sh script that runs `setup` and then the command it
     /// is given (`shell -ilc <command>`), never the user's own shell or its files.
     #[cfg(unix)]

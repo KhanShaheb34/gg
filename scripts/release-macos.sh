@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds gg for macOS as one universal app (Apple silicon and Intel), signs it ad hoc and
+# Builds gg for macOS as one universal app (Apple silicon and Intel), puts the gg command's
+# launcher in it (Contents/Resources/gg, made by fill-launcher.sh), signs it ad hoc and
 # packs it in a disk image with a link to /Applications (made by hdiutil alone: no Finder
 # window styling through AppleScript). Writes into dist-release/ (git-ignored):
 #   gg-macos-universal.dmg
@@ -42,9 +43,32 @@ done
 bundled=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
 [ "$bundled" = "$version" ] || fail "the app says version $bundled, Cargo.toml $version"
 
+# The gg command, inside the app before it is signed, for a Homebrew cask to link into its
+# bin (binary "#{appdir}/gg.app/Contents/Resources/gg"): the launcher filled in for this
+# version, finding the app by its bundle identifier.
+launcher=Contents/Resources/gg
+[ -d "$app/Contents/Resources" ] || fail "$app has no Contents/Resources"
+sh scripts/fill-launcher.sh "$version" "$app/$launcher"
+
+# Checks the launcher in app bundle $1: a plain executable file, mode 755, every placeholder
+# filled, saying this version.
+check_launcher() {
+  file=$1/$launcher
+  [ -f "$file" ] && [ ! -L "$file" ] || fail "$file is missing (or not a plain file)"
+  [ -x "$file" ] || fail "$file is not executable"
+  [ "$(stat -f %Lp "$file")" = 755 ] || fail "$file has mode $(stat -f %Lp "$file"), not 755"
+  if grep -q '@GG_' "$file"; then
+    fail "$file still has a placeholder"
+  fi
+  said=$("$file" --version) || fail "$file --version failed"
+  [ "$said" = "gg $version" ] || fail "$file --version says '$said', not 'gg $version'"
+}
+check_launcher "$app"
+
 # Ad hoc: no Developer ID, so Gatekeeper asks before the first launch.
 codesign --force --deep -s - "$app"
 codesign --verify --deep --strict "$app"
+check_launcher "$app"
 
 out=dist-release
 file=gg-macos-universal.dmg
@@ -54,6 +78,9 @@ rm -f "$out/$file" "$out/$file.sha256" "$out/latest.json"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/gg-dmg.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 cp -R "$app" "$stage/"
+# The copy that goes in the disk image: still signed, still carrying the launcher.
+codesign --verify --deep --strict "$stage/gg.app"
+check_launcher "$stage/gg.app"
 ln -s /Applications "$stage/Applications"
 hdiutil create -volname gg -srcfolder "$stage" -ov -format UDZO "$out/$file" >/dev/null
 

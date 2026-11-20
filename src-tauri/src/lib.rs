@@ -416,6 +416,11 @@ pub fn run() {
     // build is given a local test one, and without it does not update at all.
     #[cfg(feature = "perf")]
     let updates = update_hook::apply(&mut context);
+    // Performance runs: the version this build is (the updater's), in the perf log.
+    #[cfg(feature = "perf")]
+    gg_core::native_mark(Box::leak(
+        format!("native-version {}", context.package_info().version).into_boxed_str(),
+    ));
     #[cfg(not(feature = "perf"))]
     let updates = true;
     // First of all: a second launch (`gg <path>` starts a new instance) hands its folders to

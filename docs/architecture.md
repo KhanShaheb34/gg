@@ -21,6 +21,7 @@ a web UI that only renders what the core gives it.
 │ readers · graph layout · repo state · ops    │
 │ queue · dangers · watcher · fetch · store    │
 │ worktrees · commit · pull requests · launch  │
+│ updates (when, what is offered, the status)  │
 └──────┬───────────────────────────────────────┘
        │ spawns git and gh (no shell, no prompts)
        ▼
@@ -40,6 +41,21 @@ a web UI that only renders what the core gives it.
   `gg` launcher scripts (`gg` for macOS and Linux, `gg.cmd` for Windows) that the app installs
   on request. The macOS app also carries the launcher, filled in, at
   `gg.app/Contents/Resources/gg`, for the Homebrew cask to link into its `bin`.
+- **gg updating itself** is split the same way. `crates/gg-core/src/update.rs` decides when
+  to check (once the UI has shown its first rows, then about once a day by the wall clock),
+  offers only a strictly newer version, works out whether this copy can replace itself
+  (translocated, on a disk image, a read-only folder, a Linux package, a development build),
+  and keeps the status the UI shows (`update-changed` events; commands `update_status`,
+  `start_update_checks`, `check_for_updates`, `restart_to_update`, the last refused while git
+  works in an open repository). It does the work through an `UpdateBackend`:
+  `src-tauri/src/update.rs` drives Tauri's updater plugin (check, download and verify,
+  install, restart), whose one endpoint and public key are in `tauri.conf.json` and nowhere
+  else; the web view is granted none of the plugin's commands. `gg-devserver
+  --fake-updates <dir>` stands in for it in the UI's tests. A performance build can be given
+  a local test source (`src-tauri/src/update_hook.rs`, compiled only with `--features perf`),
+  which `scripts/update-proof.sh` uses to update a real app end to end.
+- **`crates/gg-release`**: release tooling only: writes the updater's `latest.json` and
+  checks each update's signature against the app's key before a release is drafted.
 - **`crates/gg-devserver`**: serves the same core over HTTP on 127.0.0.1 (`POST /invoke`,
   `GET /events` as server-sent events) so the UI runs in a plain browser, where Playwright
   can drive it. Development and tests only; the app never includes it.
@@ -125,6 +141,11 @@ Reads follow the same path without the queue: `get_snapshot`, `get_rows`,
   `GG_WALK=1`. `e2e/screens.spec.ts` takes screenshots of every view, menu and dialog in both
   themes, only with `GG_SCREENS=1`, into `.screens/` (git-ignored); the README's pictures in
   `docs/screens/` are picked from them.
+- `scripts/update-proof.sh` (macOS, by hand) updates a real app end to end: the perf
+  build at an old version, a local update source on 127.0.0.1 serving a newer one signed
+  with a throwaway key, Restart to update clicked in the app's own notice, then the cases
+  where nothing may be installed (tampered, another key, signed for another version, the
+  same or an older version).
 - CI (`.github/workflows/ci.yml`) runs formatting, clippy, every suite above and a bundle
   build on macOS, Linux and Windows (the end-to-end tests are skipped on Windows; see
   [platforms.md](platforms.md)).
@@ -136,3 +157,17 @@ a commit CI passed on. It builds the macOS universal disk image (`scripts/releas
 which puts the `gg` launcher in the app with `scripts/fill-launcher.sh`, signed ad hoc, not
 notarized), the Linux AppImage and `.deb` and the Windows installer, each
 with its SHA-256, and puts them on a draft GitHub release that is published by hand.
+
+The release also carries what the app updates itself from. Each platform's update (the macOS
+`gg-macos-universal.app.tar.gz`, made by `scripts/update-archive.sh` from the final signed
+app, launcher included; the AppImage; the Windows installer) is signed by
+`scripts/sign-update.sh` (`tauri signer sign --app-version`) in a step of its own, the only
+one given the secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; it
+fails without them. A separate job, with no secrets, verifies every signature against the
+public key in `src-tauri/tauri.conf.json` (`gg-release verify`, the verifier the app uses),
+writes `latest.json` (the plugin's static manifest: `darwin-aarch64` and `darwin-x86_64` both
+name the universal archive, then `linux-x86_64` and `windows-x86_64`, each URL one of the
+tag's own assets) and checks it (`gg-release check-manifest`) against the list of assets the
+draft release uploads. Apps check `releases/latest/download/latest.json`, so a release
+reaches them once its draft is published. The first version that updates itself (0.4.0)
+is installed by hand.

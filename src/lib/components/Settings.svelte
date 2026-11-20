@@ -171,6 +171,11 @@
   });
   const update = $derived(updates.status);
   const updateLine = $derived(statusLine(update, app.settings.checkForUpdates, app.settings.dateFormat, now));
+  /** Restart to update, from here: what is typed is saved first. */
+  async function restartFromHere() {
+    for (const field of [fields.editor, fields.terminal, fields.pattern]) await field.flush();
+    await restartToUpdate();
+  }
   /** A check, download or install runs: Check now waits. */
   const updateBusy = $derived(["checking", "downloading", "installing"].includes(update.state));
 
@@ -559,7 +564,7 @@
                   class="button primary"
                   disabled={update.state === "installing"}
                   data-testid="settings-update-restart"
-                  onclick={() => void restartToUpdate()}>Restart to update</button
+                  onclick={() => void restartFromHere()}>Restart to update</button
                 >
               {:else if update.state === "available"}
                 <button type="button" class="button primary" data-testid="settings-update-download" onclick={() => void openDownloadPage()}

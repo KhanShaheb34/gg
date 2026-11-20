@@ -301,8 +301,9 @@ pub fn installed(search_path: &OsStr) -> Option<Installed> {
 
 /// Whether `file` is gg's launcher: `Some(None)` for a plain file with the marker (one the app
 /// wrote), `Some(Some(_))` for a link that leads, through any number of links, to a plain file
-/// with the marker; `None` for anything else (no file, a folder, a link that leads nowhere or
-/// to something else).
+/// with the marker that can be run (a link to a file no one may execute is not a command the
+/// shell would find); `None` for anything else (no file, a folder, a link that leads nowhere
+/// or to something else).
 fn launcher_at(file: &Path) -> Option<Option<CliLink>> {
     let meta = fs::symlink_metadata(file).ok()?;
     if meta.is_file() {
@@ -312,8 +313,24 @@ fn launcher_at(file: &Path) -> Option<Option<CliLink>> {
         return None;
     }
     let target = dunce::canonicalize(file).ok()?;
-    let lands_on_launcher = fs::metadata(&target).is_ok_and(|m| m.is_file()) && has_marker(&target);
+    let lands_on_launcher = fs::metadata(&target).is_ok_and(|m| m.is_file() && is_executable(&m))
+        && has_marker(&target);
     lands_on_launcher.then(|| Some(link_maker(file, &target)))
+}
+
+/// Whether a file with metadata `meta` may be run by someone (any execute bit, on Unix; on
+/// Windows a file's name, not its mode, says so).
+fn is_executable(meta: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        true
+    }
 }
 
 /// Who made `link`, a link to gg's launcher at `target` (where it really is): Homebrew when the
@@ -1302,8 +1319,26 @@ mod tests {
         fs::remove_dir(&launcher).unwrap();
         let real = root.path().join("real-gg");
         fs::write(&real, launcher_script("0.3.1", None)).unwrap();
+        set_executable(&real);
         std::os::unix::fs::symlink(&real, &launcher).unwrap();
         assert_eq!(installed(&search).unwrap().link, Some(CliLink::Other));
+    }
+
+    /// A link to a marked launcher no one may execute is not a command: the shell would not
+    /// run it. With its execute bits back (the bundled launcher is 755) it is the command.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_launcher_that_cannot_be_run_is_not_the_command() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (bin, launcher) = homebrew_link(root.path());
+        let search = path_of(&[&bin]);
+        assert_eq!(installed(&search).unwrap().link, Some(CliLink::Homebrew));
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(has_marker(&launcher), "still readable and marked");
+        assert_eq!(installed(&search), None);
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(installed(&search).unwrap().link, Some(CliLink::Homebrew));
     }
 
     /// The app never replaces or removes a link to its launcher, never writes through it,

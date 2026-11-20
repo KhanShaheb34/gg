@@ -1401,6 +1401,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gg-release"
+version = "0.3.1"
+dependencies = [
+ "base64 0.23.1",
+ "minisign-verify",
+ "serde_json",
+]
+
+[[package]]
 name = "gio"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

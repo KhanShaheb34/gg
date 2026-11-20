@@ -48,6 +48,7 @@ fn every_crate_takes_the_workspace_version() {
     for rel in [
         "crates/gg-core/Cargo.toml",
         "crates/gg-devserver/Cargo.toml",
+        "crates/gg-release/Cargo.toml",
         "src-tauri/Cargo.toml",
     ] {
         let path = root().join(rel);

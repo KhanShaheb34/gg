@@ -16,6 +16,8 @@
 //!
 //! The caller binds the listener (the binary binds 127.0.0.1 only).
 
+pub mod fake_updates;
+
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;

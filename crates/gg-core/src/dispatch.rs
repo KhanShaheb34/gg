@@ -283,6 +283,7 @@ impl Core {
                 if let Ok(repos) = self.repos() {
                     repos.set_fetch_interval(settings.fetch_interval_secs);
                 }
+                self.updates.set_enabled(settings.check_for_updates);
                 to_json(settings)
             }
             "restore_default_settings" => {
@@ -293,6 +294,7 @@ impl Core {
                 if let Ok(repos) = self.repos() {
                     repos.set_fetch_interval(settings.fetch_interval_secs);
                 }
+                self.updates.set_enabled(settings.check_for_updates);
                 to_json(settings)
             }
             "reset_settings" => {
@@ -519,6 +521,37 @@ impl Core {
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect(),
                 })
+            }
+            "update_status" => {
+                let NoArgs {} = parse(cmd, args)?;
+                to_json(self.updates.status())
+            }
+            "start_update_checks" => {
+                let NoArgs {} = parse(cmd, args)?;
+                self.updates.start();
+                to_json(self.updates.status())
+            }
+            "check_for_updates" => {
+                let NoArgs {} = parse(cmd, args)?;
+                // On its own task: the status arrives as `update-changed` events.
+                self.updates.check_soon();
+                Ok(Value::Null)
+            }
+            "restart_to_update" => {
+                let NoArgs {} = parse(cmd, args)?;
+                if let Some(name) = self.repos().ok().and_then(|r| r.busy_repo()) {
+                    return Err(CoreError::new(
+                        ErrorCode::Busy,
+                        format!(
+                            "gg cannot restart while git is working in {name}. Restart once it is done."
+                        ),
+                    ));
+                }
+                // The store's writes asked for before this (the open tabs) land first.
+                let _turn = self.io_turn.lock().await;
+                self.off_runtime(|core| core.updates.install_and_restart())
+                    .await?;
+                Ok(Value::Null)
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;

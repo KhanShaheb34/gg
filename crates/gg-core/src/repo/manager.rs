@@ -1814,6 +1814,26 @@ impl RepoManager {
         Ok(())
     }
 
+    /// The name (its folder's) of an open repository where an operation runs or waits for
+    /// its turn, or a fetch the user asked for runs; `None` when nothing does. Restarting gg
+    /// to update it waits until then.
+    pub fn busy_repo(&self) -> Option<String> {
+        let repos: Vec<Arc<Repo>> = lock(&self.repos).values().cloned().collect();
+        repos
+            .iter()
+            .find(|repo| {
+                repo.op_queue.try_lock().is_err()
+                    || repo.op_waiting.load(Ordering::SeqCst) > 0
+                    || repo.user_fetch.load(Ordering::SeqCst)
+            })
+            .map(|repo| {
+                repo.root.file_name().map_or_else(
+                    || repo.root.to_string_lossy().into_owned(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+            })
+    }
+
     /// `Ok` if repository `repo_id` is open, else `unknown_repo`.
     pub fn check_open(&self, repo_id: u32) -> Result<()> {
         self.get(repo_id).map(|_| ())

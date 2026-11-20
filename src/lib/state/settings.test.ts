@@ -17,6 +17,7 @@ const DEFAULTS: Settings = {
   terminalCommand: null,
   worktreePattern: "../{repo}.worktrees/{branch}",
   dateFormat: "standard",
+  checkForUpdates: true,
 };
 
 describe("saving a setting", () => {

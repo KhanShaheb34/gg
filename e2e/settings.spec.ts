@@ -102,6 +102,7 @@ test("settings open from the keys and the gear, save each field as it changes, a
     terminalCommand: null,
     worktreePattern: "../{repo}.worktrees/{branch}",
     dateFormat: "standard",
+    checkForUpdates: true,
   });
   await expect(page.getByRole("tab", { name: "small" })).toBeVisible();
 });

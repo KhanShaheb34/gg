@@ -15,7 +15,7 @@ export type ProbeSlot = { readonly index: number; readonly row: unknown; skeleto
 /** Rows at least partly in view. */
 export type VisibleRows = { readonly visibleFirst: number; readonly visibleLast: number };
 
-type PerfScroll = boolean | "still" | "smooth" | "pages" | "jump3" | "actions" | "walk" | "walk3" | "walk3-dark" | "worktrees";
+type PerfScroll = boolean | "still" | "smooth" | "pages" | "jump3" | "actions" | "walk" | "walk3" | "walk3-dark" | "worktrees" | "update";
 
 export class GraphProbe {
   private scrolledSinceFrame = false;
@@ -105,6 +105,12 @@ export class GraphProbe {
       await api.perfMark("page-errors", errors.length).catch(() => {});
       for (const text of errors) await api.perfMark(`page-error ${text}`, 0).catch(() => {});
       await api.perfMark("scroll-done", performance.now()).catch(() => {});
+      return;
+    }
+    // "update": gg updating itself, followed to the restart (updateProbe.ts).
+    if (mode === "update") {
+      const { runUpdateProbe } = await import("./updateProbe");
+      await runUpdateProbe();
       return;
     }
     // "worktrees": opening the side panel and switching worktrees, timed (worktreesProbe.ts).

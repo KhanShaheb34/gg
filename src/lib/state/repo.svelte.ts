@@ -8,6 +8,7 @@ import { startMark } from "../perf/startMarks";
 import { computeAnchor, restoreScrollTop, ROW_H } from "../graph/geometry";
 import { RowCache } from "../graph/rowCache";
 import { api, CoreError, onEvent } from "../ipc";
+import { firstRowsShown } from "./firstRows";
 import type { RefLabel, RepoSnapshot, RowsPage, ViewOptions } from "../types";
 import { CommitDetailsLoader } from "./details.svelte";
 import { PanelState } from "./panelState.svelte";
@@ -506,6 +507,8 @@ export class RepoView {
     if (this.markedFirstRows) return;
     this.markedFirstRows = true;
     void api.perfMark("first-rows", performance.now()).catch(() => {});
+    // The window has settled: work that must not slow the start (looking for updates) may begin.
+    firstRowsShown();
   }
 
   /**

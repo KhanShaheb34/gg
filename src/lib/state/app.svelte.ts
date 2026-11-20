@@ -17,7 +17,8 @@ export type ToastKind = "info" | "error";
  */
 export type ToastAction = { label: string; run: () => void | Promise<void>; danger?: boolean; keepOpen?: boolean };
 /**
- * A notice. A persistent one stays until dismissed. `detail` (git's own text, say) shows
+ * A notice. A persistent one stays until dismissed. `note` says more under the message;
+ * `detail` (git's own text, say) shows
  * below the message, or behind a disclosure with `foldDetail`. `actions` are buttons on it;
  * `link` a quieter one after them ("Show log").
  */
@@ -25,6 +26,8 @@ export type Toast = {
   id: number;
   kind: ToastKind;
   message: string;
+  /** A sentence under the message, in its own words (not git's output). */
+  note?: string;
   detail?: string;
   foldDetail?: boolean;
   persistent?: boolean;
@@ -50,6 +53,7 @@ export const app = $state({
     terminalCommand: null,
     worktreePattern: "../{repo}.worktrees/{branch}",
     dateFormat: "standard",
+    checkForUpdates: true,
   } as Settings,
   /** The file settings are kept in, as the core says. */
   settingsFile: "",

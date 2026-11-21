@@ -78,7 +78,7 @@ a web UI that only renders what the core gives it.
 | `mask.rs` | Hides credentials in URLs (`https://user:token@host/…`) in everything the core hands the UI: results, errors, events and the command log. |
 | `launch.rs` | Starts the user's editor, a terminal, the file manager or the browser as argument arrays, never through a shell, and never hands a repository's file to the system's default application. |
 | `cli.rs` | Installs and removes the `gg` terminal command in a folder already on the user's `PATH`, and finds what else answers to `gg` there. |
-| `shell_line.rs` | The one marked line gg adds, only when asked, to the end of a zsh or bash start-up file to turn off a `gg` alias or function, and takes out again: appended without rewriting the file, through links, every byte and permission kept. |
+| `shell_line.rs` | The one marked line gg adds, only when asked, to the end of a zsh or bash start-up file to turn off a `gg` alias or function, and takes out again: plain files only, appended without rewriting the file, through links, every byte and permission kept; taken out by shortening the file, never by writing it again. |
 | `platform.rs` | What differs between macOS, Linux and Windows: finding programs on a `PATH`, ending a child's whole process tree, process liveness and file identity. See [platforms.md](platforms.md). |
 
 ## How a request flows

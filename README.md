@@ -100,9 +100,11 @@ example), the alias wins until you remove it, with `unalias gg` at the end of yo
 that is the case. With zsh or bash they can also do it for you, only if you ask (a box in
 the dialog, off until you tick it, or a button in Settings): gg adds one line, marked as
 added by gg, to the end of your `~/.zshrc` (in `$ZDOTDIR` if you set one) or bash's
-start-up file, `unalias gg 2>/dev/null` (`unset -f gg 2>/dev/null` for a function). It
-takes that line out again, and nothing else, when you remove the command in gg or choose
-**Take the line out** in Settings. It takes effect in new terminal windows.
+start-up file, `unalias gg 2>/dev/null || :` (`unset -f gg 2>/dev/null || :` for a
+function). It takes that line out again, and nothing else, when you remove the command in gg
+or choose **Take the line out** in Settings. It takes effect in new terminal windows, unless
+a start-up file read after it (a `.zlogin`, say) makes the alias again: gg asks your shell
+afterwards and says which it is.
 
 ## Features
 

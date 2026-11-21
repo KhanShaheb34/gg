@@ -229,25 +229,33 @@ Homebrew installed the command. gg then adds one line to the end of your shell's
 file, where it runs after whatever made the alias:
 
 ```sh
-unalias gg 2>/dev/null  # added by gg: lets the gg command run; gg Settings > Command line takes it out
+unalias gg 2>/dev/null || :  # added by gg: lets the gg command run; gg Settings > Command line takes it out
 ```
 
-(`unset -f gg 2>/dev/null` for a function.) The file is `.zshrc` in `$ZDOTDIR` if your zsh
-sets one, else `~/.zshrc`, made if there is none. For bash it is the file a new terminal's
-bash reads: on macOS, where terminals start login shells, the first of `~/.bash_profile`,
-`~/.bash_login` and `~/.profile` that exists; on Linux, where they do not, `~/.bashrc`. gg
-never makes a bash start-up file: with none, nothing is offered. Nothing else in the file
-changes: the line is appended (through a symbolic link, to the file it leads to, which keeps
-its permissions), never added twice, and follows the file's line ends; a file that did not
-end with a line break gets one before the line, and that line says so. gg then asks your
-shell again: if something that runs later (a `.zlogin`, say) still makes `gg`, gg says so
-rather than that it worked. It takes effect in new terminal windows.
+(`unset -f gg 2>/dev/null || :` for a function.) `|| :` keeps a start-up file that sets
+`set -e` going once the alias has gone. The file is `.zshrc` in `$ZDOTDIR` as your
+`.zshenv` and `.zprofile` set it (gg asks a login zsh; a `ZDOTDIR` that `.zshrc` itself
+sets for later does not count), else `~/.zshrc`, made if there is none; if zsh does not
+say, nothing is offered. For bash it is the file a new terminal's bash reads: on macOS,
+where terminals start login shells, the first of `~/.bash_profile`, `~/.bash_login` and
+`~/.profile` that exists and can be read; on Linux, where they do not, `~/.bashrc`. gg never
+makes a bash start-up file: with none, nothing is offered. Only a plain file is read or
+written (a FIFO or device in its place is left alone). Nothing else in the file changes: the
+line is appended (through a symbolic link, to the file it leads to, which keeps its
+permissions, owner and ACLs), never added twice, and follows the file's line ends; a file
+that did not end with a line break gets one before the line, and that line says so. If the
+file changes while gg is adding the line, nothing is written. gg then asks your shell again:
+if something that runs later (a `.zlogin`, say) still makes `gg`, gg says so rather than that
+it worked. It takes effect in new terminal windows.
 
 gg takes the line out when you remove the command in gg, or when you choose **Take the line
 out** in Settings (the way back when Homebrew installed the command). Only that exact line
-goes, with the line break gg added before it, if any: the file is left as it was before gg
-touched it (a `~/.zshrc` gg made is left empty, not deleted). If you have changed the line,
-it is yours: gg leaves it alone, says so, and adds no other. With fish or another shell, or
+goes, with the line break gg added before it, if any: the file is shortened in place and is
+left as it was before gg touched it (a `~/.zshrc` gg made is left empty, not deleted). If
+you have added lines of your own after it since, gg does not rewrite the file: it leaves it
+as it is and tells you which line to delete. If the file changes while gg is taking the line
+out, it is left as it is. If you have changed the line, it is yours: gg leaves it alone, says
+so, and adds no other. With fish or another shell, or
 when the other `gg` is a program, nothing is offered.
 
 Two `gg` commands run within the same instant while the app is not running yet can each

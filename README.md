@@ -91,13 +91,18 @@ If you installed gg with Homebrew, the command is already there: Homebrew links 
 `bin` folder to the launcher inside the app, and removes the link when you uninstall gg.
 Otherwise install the command from the app: **gg → Install ‘gg’ Command…** on macOS,
 **File → Install ‘gg’ Command…** on Windows and Linux, or **Settings → Command line**. It
-writes one small script into a folder already on your `PATH`, needs no administrator rights
-and edits none of your shell files.
+writes one small script into a folder already on your `PATH` and needs no administrator
+rights. It edits none of your shell files unless you ask it to, as below.
 
 If your shell already has an alias called `gg` (Oh My Zsh's git plugin defines one, for
 example), the alias wins until you remove it, with `unalias gg` at the end of your
 `~/.zshrc` for instance; the install dialog and **Settings → Command line** warn you when
-that is the case.
+that is the case. With zsh or bash they can also do it for you, only if you ask (a box in
+the dialog, off until you tick it, or a button in Settings): gg adds one line, marked as
+added by gg, to the end of your `~/.zshrc` (in `$ZDOTDIR` if you set one) or bash's
+start-up file, `unalias gg 2>/dev/null` (`unset -f gg 2>/dev/null` for a function). It
+takes that line out again, and nothing else, when you remove the command in gg or choose
+**Take the line out** in Settings. It takes effect in new terminal windows.
 
 ## Features
 

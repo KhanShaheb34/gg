@@ -28,6 +28,10 @@ gg runs git on repositories that may come from anyone, so these matter most:
 - **Leaking credentials.** Tokens or passwords in remote URLs, credential helper output or
   `gh` shown unmasked anywhere in the app, written to its files or logs, or sent anywhere
   other than the remote they belong to.
+- **Shell start-up files.** gg writes to one only when you ask it to turn off a `gg` alias
+  or function, and then only its one marked line at the end, which it takes out again. Any
+  way for gg to write there without being asked, to write anything else, or to change or lose
+  anything already in the file, is in scope.
 - The development server (`gg-devserver`) answering anything other than the local machine
   or the allowed origins.
 - **Updates.** Any way to make gg install something that is not a release signed with gg's

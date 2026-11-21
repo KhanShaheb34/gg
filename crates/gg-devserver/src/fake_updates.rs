@@ -6,7 +6,7 @@
 //!   `{"fail": "<kind>", "detail": "..."}` with kind `offline`, `notFound`, `badManifest`,
 //!   `noDownload`, `signature`, `install` or `other`. Missing: nothing newer.
 //! - `download.json`: `{"fail": ..., "detail": ...}` as above; missing: the download works.
-//!   `download-ms`: how long it takes (in ten steps of progress); default 0.
+//!   While `download-gate` exists, a download stops halfway and waits for it to go.
 //! - `blocker`: why this copy cannot update itself: `translocated`, `diskImage`,
 //!   `notWritable <folder>`, `linuxPackage` or `notInstalled`. Missing: it can.
 //! - `install.json`: `{"fail": ...}`; missing: the install works.
@@ -114,23 +114,20 @@ impl UpdateBackend for FakeUpdates {
         _version: &'a str,
         mut progress: Progress<'a>,
     ) -> BoxFuture<'a, Result<(), UpdateFailure>> {
-        let ms: u64 = fs::read_to_string(self.dir.join("download-ms"))
-            .ok()
-            .and_then(|t| t.trim().parse().ok())
-            .unwrap_or(0);
+        let gate = self.dir.join("download-gate");
         Box::pin(async move {
             const TOTAL: u64 = 12_000_000;
             for step in 0..=10 {
                 progress(TOTAL / 10 * step, Some(TOTAL));
-                if step < 10 && ms > 0 {
-                    tokio::time::sleep(Duration::from_millis(ms / 10)).await;
+                while step == 5 && gate.exists() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
                 }
             }
             self.outcome("download.json")
         })
     }
 
-    fn install_and_restart(&self) -> Result<(), UpdateFailure> {
+    fn install_and_restart(&self, _version: &str) -> Result<(), UpdateFailure> {
         self.outcome("install.json")?;
         let version = self.current_version();
         let mut file = fs::OpenOptions::new()
@@ -185,7 +182,7 @@ mod tests {
             .unwrap();
         assert_eq!(seen.len(), 11);
         fs::write(dir.path().join("version"), "0.3.9\n").unwrap();
-        fake.install_and_restart().unwrap();
+        fake.install_and_restart("9.0.0").unwrap();
         assert_eq!(
             fs::read_to_string(dir.path().join("restarts")).unwrap(),
             "0.3.9\n"

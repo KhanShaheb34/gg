@@ -205,7 +205,10 @@ impl RepoManager {
             // holds up the ones asked for after it: it never runs beside one. It waits on
             // its own task, so a caller that goes away leaves no count behind.
             Initiator::User => {
-                if repo.user_fetch.swap(true, Ordering::SeqCst) {
+                let mut covered = false;
+                // Counted in, unless gg is restarting to update.
+                self.admit(|| covered = repo.user_fetch.swap(true, Ordering::SeqCst))?;
+                if covered {
                     // The one waiting or running covers this one.
                     return Ok(());
                 }

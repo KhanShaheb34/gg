@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::{EventSink, lock_ignoring_poison};
@@ -60,9 +60,10 @@ pub trait UpdateBackend: Send + Sync + 'static {
         version: &'a str,
         progress: Progress<'a>,
     ) -> BoxFuture<'a, std::result::Result<(), UpdateFailure>>;
-    /// Puts the downloaded version in place (verifying it again) and restarts gg. Blocks; it
-    /// returns only when that failed (or, in a fake, once it has been recorded).
-    fn install_and_restart(&self) -> std::result::Result<(), UpdateFailure>;
+    /// Puts the downloaded `version` in place (verifying it again) and restarts gg; anything
+    /// but that version, downloaded, is refused. Blocks; it returns only when that failed
+    /// (or, in a fake, once it has been recorded).
+    fn install_and_restart(&self, version: &str) -> std::result::Result<(), UpdateFailure>;
 }
 
 /// What went wrong, by what the user can make of it.
@@ -205,14 +206,18 @@ pub fn blocker(install: &Install) -> Option<Blocker> {
             }
             let parent = bundle.parent().unwrap_or(Path::new("/"));
             // The bundle is swapped with the new one inside its folder: both are renamed, so
-            // the folder and the bundle itself must be writable.
-            if writable_dir(parent) && writable_dir(bundle) {
+            // the folder and the bundle itself must be writable. The one that is not is named.
+            let unwritable = if !writable_dir(parent) {
+                parent
+            } else if !writable_dir(bundle) {
+                bundle.as_path()
+            } else {
                 return None;
-            }
+            };
             if bundle.starts_with("/Volumes") {
                 return Some(Blocker::DiskImage);
             }
-            Some(Blocker::NotWritable(parent.to_path_buf()))
+            Some(Blocker::NotWritable(unwritable.to_path_buf()))
         }
         Install::AppImage(file) => {
             // The AppImage is moved aside and the new one written in its place.
@@ -355,6 +360,11 @@ struct State {
     started: bool,
     /// A check, download or install runs.
     busy: bool,
+    /// The check or download running was asked for by the user ("Check now"): the setting
+    /// does not stop it.
+    manual: bool,
+    /// Stops the running automatic check's download (the setting was turned off).
+    cancel: Option<watch::Sender<bool>>,
     /// When the next automatic check is due (unix ms); `None` once started: at once.
     due_ms: Option<u64>,
 }
@@ -390,6 +400,8 @@ impl Updates {
                 enabled,
                 started: false,
                 busy: false,
+                manual: false,
+                cancel: None,
                 due_ms: None,
             }),
             sink,
@@ -430,7 +442,7 @@ impl Updates {
                     return;
                 };
                 if updates.due() {
-                    updates.check().await;
+                    updates.check(false).await;
                 }
                 let woken = updates.clone();
                 drop(updates);
@@ -440,45 +452,74 @@ impl Updates {
     }
 
     /// Turns automatic checks on or off (the setting). Turned on, a check that is due runs
-    /// now.
+    /// now. Turned off, an automatic check that runs starts no download, and the download of
+    /// one stops; what the user asked for ("Check now") goes on.
     pub fn set_enabled(&self, enabled: bool) {
-        self.lock().enabled = enabled;
+        let mut state = self.lock();
+        state.enabled = enabled;
+        if !enabled
+            && state.busy
+            && !state.manual
+            && let Some(cancel) = &state.cancel
+        {
+            let _ = cancel.send(true);
+        }
+        drop(state);
         if enabled {
             self.wake.notify_one();
         }
     }
 
-    /// Whether an automatic check should run now.
-    fn due(&self) -> bool {
-        let state = self.lock();
-        state.enabled && !state.busy && state.due_ms.is_none_or(|due| (self.clock)() >= due)
+    /// Whether automatic checks are on (tests).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn automatic(&self) -> bool {
+        self.lock().enabled
     }
 
-    /// "Check now": checks on a task of its own (a caller that goes away does not stop it).
-    /// Nothing happens while a check, download or install runs.
+    /// Whether an automatic check should run now: by the wall clock, its time has come, or
+    /// it is further off than any interval sets it (the clock was set back since).
+    fn due(&self) -> bool {
+        let state = self.lock();
+        let now = (self.clock)();
+        let longest = self.timing.every.max(self.timing.retry).as_millis() as u64;
+        state.enabled
+            && !state.busy
+            && state
+                .due_ms
+                .is_none_or(|due| now >= due || due - now > longest)
+    }
+
+    /// "Check now": checks on a task of its own (a caller that goes away does not stop it),
+    /// whatever the setting. Nothing happens while a check, download or install runs.
     pub fn check_soon(self: &Arc<Self>) {
         let this = self.clone();
-        tokio::spawn(async move { this.check().await });
+        tokio::spawn(async move { this.check(true).await });
     }
 
     /// Checks for a newer version and, when there is one this copy can install, downloads
-    /// it. Nothing happens while a check, download or install runs, or without a backend.
-    pub async fn check(self: &Arc<Self>) {
+    /// it. `manual`: the user asked; otherwise it is an automatic check, which the setting
+    /// stops (it starts no download once the setting is off, and its download stops). Nothing
+    /// happens while a check, download or install runs, or without a backend.
+    pub async fn check(self: &Arc<Self>, manual: bool) {
         let Some(backend) = self.backend.get().cloned() else {
             return;
         };
-        {
+        let mut cancelled = {
             let mut state = self.lock();
-            if state.busy {
+            if state.busy || (!manual && !state.enabled) {
                 return;
             }
             state.busy = true;
+            state.manual = manual;
+            let (tx, rx) = watch::channel(false);
+            state.cancel = Some(tx);
             // A ready download stays shown while the source is asked again.
             if state.ready.is_none() {
                 state.status = UpdateStatus::Checking;
             }
-        }
-        self.emit();
+            self.publish(&state);
+            rx
+        };
         let outcome = backend.check().await;
         let now = (self.clock)();
         let current = backend.current_version();
@@ -486,86 +527,134 @@ impl Updates {
             Err(failure) => {
                 let mut state = self.lock();
                 state.due_ms = Some(now + self.timing.retry.as_millis() as u64);
-                state.busy = false;
+                self.end_run(&mut state);
                 // A failed look again leaves a ready download ready.
-                if let Some(version) = state.ready.clone() {
-                    state.status = UpdateStatus::Ready { version };
-                } else {
-                    state.status = failed(Step::Check, None, &failure, now);
-                }
-                drop(state);
-                self.emit();
+                state.status = match (state.ready.clone(), !manual && !state.enabled) {
+                    (Some(version), _) => UpdateStatus::Ready { version },
+                    (None, true) => UpdateStatus::Idle,
+                    (None, false) => failed(Step::Check, None, &failure, now),
+                };
+                self.publish(&state);
                 return;
             }
             Ok(offer) => offer.filter(|o| is_newer(&current, &o.version)),
         };
-        let blocker = offer.as_ref().and_then(|_| backend.blocker());
-        {
+        // Whether this copy can install it: the file system is looked at, off the async
+        // workers.
+        let blocker = match offer {
+            Some(_) => {
+                let backend = backend.clone();
+                tokio::task::spawn_blocking(move || backend.blocker())
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            None => None,
+        };
+        // The version to download, decided with the state held.
+        let download = {
             let mut state = self.lock();
             state.due_ms = Some(now + self.timing.every.as_millis() as u64);
-            match (&offer, blocker) {
+            let download = match (&offer, blocker) {
+                // An automatic check whose setting went off meanwhile: nothing more.
+                _ if !manual && !state.enabled => {
+                    if state.ready.is_none() {
+                        state.status = UpdateStatus::Idle;
+                    }
+                    None
+                }
                 (None, _) => {
                     state.ready = None;
-                    state.busy = false;
                     state.status = UpdateStatus::UpToDate { checked_at_ms: now };
+                    None
                 }
                 (Some(offer), Some(blocker)) => {
-                    state.busy = false;
+                    // What was downloaded before is no longer offered to install.
+                    state.ready = None;
                     state.status = UpdateStatus::Available {
                         version: offer.version.clone(),
                         reason: blocker.reason(),
                     };
+                    None
                 }
                 (Some(offer), None) if state.ready.as_deref() == Some(offer.version.as_str()) => {
-                    state.busy = false;
                     state.status = UpdateStatus::Ready {
                         version: offer.version.clone(),
                     };
+                    None
                 }
                 (Some(offer), None) => {
+                    // Another version than the one downloaded before: only the new one may
+                    // be installed, once it is downloaded.
+                    state.ready = None;
                     state.status = UpdateStatus::Downloading {
                         version: offer.version.clone(),
                         received: 0,
                         total: None,
                     };
+                    Some(offer.version.clone())
                 }
+            };
+            if download.is_none() {
+                self.end_run(&mut state);
             }
-        }
-        self.emit();
-        let Some(offer) = offer else { return };
-        if !matches!(self.status(), UpdateStatus::Downloading { .. }) {
-            return;
-        }
-        let version = offer.version;
+            self.publish(&state);
+            download
+        };
+        let Some(version) = download else { return };
         let mut shown = Shown::default();
         let progress: Progress<'_> = Box::new(|received, total| {
-            if shown.worth_showing(received, total) {
-                self.set_status(UpdateStatus::Downloading {
+            if !shown.worth_showing(received, total) {
+                return;
+            }
+            let mut state = self.lock();
+            if matches!(&state.status, UpdateStatus::Downloading { version: v, .. } if *v == version)
+            {
+                state.status = UpdateStatus::Downloading {
                     version: version.clone(),
                     received,
                     total,
-                });
+                };
+                self.publish(&state);
             }
         });
-        let downloaded = backend.download(&version, progress).await;
-        let now = (self.clock)();
-        {
-            let mut state = self.lock();
-            state.busy = false;
-            match downloaded {
-                Ok(()) => {
-                    state.ready = Some(version.clone());
-                    state.status = UpdateStatus::Ready { version };
-                }
-                Err(failure) => {
-                    state.ready = None;
-                    // Tried again with the next check, an hour on.
-                    state.due_ms = Some(now + self.timing.retry.as_millis() as u64);
-                    state.status = failed(Step::Download, Some(&version), &failure, now);
+        let stop = async {
+            // Only a `true` stops it (the sender lives until the run ends).
+            while cancelled.changed().await.is_ok() {
+                if *cancelled.borrow() {
+                    return;
                 }
             }
+            std::future::pending::<()>().await
+        };
+        let downloaded = tokio::select! {
+            downloaded = backend.download(&version, progress) => Some(downloaded),
+            () = stop => None,
+        };
+        let now = (self.clock)();
+        let mut state = self.lock();
+        self.end_run(&mut state);
+        match downloaded {
+            // Stopped: the setting went off. Nothing is ready.
+            None => state.status = UpdateStatus::Idle,
+            Some(Ok(())) => {
+                state.ready = Some(version.clone());
+                state.status = UpdateStatus::Ready { version };
+            }
+            Some(Err(failure)) => {
+                // Tried again with the next check, an hour on.
+                state.due_ms = Some(now + self.timing.retry.as_millis() as u64);
+                state.status = failed(Step::Download, Some(&version), &failure, now);
+            }
         }
-        self.emit();
+        self.publish(&state);
+    }
+
+    /// The running check or download has ended.
+    fn end_run(&self, state: &mut State) {
+        state.busy = false;
+        state.manual = false;
+        state.cancel = None;
     }
 
     /// Puts the ready version in place and restarts gg (blocks: call off the async
@@ -575,8 +664,13 @@ impl Updates {
         let backend = self.backend.get().cloned();
         let version = {
             let mut state = self.lock();
-            let version = match (&backend, &state.ready) {
-                (Some(_), Some(version)) if !state.busy => version.clone(),
+            // Only the version the status shows as ready, downloaded by this run of gg.
+            let version = match (&backend, &state.ready, &state.status) {
+                (Some(_), Some(ready), UpdateStatus::Ready { version })
+                    if !state.busy && ready == version =>
+                {
+                    version.clone()
+                }
                 _ => {
                     return Err(CoreError::new(
                         ErrorCode::BadRequest,
@@ -588,13 +682,13 @@ impl Updates {
             state.status = UpdateStatus::Installing {
                 version: version.clone(),
             };
+            self.publish(&state);
             version
         };
-        self.emit();
         let Some(backend) = backend else {
             unreachable!("checked above")
         };
-        let outcome = backend.install_and_restart();
+        let outcome = backend.install_and_restart(&version);
         let mut state = self.lock();
         state.busy = false;
         match outcome {
@@ -605,22 +699,23 @@ impl Updates {
                 let now = (self.clock)();
                 state.due_ms = Some(now + self.timing.retry.as_millis() as u64);
                 state.status = failed(Step::Install, Some(&version), &failure, now);
+                self.publish(&state);
                 let message = failure_message(Step::Install, Some(&version), failure.kind);
-                drop(state);
-                self.emit();
                 Err(CoreError::new(ErrorCode::Io, message).with_detail(failure.detail))
             }
         }
     }
 
     fn set_status(&self, status: UpdateStatus) {
-        self.lock().status = status;
-        self.emit();
+        let mut state = self.lock();
+        state.status = status;
+        self.publish(&state);
     }
 
-    fn emit(&self) {
-        let status = self.status();
-        if let Ok(payload) = serde_json::to_value(status) {
+    /// Sends the status as an event with the state held, so that events go out in the order
+    /// the status changed (the sink only queues them).
+    fn publish(&self, state: &State) {
+        if let Ok(payload) = serde_json::to_value(&state.status) {
             self.sink.emit(EVENT, payload);
         }
     }
@@ -790,7 +885,8 @@ mod tests {
         let read_only_bundle = blocker(&Install::MacBundle(bundle.clone()));
         mode(&bundle, 0o755).unwrap();
         assert_eq!(in_read_only, Some(Blocker::NotWritable(apps.clone())));
-        assert_eq!(read_only_bundle, Some(Blocker::NotWritable(apps.clone())));
+        // The bundle itself, named as such.
+        assert_eq!(read_only_bundle, Some(Blocker::NotWritable(bundle.clone())));
         let image = std::fs::write(apps.join("gg.AppImage"), "x");
         image.unwrap();
         mode(&apps, 0o555).unwrap();
@@ -876,6 +972,10 @@ mod tests {
         checks: AtomicUsize,
         downloads: Mutex<Vec<String>>,
         installs: AtomicUsize,
+        installed: Mutex<Vec<String>>,
+        /// When set, a check (or download) waits for it before it answers.
+        check_gate: Mutex<Option<Arc<Notify>>>,
+        download_gate: Mutex<Option<Arc<Notify>>>,
     }
 
     impl Fake {
@@ -889,6 +989,9 @@ mod tests {
                 checks: AtomicUsize::new(0),
                 downloads: Mutex::new(Vec::new()),
                 installs: AtomicUsize::new(0),
+                installed: Mutex::new(Vec::new()),
+                check_gate: Mutex::new(None),
+                download_gate: Mutex::new(None),
             })
         }
 
@@ -909,7 +1012,13 @@ mod tests {
         fn check(&self) -> BoxFuture<'_, std::result::Result<Option<Offer>, UpdateFailure>> {
             self.checks.fetch_add(1, Ordering::SeqCst);
             let answer = self.check.lock().unwrap().clone();
-            Box::pin(async move { answer })
+            let gate = self.check_gate.lock().unwrap().clone();
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate.notified().await;
+                }
+                answer
+            })
         }
         fn download<'a>(
             &'a self,
@@ -918,15 +1027,20 @@ mod tests {
         ) -> BoxFuture<'a, std::result::Result<(), UpdateFailure>> {
             self.downloads.lock().unwrap().push(version.to_owned());
             let answer = self.download.lock().unwrap().clone();
+            let gate = self.download_gate.lock().unwrap().clone();
             Box::pin(async move {
                 progress(0, Some(100));
                 progress(50, Some(100));
+                if let Some(gate) = gate {
+                    gate.notified().await;
+                }
                 progress(100, Some(100));
                 answer
             })
         }
-        fn install_and_restart(&self) -> std::result::Result<(), UpdateFailure> {
+        fn install_and_restart(&self, version: &str) -> std::result::Result<(), UpdateFailure> {
             self.installs.fetch_add(1, Ordering::SeqCst);
+            self.installed.lock().unwrap().push(version.to_owned());
             self.install.lock().unwrap().clone()
         }
     }
@@ -959,7 +1073,7 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let updates = Updates::new(sink.clone(), true);
         assert_eq!(updates.status(), UpdateStatus::Unavailable);
-        updates.check().await;
+        updates.check(true).await;
         updates.start();
         assert_eq!(updates.status(), UpdateStatus::Unavailable);
         assert!(updates.install_and_restart().is_err());
@@ -973,7 +1087,7 @@ mod tests {
         assert_eq!(updates.status(), UpdateStatus::Idle);
         for offered in ["0.4.0", "0.3.9", "0.4.0+build", "0.5.0-rc.1", "nonsense"] {
             fake.offers(offered);
-            updates.check().await;
+            updates.check(true).await;
             assert_eq!(
                 updates.status(),
                 UpdateStatus::UpToDate {
@@ -990,7 +1104,7 @@ mod tests {
         let fake = Fake::new("0.4.0");
         let (updates, sink, _) = updates(&fake, true);
         fake.offers("0.4.1");
-        updates.check().await;
+        updates.check(true).await;
         assert_eq!(
             updates.status(),
             UpdateStatus::Ready {
@@ -1026,7 +1140,7 @@ mod tests {
             ]
         );
         // Asked again: still ready, not downloaded twice.
-        updates.check().await;
+        updates.check(true).await;
         assert_eq!(fake.downloads.lock().unwrap().len(), 1);
         assert!(matches!(updates.status(), UpdateStatus::Ready { .. }));
         updates.install_and_restart().unwrap();
@@ -1044,9 +1158,9 @@ mod tests {
         let fake = Fake::new("0.4.0");
         let (updates, _, _) = updates(&fake, true);
         fake.offers("0.4.1");
-        updates.check().await;
+        updates.check(true).await;
         fake.offers("0.4.2");
-        updates.check().await;
+        updates.check(true).await;
         assert_eq!(*fake.downloads.lock().unwrap(), ["0.4.1", "0.4.2"]);
         assert_eq!(
             updates.status(),
@@ -1065,7 +1179,7 @@ mod tests {
             "error sending request",
         ));
         assert!(updates.due());
-        updates.check().await;
+        updates.check(true).await;
         match updates.status() {
             UpdateStatus::Failed {
                 step,
@@ -1098,7 +1212,7 @@ mod tests {
     async fn after_a_good_check_the_next_is_due_a_day_on() {
         let fake = Fake::new("0.4.0");
         let (updates, _, now) = updates(&fake, true);
-        updates.check().await;
+        updates.check(true).await;
         assert!(!updates.due());
         now.fetch_add(24 * 3600 * 1000 - 1, Ordering::SeqCst);
         assert!(!updates.due());
@@ -1115,9 +1229,9 @@ mod tests {
         let fake = Fake::new("0.4.0");
         let (updates, _, _) = updates(&fake, true);
         fake.offers("0.4.1");
-        updates.check().await;
+        updates.check(true).await;
         *fake.check.lock().unwrap() = Err(UpdateFailure::new(FailureKind::Offline, "x"));
-        updates.check().await;
+        updates.check(true).await;
         assert_eq!(
             updates.status(),
             UpdateStatus::Ready {
@@ -1136,7 +1250,7 @@ mod tests {
             FailureKind::Signature,
             "the signature does not verify",
         ));
-        updates.check().await;
+        updates.check(true).await;
         match updates.status() {
             UpdateStatus::Failed { step, message, .. } => {
                 assert_eq!(step, Step::Download);
@@ -1157,10 +1271,10 @@ mod tests {
         let fake = Fake::new("0.4.0");
         let (updates, _, _) = updates(&fake, true);
         *fake.blocker.lock().unwrap() = Some(Blocker::LinuxPackage);
-        updates.check().await;
+        updates.check(true).await;
         assert!(matches!(updates.status(), UpdateStatus::UpToDate { .. }));
         fake.offers("0.4.1");
-        updates.check().await;
+        updates.check(true).await;
         assert_eq!(
             updates.status(),
             UpdateStatus::Available {
@@ -1178,7 +1292,7 @@ mod tests {
         let fake = Fake::new("0.4.0");
         let (updates, _, _) = updates(&fake, true);
         fake.offers("0.4.1");
-        updates.check().await;
+        updates.check(true).await;
         *fake.install.lock().unwrap() = Err(UpdateFailure::new(
             FailureKind::Install,
             "Permission denied",
@@ -1196,7 +1310,7 @@ mod tests {
                 ..
             }
         ));
-        updates.check().await;
+        updates.check(true).await;
         assert_eq!(fake.downloads.lock().unwrap().len(), 2);
     }
 
@@ -1258,5 +1372,164 @@ mod tests {
         updates.set_enabled(true);
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(fake.checks.load(Ordering::SeqCst), 1);
+    }
+
+    /// Waits until `f` holds (a few ms of real time at most per step).
+    async fn until(f: impl Fn() -> bool) {
+        for _ in 0..500 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        panic!("never");
+    }
+
+    #[tokio::test]
+    async fn an_automatic_check_starts_no_download_once_the_setting_is_off() {
+        let fake = Fake::new("0.4.0");
+        let (updates, _, _) = updates(&fake, true);
+        fake.offers("0.4.1");
+        let gate = Arc::new(Notify::new());
+        *fake.check_gate.lock().unwrap() = Some(gate.clone());
+        let run = tokio::spawn({
+            let updates = updates.clone();
+            async move { updates.check(false).await }
+        });
+        until(|| fake.checks.load(Ordering::SeqCst) == 1).await;
+        updates.set_enabled(false);
+        gate.notify_one();
+        run.await.unwrap();
+        assert!(fake.downloads.lock().unwrap().is_empty());
+        assert_eq!(updates.status(), UpdateStatus::Idle);
+        // Claimed after the setting went off: it does not even ask.
+        updates.check(false).await;
+        assert_eq!(fake.checks.load(Ordering::SeqCst), 1);
+        // The user's "Check now" is not stopped by the setting.
+        *fake.check_gate.lock().unwrap() = None;
+        updates.check(true).await;
+        assert_eq!(*fake.downloads.lock().unwrap(), ["0.4.1"]);
+    }
+
+    #[tokio::test]
+    async fn turning_the_setting_off_stops_an_automatic_download_only() {
+        let fake = Fake::new("0.4.0");
+        let (updates, _, _) = updates(&fake, true);
+        fake.offers("0.4.1");
+        let gate = Arc::new(Notify::new());
+        *fake.download_gate.lock().unwrap() = Some(gate.clone());
+        let run = tokio::spawn({
+            let updates = updates.clone();
+            async move { updates.check(false).await }
+        });
+        until(|| {
+            matches!(
+                updates.status(),
+                UpdateStatus::Downloading { received: 50, .. }
+            )
+        })
+        .await;
+        updates.set_enabled(false);
+        run.await.unwrap();
+        assert_eq!(updates.status(), UpdateStatus::Idle);
+        assert_eq!(
+            updates.install_and_restart().unwrap_err().code,
+            ErrorCode::BadRequest,
+            "nothing is ready"
+        );
+        // A download the user asked for goes on when the setting goes off.
+        let manual = tokio::spawn({
+            let updates = updates.clone();
+            async move { updates.check(true).await }
+        });
+        until(|| {
+            matches!(
+                updates.status(),
+                UpdateStatus::Downloading { received: 50, .. }
+            )
+        })
+        .await;
+        updates.set_enabled(false);
+        gate.notify_one();
+        manual.await.unwrap();
+        assert_eq!(
+            updates.status(),
+            UpdateStatus::Ready {
+                version: "0.4.1".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_download_is_installable_only_while_the_status_shows_it_ready() {
+        let fake = Fake::new("0.4.0");
+        let (updates, _, _) = updates(&fake, true);
+        fake.offers("0.4.1");
+        updates.check(true).await;
+        // Then this copy can no longer install itself: the download is not installable.
+        *fake.blocker.lock().unwrap() = Some(Blocker::DiskImage);
+        updates.check(true).await;
+        assert!(matches!(updates.status(), UpdateStatus::Available { .. }));
+        assert_eq!(
+            updates.install_and_restart().unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        // Ready again, then a newer version is offered whose download fails: the older one
+        // is not installed either.
+        *fake.blocker.lock().unwrap() = None;
+        updates.check(true).await;
+        assert!(matches!(updates.status(), UpdateStatus::Ready { .. }));
+        fake.offers("0.4.2");
+        *fake.download.lock().unwrap() = Err(UpdateFailure::new(FailureKind::Offline, "x"));
+        updates.check(true).await;
+        assert!(matches!(updates.status(), UpdateStatus::Failed { .. }));
+        assert_eq!(
+            updates.install_and_restart().unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert!(fake.installed.lock().unwrap().is_empty());
+        // The version installed is the one shown ready.
+        *fake.download.lock().unwrap() = Ok(());
+        updates.check(true).await;
+        updates.install_and_restart().unwrap();
+        assert_eq!(*fake.installed.lock().unwrap(), ["0.4.2"]);
+    }
+
+    #[tokio::test]
+    async fn a_clock_set_back_does_not_put_the_next_check_off() {
+        let fake = Fake::new("0.4.0");
+        let (updates, _, now) = updates(&fake, true);
+        // The clock is a year ahead when it checks, then put right.
+        now.fetch_add(365 * 24 * 3600 * 1000, Ordering::SeqCst);
+        updates.check(true).await;
+        assert!(!updates.due());
+        now.fetch_sub(365 * 24 * 3600 * 1000, Ordering::SeqCst);
+        assert!(
+            updates.due(),
+            "a check due more than a day ahead is due now"
+        );
+        // Within the interval, as usual, not yet.
+        updates.check(true).await;
+        now.fetch_add(23 * 3600 * 1000, Ordering::SeqCst);
+        assert!(!updates.due());
+    }
+
+    /// Every status change is one event, in order, the last one what the status is.
+    #[tokio::test]
+    async fn events_follow_the_status_in_order() {
+        let fake = Fake::new("0.4.0");
+        let (updates, sink, _) = updates(&fake, true);
+        fake.offers("0.4.1");
+        let runs: Vec<_> = (0..8)
+            .map(|_| {
+                let updates = updates.clone();
+                tokio::spawn(async move { updates.check(true).await })
+            })
+            .collect();
+        for run in runs {
+            run.await.unwrap();
+        }
+        let last = sink.events().last().unwrap().1.clone();
+        assert_eq!(last, serde_json::to_value(updates.status()).unwrap());
     }
 }

@@ -25,6 +25,8 @@ struct Fake {
     blocker: Mutex<Option<Blocker>>,
     checks: AtomicUsize,
     installs: AtomicUsize,
+    /// When set, an install waits for a message, then answers with it (`true`: it worked).
+    install_gate: Mutex<Option<std::sync::mpsc::Receiver<bool>>>,
 }
 
 impl UpdateBackend for Fake {
@@ -54,9 +56,16 @@ impl UpdateBackend for Fake {
             Ok(())
         })
     }
-    fn install_and_restart(&self) -> Result<(), UpdateFailure> {
+    fn install_and_restart(&self, _version: &str) -> Result<(), UpdateFailure> {
         self.installs.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        let gate = self.install_gate.lock().unwrap().take();
+        match gate.map(|g| g.recv().unwrap_or(false)) {
+            Some(false) => Err(UpdateFailure::new(
+                gg_core::update::FailureKind::Install,
+                "Permission denied",
+            )),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -240,4 +249,78 @@ async fn restart_is_refused_while_an_operation_runs() {
 fn the_version_rule_is_exported() {
     assert!(is_newer("0.4.0", "0.4.1"));
     assert!(!is_newer("0.4.1", "0.4.1"));
+}
+
+/// From the moment a restart to update is asked for until the install fails, no operation
+/// or fetch the user asks for is admitted; refused with a plain message, and admitted again
+/// once the install has failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn while_restarting_no_operation_is_admitted() {
+    let repo = TestRepo::new();
+    let head = repo.commit("one");
+    let fake = Arc::new(Fake::default());
+    *fake.offer.lock().unwrap() = Some("0.4.1".into());
+    let (release, gate) = std::sync::mpsc::channel();
+    *fake.install_gate.lock().unwrap() = Some(gate);
+    let h = harness(Some(fake.clone())).await;
+    h.call("check_for_updates", json!({})).await;
+    h.wait_state("ready").await;
+    let snap = h.call("open_repo", json!({"path": repo.path()})).await;
+    let id = snap["repoId"].as_u64().unwrap() as u32;
+
+    let restart = tokio::spawn({
+        let core = h.core.clone();
+        async move { core.dispatch("restart_to_update", json!({})).await }
+    });
+    h.wait_state("installing").await;
+    let m = h.core.manager().unwrap().clone();
+    let refused = m
+        .run_op(id, in_wt(repo.path(), create_branch("late", &head)), &[])
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Busy);
+    assert_eq!(refused.message, "gg is restarting to update.");
+    let fetch = h
+        .core
+        .dispatch("fetch", json!({"repoId": id}))
+        .await
+        .unwrap_err();
+    assert_eq!(fetch.message, "gg is restarting to update.");
+    assert!(m.busy_repo().is_none(), "nothing was let in");
+
+    // The install fails: operations are admitted again.
+    release.send(false).unwrap();
+    let failed = restart.await.unwrap().unwrap_err();
+    assert_eq!(failed.code, ErrorCode::Io);
+    m.run_op(id, in_wt(repo.path(), create_branch("later", &head)), &[])
+        .await
+        .expect("admitted again");
+}
+
+/// Two quick changes of the setting: what is in effect is what was saved last, whatever
+/// order the calls finish in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_setting_in_effect_is_the_one_saved_last() {
+    let fake = Arc::new(Fake::default());
+    let h = harness(Some(fake)).await;
+    for round in 0..20 {
+        let calls: Vec<_> = [round % 2 == 0, round % 2 == 1]
+            .into_iter()
+            .map(|on| {
+                let core = h.core.clone();
+                tokio::spawn(async move {
+                    core.dispatch("update_settings", json!({"patch": {"checkForUpdates": on}}))
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect();
+        for call in calls {
+            call.await.unwrap();
+        }
+        let saved = h.call("get_app_state", json!({})).await["settings"]["checkForUpdates"]
+            .as_bool()
+            .unwrap();
+        assert_eq!(h.core.update_checks_on(), saved, "round {round}");
+    }
 }

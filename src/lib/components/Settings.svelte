@@ -171,9 +171,17 @@
   });
   const update = $derived(updates.status);
   const updateLine = $derived(statusLine(update, app.settings.checkForUpdates, app.settings.dateFormat, now));
-  /** Restart to update, from here: what is typed is saved first. */
+  /**
+   * Restart to update, from here: what is typed is saved first. A field that could not be
+   * saved (its message is beside it) keeps gg from restarting, so nothing typed is lost.
+   */
   async function restartFromHere() {
-    for (const field of [fields.editor, fields.terminal, fields.pattern]) await field.flush();
+    for (const field of [fields.editor, fields.terminal, fields.pattern]) {
+      if (!(await field.flush())) {
+        notify({ kind: "info", message: "gg did not restart: a setting you typed could not be saved. Fix it or clear it, then restart." });
+        return;
+      }
+    }
     await restartToUpdate();
   }
   /** A check, download or install runs: Check now waits. */
@@ -541,7 +549,7 @@
             />
             <span>
               Check for updates automatically
-              <span class="check-note">Shortly after gg starts, then once a day, gg asks GitHub for one small file. Nothing about you or your repositories is sent.</span>
+              <span class="check-note">Shortly after gg starts, then once a day, gg asks GitHub for a small file describing the latest release. It carries nothing about you or your repositories.</span>
             </span>
           </label>
           {#if fields.updates.error}<p class="problem" role="alert">{fields.updates.error}</p>{/if}

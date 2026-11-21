@@ -288,8 +288,10 @@ describe("init", () => {
     expect(s.app.activeRepoId).toBeNull();
     answers.get("/r/a")!(snapshot(1, "/r/a"));
     await vi.waitFor(() => expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 3]));
+    expect(s.app.sessionReopened).toBe(false);
     answers.get("/r/b")!(snapshot(2, "/r/b"));
     await done;
+    expect(s.app.sessionReopened).toBe(true);
     expect(s.app.tabs.map((t) => t.repoId)).toEqual([1, 2, 3]);
     expect(s.app.activeRepoId).toBe(2);
     expect(s.app.restoring).toBe(false);

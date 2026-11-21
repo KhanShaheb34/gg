@@ -21,6 +21,12 @@ vi.mock("../ipc", async (importOriginal) => {
   };
 });
 
+const platform = vi.hoisted(() => ({ mac: false }));
+vi.mock("../platform", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../platform")>();
+  return { ...actual, isMac: () => platform.mac };
+});
+
 type Ipc = typeof import("../ipc");
 
 describe("what Settings says of an update", () => {
@@ -125,6 +131,21 @@ describe("the update notice", () => {
     expect(notice.actions?.map((a) => a.label)).toEqual(["Download page"]);
     await notice.actions![0].run();
     expect(ipc.api.openAppLink).toHaveBeenCalledWith("home");
+    stop();
+  });
+
+  it("names Homebrew's command only on a Mac where Homebrew linked gg and gg cannot update itself", async () => {
+    const stop = u.initUpdates();
+    platform.mac = true;
+    app.cli = { installed: "/opt/homebrew/bin/gg", link: "homebrew", shadowedBy: null, candidates: [] };
+    send({ state: "available", version: "0.5.0", reason: "gg cannot update itself: it may not change /Applications." });
+    expect(app.toasts[0].note).toBe(
+      "gg cannot update itself: it may not change /Applications. Or update it with Homebrew: brew upgrade --cask gg",
+    );
+    expect(u.brewHint()).toBe("brew upgrade --cask gg");
+    app.cli = { installed: null, link: null, shadowedBy: null, candidates: [] };
+    expect(u.brewHint()).toBeNull();
+    platform.mac = false;
     stop();
   });
 

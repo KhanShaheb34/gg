@@ -32,6 +32,9 @@ function said(s: UpdateStatus): string {
 const SETTLED = new Set(["ready", "upToDate", "available", "failed", "unavailable"]);
 
 export async function runUpdateProbe(): Promise<void> {
+  // Every tab of the saved session reopened (or given up on) first.
+  const restored = performance.now() + 60_000;
+  while (!app.sessionReopened && performance.now() < restored) await sleep(50);
   await mark(`update-running ${app.version}`);
   const active = app.tabs.find((t) => t.repoId === app.activeRepoId)?.name ?? "";
   await mark(`update-tabs ${app.tabs.map((t) => t.name).join(",")} active ${active}`);

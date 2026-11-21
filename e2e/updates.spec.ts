@@ -38,16 +38,17 @@ test("a newer version is downloaded in the background, then a notice offers the 
   const { page } = gg;
   gg.updates.running("0.4.0");
   gg.updates.offer("0.9.0");
-  gg.updates.download(null, 1500);
+  gg.updates.holdDownloads();
   await page.goto("/");
   await open(page, gg.repoPath("small"));
 
-  // Downloading: said in Settings only, never in a notice.
+  // Downloading (held halfway): said in Settings only, never in a notice.
   const s = await about(page);
   const status = s.getByTestId("settings-update-status");
-  await expect(status).toHaveText(/^Downloading gg 0\.9\.0…( \d+%)?$/, CHECKED);
+  await expect(status).toHaveText("Downloading gg 0.9.0… 50%", CHECKED);
   await expect(s.getByTestId("settings-update-check")).toBeDisabled();
   await expect(notices(page).locator(".toast")).toHaveCount(0);
+  gg.updates.openDownloadGate();
   await expect(status).toHaveText("gg 0.9.0 is ready. Restart to update.", CHECKED);
   await expect(s.getByTestId("settings-update-restart")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -179,4 +180,27 @@ test("with automatic checks off nothing is asked at start; Check now still works
   await again.getByTestId("settings-update-check").click();
   await expect(again.getByTestId("settings-update-status")).toHaveText("gg 0.9.0 is ready. Restart to update.", CHECKED);
   await expect(notice(page, "gg 0.9.0 is ready.")).toBeVisible();
+});
+
+test("turning automatic checks off stops the download they started; Check now is the user's own", async ({ gg }) => {
+  const { page } = gg;
+  gg.updates.running("0.4.0");
+  gg.updates.offer("0.9.0");
+  gg.updates.holdDownloads();
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  const s = await about(page);
+  const status = s.getByTestId("settings-update-status");
+  await expect(status).toHaveText("Downloading gg 0.9.0… 50%", CHECKED);
+  await s.getByTestId("settings-check-updates").uncheck();
+  await expect(status).toHaveText("Automatic checks are off.");
+  // The download it started does not come back to life.
+  gg.updates.openDownloadGate();
+  await page.waitForTimeout(1_000);
+  await expect(status).toHaveText("Automatic checks are off.");
+  await expect(notices(page).locator(".toast")).toHaveCount(0);
+  await expect(s.getByTestId("settings-update-restart")).toHaveCount(0);
+  // Check now, whatever the setting.
+  await s.getByTestId("settings-update-check").click();
+  await expect(status).toHaveText("gg 0.9.0 is ready. Restart to update.", CHECKED);
 });

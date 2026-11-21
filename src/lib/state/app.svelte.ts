@@ -69,6 +69,8 @@ export const app = $state({
    * window shows the tabs that are, and no welcome screen.
    */
   restoring: false,
+  /** Every tab of the saved session (and the launch path) has been reopened, or given up on. */
+  sessionReopened: false,
   /** The core could not find git: nothing can be opened. */
   gitMissing: false,
   /** The user's home folder, for showing paths as `~/…`. */
@@ -532,6 +534,7 @@ export async function init(): Promise<void> {
   if (app.activeRepoId === null && app.tabs.length > 0) show(app.tabs[0].repoId);
   restoreTarget = null;
   app.restoring = false;
+  app.sessionReopened = true;
   if (tabs.length > 0 || launch) {
     saveSession();
     await refreshRecents();

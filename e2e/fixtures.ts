@@ -733,8 +733,11 @@ export type FakeUpdates = {
   offer(version: string | null): void;
   /** The check fails with `kind` (`offline`, `notFound`, `badManifest`, …) and `detail`. */
   checkFails(kind: string, detail: string): void;
-  /** The download fails, or (null) works again; `ms`: how long it takes. */
-  download(fail: { kind: string; detail: string } | null, ms?: number): void;
+  /** The download fails, or (null) works again. */
+  download(fail: { kind: string; detail: string } | null): void;
+  /** Downloads stop halfway until `openDownloadGate`. */
+  holdDownloads(): void;
+  openDownloadGate(): void;
   /** Why this copy cannot update itself (`translocated`, `diskImage`, `notWritable <folder>`, …); null: it can. */
   blocker(reason: string | null): void;
   /** The restarts asked for (the running version each), oldest first. */
@@ -748,11 +751,12 @@ function fakeUpdates(home: string): FakeUpdates {
     running: (version) => put("version", version),
     offer: (version) => put("check.json", JSON.stringify({ offer: version })),
     checkFails: (kind, detail) => put("check.json", JSON.stringify({ fail: kind, detail })),
-    download(fail, ms = 0) {
-      put("download-ms", String(ms));
+    download(fail) {
       if (fail) put("download.json", JSON.stringify({ fail: fail.kind, detail: fail.detail }));
       else rmSync(path.join(dir, "download.json"), { force: true });
     },
+    holdDownloads: () => put("download-gate", ""),
+    openDownloadGate: () => rmSync(path.join(dir, "download-gate"), { force: true }),
     blocker(reason) {
       if (reason) put("blocker", reason);
       else rmSync(path.join(dir, "blocker"), { force: true });

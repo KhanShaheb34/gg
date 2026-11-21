@@ -47,8 +47,14 @@ access to it):
   the development build used for performance tests (`--features perf`, bundle identifier
   `com.shakirul.gg.perf`) can be pointed at a local test server, with a test key.
 - **Signed.** Each release's update (the macOS `.app.tar.gz`, the Linux AppImage, the Windows
-  installer) is signed with a minisign key held only as a GitHub Actions secret, in a
-  workflow step of its own; the release workflow fails without it. The app verifies the
+  installer) is signed with a minisign key held only as GitHub Actions secrets
+  (`TAURI_SIGNING_PRIVATE_KEY`, password-protected, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`).
+  One step of the release workflow sees them: "Sign the updates", in a job that checks nothing
+  out and builds nothing, which runs only the release's signer (`crates/gg-release`, built
+  beforehand in another job without the secrets) by its absolute path with a clean `PATH`. The
+  jobs that build the app, its dependencies and its build scripts never see the key; the
+  signer prints only file names, and only the signatures are kept as artifacts. Without the
+  secrets that step fails and nothing is released. The app verifies the
   download against the public key built into it before installing anything; a download that
   does not verify, or whose signature was made for another version than the one offered
   (`requireSignedVersion`), is refused and nothing is installed. The public key is:
@@ -64,8 +70,10 @@ access to it):
   release's version and only that release's own assets.
 - **Never older.** Only a strictly newer version is offered: never the same one, an older
   one or a pre-release.
-- **Private.** The check sends nothing about the user, the machine or the repositories, and
-  can be turned off in Settings → About.
+- **Private.** The check asks GitHub for a small file describing the latest release (GitHub
+  answers through a redirect to its file host). It carries nothing about the user, what is on
+  their machine or their repositories beyond what any web request does (the IP address, and a
+  user agent naming the updater), and can be turned off in Settings → About.
 
 ## Out of scope
 

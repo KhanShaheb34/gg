@@ -54,8 +54,9 @@ a web UI that only renders what the core gives it.
   --fake-updates <dir>` stands in for it in the UI's tests. A performance build can be given
   a local test source (`src-tauri/src/update_hook.rs`, compiled only with `--features perf`),
   which `scripts/update-proof.sh` uses to update a real app end to end.
-- **`crates/gg-release`**: release tooling only: writes the updater's `latest.json` and
-  checks each update's signature against the app's key before a release is drafted.
+- **`crates/gg-release`**: release tooling only: signs each update (`sign`), writes the
+  updater's `latest.json`, and checks each update's signature against the app's key before
+  a release is drafted.
 - **`crates/gg-devserver`**: serves the same core over HTTP on 127.0.0.1 (`POST /invoke`,
   `GET /events` as server-sent events) so the UI runs in a plain browser, where Playwright
   can drive it. Development and tests only; the app never includes it.
@@ -158,13 +159,16 @@ which puts the `gg` launcher in the app with `scripts/fill-launcher.sh`, signed 
 notarized), the Linux AppImage and `.deb` and the Windows installer, each
 with its SHA-256, and puts them on a draft GitHub release that is published by hand.
 
-The release also carries what the app updates itself from. Each platform's update (the macOS
-`gg-macos-universal.app.tar.gz`, made by `scripts/update-archive.sh` from the final signed
-app, launcher included; the AppImage; the Windows installer) is signed by
-`scripts/sign-update.sh` (`tauri signer sign --app-version`) in a step of its own, the only
-one given the secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; it
-fails without them. A separate job, with no secrets, verifies every signature against the
-public key in `src-tauri/tauri.conf.json` (`gg-release verify`, the verifier the app uses),
+The release also carries what the app updates itself from. Each build job makes its
+platform's update, unsigned: the macOS `gg-macos-universal.app.tar.gz` (made by
+`scripts/update-archive.sh` from the final signed app, launcher included), the AppImage, the
+Windows installer. The signer job builds `gg-release` (`cargo build --locked -p gg-release`)
+without any secret. The sign job checks nothing out and builds nothing: it fetches the signer
+and the updates, and its one step that sees the secrets `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` runs only `gg-release sign` by its absolute path, with a
+clean `PATH`; it writes signatures in the format `tauri signer sign --app-version` writes, and
+fails without the secrets. A separate job, with no secrets, verifies every signature against
+the public key in `src-tauri/tauri.conf.json` (`gg-release verify`, the verifier the app uses),
 writes `latest.json` (the plugin's static manifest: `darwin-aarch64` and `darwin-x86_64` both
 name the universal archive, then `linux-x86_64` and `windows-x86_64`, each URL one of the
 tag's own assets) and checks it (`gg-release check-manifest`) against the list of assets the

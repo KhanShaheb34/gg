@@ -68,7 +68,7 @@ Where gg cannot replace itself it says so, and links the download page instead: 
 from the disk image or from where it was downloaded (move it to Applications first), from a
 folder you may not write to, or from a Linux `.deb` package (update that with your package
 manager; the AppImage updates itself). An app installed with Homebrew updates itself like any
-other; `brew upgrade --cask gg` works too.
+other; `brew upgrade --cask gg` works too, and gg names it when it cannot update itself.
 
 ### Windows and Linux
 
@@ -262,12 +262,14 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
   ask on a terminal fails at once instead: commit signing with a loopback pinentry, an SSH
   key whose passphrase is not in an agent, hooks that read `/dev/tty`. Use an agent
   (ssh-agent, gpg-agent, 1Password) or a graphical pinentry such as pinentry-mac.
-- No telemetry and no account. gg itself uses the network only to look for updates: one
-  HTTPS request to GitHub for a small file (`latest.json` of the latest release) shortly after
-  it starts and about once a day, and, when there is a new version, its download from the
-  same release. Nothing about you, your machine or your repositories is sent; GitHub sees the
-  request as it sees any download. Turn it off in Settings → About. Otherwise the network is
-  git talking to your own remotes, and `gh` when you use pull requests.
+- No telemetry and no account. gg itself uses the network only to look for updates: shortly
+  after it starts and about once a day it asks GitHub, over HTTPS, for a small file describing
+  the latest release (`latest.json`; GitHub answers through a redirect to its file host), and
+  when there is a new version it downloads it from the same release. These requests carry
+  nothing about you, what is on your machine or your repositories beyond what any web request
+  does: your IP address, and a user agent naming the updater. Turn the checks off in
+  Settings → About. Otherwise the network is git talking to your own remotes, and `gh` when you
+  use pull requests.
 - Updates are signed. gg installs one only if its signature verifies with the public key
   built into the app and was made for the version offered; anything else is refused and
   nothing is installed. See [SECURITY.md](SECURITY.md#updates).

@@ -125,6 +125,7 @@ test.describe("with a shell that has its own gg", () => {
   test("warns that the shell's gg wins, and installs all the same", async ({ gg }) => {
     const { page, home } = gg;
     await page.goto("/");
+    await shellAnswered(page);
     await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
     const box = dialog(page);
     await expect(box.getByTestId("cli-shadowed")).toHaveText(
@@ -140,6 +141,27 @@ test.describe("with a shell that has its own gg", () => {
 
 /** gg's line, as the core writes it after a file that ends with a line break. */
 const LINE = "unalias gg 2>/dev/null  # added by gg: lets the gg command run; gg Settings > Command line takes it out\n";
+/** How long the shell's first answer may take when many tests run at once. */
+const SHELL_WAIT = 15_000;
+
+/**
+ * Waits until the core has the stand-in shell's answer, then loads the page again, so the
+ * page starts from it: an answer that came before the page listened for it (the devserver's
+ * events reach only a page already listening) is not waited for in vain.
+ */
+async function shellAnswered(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () => {
+          const { api } = await import("/src/lib/ipc.ts");
+          return (await api.getAppState()).cli.shadowedBy;
+        }),
+      { timeout: SHELL_WAIT },
+    )
+    .not.toBeNull();
+  await page.reload();
+}
 /** A start-up file of the test's home folder, with a byte that is not UTF-8. */
 const ZSHRC = Buffer.from("export EDITOR=vi\n# caf\xe9\n", "latin1");
 
@@ -156,10 +178,12 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     const rc = path.join(home, ".zshrc");
     writeFileSync(rc, ZSHRC);
     await page.goto("/");
+    await shellAnswered(page);
     await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
     const box = dialog(page);
     const tick = box.getByRole("checkbox", { name: "Turn off that alias for me" });
-    await expect(tick).toBeVisible();
+    // The shell's answer comes in the background, slower when many tests run at once.
+    await expect(tick).toBeVisible({ timeout: SHELL_WAIT });
     await expect(tick).not.toBeChecked();
     await box.getByRole("button", { name: "Install", exact: true }).click();
     await expect(box).toHaveCount(0);
@@ -177,10 +201,12 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     writeFileSync(rc, ZSHRC);
     const withLine = Buffer.concat([ZSHRC, Buffer.from(LINE)]);
     await page.goto("/");
+    await shellAnswered(page);
     await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
     const box = dialog(page);
     await expect(box.getByTestId("cli-shadowed")).toContainText(
       "Your shell already defines gg as an alias for git gui citool; that wins over this command until you remove it.",
+      { timeout: SHELL_WAIT },
     );
     await expect(box.getByTestId("cli-turn-off-note")).toHaveText(
       "Adds one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null. Removing the command in gg takes it out again. It takes effect in new terminal windows.",
@@ -237,12 +263,14 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     writeFileSync(rc, ZSHRC);
 
     await page.goto("/");
+    await shellAnswered(page);
     await page.keyboard.press("ControlOrMeta+,");
     const settings = page.getByTestId("settings");
     await expect(settings.getByTestId("settings-cli-state")).toHaveText("Installed by Homebrew at ~/bin/gg");
     await expect(settings.getByTestId("settings-cli-remove")).toHaveCount(0);
     await expect(settings.getByTestId("settings-cli-turn-off-note")).toHaveText(
       "gg can add one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null. It takes effect in new terminal windows.",
+      { timeout: SHELL_WAIT },
     );
     await settings.getByRole("button", { name: "Turn off that alias for me" }).click();
     await expect(
@@ -286,8 +314,10 @@ test.describe("with zsh and an alias made again after ~/.zshrc (a .zlogin, say)"
     const rc = path.join(home, ".zshrc");
     writeFileSync(rc, ZSHRC);
     await page.goto("/");
+    await shellAnswered(page);
     await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
     const box = dialog(page);
+    await expect(box.getByRole("checkbox", { name: "Turn off that alias for me" })).toBeVisible({ timeout: SHELL_WAIT });
     await box.getByRole("checkbox", { name: "Turn off that alias for me" }).check();
     await box.getByRole("button", { name: "Install", exact: true }).click();
     await expect(box).toHaveCount(0);

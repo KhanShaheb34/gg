@@ -13,7 +13,7 @@
   import { api } from "../ipc";
   import { isMac, isWindows } from "../platform";
   import { app, notify, setTheme } from "../state/app.svelte";
-  import { openCliDialog, removeCli, removeShellLine, turnOffShellGg } from "../state/cli.svelte";
+  import { openCliDialog, refreshCli, removeCli, removeShellLine, turnOffShellGg } from "../state/cli.svelte";
   import { showDialog } from "../state/overlays.svelte";
   import { findRepoView } from "../state/repo.svelte";
   import { brewHint, checkNow, openDownloadPage, restartToUpdate, statusLine, updates } from "../state/updates.svelte";
@@ -35,6 +35,10 @@
 
   const mac = isMac();
   const windows = isWindows();
+
+  // The command's state as it is now: a line of gg's in a shell file may have been taken out
+  // by hand, and what the shell said of `gg` may have come before the window listened.
+  onMount(() => void refreshCli());
 
   /** Turning the shell's `gg` off or back on is under way: its buttons wait. */
   let lineBusy = $state(false);

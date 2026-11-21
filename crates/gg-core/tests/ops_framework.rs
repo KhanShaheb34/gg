@@ -810,14 +810,16 @@ async fn outcome_does_not_wait_long_for_a_slow_status() {
     ignored_file_becomes_untracked(&repo);
     let h = harness().await;
     let id = h.open(repo.path()).await.repo_id;
-    h.m.set_status_delay(Duration::from_millis(3500));
+    // The wait for the status is 2 s; the status takes 6 s, so that a slow checkout (over a
+    // second on a loaded Windows runner) is still told from having waited for it.
+    h.m.set_status_delay(Duration::from_millis(6000));
 
     let asked = std::time::Instant::now();
     let out = h.run(id, checkout_branch("plain")).await;
     let took = asked.elapsed();
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert!(took >= Duration::from_secs(2), "waited {took:?}");
-    assert!(took < Duration::from_millis(3000), "waited {took:?}");
+    assert!(took < Duration::from_millis(5000), "waited {took:?}");
     assert_eq!(out.snapshot.status.untracked, 0, "not read yet");
     assert_eq!(out.snapshot.op, None);
     // It arrives later, by event.

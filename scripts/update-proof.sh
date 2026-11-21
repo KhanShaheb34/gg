@@ -306,6 +306,11 @@ done
 versions=$(grep '^native-version' "$log" | cut -f1 | sed 's/native-version //' | tr '\n' ' ')
 [ "$versions" = "$old_version $new_version " ] && pass "update: the app ran as $old_version, then, restarted, as $new_version" ||
   fail "update: the app ran as: $versions"
+# The restarted app marks its tabs once every tab of the session has reopened.
+for _ in $(seq 1 300); do
+  [ "$(grep -c '^update-tabs' "$log")" -ge 2 ] && break
+  sleep 0.2
+done
 tabs=$(grep '^update-tabs' "$log" | sed -n 2p | cut -f1)
 [ "$tabs" = "update-tabs alpha,beta active beta" ] && pass "update: state restored: $tabs" ||
   fail "update: state after the restart: '$tabs'"

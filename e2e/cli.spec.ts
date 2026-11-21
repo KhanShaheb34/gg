@@ -140,7 +140,7 @@ test.describe("with a shell that has its own gg", () => {
 });
 
 /** gg's line, as the core writes it after a file that ends with a line break. */
-const LINE = "unalias gg 2>/dev/null  # added by gg: lets the gg command run; gg Settings > Command line takes it out\n";
+const LINE = "unalias gg 2>/dev/null || :  # added by gg: lets the gg command run; gg Settings > Command line takes it out\n";
 /** How long the shell's first answer may take when many tests run at once. */
 const SHELL_WAIT = 15_000;
 
@@ -209,7 +209,7 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
       { timeout: SHELL_WAIT },
     );
     await expect(box.getByTestId("cli-turn-off-note")).toHaveText(
-      "Adds one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null. Removing the command in gg takes it out again. It takes effect in new terminal windows.",
+      "Adds one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null || :. Removing the command in gg takes it out again. It takes effect in new terminal windows.",
     );
     await box.getByRole("checkbox", { name: "Turn off that alias for me" }).check();
     await expect(box.getByTestId("cli-written")).toHaveText(
@@ -269,7 +269,7 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     await expect(settings.getByTestId("settings-cli-state")).toHaveText("Installed by Homebrew at ~/bin/gg");
     await expect(settings.getByTestId("settings-cli-remove")).toHaveCount(0);
     await expect(settings.getByTestId("settings-cli-turn-off-note")).toHaveText(
-      "gg can add one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null. It takes effect in new terminal windows.",
+      "gg can add one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null || :. It takes effect in new terminal windows.",
       { timeout: SHELL_WAIT },
     );
     await settings.getByRole("button", { name: "Turn off that alias for me" }).click();

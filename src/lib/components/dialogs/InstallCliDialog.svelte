@@ -58,7 +58,7 @@
     void run(async () => {
       const { state: after, shellLineAdded } = await installCli(target, asked);
       const wrote = short(launcherPath(target));
-      const line = shellLineAdded === null ? undefined : lineAddedNote(shellLineAdded, after.shadowedBy, short);
+      const line = shellLineAdded === null ? undefined : lineAddedNote(shellLineAdded, after, short);
       const worked = shellLineAdded === null || (shellLineAdded.problem === null && shellLineAdded.checked && after.shadowedBy === null);
       notify({
         kind: "info",

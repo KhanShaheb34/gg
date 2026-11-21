@@ -139,7 +139,7 @@ describe("the gg command's state", () => {
       persistent: false,
     });
     // Something after the line makes it again: said, and it stays until dismissed.
-    vi.mocked(ipc.api.turnOffShellGg).mockResolvedValueOnce({ ...turnedOff, shadowedBy: "an alias for git log", shellLineAdded });
+    vi.mocked(ipc.api.turnOffShellGg).mockResolvedValueOnce({ ...turnedOff, shadowedBy: "an alias for git log", shadowConflict: "alias", shellLineAdded });
     await cli.turnOffShellGg();
     expect(app.toasts.at(-1)).toMatchObject({
       kind: "info",

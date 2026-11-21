@@ -85,32 +85,40 @@ describe("turning off the shell's own gg", () => {
     checked: true,
     ...over,
   });
+  /** The shell, asked again, has no gg of its own. */
+  const none = { shadowedBy: null, shadowConflict: null };
 
   it("names what is turned off and the line that does it", () => {
     expect(conflictWord("alias")).toBe("alias");
     expect(conflictWord("function")).toBe("function");
-    expect(turnOffCommand("alias")).toBe("unalias gg 2>/dev/null");
-    expect(turnOffCommand("function")).toBe("unset -f gg 2>/dev/null");
+    expect(turnOffCommand("alias")).toBe("unalias gg 2>/dev/null || :");
+    expect(turnOffCommand("function")).toBe("unset -f gg 2>/dev/null || :");
   });
 
   it("says it worked only when the shell, asked again, has no gg of its own", () => {
-    expect(lineAddedNote(added(), null, short)).toBe(
+    expect(lineAddedNote(added(), none, short)).toBe(
       "Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. It takes effect in new terminal windows.",
     );
-    expect(lineAddedNote(added({ added: false }), null, short)).toBe(
+    expect(lineAddedNote(added({ added: false }), none, short)).toBe(
       "Your shell’s gg alias is turned off by gg’s line in ~/.zshrc. It takes effect in new terminal windows.",
     );
-    expect(lineAddedNote(added(), "an alias for git gui citool", short)).toBe(
+    expect(lineAddedNote(added(), { shadowedBy: "an alias for git gui citool", shadowConflict: "alias" }, short)).toBe(
       "Added one line to the end of ~/.zshrc, but your shell still defines gg as an alias for git gui citool: something that runs after that line defines it again.",
     );
-    expect(lineAddedNote(added({ checked: false, conflict: "function" }), null, short)).toBe(
+    expect(lineAddedNote(added({ checked: false, conflict: "function" }), none, short)).toBe(
       "Added one line to the end of ~/.zshrc to turn off your shell’s gg function, but gg could not ask your shell whether that worked. It takes effect in new terminal windows; run type gg in one to see.",
+    );
+  });
+
+  it("says the alias is off when what is left is a program, which no line turns off", () => {
+    expect(lineAddedNote(added(), { shadowedBy: "the program /opt/x/gg", shadowConflict: null }, short)).toBe(
+      "Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. But your shell still runs the program /opt/x/gg for gg, which wins over this command until you remove it.",
     );
   });
 
   it("says why the line could not be added", () => {
     const problem = "Could not add a line to ~/.zshrc: Permission denied (os error 13).";
-    expect(lineAddedNote(added({ added: false, problem }), "an alias for x", short)).toBe(
+    expect(lineAddedNote(added({ added: false, problem }), { shadowedBy: "an alias for x", shadowConflict: "alias" }, short)).toBe(
       "Did not turn off your shell’s gg alias: Could not add a line to ~/.zshrc: Permission denied (os error 13).",
     );
   });

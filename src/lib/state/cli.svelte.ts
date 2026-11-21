@@ -90,7 +90,7 @@ export async function turnOffShellGg(): Promise<void> {
     return;
   }
   const worked = added.problem === null && added.checked && app.cli.shadowedBy === null;
-  notify({ kind: added.problem === null ? "info" : "error", message: lineAddedNote(added, app.cli.shadowedBy, short), persistent: !worked });
+  notify({ kind: added.problem === null ? "info" : "error", message: lineAddedNote(added, app.cli, short), persistent: !worked });
 }
 
 /** Settings' "Take the line out": takes gg's line out of the shell's start-up files and says so. */

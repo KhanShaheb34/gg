@@ -68,21 +68,35 @@ export function conflictWord(conflict: ShellConflict): string {
 
 /** The command gg's line runs to turn the shell's `gg` off (the core writes it, with a note). */
 export function turnOffCommand(conflict: ShellConflict): string {
-  return conflict === "alias" ? "unalias gg 2>/dev/null" : "unset -f gg 2>/dev/null";
+  return conflict === "alias" ? "unalias gg 2>/dev/null || :" : "unset -f gg 2>/dev/null || :";
 }
 
 /**
  * What adding gg's line did, in a sentence or two, as the shell said after (`shadowedBy`, what
- * it still runs for `gg`): turned off; added but something after it makes `gg` again; added
- * but the shell could not be asked; or not added, and why. Paths through `short`.
+ * it still runs for `gg`, and `shadowConflict`, whether that is an alias or a function): turned
+ * off; turned off, but a program called gg still comes first; added but something after it
+ * makes `gg` again; added but the shell could not be asked; or not added, and why. Paths
+ * through `short`.
  */
-export function lineAddedNote(added: ShellLineAdded, shadowedBy: string | null, short: (path: string) => string): string {
+export function lineAddedNote(
+  added: ShellLineAdded,
+  after: Pick<CliState, "shadowedBy" | "shadowConflict">,
+  short: (path: string) => string,
+): string {
+  const { shadowedBy } = after;
   const file = short(added.file);
   const word = conflictWord(added.conflict);
   if (added.problem !== null) return `Did not turn off your shell’s gg ${word}: ${added.problem}`;
   const where = added.added ? `Added one line to the end of ${file}` : `gg’s line is already in ${file}`;
   if (!added.checked) {
     return `${where} to turn off your shell’s gg ${word}, but gg could not ask your shell whether that worked. It takes effect in new terminal windows; run type gg in one to see.`;
+  }
+  if (shadowedBy !== null && after.shadowConflict === null) {
+    // The alias is gone; what is left is no alias or function, which a line cannot turn off.
+    const done = added.added
+      ? `Turned off your shell’s gg ${word}: added one line to the end of ${file}.`
+      : `Your shell’s gg ${word} is turned off by gg’s line in ${file}.`;
+    return `${done} But your shell still runs ${shadowedBy} for gg, which wins over this command until you remove it.`;
   }
   if (shadowedBy !== null) {
     return `${where}, but your shell still defines gg as ${shadowedBy}: something that runs after that line defines it again.`;

@@ -1566,7 +1566,8 @@ async fn the_gg_command_installs_and_uninstalls() {
 /// of `root`: a POSIX sh script with a bare `PATH` and no `ZDOTDIR` of the user's that runs
 /// `before`, then each of `sourced` (start-up files of the test's home folder, read as the
 /// real shell would read them), then `after`, then the command it is given. Never the user's
-/// own shell or its files.
+/// own shell or its files. What it sources must be POSIX sh: `/bin/sh` is bash on one machine
+/// and dash on another.
 #[cfg(unix)]
 fn named_shell(root: &Path, name: &str, before: &str, sourced: &[&Path], after: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -1612,7 +1613,9 @@ async fn the_shells_alias_is_turned_off_only_when_asked_and_back_on() {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let rc = home.join(".zshrc");
-    let before: &[u8] = b"export ZSH=\"$HOME/.oh-my-zsh\"\n# caf\xe9\nsource \"$ZSH/oh-my-zsh.sh\"";
+    // POSIX only: the stand-in reads it with whatever /bin/sh is (dash stops at zsh syntax,
+    // and a POSIX sh at a missing file sourced).
+    let before: &[u8] = b"export ZSH=\"$HOME/.oh-my-zsh\"\n# caf\xe9\nexport EDITOR=vi";
     std::fs::write(&rc, before).unwrap();
     std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o600)).unwrap();
     let shell = named_shell(root.path(), "zsh", "alias gg='git gui citool'", &[&rc], "");
@@ -1822,7 +1825,8 @@ async fn the_alias_over_homebrews_command_is_turned_off_and_back_on() {
     let link = bin.join("gg");
     std::os::unix::fs::symlink(&bundled, &link).unwrap();
     let rc = home.join(".zshrc");
-    std::fs::write(&rc, "plugins=(git)\n").unwrap();
+    // POSIX only, as above.
+    std::fs::write(&rc, "export PLUGINS=git\n").unwrap();
     let shell = named_shell(
         root.path(),
         "zsh",
@@ -1851,9 +1855,101 @@ async fn the_alias_over_homebrews_command_is_turned_off_and_back_on() {
     assert_eq!(cli["shellLine"], rc.to_string_lossy().as_ref());
     let cli = h.call("remove_shell_line", json!({})).await;
     assert_eq!(cli["shellLine"], Value::Null);
-    assert_eq!(std::fs::read_to_string(&rc).unwrap(), "plugins=(git)\n");
+    assert_eq!(
+        std::fs::read_to_string(&rc).unwrap(),
+        "export PLUGINS=git\n"
+    );
     assert_eq!(cli["installed"], link.to_string_lossy().as_ref());
     assert_eq!(std::fs::read_link(&link).unwrap(), bundled);
+}
+
+/// zsh's `.zshrc` is the one read with `ZDOTDIR` as `.zshenv` and `.zprofile` leave it (a
+/// login shell that is not interactive says it), not the one `.zshrc` sets for later; and
+/// with no such answer, nothing is offered for zsh.
+#[cfg(unix)]
+#[tokio::test]
+async fn zshs_zshrc_is_the_one_read_before_it_sets_zdotdir() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let later = home.join(".config/zsh");
+    std::fs::create_dir_all(&later).unwrap();
+    let rc = home.join(".zshrc");
+    std::fs::write(&rc, "export A=1\n").unwrap();
+    // Interactive only (as from .zshrc): the alias, then ZDOTDIR for what comes later.
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        &format!(
+            "case \"$1\" in -i*) alias gg='git gui citool'; ZDOTDIR='{}';; esac",
+            later.display()
+        ),
+        &[],
+        "",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let cli = first_answer(&h).await;
+    assert_eq!(cli["turnOff"]["file"], rc.to_string_lossy().as_ref());
+
+    // A zsh that answers what gg is, but not as a login shell: nothing offered.
+    let h = harness().await;
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        "case \"$1\" in -lc) exit 1;; esac\nalias gg='git gui citool'",
+        &[],
+        "",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let cli = first_answer(&h).await;
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+    assert_eq!(cli["turnOff"], Value::Null);
+    let err = h.fail("turn_off_shell_gg", json!({})).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert_eq!(std::fs::read_to_string(&rc).unwrap(), "export A=1\n");
+}
+
+/// A line of gg's in `ZDOTDIR`'s `.zshrc`, with no `gg` of the shell's left to say: the
+/// shell's answer is still announced, so a window that read the state before it shows the
+/// line.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_line_in_zdotdir_is_announced_when_the_shell_says_where_that_is() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let zdot = home.join(".config/zsh");
+    std::fs::create_dir_all(&zdot).unwrap();
+    let rc = zdot.join(".zshrc");
+    let line = gg_core::shell_line::line(gg_core::shell_line::Conflict::Alias, false);
+    std::fs::write(&rc, format!("{line}\n")).unwrap();
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        &format!("ZDOTDIR='{}'", zdot.display()),
+        &[],
+        "",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let announced = h
+        .sink
+        .wait_for(TIMEOUT, |name, _| name == "cli-changed")
+        .await;
+    let state = announced.map(|(_, v)| v).expect("announced");
+    assert_eq!(state["shadowedBy"], Value::Null);
+    assert_eq!(state["shellLine"], rc.to_string_lossy().as_ref());
 }
 
 /// Without a login shell to ask, nothing is said to shadow the command.

@@ -535,35 +535,45 @@ pub(crate) struct Shadow {
     pub(crate) conflict: Option<Conflict>,
 }
 
-/// The login shell's answer: what `gg` is to it, and its `ZDOTDIR` (where zsh reads
-/// `.zshrc` from; usually set in `~/.zshenv`, so only the shell itself knows it).
+/// The login shell's answer: what `gg` is to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Answer {
     shadow: Option<Shadow>,
-    zdotdir: Option<PathBuf>,
 }
 
-/// Asks the login shell `shell` (see [`shadowed_by`]); `None` when it does not answer.
+/// Asks the login shell `shell` (see [`shadowed_by`]); `None` when it does not answer. A
+/// `gg` it does not know is an answer too, also where its start-up files turn on `errexit`
+/// (`|| :`: the closing marker is printed all the same).
 fn ask_shell(shell: &Path, timeout: Duration) -> Option<Answer> {
     #[cfg(unix)]
     {
-        use std::os::unix::ffi::OsStrExt;
-        let script = "printf '\\n__GG_WHICH__'; command -V gg; printf '__GG_WHICH__%s__GG_WHICH__' \"${ZDOTDIR-}\"";
+        let script = "printf '\\n__GG_WHICH__'; command -V gg || :; printf '__GG_WHICH__'";
         let out = crate::git::runner::shell_output(shell, &["-ilc", script], timeout)?;
         let answer = crate::git::runner::between_markers(&out, WHICH_MARKER)?;
-        // What follows the answer's closing marker, up to the next one.
-        let rest = &out[out
-            .windows(WHICH_MARKER.len())
-            .position(|w| w == WHICH_MARKER)?
-            + WHICH_MARKER.len()
-            + answer.len()..];
-        let zdotdir = crate::git::runner::between_markers(rest, WHICH_MARKER)
-            .filter(|z| !z.is_empty())
-            .map(|z| PathBuf::from(OsStr::from_bytes(z)));
         Some(Answer {
             shadow: describe(&String::from_utf8_lossy(answer)),
-            zdotdir,
         })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (shell, timeout);
+        None
+    }
+}
+
+/// zsh's `ZDOTDIR` as it is when zsh picks the `.zshrc` to read: after `.zshenv` and
+/// `.zprofile`, before `.zshrc` (which may set it for what comes later). Asked of a login
+/// shell that is not interactive, which reads those two and not `.zshrc` (and `.zlogin`
+/// after, which rarely touches it). `Some(None)`: not set (the home folder's `.zshrc`);
+/// `None`: the shell did not answer (nothing is offered then).
+fn ask_zdotdir(shell: &Path, timeout: Duration) -> Option<Option<PathBuf>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let script = "printf '__GG_WHICH__%s__GG_WHICH__' \"${ZDOTDIR-}\"";
+        let out = crate::git::runner::shell_output(shell, &["-lc", script], timeout)?;
+        let zdotdir = crate::git::runner::between_markers(&out, WHICH_MARKER)?;
+        Some((!zdotdir.is_empty()).then(|| PathBuf::from(OsStr::from_bytes(zdotdir))))
     }
     #[cfg(not(unix))]
     {
@@ -661,8 +671,9 @@ pub(crate) struct CliContext {
     checked: u64,
     /// Whether that answer is an alias or a function (one a line can turn off).
     conflict: Option<Conflict>,
-    /// The login shell's `ZDOTDIR`, as it last said it.
-    zdotdir: Option<PathBuf>,
+    /// zsh's `ZDOTDIR` when it reads `.zshrc`, as the shell last said it (see
+    /// [`ask_zdotdir`]); `None` while not known.
+    zdotdir: Option<Option<PathBuf>>,
     /// Checks started so far.
     checks: u64,
 }
@@ -698,13 +709,17 @@ impl CliContext {
         }
         let shell = self.shell.as_deref()?;
         let home = self.home.clone()?;
-        Some((Shell::of(shell), home, self.zdotdir.clone()))
+        Some((Shell::of(shell), home, self.zdotdir.clone().flatten()))
     }
 
     /// What a line could turn off, and where it would go (see [`CliState::turn_off`]).
     fn turn_off(&self) -> Option<(Conflict, PathBuf, Shell)> {
         let (shell, home, zdotdir) = self.shell_files()?;
         let shell = shell?;
+        // zsh's .zshrc is only known with the ZDOTDIR it is read with.
+        if shell == Shell::Zsh && self.zdotdir.is_none() {
+            return None;
+        }
         self.shadowed_by.as_ref()?;
         let conflict = self.conflict?;
         let file =
@@ -782,19 +797,20 @@ impl Core {
                     what,
                     conflict: None,
                 }),
-                zdotdir: None,
             })
         } else {
-            let Some(shell) = shell else {
+            let Some(shell) = shell.as_deref() else {
                 return false;
             };
-            ask_shell(&shell, SHELL_TIMEOUT)
+            ask_shell(shell, SHELL_TIMEOUT)
         };
         let answered = answer.is_some();
-        let (shadow, zdotdir) = match answer {
-            Some(a) => (a.shadow, Some(a.zdotdir)),
-            None => (None, None),
-        };
+        // zsh's: where its .zshrc is read from, asked only of a zsh that answered.
+        let zdotdir = shell
+            .as_deref()
+            .filter(|s| answered && !cfg!(windows) && Shell::of(s) == Some(Shell::Zsh))
+            .and_then(|s| ask_zdotdir(s, SHELL_TIMEOUT));
+        let shadow = answer.and_then(|a| a.shadow);
         let changed = {
             let mut cli = crate::lock_ignoring_poison(&self.cli);
             let newest = number > cli.checked;
@@ -802,15 +818,15 @@ impl Core {
                 Some(s) => (Some(s.what), s.conflict),
                 None => (None, None),
             };
-            let changed = newest && (cli.shadowed_by != what || cli.conflict != conflict);
+            // A shell that did not say leaves the last ZDOTDIR known.
+            let zdotdir = zdotdir.or_else(|| cli.zdotdir.clone());
+            let changed = newest
+                && (cli.shadowed_by != what || cli.conflict != conflict || cli.zdotdir != zdotdir);
             if newest {
                 cli.checked = number;
                 cli.shadowed_by = what;
                 cli.conflict = conflict;
-                // A shell that did not answer leaves the last ZDOTDIR known.
-                if let Some(z) = zdotdir {
-                    cli.zdotdir = z;
-                }
+                cli.zdotdir = zdotdir;
             }
             changed
         };
@@ -1729,31 +1745,48 @@ mod tests {
         fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// The shell says its `ZDOTDIR` with its answer (set in `~/.zshenv`, the app's own
-    /// environment does not have it), and nothing when it has none.
+    /// zsh's `ZDOTDIR` is the one a login shell that is not interactive has (after
+    /// `.zshenv` and `.zprofile`, which is what picks `.zshrc`), not the one `.zshrc` may set
+    /// for later; nothing when it has none, and no answer from a shell that fails.
     #[cfg(unix)]
     #[test]
-    fn the_shell_says_its_zdotdir_with_its_answer() {
+    fn zshs_zdotdir_is_the_one_zshrc_is_read_with() {
         let dir = tempfile::tempdir().unwrap();
         let zdot = dir.path().join("zsh config");
+        // As .zshenv sets it for all, and .zshrc (interactive only) sets another.
         let shell = fake_shell(
             dir.path(),
             &format!(
-                "PATH=/usr/bin:/bin\nZDOTDIR='{}'\necho noise\nalias gg=x",
+                "PATH=/usr/bin:/bin\nZDOTDIR='{}'\necho noise\ncase \"$1\" in -i*) ZDOTDIR=/later; alias gg=x;; esac",
                 zdot.display()
             ),
         );
+        assert_eq!(ask_zdotdir(&shell, SHELL_TIMEOUT), Some(Some(zdot)));
         let answer = ask_shell(&shell, SHELL_TIMEOUT).unwrap();
-        assert_eq!(answer.zdotdir, Some(zdot));
         assert_eq!(answer.shadow.unwrap().conflict, Some(Conflict::Alias));
         let shell = fake_shell(dir.path(), "PATH=/usr/bin:/bin");
+        assert_eq!(ask_zdotdir(&shell, SHELL_TIMEOUT), Some(None));
         assert_eq!(
             ask_shell(&shell, SHELL_TIMEOUT).unwrap(),
-            Answer {
-                shadow: None,
-                zdotdir: None
-            }
+            Answer { shadow: None }
         );
+        let failing = fake_shell(dir.path(), "exit 3");
+        assert_eq!(ask_zdotdir(&failing, SHELL_TIMEOUT), None);
+    }
+
+    /// A shell whose start-up files turn on `errexit` still answers when it has no `gg`:
+    /// that is an answer (the edit worked), not a shell that could not be asked.
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_that_exits_on_errors_still_answers_that_it_has_no_gg() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = fake_shell(dir.path(), "PATH=/usr/bin:/bin\nset -e");
+        assert_eq!(
+            ask_shell(&shell, SHELL_TIMEOUT),
+            Some(Answer { shadow: None })
+        );
+        let shell = fake_shell(dir.path(), "PATH=/usr/bin:/bin\nset -e\nalias gg=x");
+        assert!(ask_shell(&shell, SHELL_TIMEOUT).unwrap().shadow.is_some());
     }
 
     #[cfg(unix)]

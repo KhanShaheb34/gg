@@ -1491,7 +1491,11 @@ async fn the_gg_command_installs_and_uninstalls() {
         std::fs::create_dir_all(dir).unwrap();
     }
     let shell = root.path().join("fake-shell");
-    std::fs::write(&shell, "#!/bin/sh\nalias gg='git log'\neval \"$2\"\n").unwrap();
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\nunset ZDOTDIR\nalias gg='git log'\neval \"$2\"\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
     h.core.start_cli(gg_core::cli::CliSetup {
         shell: Some(shell),
@@ -1509,11 +1513,15 @@ async fn the_gg_command_installs_and_uninstalls() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
     let s = |p: &Path| p.to_string_lossy().into_owned();
+    // A shell that is neither zsh nor bash: nothing is offered to turn the alias off.
     let expected = json!({
         "installed": null,
         "link": null,
         "shadowedBy": "an alias for git log",
         "candidates": [s(&local), s(&bin)],
+        "shadowConflict": "alias",
+        "turnOff": null,
+        "shellLine": null,
     });
     assert_eq!(cli, expected);
     // Announced too, for a UI that read the state before the answer came.
@@ -1531,6 +1539,7 @@ async fn the_gg_command_installs_and_uninstalls() {
     let cli = h.call("install_cli", json!({ "dir": bin })).await;
     assert_eq!(cli["installed"], s(&bin.join("gg")));
     assert_eq!(cli["shadowedBy"], "an alias for git log");
+    assert_eq!(cli["shellLineAdded"], Value::Null);
     assert!(gg_core::cli::has_marker(&bin.join("gg")));
     assert_eq!(
         h.call("get_app_state", json!({})).await["cli"]["installed"],
@@ -1540,6 +1549,8 @@ async fn the_gg_command_installs_and_uninstalls() {
     let cli = h.call("uninstall_cli", json!({})).await;
     assert_eq!(cli["installed"], Value::Null);
     assert_eq!(cli["removed"], json!([s(&bin.join("gg"))]));
+    assert_eq!(cli["lineRemovedFrom"], json!([]));
+    assert_eq!(cli["lineProblem"], Value::Null);
     assert!(!bin.join("gg").exists());
     // Again: nothing to remove, and it says so.
     let cli = h.call("uninstall_cli", json!({})).await;
@@ -1549,6 +1560,396 @@ async fn the_gg_command_installs_and_uninstalls() {
     assert_eq!(err.code, ErrorCode::BadRequest);
     let err = h.fail("install_cli", json!({})).await;
     assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
+/// A stand-in login shell named `name` (`zsh`, `bash`: the name says which it is) in a folder
+/// of `root`: a POSIX sh script with a bare `PATH` and no `ZDOTDIR` of the user's that runs
+/// `before`, then each of `sourced` (start-up files of the test's home folder, read as the
+/// real shell would read them), then `after`, then the command it is given. Never the user's
+/// own shell or its files. What it sources must be POSIX sh: `/bin/sh` is bash on one machine
+/// and dash on another.
+#[cfg(unix)]
+fn named_shell(root: &Path, name: &str, before: &str, sourced: &[&Path], after: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = root.join("shell");
+    std::fs::create_dir_all(&dir).unwrap();
+    let shell = dir.join(name);
+    let mut script = format!("#!/bin/sh\nunset ZDOTDIR\nPATH=/usr/bin:/bin\n{before}\n");
+    for file in sourced {
+        let f = file.display();
+        script.push_str(&format!("if [ -f '{f}' ]; then . '{f}'; fi\n"));
+    }
+    script.push_str(&format!("{after}\neval \"$2\"\n"));
+    std::fs::write(&shell, script).unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    shell
+}
+
+/// Waits for the shell's first answer: the command's state once `shadowedBy` is known.
+#[cfg(unix)]
+async fn first_answer(h: &Harness) -> Value {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let cli = h.call("get_app_state", json!({})).await["cli"].clone();
+        if !cli["shadowedBy"].is_null() || std::time::Instant::now() > deadline {
+            return cli;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The line gg adds to turn off the shell's alias, only when asked: with the install
+/// (`turnOff`), in Settings (`turn_off_shell_gg`), and taken out with the command
+/// (`uninstall_cli`) or in Settings (`remove_shell_line`), the file byte for byte as it was,
+/// its permissions kept. The shell is asked again each time, and says the alias is gone.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_shells_alias_is_turned_off_only_when_asked_and_back_on() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let rc = home.join(".zshrc");
+    // POSIX only: the stand-in reads it with whatever /bin/sh is (dash stops at zsh syntax,
+    // and a POSIX sh at a missing file sourced).
+    let before: &[u8] = b"export ZSH=\"$HOME/.oh-my-zsh\"\n# caf\xe9\nexport EDITOR=vi";
+    std::fs::write(&rc, before).unwrap();
+    std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let shell = named_shell(root.path(), "zsh", "alias gg='git gui citool'", &[&rc], "");
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(bin.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let s = |p: &Path| p.to_string_lossy().into_owned();
+    let mode = || std::fs::metadata(&rc).unwrap().permissions().mode() & 0o777;
+
+    let cli = first_answer(&h).await;
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+    assert_eq!(
+        cli["turnOff"],
+        json!({ "conflict": "alias", "file": s(&rc) })
+    );
+    assert_eq!(cli["shellLine"], Value::Null);
+
+    // Installed without the box ticked: the file is not touched.
+    let cli = h.call("install_cli", json!({ "dir": bin })).await;
+    assert_eq!(cli["shellLineAdded"], Value::Null);
+    assert_eq!(std::fs::read(&rc).unwrap(), before);
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+
+    // Ticked: one line at the end, and the shell, asked again, has no gg of its own.
+    let cli = h
+        .call("install_cli", json!({ "dir": bin, "turnOff": true }))
+        .await;
+    assert_eq!(
+        cli["shellLineAdded"],
+        json!({ "file": s(&rc), "conflict": "alias", "added": true, "problem": null, "checked": true })
+    );
+    let line = gg_core::shell_line::line(gg_core::shell_line::Conflict::Alias, true);
+    let mut with_line = before.to_vec();
+    with_line.extend_from_slice(format!("\n{line}\n").as_bytes());
+    assert_eq!(std::fs::read(&rc).unwrap(), with_line);
+    assert_eq!(mode(), 0o600);
+    assert_eq!(cli["shadowedBy"], Value::Null);
+    assert_eq!(cli["shadowConflict"], Value::Null);
+    assert_eq!(cli["turnOff"], Value::Null);
+    assert_eq!(cli["shellLine"], s(&rc));
+    assert_eq!(cli["installed"], s(&bin.join("gg")));
+    // Ticked again: nothing more to turn off, nothing written.
+    let cli = h
+        .call("install_cli", json!({ "dir": bin, "turnOff": true }))
+        .await;
+    assert_eq!(cli["shellLineAdded"], Value::Null);
+    assert_eq!(std::fs::read(&rc).unwrap(), with_line);
+
+    // Removing the command takes the line out: the file as it was, the alias back.
+    let cli = h.call("uninstall_cli", json!({})).await;
+    assert_eq!(cli["removed"], json!([s(&bin.join("gg"))]));
+    assert_eq!(cli["lineRemovedFrom"], json!([s(&rc)]));
+    assert_eq!(cli["lineProblem"], Value::Null);
+    assert_eq!(std::fs::read(&rc).unwrap(), before);
+    assert_eq!(mode(), 0o600);
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+    assert_eq!(cli["shellLine"], Value::Null);
+
+    // Settings: turned off and back on, the command not installed meanwhile.
+    let cli = h.call("turn_off_shell_gg", json!({})).await;
+    assert_eq!(cli["shellLineAdded"]["added"], true);
+    assert_eq!(cli["shellLineAdded"]["checked"], true);
+    assert_eq!(cli["shadowedBy"], Value::Null);
+    assert_eq!(cli["shellLine"], s(&rc));
+    let cli = h.call("remove_shell_line", json!({})).await;
+    assert_eq!(cli["lineRemovedFrom"], json!([s(&rc)]));
+    assert_eq!(cli["lineProblem"], Value::Null);
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+    assert_eq!(std::fs::read(&rc).unwrap(), before);
+    // Nothing left to take out: fine, nothing said.
+    let cli = h.call("remove_shell_line", json!({})).await;
+    assert_eq!(cli["lineRemovedFrom"], json!([]));
+    assert_eq!(cli["lineProblem"], Value::Null);
+    assert_eq!(std::fs::read(&rc).unwrap(), before);
+
+    // A file gg may not write: the command is installed all the same, the file untouched,
+    // and why is said.
+    std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let cli = h
+        .call("install_cli", json!({ "dir": bin, "turnOff": true }))
+        .await;
+    assert_eq!(cli["installed"], s(&bin.join("gg")));
+    let added = &cli["shellLineAdded"];
+    assert_eq!(added["added"], false);
+    let problem = added["problem"].as_str().unwrap();
+    assert!(
+        problem.starts_with("Could not add a line to ~/.zshrc: "),
+        "{problem}"
+    );
+    assert_eq!(std::fs::read(&rc).unwrap(), before);
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+    std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let err = h.fail("turn_off_shell_gg", json!({ "file": s(&rc) })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let err = h.fail("remove_shell_line", json!({ "file": s(&rc) })).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert_eq!(std::fs::read(&rc).unwrap(), before);
+}
+
+/// When something after the line makes the alias again, the shell asked again still has it:
+/// that is what gg reports, not that it worked.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_line_that_does_not_turn_the_alias_off_is_reported_as_such() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let rc = home.join(".zshrc");
+    // Like a .zlogin, read after .zshrc: the alias comes back.
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        "alias gg='git gui citool'",
+        &[&rc],
+        "alias gg='git gui citool'",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    assert_eq!(first_answer(&h).await["turnOff"]["conflict"], "alias");
+    // No .zshrc yet: zsh's is made, holding the line only.
+    let cli = h.call("turn_off_shell_gg", json!({})).await;
+    let line = gg_core::shell_line::line(gg_core::shell_line::Conflict::Alias, false);
+    assert_eq!(std::fs::read_to_string(&rc).unwrap(), format!("{line}\n"));
+    assert_eq!(cli["shellLineAdded"]["added"], true);
+    assert_eq!(cli["shellLineAdded"]["checked"], true);
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+    assert_eq!(cli["shellLine"], rc.to_string_lossy().as_ref());
+    // Not offered again: the line is there.
+    assert_eq!(cli["turnOff"], Value::Null);
+}
+
+/// bash: a function, turned off in the file bash reads (macOS: the first login file;
+/// elsewhere `.bashrc`); never a bash file that does not exist.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_bash_function_is_turned_off_in_the_file_bash_reads() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let file = if cfg!(target_os = "macos") {
+        home.join(".bash_profile")
+    } else {
+        home.join(".bashrc")
+    };
+    let shell = named_shell(root.path(), "bash", "gg() { :; }", &[&file], "");
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let cli = first_answer(&h).await;
+    assert!(
+        cli["shadowedBy"].as_str().unwrap().contains("function"),
+        "{cli}"
+    );
+    // No such file: nothing offered, and nothing made when asked.
+    assert_eq!(cli["turnOff"], Value::Null);
+    let err = h.fail("turn_off_shell_gg", json!({})).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(std::fs::read_dir(&home).unwrap().next().is_none());
+
+    std::fs::write(&file, "export A=1\n").unwrap();
+    let cli = h.call("get_app_state", json!({})).await["cli"].clone();
+    assert_eq!(
+        cli["turnOff"],
+        json!({ "conflict": "function", "file": file.to_string_lossy() })
+    );
+    let cli = h.call("turn_off_shell_gg", json!({})).await;
+    let line = gg_core::shell_line::line(gg_core::shell_line::Conflict::Function, false);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("export A=1\n{line}\n")
+    );
+    assert_eq!(cli["shadowedBy"], Value::Null);
+    let cli = h.call("remove_shell_line", json!({})).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "export A=1\n");
+    assert!(cli["shadowedBy"].as_str().unwrap().contains("function"));
+}
+
+/// Homebrew's command, and the shell's alias over it: Settings turns the alias off and takes
+/// the line out again (gg cannot remove Homebrew's command, which stays as it is).
+#[cfg(unix)]
+#[tokio::test]
+async fn the_alias_over_homebrews_command_is_turned_off_and_back_on() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let prefix = root.path().join("homebrew");
+    let bin = prefix.join("bin");
+    let resources = root.path().join("Applications/gg.app/Contents/Resources");
+    for dir in [&home, &bin, &prefix.join("Caskroom/gg"), &resources] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let bundled = resources.join("gg");
+    std::fs::write(&bundled, gg_core::cli::launcher_script("0.3.1", None)).unwrap();
+    std::fs::set_permissions(&bundled, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = bin.join("gg");
+    std::os::unix::fs::symlink(&bundled, &link).unwrap();
+    let rc = home.join(".zshrc");
+    // POSIX only, as above.
+    std::fs::write(&rc, "export PLUGINS=git\n").unwrap();
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        &format!(
+            "PATH='{}':/usr/bin:/bin\nalias gg='git gui citool'",
+            bin.display()
+        ),
+        &[&rc],
+        "",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(bin.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let cli = first_answer(&h).await;
+    assert_eq!(cli["link"], "homebrew");
+    assert_eq!(cli["turnOff"]["file"], rc.to_string_lossy().as_ref());
+
+    let cli = h.call("turn_off_shell_gg", json!({})).await;
+    assert_eq!(
+        cli["shadowedBy"],
+        Value::Null,
+        "Homebrew's link is gg's own"
+    );
+    assert_eq!(cli["shellLine"], rc.to_string_lossy().as_ref());
+    let cli = h.call("remove_shell_line", json!({})).await;
+    assert_eq!(cli["shellLine"], Value::Null);
+    assert_eq!(
+        std::fs::read_to_string(&rc).unwrap(),
+        "export PLUGINS=git\n"
+    );
+    assert_eq!(cli["installed"], link.to_string_lossy().as_ref());
+    assert_eq!(std::fs::read_link(&link).unwrap(), bundled);
+}
+
+/// zsh's `.zshrc` is the one read with `ZDOTDIR` as `.zshenv` and `.zprofile` leave it (a
+/// login shell that is not interactive says it), not the one `.zshrc` sets for later; and
+/// with no such answer, nothing is offered for zsh.
+#[cfg(unix)]
+#[tokio::test]
+async fn zshs_zshrc_is_the_one_read_before_it_sets_zdotdir() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let later = home.join(".config/zsh");
+    std::fs::create_dir_all(&later).unwrap();
+    let rc = home.join(".zshrc");
+    std::fs::write(&rc, "export A=1\n").unwrap();
+    // Interactive only (as from .zshrc): the alias, then ZDOTDIR for what comes later.
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        &format!(
+            "case \"$1\" in -i*) alias gg='git gui citool'; ZDOTDIR='{}';; esac",
+            later.display()
+        ),
+        &[],
+        "",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let cli = first_answer(&h).await;
+    assert_eq!(cli["turnOff"]["file"], rc.to_string_lossy().as_ref());
+
+    // A zsh that answers what gg is, but not as a login shell: nothing offered.
+    let h = harness().await;
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        "case \"$1\" in -lc) exit 1;; esac\nalias gg='git gui citool'",
+        &[],
+        "",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let cli = first_answer(&h).await;
+    assert_eq!(cli["shadowedBy"], "an alias for git gui citool");
+    assert_eq!(cli["turnOff"], Value::Null);
+    let err = h.fail("turn_off_shell_gg", json!({})).await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert_eq!(std::fs::read_to_string(&rc).unwrap(), "export A=1\n");
+}
+
+/// A line of gg's in `ZDOTDIR`'s `.zshrc`, with no `gg` of the shell's left to say: the
+/// shell's answer is still announced, so a window that read the state before it shows the
+/// line.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_line_in_zdotdir_is_announced_when_the_shell_says_where_that_is() {
+    let h = harness().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let zdot = home.join(".config/zsh");
+    std::fs::create_dir_all(&zdot).unwrap();
+    let rc = zdot.join(".zshrc");
+    let line = gg_core::shell_line::line(gg_core::shell_line::Conflict::Alias, false);
+    std::fs::write(&rc, format!("{line}\n")).unwrap();
+    let shell = named_shell(
+        root.path(),
+        "zsh",
+        &format!("ZDOTDIR='{}'", zdot.display()),
+        &[],
+        "",
+    );
+    h.core.start_cli(gg_core::cli::CliSetup {
+        shell: Some(shell),
+        search_path: Some(home.as_os_str().to_owned()),
+        home: Some(home.clone()),
+    });
+    let announced = h
+        .sink
+        .wait_for(TIMEOUT, |name, _| name == "cli-changed")
+        .await;
+    let state = announced.map(|(_, v)| v).expect("announced");
+    assert_eq!(state["shadowedBy"], Value::Null);
+    assert_eq!(state["shellLine"], rc.to_string_lossy().as_ref());
 }
 
 /// Without a login shell to ask, nothing is said to shadow the command.
@@ -1564,7 +1965,8 @@ async fn the_gg_command_without_a_shell_check() {
     let cli = h.call("get_app_state", json!({})).await["cli"].clone();
     assert_eq!(
         cli,
-        json!({ "installed": null, "link": null, "shadowedBy": null, "candidates": [] })
+        json!({ "installed": null, "link": null, "shadowedBy": null, "candidates": [],
+                "shadowConflict": null, "turnOff": null, "shellLine": null })
     );
 }
 
@@ -1593,7 +1995,7 @@ async fn the_gg_command_linked_by_homebrew() {
     let link = bin.join("gg");
     std::os::unix::fs::symlink(&bundled, &link).unwrap();
     let shell = root.path().join("fake-shell");
-    let setup = format!("PATH='{}':/usr/bin:/bin", bin.display());
+    let setup = format!("unset ZDOTDIR\nPATH='{}':/usr/bin:/bin", bin.display());
     std::fs::write(&shell, format!("#!/bin/sh\n{setup}\neval \"$2\"\n")).unwrap();
     std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
     h.core.start_cli(gg_core::cli::CliSetup {
@@ -1608,6 +2010,9 @@ async fn the_gg_command_linked_by_homebrew() {
         "link": "homebrew",
         "shadowedBy": null,
         "candidates": [s(&bin)],
+        "shadowConflict": null,
+        "turnOff": null,
+        "shellLine": null,
     });
     assert_eq!(h.call("get_app_state", json!({})).await["cli"], expected);
 

@@ -201,7 +201,8 @@ To install the command, choose **gg → Install ‘gg’ Command…** on macOS o
 **Settings → Command line**). Pick one of the offered folders: they are already on your login shell's
 `PATH`, writable by you and not inside a repository (`~/.local/bin`, `/opt/homebrew/bin` and
 `/usr/local/bin` first). The app writes one small script there, named `gg`, and changes
-nothing else: no administrator rights, no edits to your shell files. It never replaces a
+nothing else: no administrator rights, and no edits to your shell files unless you ask for
+the one line described below. It never replaces a
 `gg` it did not write, and the same dialog removes the one it did. If no folder is offered,
 add one such as `~/.local/bin` to your `PATH` in your shell's profile and open the dialog
 again.
@@ -220,6 +221,42 @@ wins until you remove it or rename it. Past an alias or a function, `command gg`
 this command anyway. The dialog learns this by asking your login shell (zsh, bash or a
 POSIX sh); with fish it cannot tell, so no warning is shown there: run `type gg` in fish to
 check.
+
+When that `gg` is an alias or a function and your shell is zsh or bash, gg can turn it off
+for you, but only if you ask: tick **Turn off that alias for me** in the dialog (it starts
+unticked), or choose the same in **Settings → Command line**, which offers it also when
+Homebrew installed the command. gg then adds one line to the end of your shell's start-up
+file, where it runs after whatever made the alias:
+
+```sh
+unalias gg 2>/dev/null || :  # added by gg: lets the gg command run; gg Settings > Command line takes it out
+```
+
+(`unset -f gg 2>/dev/null || :` for a function.) `|| :` keeps a start-up file that sets
+`set -e` going once the alias has gone. The file is `.zshrc` in `$ZDOTDIR` as your
+`.zshenv` and `.zprofile` set it (gg asks a login zsh; a `ZDOTDIR` that `.zshrc` itself
+sets for later does not count), else `~/.zshrc`, made if there is none; if zsh does not
+say, nothing is offered. For bash it is the file a new terminal's bash reads: on macOS,
+where terminals start login shells, the first of `~/.bash_profile`, `~/.bash_login` and
+`~/.profile` that exists and can be read; on Linux, where they do not, `~/.bashrc`. gg never
+makes a bash start-up file: with none, nothing is offered. Only a plain file is read or
+written (a FIFO or device in its place is left alone). Nothing else in the file changes: the
+line is appended (through a symbolic link, to the file it leads to, which keeps its
+permissions, owner and ACLs), never added twice, and follows the file's line ends; a file
+that did not end with a line break gets one before the line, and that line says so. If the
+file changes while gg is adding the line, nothing is written. gg then asks your shell again:
+if something that runs later (a `.zlogin`, say) still makes `gg`, gg says so rather than that
+it worked. It takes effect in new terminal windows.
+
+gg takes the line out when you remove the command in gg, or when you choose **Take the line
+out** in Settings (the way back when Homebrew installed the command). Only that exact line
+goes, with the line break gg added before it, if any: the file is shortened in place and is
+left as it was before gg touched it (a `~/.zshrc` gg made is left empty, not deleted). If
+you have added lines of your own after it since, gg does not rewrite the file: it leaves it
+as it is and tells you which line to delete. If the file changes while gg is taking the line
+out, it is left as it is. If you have changed the line, it is yours: gg leaves it alone, says
+so, and adds no other. With fish or another shell, or
+when the other `gg` is a program, nothing is offered.
 
 Two `gg` commands run within the same instant while the app is not running yet can each
 start a window of their own; once the app runs, every `gg` goes to it.

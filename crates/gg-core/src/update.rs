@@ -477,11 +477,13 @@ impl Updates {
     }
 
     /// Whether an automatic check should run now: by the wall clock, its time has come, or
-    /// it is further off than any interval sets it (the clock was set back since).
+    /// it is further off than any interval sets it, by more than an hour (the clock was set
+    /// back since; a small correction is not that).
     fn due(&self) -> bool {
         let state = self.lock();
         let now = (self.clock)();
-        let longest = self.timing.every.max(self.timing.retry).as_millis() as u64;
+        let longest = (self.timing.every.max(self.timing.retry) + Duration::from_secs(3600))
+            .as_millis() as u64;
         state.enabled
             && !state.busy
             && state
@@ -1508,8 +1510,11 @@ mod tests {
             updates.due(),
             "a check due more than a day ahead is due now"
         );
-        // Within the interval, as usual, not yet.
+        // A small correction back (the clock synced) does not make it due.
         updates.check(true).await;
+        now.fetch_sub(10 * 60 * 1000, Ordering::SeqCst);
+        assert!(!updates.due());
+        // Within the interval, as usual, not yet.
         now.fetch_add(23 * 3600 * 1000, Ordering::SeqCst);
         assert!(!updates.due());
     }

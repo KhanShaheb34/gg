@@ -1,6 +1,10 @@
 //! `gg-release`: the release's updater files, checked before the draft release is made.
 //!
 //! ```text
+//! gg-release sign --version <v> <file>...
+//!     Signs each <file> into <file>.sig for version <v>, as `tauri signer sign --app-version`
+//!     does, with the key in TAURI_SIGNING_PRIVATE_KEY (as `tauri signer generate` wrote it)
+//!     and its password in TAURI_SIGNING_PRIVATE_KEY_PASSWORD. Without them it signs nothing.
 //! gg-release verify --config <tauri.conf.json> --version <v> <file>...
 //!     Each <file>'s signature (<file>.sig) verifies with the config's public key and was
 //!     made for version <v>.
@@ -19,9 +23,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use gg_release::{check_manifest, manifest, pubkey_from_config, verify};
+use gg_release::{check_manifest, manifest, pubkey_from_config, sign, verify};
 
-const USAGE: &str = "usage: gg-release verify --config <tauri.conf.json> --version <v> <file>...
+const USAGE: &str = "usage: gg-release sign --version <v> <file>...
+       gg-release verify --config <tauri.conf.json> --version <v> <file>...
        gg-release manifest --version <v> --tag <tag> --pub-date <rfc3339> --notes <text> --dir <dir> --out <file>
        gg-release check-manifest --config <tauri.conf.json> --version <v> --tag <tag> --dir <dir> <latest.json> <uploaded>...";
 
@@ -62,6 +67,44 @@ fn run(args: &[String]) -> Result<Vec<String>, String> {
     };
     let pubkey = || pubkey_from_config(&read_text(Path::new(&opt("config")?))?);
     match command.as_str() {
+        "sign" => {
+            let version = opt("version")?;
+            if rest.is_empty() {
+                return Err("no file to sign".into());
+            }
+            // The key and password are read here and never printed.
+            let key = std::env::var("TAURI_SIGNING_PRIVATE_KEY").unwrap_or_default();
+            if key.trim().is_empty() {
+                return Err("TAURI_SIGNING_PRIVATE_KEY is not set: nothing is signed (the release needs the repository secrets TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD)".into());
+            }
+            let Ok(password) = std::env::var("TAURI_SIGNING_PRIVATE_KEY_PASSWORD") else {
+                return Err(
+                    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not set: nothing is signed".into(),
+                );
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_secs();
+            // Every file is signed before any .sig is written: a failure leaves none.
+            let mut signed = Vec::new();
+            for file in &rest {
+                let path = PathBuf::from(file);
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| format!("{file} has no file name"))?
+                    .to_owned();
+                let sig = sign(&key, &password, &read(&path)?, &name, &version, now)
+                    .map_err(|e| format!("{file}: {e}"))?;
+                signed.push((format!("{file}.sig"), sig));
+            }
+            for (out, sig) in signed {
+                std::fs::write(&out, sig).map_err(|e| format!("{out}: {e}"))?;
+                println!("signed {out} (version {version})");
+            }
+            Ok(Vec::new())
+        }
         "verify" => {
             let (key, version) = (pubkey()?, opt("version")?);
             if rest.is_empty() {

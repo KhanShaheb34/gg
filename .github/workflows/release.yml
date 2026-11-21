@@ -2,14 +2,18 @@
 # them, each with its sha256, on a DRAFT GitHub release: the macOS universal disk image,
 # the Linux AppImage and .deb, the Windows installer. Publishing the draft is done by hand.
 #
-# gg updates itself from these releases: each build job also signs its platform's update
-# (the macOS universal .app.tar.gz made from the final signed app, the AppImage, the Windows
-# installer) with the release key, in a step of its own that alone sees the secrets
-# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD (without them the release
-# fails there); the updates job checks every signature against the public key in the app's
-# config, writes the updater's manifest, latest.json, and checks that it names this version
-# and only this tag's assets that the release uploads. The app checks
-# releases/latest/download/latest.json, so a release reaches it once the draft is published.
+# gg updates itself from these releases. Each build job also makes its platform's update,
+# unsigned: the macOS universal .app.tar.gz (from the final signed app), the AppImage, the
+# Windows installer. The signing key (the secrets TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD) is seen by one step only: "Sign the updates", in the
+# sign job, which runs nothing but the signer (gg-release, built beforehand by the signer job
+# without the secrets) by its absolute path with a clean PATH. That job checks nothing out
+# and runs no pnpm, node, cargo or app build, so no build-time dependency of the app runs
+# where the key is; without the secrets it fails there and nothing is published. The updates
+# job then checks every signature against the public key in the app's config, writes the
+# updater's manifest, latest.json, and checks that it names this version and only this tag's
+# assets that the release uploads. The app checks releases/latest/download/latest.json, so a
+# release reaches it once the draft is published.
 #
 # Code signing is macOS's ad hoc signature only; no secrets other than the signing key and
 # the run's token, which may write only in the job that makes the release. No build cache:
@@ -126,14 +130,6 @@ jobs:
       - name: Build, sign ad hoc, make the disk image and the update
         run: scripts/release-macos.sh
 
-      # The only step that sees the signing key.
-      - name: Sign the update
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: scripts/sign-update.sh "$VERSION" dist-release/gg-macos-universal.app.tar.gz
-
       - name: Keep the downloads
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -143,7 +139,6 @@ jobs:
             dist-release/gg-macos-universal.dmg.sha256
             dist-release/gg-macos-universal.app.tar.gz
             dist-release/gg-macos-universal.app.tar.gz.sha256
-            dist-release/gg-macos-universal.app.tar.gz.sig
           if-no-files-found: error
           retention-days: 7
 
@@ -202,15 +197,6 @@ jobs:
           for f in *; do sha256sum "$f" > "$f.sha256"; done
           cat ./*.sha256
 
-      # The only step that sees the signing key. The AppImage is the update (it replaces
-      # itself); a .deb install is updated by its package manager.
-      - name: Sign the update
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: scripts/sign-update.sh "$VERSION" dist-release/gg-linux-x86_64.AppImage
-
       - name: Keep the downloads
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -262,15 +248,6 @@ jobs:
           sha256sum gg-windows-x64-setup.exe > gg-windows-x64-setup.exe.sha256
           cat ./*.sha256
 
-      # The only step that sees the signing key. The installer is the update (the app runs
-      # it to update itself).
-      - name: Sign the update
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: scripts/sign-update.sh "$VERSION" dist-release/gg-windows-x64-setup.exe
-
       - name: Keep the downloads
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -279,9 +256,85 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The signer, built here without the secrets, for the sign job to run. gg-release's
+  # dependencies: minisign (signing), minisign-verify, base64, serde_json, and theirs.
+  signer:
+    name: Build the signer
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The release rust-toolchain.toml names.
+      - name: Rust
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - name: Build gg-release
+        run: cargo build --locked --release -p gg-release
+
+      - name: Keep the signer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-signer
+          path: target/release/gg-release
+          if-no-files-found: error
+          retention-days: 1
+
+  # The only job that sees the signing key, and in it the only step: it runs the signer built
+  # above and nothing else. Nothing is checked out and nothing is built here; on Linux, so no
+  # shell rewrites paths. The key never reaches a log (the signer prints file names only) or
+  # an artifact (only the .sig files are kept).
+  sign:
+    name: Sign the updates
+    needs: [version, signer, macos, linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the signer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-signer
+          path: signer
+
+      - name: Fetch the updates
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: gg-*
+          merge-multiple: true
+          path: updates
+
+      - name: Make the signer runnable
+        run: chmod 755 signer/gg-release
+
+      - name: Sign the updates
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PATH: /usr/bin:/bin
+          BASH_ENV: ""
+        run: '"$GITHUB_WORKSPACE/signer/gg-release" sign --version "$VERSION" updates/gg-macos-universal.app.tar.gz updates/gg-linux-x86_64.AppImage updates/gg-windows-x64-setup.exe'
+
+      - name: Keep the signatures
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-signatures
+          path: |
+            updates/gg-macos-universal.app.tar.gz.sig
+            updates/gg-linux-x86_64.AppImage.sig
+            updates/gg-windows-x64-setup.exe.sig
+          if-no-files-found: error
+          retention-days: 7
+
   updates:
     name: Check the updates, write latest.json
-    needs: [version, macos, linux, windows]
+    needs: [version, macos, linux, windows, sign]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -349,7 +402,7 @@ jobs:
 
   release:
     name: Draft release
-    needs: [version, macos, linux, windows, updates]
+    needs: [version, macos, linux, windows, sign, updates]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

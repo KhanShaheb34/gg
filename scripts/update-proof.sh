@@ -13,8 +13,9 @@
 # never started, stopped or read) twice, at the fake versions 0.3.9 (old) and 0.9.0 (new),
 # into <outdir>/old and <outdir>/new, each with the gg launcher inside and signed ad hoc as a
 # release is (--no-build reuses them). The new one is packed as the macOS update
-# (scripts/update-archive.sh) and signed with a throwaway key made here for this run
-# (scripts/sign-update.sh); the release key is never used. A Python HTTP server on 127.0.0.1
+# (scripts/update-archive.sh) and signed by the release's own signer (gg-release sign, as the
+# release workflow's sign job runs it) with a throwaway, password-protected key that the Tauri
+# CLI makes here for this run; the release key is never used. A Python HTTP server on 127.0.0.1
 # serves latest.json and the archive; it logs every request.
 #
 # Each case copies the old app to <outdir>/case-<name>/install/gg.app and starts it with
@@ -82,17 +83,37 @@ keys=$out/keys
 rm -rf "$keys"
 mkdir -p "$keys"
 for k in test other; do
-  (cd "$root" && pnpm -s tauri signer generate --ci -p "" -w "$keys/$k" >/dev/null 2>&1) || die "could not make a throwaway key"
+  (cd "$root" && pnpm -s tauri signer generate --ci -p "proof-$k" -w "$keys/$k" >/dev/null 2>&1) || die "could not make a throwaway key"
 done
+# The release's signer.
+(cd "$root" && cargo build -q --locked -p gg-release) || die "could not build gg-release"
+signer=$root/target/debug/gg-release
 serve=$out/serve
 rm -rf "$serve"
 mkdir -p "$serve"
 sh "$root/scripts/update-archive.sh" "$out/new/gg.app" "$serve/gg.app.tar.gz" || die "update-archive failed"
 sign() { # file version key
-  TAURI_SIGNING_PRIVATE_KEY=$(cat "$keys/$3") TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
-    sh "$root/scripts/sign-update.sh" "$2" "$1" >/dev/null || die "could not sign $1"
+  env -i PATH=/usr/bin:/bin TAURI_SIGNING_PRIVATE_KEY="$(cat "$keys/$3")" \
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD="proof-$3" \
+    "$signer" sign --version "$2" "$1" >/dev/null || die "could not sign $1"
 }
 sign "$serve/gg.app.tar.gz" "$new_version" test
+# The signer refuses, and writes nothing, with a wrong password or without the key.
+cp "$serve/gg.app.tar.gz" "$out/refused.tar.gz"
+rm -f "$out/refused.tar.gz.sig"
+if env -i PATH=/usr/bin:/bin TAURI_SIGNING_PRIVATE_KEY="$(cat "$keys/test")" \
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD=wrong "$signer" sign --version "$new_version" \
+  "$out/refused.tar.gz" 2>"$out/refused.err" || [ -e "$out/refused.tar.gz.sig" ]; then
+  fail "signer: a wrong password signed"
+else
+  pass "signer: a wrong password signs nothing ($(cat "$out/refused.err"))"
+fi
+if env -i PATH=/usr/bin:/bin "$signer" sign --version "$new_version" "$out/refused.tar.gz" \
+  2>"$out/refused.err" || [ -e "$out/refused.tar.gz.sig" ]; then
+  fail "signer: signed without a key"
+else
+  pass "signer: without the key it signs nothing ($(head -1 "$out/refused.err" | cut -c1-90)…)"
+fi
 # A tampered copy (one byte changed) with the good signature; a copy signed for another version.
 cp "$serve/gg.app.tar.gz" "$serve/tampered.tar.gz"
 printf 'X' | dd of="$serve/tampered.tar.gz" bs=1 seek=4096 conv=notrunc 2>/dev/null

@@ -7,6 +7,11 @@
 //!   platform key the plugin looks up (`darwin-aarch64` and `darwin-x86_64` both name the
 //!   universal archive) the download URL of that tag's asset and the signature's text.
 //!
+//! The signatures are made here too ([`sign`], `gg-release sign`), in a job of the release
+//! workflow that builds nothing else: from the secret key as `tauri signer generate` writes it
+//! (base64 of minisign's password-protected secret key) and its password, a signature in the
+//! format `tauri signer sign --app-version` writes, which the plugin verifies.
+//!
 //! The checks: every signature verifies against the public key in the app's config with the
 //! verifier the plugin itself uses, and was made for the release's version; the manifest
 //! names that version and only URLs of that tag's assets that are being uploaded.
@@ -72,43 +77,114 @@ pub fn verify(pubkey: &str, data: &[u8], sig: &str, version: &str) -> Result<(),
     }
 }
 
-/// Whether `s` is an RFC 3339 date and time (the plugin refuses a manifest whose `pub_date`
-/// is not): `2026-11-21T10:00:00Z`, with optional fractions and an offset instead of `Z`.
+/// The untrusted comment Tauri's CLI writes in a signature (not covered by it).
+const UNTRUSTED_COMMENT: &str = "signature from tauri secret key";
+
+/// Signs `data`, the file named `file_name`, for `version`, with `secret_key` (the text
+/// `tauri signer generate` writes: base64 of minisign's password-protected secret key) and its
+/// `password`, as `tauri signer sign --app-version <version>` does at unix time `timestamp`:
+/// returns the `.sig` file's text, base64 of a minisign signature (prehashed) whose trusted
+/// comment is `timestamp:<t>\tfile:<name>\tversion:<version>`.
+///
+/// Errors never quote the key or the password.
+pub fn sign(
+    secret_key: &str,
+    password: &str,
+    data: &[u8],
+    file_name: &str,
+    version: &str,
+    timestamp: u64,
+) -> Result<String, String> {
+    let plain = |s: &str| !s.is_empty() && !s.contains(['\t', '\n', '\r']);
+    if !plain(version) || !plain(file_name) {
+        return Err("the version and the file name must be one line of text, not empty".into());
+    }
+    // Not `unbase64`: a decoding error would quote a character of the key.
+    let text = base64::engine::general_purpose::STANDARD
+        .decode(secret_key.trim())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or("the secret key is not what `tauri signer generate` writes (base64 text)")?;
+    let key = minisign::SecretKeyBox::from_string(&text)
+        .and_then(|b| b.into_secret_key(Some(password.to_owned())))
+        .map_err(|e| format!("the secret key cannot be used: {e}"))?;
+    let trusted = format!("timestamp:{timestamp}\tfile:{file_name}\tversion:{version}");
+    let signature = minisign::sign(
+        None,
+        &key,
+        std::io::Cursor::new(data),
+        Some(&trusted),
+        Some(UNTRUSTED_COMMENT),
+    )
+    .map_err(|e| format!("could not sign: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(signature.to_string()))
+}
+
+/// Whether `s` is an RFC 3339 date and time that exists (the plugin refuses a manifest whose
+/// `pub_date` it cannot read): `2026-11-21T10:00:00Z`, with optional fractions (up to
+/// nanoseconds) and an offset instead of `Z`. Months, days (leap years included), hours,
+/// minutes, seconds and offsets out of range are refused, and so is a leap second.
 pub fn is_rfc3339(s: &str) -> bool {
     let b = s.as_bytes();
-    let digits =
-        |r: std::ops::Range<usize>| r.clone().all(|i| b.get(i).is_some_and(u8::is_ascii_digit));
-    if b.len() < 20
-        || !digits(0..4)
-        || b[4] != b'-'
-        || !digits(5..7)
-        || b[7] != b'-'
-        || !digits(8..10)
-        || !(b[10] == b'T' || b[10] == b't')
-        || !digits(11..13)
-        || b[13] != b':'
-        || !digits(14..16)
-        || b[16] != b':'
-        || !digits(17..19)
-    {
+    let number = |r: std::ops::Range<usize>| -> Option<u32> {
+        let digits = b.get(r)?;
+        digits
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| digits.iter().fold(0, |n, d| n * 10 + u32::from(d - b'0')))
+    };
+    let shape = b.len() >= 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && (b[10] == b'T' || b[10] == b't')
+        && b[13] == b':'
+        && b[16] == b':';
+    if !shape {
+        return false;
+    }
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        number(0..4),
+        number(5..7),
+        number(8..10),
+        number(11..13),
+        number(14..16),
+        number(17..19),
+    ) else {
+        return false;
+    };
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    if day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
         return false;
     }
     let mut rest = &s[19..];
     if let Some(fraction) = rest.strip_prefix('.') {
         let n = fraction.bytes().take_while(u8::is_ascii_digit).count();
-        if n == 0 {
+        if n == 0 || n > 9 {
             return false;
         }
         rest = &fraction[n..];
     }
+    if rest == "Z" || rest == "z" {
+        return true;
+    }
     let zone = rest.as_bytes();
-    rest == "Z"
-        || rest == "z"
-        || (zone.len() == 6
-            && (zone[0] == b'+' || zone[0] == b'-')
-            && zone[1..3].iter().all(u8::is_ascii_digit)
-            && zone[3] == b':'
-            && zone[4..6].iter().all(u8::is_ascii_digit))
+    let offset = |r: std::ops::Range<usize>| {
+        zone.get(r.clone())
+            .filter(|d| d.iter().all(u8::is_ascii_digit))
+            .map(|d| d.iter().fold(0u32, |n, d| n * 10 + u32::from(d - b'0')))
+    };
+    zone.len() == 6
+        && (zone[0] == b'+' || zone[0] == b'-')
+        && zone[3] == b':'
+        && offset(1..3).is_some_and(|h| h <= 23)
+        && offset(4..6).is_some_and(|m| m <= 59)
 }
 
 /// The manifest for `version`, released as `tag` on `pub_date`, with `notes`; `sig(file)` is
@@ -300,6 +376,13 @@ mod tests {
         ] {
             assert!(is_rfc3339(ok), "{ok}");
         }
+        for ok in [
+            "2028-02-29T23:59:59Z",
+            "2000-02-29T00:00:00Z",
+            "2026-12-31T00:00:00.123456789Z",
+        ] {
+            assert!(is_rfc3339(ok), "{ok}");
+        }
         for bad in [
             "",
             "2026-11-21",
@@ -308,6 +391,20 @@ mod tests {
             "2026-11-21T10:00:00.Z",
             "2026-11-21T10:00:00+0600",
             "21 Nov 2026",
+            // Dates and times that do not exist.
+            "2026-13-01T10:00:00Z",
+            "2026-00-01T10:00:00Z",
+            "2026-11-31T10:00:00Z",
+            "2026-11-00T10:00:00Z",
+            "2026-02-29T10:00:00Z",
+            "1900-02-29T10:00:00Z",
+            "2026-11-21T24:00:00Z",
+            "2026-11-21T10:60:00Z",
+            "2026-11-21T10:00:60Z",
+            "2026-11-21T10:00:00+24:00",
+            "2026-11-21T10:00:00+06:60",
+            "2026-11-21T10:00:00.1234567890Z",
+            "2026-1x-21T10:00:00Z",
         ] {
             assert!(!is_rfc3339(bad), "{bad}");
         }
@@ -398,5 +495,112 @@ mod tests {
             check_manifest(&good, "1.2.3", "v1.2.3", &app_key, &uploaded(), fixture).len(),
             4
         );
+    }
+
+    /// A throwaway key pair made by the real Tauri CLI for these tests only (`tauri signer
+    /// generate -p gg-test-only`), and the CLI's own signature of `compat.bin` with it
+    /// (`tauri signer sign --app-version 2.3.4`).
+    const CLI_KEY: &str = include_str!("../tests/fixtures/cli-test.key");
+    const CLI_PUB: &str = include_str!("../tests/fixtures/cli-test.key.pub");
+    const CLI_PASSWORD: &str = "gg-test-only";
+    const COMPAT: &[u8] = include_bytes!("../tests/fixtures/compat.bin");
+    const COMPAT_CLI_SIG: &str = include_str!("../tests/fixtures/compat.bin.cli.sig");
+    const CLI_TIMESTAMP: u64 = 1795247674;
+
+    #[test]
+    fn signs_with_a_tauri_cli_key_as_the_updater_verifies() {
+        let sig = sign(CLI_KEY, CLI_PASSWORD, COMPAT, "compat.bin", "2.3.4", 1).unwrap();
+        // The plugin's verifier, with the version bound (requireSignedVersion).
+        assert_eq!(verify(CLI_PUB, COMPAT, &sig, "2.3.4"), Ok(()));
+        assert_eq!(
+            verify(CLI_PUB, COMPAT, &sig, "2.3.5"),
+            Err("it was signed for version 2.3.4, not 2.3.5".to_owned())
+        );
+        let tampered = [COMPAT, b"x"].concat();
+        assert!(
+            verify(CLI_PUB, &tampered, &sig, "2.3.4")
+                .unwrap_err()
+                .contains("does not verify")
+        );
+        // Another key's public half does not verify it.
+        assert!(
+            verify(KEY, COMPAT, &sig, "2.3.4")
+                .unwrap_err()
+                .contains("does not verify")
+        );
+    }
+
+    #[test]
+    fn a_wrong_password_or_key_signs_nothing_and_says_so_without_the_secret() {
+        let secrets = |e: &str| {
+            e.contains(CLI_PASSWORD) || e.contains(CLI_KEY.trim()) || e.contains("wrong-one")
+        };
+        let e = sign(CLI_KEY, "wrong-one", COMPAT, "compat.bin", "2.3.4", 1).unwrap_err();
+        assert!(e.contains("Wrong password"), "{e}");
+        assert!(!secrets(&e), "{e}");
+        let e = sign(CLI_KEY, "", COMPAT, "compat.bin", "2.3.4", 1).unwrap_err();
+        assert!(e.contains("Wrong password"), "{e}");
+        for key in ["", "not base64 at all!", "bm90IGEga2V5"] {
+            let e = sign(key, CLI_PASSWORD, COMPAT, "compat.bin", "2.3.4", 1).unwrap_err();
+            assert!(!secrets(&e) && !e.contains(key) || key.is_empty(), "{e}");
+        }
+        // A key that is only the public half.
+        assert!(sign(CLI_PUB, CLI_PASSWORD, COMPAT, "compat.bin", "2.3.4", 1).is_err());
+        for (name, version) in [
+            ("a\tb", "1.0.0"),
+            ("compat.bin", "1.0\n0"),
+            ("compat.bin", ""),
+        ] {
+            assert!(sign(CLI_KEY, CLI_PASSWORD, COMPAT, name, version, 1).is_err());
+        }
+    }
+
+    /// The parts of a `.sig` file's text: its lines, and its signature's algorithm and key id.
+    fn parts(sig: &str) -> (Vec<String>, Vec<u8>) {
+        let text = unbase64("sig", sig).unwrap();
+        let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(&lines[1])
+            .unwrap();
+        (lines, raw[..10].to_vec())
+    }
+
+    /// What the plugin reads from a signature is what `tauri signer sign --app-version`
+    /// writes: the same untrusted comment, algorithm (prehashed Ed25519) and key id, the
+    /// same trusted comment (timestamp, file, version, in that order), the same layout.
+    #[test]
+    fn the_signature_is_laid_out_as_the_tauri_cli_writes_it() {
+        assert_eq!(
+            verify(CLI_PUB, COMPAT, COMPAT_CLI_SIG, "2.3.4"),
+            Ok(()),
+            "the CLI's own"
+        );
+        let ours = sign(
+            CLI_KEY,
+            CLI_PASSWORD,
+            COMPAT,
+            "compat.bin",
+            "2.3.4",
+            CLI_TIMESTAMP,
+        )
+        .unwrap();
+        let (cli_lines, cli_head) = parts(COMPAT_CLI_SIG);
+        let (our_lines, our_head) = parts(&ours);
+        assert_eq!(our_lines.len(), cli_lines.len());
+        assert_eq!(our_lines.len(), 5, "four lines, each ended by a newline");
+        assert_eq!(our_lines[4], "");
+        assert_eq!(our_lines[0], cli_lines[0]);
+        assert_eq!(
+            our_lines[0],
+            "untrusted comment: signature from tauri secret key"
+        );
+        assert_eq!(our_head, cli_head, "algorithm and key id");
+        assert_eq!(&our_head[..2], b"ED", "prehashed");
+        assert_eq!(our_lines[2], cli_lines[2], "the trusted comment");
+        assert_eq!(
+            our_lines[2],
+            format!("trusted comment: timestamp:{CLI_TIMESTAMP}\tfile:compat.bin\tversion:2.3.4")
+        );
+        assert_eq!(verify(CLI_PUB, COMPAT, &ours, "2.3.4"), Ok(()));
     }
 }

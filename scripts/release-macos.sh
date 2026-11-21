@@ -8,7 +8,7 @@
 #   gg-macos-universal.dmg
 #   gg-macos-universal.dmg.sha256   ("<sha256>  gg-macos-universal.dmg", as shasum -c reads)
 #   gg-macos-universal.app.tar.gz   the update (signed for the updater by the release
-#                                     workflow's next step, scripts/sign-update.sh)
+#                                     workflow's sign job: gg-release sign)
 #   gg-macos-universal.app.tar.gz.sha256
 #   site-latest.json                 ({"version","file","sizeMb","sha256"} on one line, the
 #                                     shape the site's latest.json has; not the updater's
@@ -117,6 +117,6 @@ printf '{"version":"%s","file":"%s","sizeMb":%s,"sha256":"%s"}\n' \
 echo "release-macos: gg $version, $archs, $size MB"
 echo "  $out/$file"
 echo "  $out/$file.sha256"
-echo "  $out/$update (to be signed: scripts/sign-update.sh $version $out/$update)"
+echo "  $out/$update (to be signed: gg-release sign --version $version $out/$update)"
 echo "  $out/$update.sha256"
 echo "  $out/site-latest.json"

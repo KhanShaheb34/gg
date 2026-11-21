@@ -137,13 +137,13 @@ describe("the update notice", () => {
   it("names Homebrew's command only on a Mac where Homebrew linked gg and gg cannot update itself", async () => {
     const stop = u.initUpdates();
     platform.mac = true;
-    app.cli = { installed: "/opt/homebrew/bin/gg", link: "homebrew", shadowedBy: null, candidates: [] };
+    app.cli = { installed: "/opt/homebrew/bin/gg", link: "homebrew", shadowedBy: null, candidates: [], shadowConflict: null, turnOff: null, shellLine: null };
     send({ state: "available", version: "0.5.0", reason: "gg cannot update itself: it may not change /Applications." });
     expect(app.toasts[0].note).toBe(
       "gg cannot update itself: it may not change /Applications. Or update it with Homebrew: brew upgrade --cask gg",
     );
     expect(u.brewHint()).toBe("brew upgrade --cask gg");
-    app.cli = { installed: null, link: null, shadowedBy: null, candidates: [] };
+    app.cli = { installed: null, link: null, shadowedBy: null, candidates: [], shadowConflict: null, turnOff: null, shellLine: null };
     expect(u.brewHint()).toBeNull();
     platform.mac = false;
     stop();

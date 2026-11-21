@@ -43,7 +43,7 @@ function appState(overrides: Partial<AppState> = {}): AppState {
     settingsProblem: null,
     settingsFile: "/c/state.json",
     gitProblem: null,
-    cli: { installed: null, link: null, shadowedBy: null, candidates: [] },
+    cli: { installed: null, link: null, shadowedBy: null, candidates: [], shadowConflict: null, turnOff: null, shellLine: null },
     version: "0.1.0",
     ...overrides,
   };
@@ -420,7 +420,7 @@ describe("init", () => {
   });
 
   it("takes the gg command's state at start, and what the shell says of gg when that comes", async () => {
-    const cli: CliState = { installed: null, link: null, shadowedBy: null, candidates: ["/h/bin"] };
+    const cli: CliState = { installed: null, link: null, shadowedBy: null, candidates: ["/h/bin"], shadowConflict: null, turnOff: null, shellLine: null };
     vi.mocked(ipc.api.getAppState).mockResolvedValue(appState({ cli }));
     await s.init();
     expect(s.app.cli).toEqual(cli);

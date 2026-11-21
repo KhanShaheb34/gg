@@ -1,7 +1,7 @@
 // The `gg` terminal command, as the UI words it: where the launcher goes and what the user
 // is told about it. The core writes and removes it (install_cli, uninstall_cli).
 
-import type { CliLink, CliState } from "./types";
+import type { CliLink, CliState, ShellConflict, ShellLineAdded, ShellLineRemoved } from "./types";
 
 /** The launcher's path in folder `dir` (`dir/gg`, with the folder's own separator). */
 export function launcherPath(dir: string): string {
@@ -59,4 +59,54 @@ export function installedAt(state: CliState, short: (path: string) => string): s
     default:
       return `installed at ${at}`;
   }
+}
+
+/** "alias" or "function": the shell's own `gg`, in a word. */
+export function conflictWord(conflict: ShellConflict): string {
+  return conflict === "alias" ? "alias" : "function";
+}
+
+/** The command gg's line runs to turn the shell's `gg` off (the core writes it, with a note). */
+export function turnOffCommand(conflict: ShellConflict): string {
+  return conflict === "alias" ? "unalias gg 2>/dev/null" : "unset -f gg 2>/dev/null";
+}
+
+/**
+ * What adding gg's line did, in a sentence or two, as the shell said after (`shadowedBy`, what
+ * it still runs for `gg`): turned off; added but something after it makes `gg` again; added
+ * but the shell could not be asked; or not added, and why. Paths through `short`.
+ */
+export function lineAddedNote(added: ShellLineAdded, shadowedBy: string | null, short: (path: string) => string): string {
+  const file = short(added.file);
+  const word = conflictWord(added.conflict);
+  if (added.problem !== null) return `Did not turn off your shell’s gg ${word}: ${added.problem}`;
+  const where = added.added ? `Added one line to the end of ${file}` : `gg’s line is already in ${file}`;
+  if (!added.checked) {
+    return `${where} to turn off your shell’s gg ${word}, but gg could not ask your shell whether that worked. It takes effect in new terminal windows; run type gg in one to see.`;
+  }
+  if (shadowedBy !== null) {
+    return `${where}, but your shell still defines gg as ${shadowedBy}: something that runs after that line defines it again.`;
+  }
+  return added.added
+    ? `Turned off your shell’s gg ${word}: added one line to the end of ${file}. It takes effect in new terminal windows.`
+    : `Your shell’s gg ${word} is turned off by gg’s line in ${file}. It takes effect in new terminal windows.`;
+}
+
+/**
+ * Whether gg's line is in a start-up file and the shell still has an alias or function called
+ * `gg` that no other line would turn off: something that runs after the line makes it again
+ * (another `gg`, a program, is not the line's to turn off).
+ */
+export function lineFailed(state: CliState): boolean {
+  return state.shellLine !== null && state.shadowConflict !== null && state.turnOff === null;
+}
+
+/** What taking gg's line out did, in a sentence or two; null when there was no line and nothing to say. */
+export function lineRemovedNote(removed: ShellLineRemoved, short: (path: string) => string): string | null {
+  const parts: string[] = [];
+  if (removed.lineRemovedFrom.length > 0) {
+    parts.push(`Took gg’s line out of ${removed.lineRemovedFrom.map(short).join(", ")}; new terminal windows no longer run it.`);
+  }
+  if (removed.lineProblem !== null) parts.push(removed.lineProblem);
+  return parts.length === 0 ? null : parts.join(" ");
 }

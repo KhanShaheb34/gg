@@ -264,6 +264,30 @@ export type CliState = {
   link: CliLink | null; // `installed` is a link to gg's launcher made outside the app, which it never replaces or removes; null when the app wrote it (or none)
   shadowedBy: string | null; // what the login shell runs for `gg` instead ("an alias for …"); null when nothing or not known
   candidates: string[]; // folders it can be written to, best first (on PATH, writable, not in a repository)
+  shadowConflict: ShellConflict | null; // what `shadowedBy` is when a line of gg's can turn it off (an alias or a function); null otherwise
+  turnOff: TurnOff | null; // gg can turn off the shell's gg (an alias or function of zsh or bash) with one line, if asked; null otherwise
+  shellLine: string | null; // the shell start-up file holding the line gg added to turn off the shell's gg; null when none
+};
+
+/** The shell's own `gg` that a line gg adds would turn off: an alias or a shell function. */
+export type ShellConflict = "alias" | "function";
+
+/** What a line gg may add would turn off, and the start-up file it would go at the end of. */
+export type TurnOff = { conflict: ShellConflict; file: string };
+
+/** What asking gg to turn off the shell's `gg` did (`install_cli` with `turnOff`, `turn_off_shell_gg`). */
+export type ShellLineAdded = {
+  file: string; // the start-up file the line went in, or was to go in
+  conflict: ShellConflict;
+  added: boolean; // added now; false when it was there already, or `problem` stopped it
+  problem: string | null; // why it could not be added (nothing was written), one or two sentences; null when the line is in the file
+  checked: boolean; // the shell answered when asked again: `shadowedBy` says whether the line worked
+};
+
+/** What taking gg's line out of the shell's start-up files did (`remove_shell_line`, `uninstall_cli`). */
+export type ShellLineRemoved = {
+  lineRemovedFrom: string[]; // the files a line of gg's was taken out of (none when there was none)
+  lineProblem: string | null; // why a line could not be taken out, or one changed since was left alone; null when nothing stands in the way
 };
 
 /**

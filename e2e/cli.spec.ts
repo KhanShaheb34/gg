@@ -130,9 +130,129 @@ test.describe("with a shell that has its own gg", () => {
     await expect(box.getByTestId("cli-shadowed")).toHaveText(
       "Your shell already defines gg as an alias for git log --graph; that wins over this command until you remove it.",
     );
+    // A shell that is neither zsh nor bash: nothing is offered to turn it off.
+    await expect(box.getByTestId("cli-turn-off")).toHaveCount(0);
     await box.getByRole("button", { name: "Install", exact: true }).click();
     await expect(box).toHaveCount(0);
     expect(existsSync(path.join(home, ".local", "bin", "gg"))).toBe(true);
+  });
+});
+
+/** gg's line, as the core writes it after a file that ends with a line break. */
+const LINE = "unalias gg 2>/dev/null  # added by gg: lets the gg command run; gg Settings > Command line takes it out\n";
+/** A start-up file of the test's home folder, with a byte that is not UTF-8. */
+const ZSHRC = Buffer.from("export EDITOR=vi\n# caf\xe9\n", "latin1");
+
+test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
+  // The stand-in zsh makes the alias, then reads ~/.zshrc as zsh would: a line there that
+  // turns it off works, and the shell, asked again, says so.
+  test.use({
+    ggShellName: "zsh",
+    ggShellSetup: `alias gg='git gui citool'\nif [ -f "$HOME/.zshrc" ]; then . "$HOME/.zshrc"; fi`,
+  });
+
+  test("leaves ~/.zshrc alone unless the box is ticked", async ({ gg }) => {
+    const { page, home } = gg;
+    const rc = path.join(home, ".zshrc");
+    writeFileSync(rc, ZSHRC);
+    await page.goto("/");
+    await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
+    const box = dialog(page);
+    const tick = box.getByRole("checkbox", { name: "Turn off that alias for me" });
+    await expect(tick).toBeVisible();
+    await expect(tick).not.toBeChecked();
+    await box.getByRole("button", { name: "Install", exact: true }).click();
+    await expect(box).toHaveCount(0);
+    await expect(page.getByText("Installed the gg command: wrote ~/.local/bin/gg.")).toBeVisible();
+    expect(readFileSync(rc)).toEqual(ZSHRC);
+    await page.keyboard.press("ControlOrMeta+,");
+    const settings = page.getByTestId("settings");
+    await expect(settings.getByTestId("settings-cli-line")).toHaveCount(0);
+    await expect(settings.getByRole("button", { name: "Turn off that alias for me" })).toBeVisible();
+  });
+
+  test("ticked: turns the alias off with one line, which Settings shows and takes out again", async ({ gg }) => {
+    const { page, home } = gg;
+    const rc = path.join(home, ".zshrc");
+    writeFileSync(rc, ZSHRC);
+    const withLine = Buffer.concat([ZSHRC, Buffer.from(LINE)]);
+    await page.goto("/");
+    await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
+    const box = dialog(page);
+    await expect(box.getByTestId("cli-shadowed")).toContainText(
+      "Your shell already defines gg as an alias for git gui citool; that wins over this command until you remove it.",
+    );
+    await expect(box.getByTestId("cli-turn-off-note")).toHaveText(
+      "Adds one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null. Removing the command in gg takes it out again. It takes effect in new terminal windows.",
+    );
+    await box.getByRole("checkbox", { name: "Turn off that alias for me" }).check();
+    await expect(box.getByTestId("cli-written")).toHaveText(
+      "Writes one small script, ~/.local/bin/gg, and one line at the end of ~/.zshrc, and changes nothing else. No administrator rights are needed.",
+    );
+    await box.getByRole("button", { name: "Install", exact: true }).click();
+    await expect(box).toHaveCount(0);
+    const notice = page.locator(".toast").filter({ hasText: "Installed the gg command: wrote ~/.local/bin/gg." });
+    await expect(notice).toContainText(
+      "Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. It takes effect in new terminal windows.",
+    );
+    expect(readFileSync(rc)).toEqual(withLine);
+
+    // Settings: the line, no warning, and a way to take it out.
+    await page.keyboard.press("ControlOrMeta+,");
+    const settings = page.getByTestId("settings");
+    await expect(settings.getByTestId("settings-cli-line")).toHaveText(
+      "gg added one line to the end of ~/.zshrc that turns off your shell’s own gg.",
+    );
+    await expect(settings.getByTestId("settings-cli-shadowed")).toHaveCount(0);
+    await expect(settings.getByTestId("settings-cli-turn-off")).toHaveCount(0);
+    await settings.getByRole("button", { name: "Take the line out" }).click();
+    await expect(page.getByText("Took gg’s line out of ~/.zshrc; new terminal windows no longer run it.")).toBeVisible();
+    expect(readFileSync(rc)).toEqual(ZSHRC);
+    await expect(settings.getByTestId("settings-cli-line")).toHaveCount(0);
+    await expect(settings.getByTestId("settings-cli-shadowed")).toContainText(
+      "Your shell already defines gg as an alias for git gui citool",
+    );
+
+    // Turned off again from Settings, then gone with the command.
+    await settings.getByRole("button", { name: "Turn off that alias for me" }).click();
+    await expect(settings.getByTestId("settings-cli-line")).toBeVisible();
+    expect(readFileSync(rc)).toEqual(withLine);
+    await settings.getByTestId("settings-cli-remove").click();
+    const removed = page.locator(".toast").filter({ hasText: "Removed the gg command: ~/.local/bin/gg." });
+    await expect(removed).toContainText("Took gg’s line out of ~/.zshrc; new terminal windows no longer run it.");
+    expect(readFileSync(rc)).toEqual(ZSHRC);
+    await expect(settings.getByTestId("settings-cli-state")).toHaveText("Not installed");
+  });
+
+  test("with Homebrew's command, Settings turns the alias off and takes the line out", async ({ gg }) => {
+    const { page, home } = gg;
+    // Homebrew's link, as in the test above that has no alias.
+    const resources = path.join(home, "Applications", "gg.app", "Contents", "Resources");
+    mkdirSync(resources, { recursive: true });
+    mkdirSync(path.join(home, "Caskroom", "gg"), { recursive: true });
+    const bundled = path.join(resources, "gg");
+    writeFileSync(bundled, "#!/bin/sh\n# gg launcher, installed by gg 0.3.1\n", { mode: 0o755 });
+    symlinkSync(bundled, path.join(home, "bin", "gg"));
+    const rc = path.join(home, ".zshrc");
+    writeFileSync(rc, ZSHRC);
+
+    await page.goto("/");
+    await page.keyboard.press("ControlOrMeta+,");
+    const settings = page.getByTestId("settings");
+    await expect(settings.getByTestId("settings-cli-state")).toHaveText("Installed by Homebrew at ~/bin/gg");
+    await expect(settings.getByTestId("settings-cli-remove")).toHaveCount(0);
+    await expect(settings.getByTestId("settings-cli-turn-off-note")).toHaveText(
+      "gg can add one line, marked as gg’s, to the end of ~/.zshrc: unalias gg 2>/dev/null. It takes effect in new terminal windows.",
+    );
+    await settings.getByRole("button", { name: "Turn off that alias for me" }).click();
+    await expect(
+      page.getByText("Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. It takes effect in new terminal windows."),
+    ).toBeVisible();
+    expect(readFileSync(rc)).toEqual(Buffer.concat([ZSHRC, Buffer.from(LINE)]));
+    await settings.getByRole("button", { name: "Take the line out" }).click();
+    await expect(settings.getByTestId("settings-cli-line")).toHaveCount(0);
+    expect(readFileSync(rc)).toEqual(ZSHRC);
+    expect(lstatSync(path.join(home, "bin", "gg")).isSymbolicLink()).toBe(true);
   });
 });
 
@@ -152,5 +272,37 @@ test.describe("with many folders on the PATH", () => {
     await box.getByRole("button", { name: "Install", exact: true }).click();
     await expect(box).toHaveCount(0);
     expect(existsSync(path.join(home, "tools", "bin3", "gg"))).toBe(true);
+  });
+});
+
+test.describe("with zsh and an alias made again after ~/.zshrc (a .zlogin, say)", () => {
+  test.use({
+    ggShellName: "zsh",
+    ggShellSetup: `alias gg='git gui citool'\nif [ -f "$HOME/.zshrc" ]; then . "$HOME/.zshrc"; fi\nalias gg='git gui citool'`,
+  });
+
+  test("says the line did not turn it off, rather than that it worked", async ({ gg }) => {
+    const { page, home } = gg;
+    const rc = path.join(home, ".zshrc");
+    writeFileSync(rc, ZSHRC);
+    await page.goto("/");
+    await page.getByTestId("cli-hint").getByRole("button", { name: "Install the command…" }).click();
+    const box = dialog(page);
+    await box.getByRole("checkbox", { name: "Turn off that alias for me" }).check();
+    await box.getByRole("button", { name: "Install", exact: true }).click();
+    await expect(box).toHaveCount(0);
+    const notice = page.locator(".toast").filter({ hasText: "Installed the gg command: wrote ~/.local/bin/gg." });
+    await expect(notice).toContainText(
+      "Added one line to the end of ~/.zshrc, but your shell still defines gg as an alias for git gui citool: something that runs after that line defines it again.",
+    );
+    expect(readFileSync(rc)).toEqual(Buffer.concat([ZSHRC, Buffer.from(LINE)]));
+    await page.keyboard.press("ControlOrMeta+,");
+    const settings = page.getByTestId("settings");
+    await expect(settings.getByTestId("settings-cli-line")).toHaveText(
+      "gg’s line in ~/.zshrc does not turn it off: something that runs after that line defines gg again.",
+    );
+    await settings.getByRole("button", { name: "Take the line out" }).click();
+    await expect(settings.getByTestId("settings-cli-line")).toHaveCount(0);
+    expect(readFileSync(rc)).toEqual(ZSHRC);
   });
 });

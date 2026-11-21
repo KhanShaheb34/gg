@@ -21,6 +21,8 @@ import type {
   RowsPage,
   ExternalRequest,
   Settings,
+  ShellLineAdded,
+  ShellLineRemoved,
   UpdateStatus,
   ViewOptions,
   WorktreeFiles,
@@ -388,12 +390,21 @@ export const api = {
     call<{ note: string | null }>("open_external", { repoId, ...request }),
   /**
    * Writes the `gg` launcher into `dir` (one of `CliState.candidates`), replacing only a
-   * launcher the app wrote; resolves to the command's state after.
+   * launcher the app wrote; with `turnOff` (the user ticked the box), then adds gg's line to
+   * the shell's start-up file to turn off its own `gg`. Resolves to the command's state after,
+   * and what adding the line did (null when not asked, or nothing to turn off).
    */
-  installCli: (dir: string) => call<CliState>("install_cli", { dir }),
-  /** Removes the launchers the app wrote on the PATH; resolves to the command's state after. */
-  /** Removes the launchers the app wrote; `removed`: the files that went (none: nothing to remove). */
-  uninstallCli: () => call<CliState & { removed: string[] }>("uninstall_cli", {}),
+  installCli: (dir: string, turnOff = false) =>
+    call<CliState & { shellLineAdded: ShellLineAdded | null }>("install_cli", { dir, turnOff }),
+  /**
+   * Removes the launchers the app wrote, and gg's line in a shell file if any; `removed`: the
+   * files that went (none: nothing to remove).
+   */
+  uninstallCli: () => call<CliState & ShellLineRemoved & { removed: string[] }>("uninstall_cli", {}),
+  /** Adds gg's line to the shell's start-up file to turn off its own `gg` (Settings). */
+  turnOffShellGg: () => call<CliState & { shellLineAdded: ShellLineAdded }>("turn_off_shell_gg", {}),
+  /** Takes gg's line out of the shell's start-up files (Settings). */
+  removeShellLine: () => call<CliState & ShellLineRemoved>("remove_shell_line", {}),
   /** Where gg updating itself stands. */
   updateStatus: () => call<UpdateStatus>("update_status"),
   /** Starts the update checks (once the first rows are shown; later calls do nothing). */

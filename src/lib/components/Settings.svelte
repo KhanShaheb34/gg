@@ -8,12 +8,12 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { linkNote } from "../cli";
+  import { conflictWord, lineFailed, linkNote, turnOffCommand } from "../cli";
   import { formatDate, formatDateLong, homeInText, shellQuote, shortenPath, type DateFormat } from "../format";
   import { api } from "../ipc";
   import { isMac, isWindows } from "../platform";
   import { app, notify, setTheme } from "../state/app.svelte";
-  import { openCliDialog, removeCli } from "../state/cli.svelte";
+  import { openCliDialog, removeCli, removeShellLine, turnOffShellGg } from "../state/cli.svelte";
   import { showDialog } from "../state/overlays.svelte";
   import { findRepoView } from "../state/repo.svelte";
   import { brewHint, checkNow, openDownloadPage, restartToUpdate, statusLine, updates } from "../state/updates.svelte";
@@ -35,6 +35,18 @@
 
   const mac = isMac();
   const windows = isWindows();
+
+  /** Turning the shell's `gg` off or back on is under way: its buttons wait. */
+  let lineBusy = $state(false);
+  async function lineAction(action: () => Promise<void>) {
+    if (lineBusy) return;
+    lineBusy = true;
+    try {
+      await action();
+    } finally {
+      lineBusy = false;
+    }
+  }
 
   // --- The fields ---------------------------------------------------------------------
 
@@ -499,9 +511,49 @@
             <p class="state" data-testid="settings-cli-state"><span class="dot" aria-hidden="true"></span>Not installed</p>
           {/if}
           {#if app.cli.shadowedBy}
-            <p class="warn" role="status">
+            <p class="warn" role="status" data-testid="settings-cli-shadowed">
               Your shell already defines <code>gg</code> as {app.cli.shadowedBy}; that wins over this command until you remove it.
             </p>
+          {/if}
+          <!-- gg's line in a shell file: added only when the user asks here or in the install dialog. -->
+          {#if !windows && app.cli.shellLine !== null}
+            <p class="explain" data-testid="settings-cli-line">
+              {#if lineFailed(app.cli)}
+                gg’s line in <code>{shortenPath(app.cli.shellLine, app.homeDir)}</code> does not turn it off: something that runs after
+                that line defines <code>gg</code> again.
+              {:else}
+                gg added one line to the end of <code>{shortenPath(app.cli.shellLine, app.homeDir)}</code> that turns off your shell’s
+                own <code>gg</code>.
+              {/if}
+            </p>
+          {/if}
+          {#if !windows && app.cli.turnOff !== null}
+            <p class="explain" data-testid="settings-cli-turn-off-note">
+              gg can add one line, marked as gg’s, to the end of <code>{shortenPath(app.cli.turnOff.file, app.homeDir)}</code>:
+              <code>{turnOffCommand(app.cli.turnOff.conflict)}</code>. It takes effect in new terminal windows.
+            </p>
+          {/if}
+          {#if !windows && (app.cli.turnOff !== null || app.cli.shellLine !== null)}
+            <div class="buttons">
+              {#if app.cli.turnOff !== null}
+                <button
+                  type="button"
+                  class="button"
+                  disabled={lineBusy}
+                  data-testid="settings-cli-turn-off"
+                  onclick={() => void lineAction(turnOffShellGg)}>Turn off that {conflictWord(app.cli.turnOff.conflict)} for me</button
+                >
+              {/if}
+              {#if app.cli.shellLine !== null}
+                <button
+                  type="button"
+                  class="button"
+                  disabled={lineBusy}
+                  data-testid="settings-cli-line-remove"
+                  onclick={() => void lineAction(removeShellLine)}>Take the line out</button
+                >
+              {/if}
+            </div>
           {/if}
           {#if linkNote(app.cli.link) !== null}
             <!-- A link made outside the app (Homebrew's): nothing here installs or removes it. -->

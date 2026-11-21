@@ -21,8 +21,13 @@ use tauri_plugin_updater::{Error, Update, UpdaterExt};
 
 /// How long the check may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long the download may take, all of it.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// How long the download may take, all of it: the largest update (the Linux AppImage, about
+/// 80 MB) on a link of about 100 kbit/s. A download that stalls is stopped much sooner
+/// ([`STALL_TIMEOUT`]).
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
+/// How long a connection may take to open, and a download go without receiving anything.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct TauriUpdates {
     app: AppHandle,
@@ -65,6 +70,13 @@ impl UpdateBackend for TauriUpdates {
                     is_newer(&current.to_string(), &release.version.to_string())
                 })
                 .timeout(CHECK_TIMEOUT)
+                // For the check and the download: a connection that does not open, or a
+                // download that stops receiving, fails rather than waits.
+                .configure_client(|client| {
+                    client
+                        .connect_timeout(CONNECT_TIMEOUT)
+                        .read_timeout(STALL_TIMEOUT)
+                })
                 .build()
                 .map_err(failure)?;
             let update = updater.check().await.map_err(failure)?;
@@ -107,11 +119,15 @@ impl UpdateBackend for TauriUpdates {
         })
     }
 
-    fn install_and_restart(&self) -> Result<(), UpdateFailure> {
-        let Some((update, bytes)) = lock(&self.downloaded).take() else {
+    fn install_and_restart(&self, version: &str) -> Result<(), UpdateFailure> {
+        // Only the version asked for, as downloaded and verified.
+        let Some((update, bytes)) = lock(&self.downloaded)
+            .take()
+            .filter(|(update, _)| update.version == version)
+        else {
             return Err(UpdateFailure::new(
                 FailureKind::Other,
-                "nothing was downloaded",
+                format!("{version} was not downloaded"),
             ));
         };
         // Verifies the bytes again, then puts them in place (on Windows the installer takes

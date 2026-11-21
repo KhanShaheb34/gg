@@ -16,6 +16,7 @@ mod mask;
 pub mod ops;
 mod platform;
 pub mod repo;
+pub mod shell_line;
 pub mod store;
 #[cfg(any(test, feature = "testutil"))]
 pub mod testutil;

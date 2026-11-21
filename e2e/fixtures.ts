@@ -818,12 +818,16 @@ function fakeGh(home: string): FakeGh {
 
 /**
  * A stand-in for the login shell the devserver asks what `gg` is (`--cli-shell`): a POSIX sh
- * script with a bare `PATH` that runs `setup` (an alias, say) and then the command it is
- * given. The user's own shell and its files are never run.
+ * script with a bare `PATH` and no `ZDOTDIR` that runs `setup` (an alias, say) and then the
+ * command it is given. Named `name`: `zsh` or `bash` make the devserver take it for that shell
+ * (in `<home>/shell`), and so offer to turn off its `gg` in the test's home folder. The user's
+ * own shell and its files are never run.
  */
-function fakeShell(home: string, setup: string): string {
-  const file = path.join(home, "fake-shell");
-  writeFileSync(file, `#!/bin/sh\nPATH=/usr/bin:/bin\n${setup}\neval "$2"\n`, { mode: 0o755 });
+function fakeShell(home: string, setup: string, name = "fake-shell"): string {
+  const dir = name === "fake-shell" ? home : path.join(home, "shell");
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, name);
+  writeFileSync(file, `#!/bin/sh\nunset ZDOTDIR\nPATH=/usr/bin:/bin\n${setup}\neval "$2"\n`, { mode: 0o755 });
   return file;
 }
 
@@ -840,9 +844,13 @@ export function startDevserver(
   binary = DEVSERVER,
   shellSetup = "",
   extraCliFolders = 0,
+  shellName = "fake-shell",
 ): Promise<Devserver> {
   const cliPath = cliFolders(home, extraCliFolders).join(path.delimiter);
-  const shell = fakeShell(home, shellSetup);
+  const shell = fakeShell(home, shellSetup, shellName);
+  // No ZDOTDIR of the user's reaches the devserver or its stand-in shell.
+  const env = isolatedEnv();
+  delete env.ZDOTDIR;
   const child = spawn(
     binary,
     [
@@ -868,7 +876,7 @@ export function startDevserver(
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
     // server quits, though it is detached.
-    { stdio: ["pipe", "pipe", "pipe"], env: { ...isolatedEnv(), HOME: home, USERPROFILE: home }, detached: true },
+    { stdio: ["pipe", "pipe", "pipe"], env: { ...env, HOME: home, USERPROFILE: home }, detached: true },
   );
   return new Promise((resolve, reject) => {
     let out = "";
@@ -1012,17 +1020,19 @@ export async function buildDevserver(): Promise<void> {
   }
 }
 
-export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: number }>({
+export const test = base.extend<{ gg: GG; ggShellSetup: string; ggShellName: string; ggCliFolders: number }>({
   /** What the stand-in login shell defines before it is asked what `gg` is (`alias gg=…`). */
   ggShellSetup: ["", { option: true }],
+  /** The stand-in login shell's name: `zsh` or `bash` to be taken for that shell. */
+  ggShellName: ["fake-shell", { option: true }],
   /** Folders the `gg` command may go in besides `~/.local/bin` and `~/bin`. */
   ggCliFolders: [0, { option: true }],
-  gg: async ({ page, ggShellSetup, ggCliFolders }, use) => {
+  gg: async ({ page, ggShellSetup, ggShellName, ggCliFolders }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
     let server: Devserver | null = null;
     try {
-      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders);
+      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders, ggShellName);
       await page.addInitScript((url) => {
         (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
       }, server.url);
@@ -1069,7 +1079,7 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: nu
       const relaunch = async () => {
         if (server) await stopDevserver(server);
         server = null;
-        server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders);
+        server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders, ggShellName);
         // Run after the first one, so this address wins.
         await page.addInitScript((url) => {
           (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;

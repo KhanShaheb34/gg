@@ -23,6 +23,10 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{CoreError, ErrorCode, Result};
 
+/// One change to a start-up file at a time: two of gg's own (the dialog and Settings at
+/// once) never both find the line missing and both add it.
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The login shells whose start-up file gg can add the line to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
@@ -254,6 +258,7 @@ fn io_error(message: String, e: &io::Error) -> CoreError {
 /// file (or a link to one), holds a line with gg's mark that was changed, cannot be read or
 /// written, or changed while gg was adding the line. `home` is only for the messages.
 pub fn add(file: &Path, conflict: Conflict, create: bool, home: Option<&Path>) -> Result<Added> {
+    let _one_at_a_time = crate::lock_ignoring_poison(&WRITING);
     let name = shown(file, home);
     let could_not = |e: &io::Error| io_error(format!("Could not add a line to {name}"), e);
     let refused = |why: String| CoreError::new(ErrorCode::BadRequest, why);
@@ -361,6 +366,7 @@ pub struct Removed {
 /// written (a read-only file stays as it is, even where its folder would let it be
 /// replaced), or changed while gg was taking the line out.
 pub fn remove(file: &Path, home: Option<&Path>) -> Result<Removed> {
+    let _one_at_a_time = crate::lock_ignoring_poison(&WRITING);
     let name = shown(file, home);
     let could_not = |e: &io::Error| io_error(format!("Could not take gg's line out of {name}"), e);
     let content = match fs::read(file) {

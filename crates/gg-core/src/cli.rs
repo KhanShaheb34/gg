@@ -834,6 +834,7 @@ impl Core {
                 .into_iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect(),
+            shadow_conflict: cli.conflict.filter(|_| cli.shadowed_by.is_some()),
             turn_off: cli.turn_off().map(|(conflict, file, _)| TurnOff {
                 conflict,
                 file: file.to_string_lossy().into_owned(),

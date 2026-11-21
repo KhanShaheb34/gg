@@ -1519,6 +1519,7 @@ async fn the_gg_command_installs_and_uninstalls() {
         "link": null,
         "shadowedBy": "an alias for git log",
         "candidates": [s(&local), s(&bin)],
+        "shadowConflict": "alias",
         "turnOff": null,
         "shellLine": null,
     });
@@ -1651,6 +1652,7 @@ async fn the_shells_alias_is_turned_off_only_when_asked_and_back_on() {
     assert_eq!(std::fs::read(&rc).unwrap(), with_line);
     assert_eq!(mode(), 0o600);
     assert_eq!(cli["shadowedBy"], Value::Null);
+    assert_eq!(cli["shadowConflict"], Value::Null);
     assert_eq!(cli["turnOff"], Value::Null);
     assert_eq!(cli["shellLine"], s(&rc));
     assert_eq!(cli["installed"], s(&bin.join("gg")));
@@ -1868,7 +1870,7 @@ async fn the_gg_command_without_a_shell_check() {
     assert_eq!(
         cli,
         json!({ "installed": null, "link": null, "shadowedBy": null, "candidates": [],
-                "turnOff": null, "shellLine": null })
+                "shadowConflict": null, "turnOff": null, "shellLine": null })
     );
 }
 
@@ -1912,6 +1914,7 @@ async fn the_gg_command_linked_by_homebrew() {
         "link": "homebrew",
         "shadowedBy": null,
         "candidates": [s(&bin)],
+        "shadowConflict": null,
         "turnOff": null,
         "shellLine": null,
     });

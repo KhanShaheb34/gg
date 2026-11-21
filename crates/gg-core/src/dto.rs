@@ -1383,6 +1383,9 @@ pub struct CliState {
     /// The folders the launcher can be written to, best first: on the login `PATH`,
     /// writable, not inside a repository.
     pub candidates: Vec<String>,
+    /// What `shadowed_by` is when it is an alias or a function (what a line of gg's can turn
+    /// off); `None` for a program, anything else, or nothing.
+    pub shadow_conflict: Option<crate::shell_line::Conflict>,
     /// gg can turn off what shadows the command, with one line at the end of a start-up file
     /// (see [`crate::shell_line`]), if the user asks: the shell's `gg` is an alias or a
     /// function of zsh or bash, and that line is not there yet. `None` otherwise.
@@ -1471,6 +1474,7 @@ mod tests {
                 link: Some(CliLink::Homebrew),
                 shadowed_by: None,
                 candidates: vec!["/b".into()],
+                shadow_conflict: None,
                 turn_off: Some(TurnOff {
                     conflict: crate::shell_line::Conflict::Alias,
                     file: "/h/.zshrc".into(),
@@ -1495,6 +1499,7 @@ mod tests {
                 "gitProblem": null,
                 "cli": {"installed": "/b/gg", "link": "homebrew", "shadowedBy": null,
                         "candidates": ["/b"],
+                        "shadowConflict": null,
                         "turnOff": {"conflict": "alias", "file": "/h/.zshrc"},
                         "shellLine": null},
                 "version": "0.1.0"

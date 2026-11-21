@@ -955,7 +955,10 @@ impl RepoManager {
     /// the next operation starts.
     async fn run_in_turn(self: &Arc<Self>, mut turn: Turn) -> Result<OpOutcome> {
         let repo = turn.repo.clone();
-        repo.op_waiting.fetch_add(1, Ordering::SeqCst);
+        // Counted in, unless gg is restarting to update.
+        self.admit(|| {
+            repo.op_waiting.fetch_add(1, Ordering::SeqCst);
+        })?;
         self.op_queue_changed(&repo).await;
         // The mutex is fair: polled once, the request has its place in the queue, and the
         // next numbered one may join behind it.

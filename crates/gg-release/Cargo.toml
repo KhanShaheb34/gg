@@ -1,0 +1,16 @@
+[package]
+name = "gg-release"
+description = "Release tooling: writes the updater manifest (latest.json) and checks it and its signatures against the app's public key"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64 = "0.23"
+# Signing (the release's `sign` job): the minisign implementation Tauri's CLI signs with, for
+# its password-protected secret key and its signatures.
+minisign = "0.10"
+# The verifier Tauri's updater plugin uses, so a release is checked as the app will check it.
+minisign-verify = "0.3"
+serde_json = "1"

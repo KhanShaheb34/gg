@@ -251,7 +251,7 @@ fn through_a_link(home: &Path, dir: &Path) -> bool {
 }
 
 /// Whether `dir` is a folder the user may create files in.
-fn is_writable_dir(dir: &Path) -> bool {
+pub(crate) fn is_writable_dir(dir: &Path) -> bool {
     if !dir.is_dir() {
         return false;
     }

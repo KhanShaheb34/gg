@@ -19,6 +19,7 @@ pub mod repo;
 pub mod store;
 #[cfg(any(test, feature = "testutil"))]
 pub mod testutil;
+pub mod update;
 pub mod watcher;
 
 use std::fs::OpenOptions;
@@ -65,6 +66,8 @@ pub struct Core {
     opened: Mutex<Vec<String>>,
     /// The `gg` terminal command: where it is looked for, and what the shell said of it.
     cli: Mutex<cli::CliContext>,
+    /// gg updating itself (see [`update`]): without a backend, `unavailable`.
+    updates: Arc<update::Updates>,
     sink: Arc<dyn EventSink>,
 }
 
@@ -116,6 +119,7 @@ impl Core {
             repos
         });
         let login_path = repos.as_ref().ok().and_then(|r| r.login_path());
+        let updates = update::Updates::new(sink.clone(), store.settings().check_for_updates);
         Arc::new(Self {
             repos,
             log,
@@ -125,6 +129,7 @@ impl Core {
             io_turn: tokio::sync::Mutex::new(()),
             opened: Mutex::new(Vec::new()),
             cli: Mutex::new(cli::CliContext::new(login_path)),
+            updates,
             sink,
         })
     }
@@ -171,6 +176,12 @@ impl Core {
                 let _ = repos.open_in_background(std::path::Path::new(&path)).await;
             });
         }
+    }
+
+    /// Gives updating its backend: the Tauri app's updater, or the devserver's fake. Without
+    /// one, updating is `unavailable`. Checks start once the UI asks (`start_update_checks`).
+    pub fn set_update_backend(&self, backend: Arc<dyn update::UpdateBackend>) {
+        self.updates.set_backend(backend);
     }
 
     /// Sets the file `perf_mark` appends `name<TAB>ms<TAB>epoch_ms` lines to, where

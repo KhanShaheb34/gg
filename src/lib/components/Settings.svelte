@@ -16,6 +16,7 @@
   import { openCliDialog, removeCli } from "../state/cli.svelte";
   import { showDialog } from "../state/overlays.svelte";
   import { findRepoView } from "../state/repo.svelte";
+  import { brewHint, checkNow, openDownloadPage, restartToUpdate, statusLine, updates } from "../state/updates.svelte";
   import {
     commandWords,
     FETCH_CHOICES,
@@ -43,6 +44,7 @@
     editor: new SettingField("editorCommand", TEXT_DELAY_MS),
     terminal: new SettingField("terminalCommand", TEXT_DELAY_MS),
     pattern: new SettingField("worktreePattern", TEXT_DELAY_MS),
+    updates: new SettingField("checkForUpdates"),
   };
   /** A command field, as the snippet that draws it uses it. */
   type CommandField = { status: SaveStatus; error: string | null; set: (v: string | null) => void; flush: () => Promise<boolean> };
@@ -158,6 +160,32 @@
       },
     });
   }
+
+  // --- Updates ------------------------------------------------------------------------
+
+  /** A minute's tick, so "Checked 2 min ago" moves on while the sheet is open. */
+  let now = $state(Date.now());
+  onMount(() => {
+    const timer = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(timer);
+  });
+  const update = $derived(updates.status);
+  const updateLine = $derived(statusLine(update, app.settings.checkForUpdates, app.settings.dateFormat, now));
+  /**
+   * Restart to update, from here: what is typed is saved first. A field that could not be
+   * saved (its message is beside it) keeps gg from restarting, so nothing typed is lost.
+   */
+  async function restartFromHere() {
+    for (const field of [fields.editor, fields.terminal, fields.pattern]) {
+      if (!(await field.flush())) {
+        notify({ kind: "info", message: "gg did not restart: a setting you typed could not be saved. Fix it or clear it, then restart." });
+        return;
+      }
+    }
+    await restartToUpdate();
+  }
+  /** A check, download or install runs: Check now waits. */
+  const updateBusy = $derived(["checking", "downloading", "installing"].includes(update.state));
 
   // --- Sections -----------------------------------------------------------------------
 
@@ -505,6 +533,60 @@
         </div>
       </div>
       <div class="setting">
+        <div class="name"><span>Updates</span>{@render status(fields.updates)}</div>
+        <div class="control">
+          <label class="check-row update-auto">
+            <input
+              class="checkbox"
+              type="checkbox"
+              checked={app.settings.checkForUpdates}
+              data-testid="settings-check-updates"
+              onchange={(e) => {
+                const on = e.currentTarget.checked;
+                app.settings.checkForUpdates = on;
+                fields.updates.set(on);
+              }}
+            />
+            <span>
+              Check for updates automatically
+              <span class="check-note">Shortly after gg starts, then once a day, gg asks GitHub for a small file describing the latest release. It carries nothing about you or your repositories.</span>
+            </span>
+          </label>
+          {#if fields.updates.error}<p class="problem" role="alert">{fields.updates.error}</p>{/if}
+          <p class="state update-state" role="status" data-testid="settings-update-status" data-state={update.state}>
+            <span class="dot {updateLine.tone}" aria-hidden="true"></span>{updateLine.text}
+          </p>
+          {#if update.state === "failed" && update.detail}
+            <p class="update-detail selectable" data-testid="settings-update-detail">{update.detail}</p>
+          {:else if update.state === "available"}
+            <p class="explain" data-testid="settings-update-reason">{update.reason}</p>
+            {#if brewHint()}
+              <p class="explain" data-testid="settings-update-brew">Or update it with Homebrew: <code class="selectable">{brewHint()}</code></p>
+            {/if}
+          {/if}
+          {#if update.state !== "unavailable"}
+            <div class="buttons">
+              {#if update.state === "ready" || update.state === "installing"}
+                <button
+                  type="button"
+                  class="button primary"
+                  disabled={update.state === "installing"}
+                  data-testid="settings-update-restart"
+                  onclick={() => void restartFromHere()}>Restart to update</button
+                >
+              {:else if update.state === "available"}
+                <button type="button" class="button primary" data-testid="settings-update-download" onclick={() => void openDownloadPage()}
+                  >Download page</button
+                >
+              {/if}
+              <button type="button" class="button" disabled={updateBusy} data-testid="settings-update-check" onclick={() => void checkNow()}
+                >Check now</button
+              >
+            </div>
+          {/if}
+        </div>
+      </div>
+      <div class="setting">
         <div class="name"><span>Settings file</span></div>
         <div class="control">
           <p class="file"><code class="selectable" data-testid="settings-file">{shortenPath(app.settingsFile, app.homeDir)}</code></p>
@@ -739,8 +821,48 @@
     background: var(--border-strong);
   }
 
-  .dot.on {
+  .dot.on,
+  .dot.ok {
     background: var(--success);
+  }
+
+  .dot.busy {
+    background: var(--accent);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  .dot.warn {
+    background: var(--warning);
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot.busy {
+      animation: none;
+    }
+  }
+
+  .update-auto {
+    margin-top: 4px;
+    font-size: var(--fs);
+  }
+
+  .update-state {
+    padding-top: 2px;
+  }
+
+  .update-detail {
+    max-width: 100%;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
   }
 
   .warn {
@@ -795,6 +917,26 @@
 
   .button:disabled {
     color: var(--text-faint);
+  }
+
+  .button.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-contrast);
+  }
+
+  .button.primary:hover:not(:disabled) {
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
+  }
+
+  .button.primary:active:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-hover) 88%, black);
+  }
+
+  .button.primary:disabled {
+    opacity: 0.6;
+    color: var(--accent-contrast);
   }
 
   .link-btn {

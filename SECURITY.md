@@ -30,6 +30,50 @@ gg runs git on repositories that may come from anyone, so these matter most:
   other than the remote they belong to.
 - The development server (`gg-devserver`) answering anything other than the local machine
   or the allowed origins.
+- **Updates.** Any way to make gg install something that is not a release signed with gg's
+  key, an older release, or to make it fetch updates from anywhere but the release on
+  GitHub (see below).
+
+## Updates
+
+gg updates itself with Tauri's updater plugin, driven by the app's core (the web view has no
+access to it):
+
+- **One source.** The app asks one URL, over HTTPS:
+  `https://github.com/KhanShaheb34/gg/releases/latest/download/latest.json`. It is compiled
+  into the app (`src-tauri/tauri.conf.json`); no setting, argument or environment variable
+  changes it. Tests (`src-tauri/tests/update_source.rs` and `lib.rs`'s) check that the shipped
+  configuration names that URL and the key below and nothing that loosens the checks; only
+  the development build used for performance tests (`--features perf`, bundle identifier
+  `com.shakirul.gg.perf`) can be pointed at a local test server, with a test key.
+- **Signed.** Each release's update (the macOS `.app.tar.gz`, the Linux AppImage, the Windows
+  installer) is signed with a minisign key held only as GitHub Actions secrets
+  (`TAURI_SIGNING_PRIVATE_KEY`, password-protected, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`).
+  One step of the release workflow sees them: "Sign the updates", in a job that checks nothing
+  out and builds nothing, which runs only the release's signer (`crates/gg-release`, built
+  beforehand in another job without the secrets) by its absolute path with a clean `PATH`. The
+  jobs that build the app, its dependencies and its build scripts never see the key; the
+  signer prints only file names, and only the signatures are kept as artifacts. Without the
+  secrets that step fails and nothing is released. The app verifies the
+  download against the public key built into it before installing anything; a download that
+  does not verify, or whose signature was made for another version than the one offered
+  (`requireSignedVersion`), is refused and nothing is installed. The public key is:
+
+  ```text
+  untrusted comment: minisign public key: 86DEEA715E3B4F95
+  RWSVTztecerehnGJxp5eHACEvK0QoZevuuJ/BrG75e6vUuwbELWNkl1g
+  ```
+
+- **Checked before it is published.** Before the draft release is created, the workflow
+  verifies every update's signature against the key in the app's config, with the same
+  verifier the app uses (`crates/gg-release`), and checks that `latest.json` names the
+  release's version and only that release's own assets.
+- **Never older.** Only a strictly newer version is offered: never the same one, an older
+  one or a pre-release.
+- **Private.** The check asks GitHub for a small file describing the latest release (GitHub
+  answers through a redirect to its file host). It carries nothing about the user, what is on
+  their machine or their repositories beyond what any web request does (the IP address, and a
+  user agent naming the updater), and can be turned off in Settings → About.
 
 ## Out of scope
 

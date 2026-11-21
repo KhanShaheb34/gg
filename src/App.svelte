@@ -33,6 +33,7 @@
   } from "./lib/state/app.svelte";
   import { openCliDialog } from "./lib/state/cli.svelte";
   import { openSettings, openShortcuts } from "./lib/state/settings.svelte";
+  import { initUpdates } from "./lib/state/updates.svelte";
   import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
   import { fromAppMenu, overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
@@ -162,6 +163,8 @@
 
   onMount(() => {
     void init();
+    // Looking for a new version of gg: once the first rows are on screen.
+    const stopUpdates = initUpdates();
     const stopFocus = trackWindowFocus(window, document, windowFocusChanged);
     const stopDrop = onFolderDrop(async (event) => {
       dragging = event.kind === "enter";
@@ -180,6 +183,7 @@
     };
     document.addEventListener("contextmenu", onContextMenu);
     return () => {
+      stopUpdates();
       stopFocus();
       stopDrop();
       stopCliMenu();

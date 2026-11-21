@@ -17,7 +17,8 @@ export type ToastKind = "info" | "error";
  */
 export type ToastAction = { label: string; run: () => void | Promise<void>; danger?: boolean; keepOpen?: boolean };
 /**
- * A notice. A persistent one stays until dismissed. `detail` (git's own text, say) shows
+ * A notice. A persistent one stays until dismissed. `note` says more under the message;
+ * `detail` (git's own text, say) shows
  * below the message, or behind a disclosure with `foldDetail`. `actions` are buttons on it;
  * `link` a quieter one after them ("Show log").
  */
@@ -25,6 +26,8 @@ export type Toast = {
   id: number;
   kind: ToastKind;
   message: string;
+  /** A sentence under the message, in its own words (not git's output). */
+  note?: string;
   detail?: string;
   foldDetail?: boolean;
   persistent?: boolean;
@@ -50,6 +53,7 @@ export const app = $state({
     terminalCommand: null,
     worktreePattern: "../{repo}.worktrees/{branch}",
     dateFormat: "standard",
+    checkForUpdates: true,
   } as Settings,
   /** The file settings are kept in, as the core says. */
   settingsFile: "",
@@ -65,6 +69,8 @@ export const app = $state({
    * window shows the tabs that are, and no welcome screen.
    */
   restoring: false,
+  /** Every tab of the saved session (and the launch path) has been reopened, or given up on. */
+  sessionReopened: false,
   /** The core could not find git: nothing can be opened. */
   gitMissing: false,
   /** The user's home folder, for showing paths as `~/…`. */
@@ -528,6 +534,7 @@ export async function init(): Promise<void> {
   if (app.activeRepoId === null && app.tabs.length > 0) show(app.tabs[0].repoId);
   restoreTarget = null;
   app.restoring = false;
+  app.sessionReopened = true;
   if (tabs.length > 0 || launch) {
     saveSession();
     await refreshRecents();

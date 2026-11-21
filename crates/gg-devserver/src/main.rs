@@ -11,20 +11,25 @@
 //! tests pass both: temp folders and a stand-in shell, never the user's own). With
 //! `--tool-path <PATH>`, `gh` and `ssh` are found and run on that `PATH` instead of the login
 //! shell's (the UI's tests pass a folder holding a fake `gh` and `ssh`, never the real ones).
+//! With `--fake-updates <dir>`, updating gg is a stand-in that answers from files in `<dir>`
+//! (see `fake_updates.rs`); without it, updating is unavailable. Nothing is downloaded.
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use gg_core::Core;
+use gg_devserver::fake_updates::FakeUpdates;
 use gg_devserver::{DEFAULT_ORIGINS, Events, serve};
 use tokio::net::TcpListener;
 
 const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--open <path>] \
                      [--allow-origin <origin>]... [--exit-on-stdin-eof] \
                      [--record-launches <file>] [--cli-path <PATH>] \
-                     [--cli-shell <program>] [--tool-path <PATH>]";
+                     [--cli-shell <program>] [--tool-path <PATH>] \
+                     [--fake-updates <dir>]";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -44,6 +49,8 @@ struct Args {
     cli_shell: Option<PathBuf>,
     /// The `PATH` `gh` and `ssh` are found and run on.
     tool_path: Option<OsString>,
+    /// The folder the stand-in for the updater answers from.
+    fake_updates: Option<PathBuf>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -57,6 +64,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut cli_path = None;
     let mut cli_shell = None;
     let mut tool_path = None;
+    let mut fake_updates = None;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -90,6 +98,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
             "--cli-path" => cli_path = Some(value()?),
             "--cli-shell" => cli_shell = Some(PathBuf::from(value()?)),
             "--tool-path" => tool_path = Some(value()?),
+            "--fake-updates" => fake_updates = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -103,6 +112,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         cli_path,
         cli_shell,
         tool_path,
+        fake_updates,
     })
 }
 
@@ -175,6 +185,9 @@ async fn main() -> ExitCode {
     if args.tool_path.is_some() {
         core.set_tool_path(args.tool_path);
     }
+    if let Some(dir) = args.fake_updates {
+        core.set_update_backend(Arc::new(FakeUpdates::new(dir)));
+    }
     core.start_cli(gg_core::cli::CliSetup {
         shell: args
             .cli_shell
@@ -229,6 +242,7 @@ mod tests {
                 cli_path: None,
                 cli_shell: None,
                 tool_path: None,
+                fake_updates: None,
             }
         );
         assert_eq!(
@@ -251,6 +265,8 @@ mod tests {
                 "/fake/sh",
                 "--tool-path",
                 "/fake/bin",
+                "--fake-updates",
+                "/fake/updates",
             ])
             .unwrap(),
             Args {
@@ -263,6 +279,7 @@ mod tests {
                 cli_path: Some("/a:/b".into()),
                 cli_shell: Some("/fake/sh".into()),
                 tool_path: Some("/fake/bin".into()),
+                fake_updates: Some("/fake/updates".into()),
             }
         );
         for bad in [

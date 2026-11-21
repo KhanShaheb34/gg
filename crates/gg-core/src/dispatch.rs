@@ -277,22 +277,26 @@ impl Core {
             }
             "update_settings" => {
                 let a: UpdateSettingsArgs = parse(cmd, args)?;
+                // Applied in the same turn as the write, so two quick changes apply in the
+                // order they are saved.
                 let settings = self
-                    .blocking(move |core| core.store.update_settings(a.patch))
+                    .blocking(move |core| {
+                        let settings = core.store.update_settings(a.patch)?;
+                        core.apply_settings(&settings);
+                        Ok(settings)
+                    })
                     .await?;
-                if let Ok(repos) = self.repos() {
-                    repos.set_fetch_interval(settings.fetch_interval_secs);
-                }
                 to_json(settings)
             }
             "restore_default_settings" => {
                 let NoArgs {} = parse(cmd, args)?;
                 let settings = self
-                    .blocking(|core| core.store.restore_default_settings())
+                    .blocking(|core| {
+                        let settings = core.store.restore_default_settings()?;
+                        core.apply_settings(&settings);
+                        Ok(settings)
+                    })
                     .await?;
-                if let Ok(repos) = self.repos() {
-                    repos.set_fetch_interval(settings.fetch_interval_secs);
-                }
                 to_json(settings)
             }
             "reset_settings" => {
@@ -371,6 +375,8 @@ impl Core {
                 let repos = self.repos()?.clone();
                 // Fails for an unknown repository; the fetch's own outcome arrives as events.
                 repos.check_open(a.repo_id)?;
+                // Said now: the fetch itself is refused too, but on its own task.
+                repos.refuse_if_restarting()?;
                 // On its own task, so a caller that goes away (a closed HTTP request) does
                 // not cancel it.
                 tokio::spawn(async move {
@@ -520,6 +526,43 @@ impl Core {
                         .collect(),
                 })
             }
+            "update_status" => {
+                let NoArgs {} = parse(cmd, args)?;
+                to_json(self.updates.status())
+            }
+            "start_update_checks" => {
+                let NoArgs {} = parse(cmd, args)?;
+                self.updates.start();
+                to_json(self.updates.status())
+            }
+            "check_for_updates" => {
+                let NoArgs {} = parse(cmd, args)?;
+                // On its own task: the status arrives as `update-changed` events.
+                self.updates.check_soon();
+                Ok(Value::Null)
+            }
+            "restart_to_update" => {
+                let NoArgs {} = parse(cmd, args)?;
+                // From here until gg exits, or the install fails, no operation or fetch the
+                // user asks for is admitted; refused while one runs.
+                let repos = self.repos().ok().cloned();
+                if let Some(repos) = &repos {
+                    repos.begin_restart()?;
+                }
+                // The store's writes asked for before this (the open tabs) land first.
+                let installed = {
+                    let _turn = self.io_turn.lock().await;
+                    self.off_runtime(|core| core.updates.install_and_restart())
+                        .await
+                };
+                if installed.is_err()
+                    && let Some(repos) = &repos
+                {
+                    repos.end_restart();
+                }
+                installed?;
+                Ok(Value::Null)
+            }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;
                 self.blocking(move |core| core.perf_mark(&a.name, a.ms))
@@ -531,6 +574,20 @@ impl Core {
                 format!("Unknown command: {cmd}"),
             )),
         }
+    }
+
+    /// Puts settings just saved into effect: the fetch interval, the automatic update checks.
+    fn apply_settings(&self, settings: &crate::dto::Settings) {
+        if let Ok(repos) = self.repos() {
+            repos.set_fetch_interval(settings.fetch_interval_secs);
+        }
+        self.updates.set_enabled(settings.check_for_updates);
+    }
+
+    /// Whether automatic update checks are on, as applied (tests).
+    #[cfg(any(test, feature = "testutil"))]
+    pub fn update_checks_on(&self) -> bool {
+        self.updates.automatic()
     }
 
     /// Runs `f`, which does file I/O (the store writes and syncs `state.json` under its

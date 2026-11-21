@@ -25,3 +25,12 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["sync"] }
+
+# gg updating itself (src/update.rs): checks GitHub's latest release for a signed update.
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+# `~`: update.rs configures its reqwest client, whose type may change in a minor release.
+tauri-plugin-updater = "~2.14.1"
+
+[dev-dependencies]
+# A minisign error for the updater's error mapping test (the plugin verifies with it).
+minisign-verify = "0.3"

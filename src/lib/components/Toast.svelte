@@ -108,6 +108,9 @@
         <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
              what is around it. -->
         <p class="message"><bdi>{visibleText(homeInText(toast.message, app.homeDir))}</bdi></p>
+        {#if toast.note}
+          <p class="note">{toast.note}</p>
+        {/if}
         {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
         {/if}
@@ -205,6 +208,14 @@
   .message {
     overflow-wrap: anywhere;
     line-height: 18px;
+  }
+
+  .note {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
   }
 
   .detail {

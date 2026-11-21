@@ -78,6 +78,11 @@ pub struct RepoManager {
     runner: GitRunner,
     pub(crate) sink: Arc<dyn EventSink>,
     pub(super) repos: Mutex<HashMap<u32, Arc<Repo>>>,
+    /// gg is restarting to update: no operation or fetch the user asks for is admitted.
+    /// Operations and user fetches are counted (`op_waiting`, `user_fetch`) with this held,
+    /// and [`RepoManager::begin_restart`] looks for them with it held, so none slips in
+    /// between.
+    pub(crate) restarting: Mutex<bool>,
     next_id: AtomicU32,
     /// Fetch interval and window focus.
     pub(super) schedule: Mutex<Schedule>,
@@ -694,6 +699,7 @@ impl RepoManager {
             runner,
             sink,
             repos: Mutex::new(HashMap::new()),
+            restarting: Mutex::new(false),
             next_id: AtomicU32::new(1),
             schedule: Mutex::new(Schedule::new()),
             schedule_changed: Arc::new(Notify::new()),
@@ -1814,6 +1820,69 @@ impl RepoManager {
         Ok(())
     }
 
+    /// Stops admitting operations and fetches the user asks for, for a restart to update:
+    /// `busy`, naming the repository, while one runs or waits anywhere (then nothing
+    /// changes). Until [`RepoManager::end_restart`], each new one is refused (`busy`, "gg is
+    /// restarting to update.").
+    pub fn begin_restart(&self) -> Result<()> {
+        let mut restarting = lock(&self.restarting);
+        if let Some(name) = self.busy_repo() {
+            return Err(CoreError::new(
+                ErrorCode::Busy,
+                format!(
+                    "gg cannot restart while git is working in {name}. Restart once it is done."
+                ),
+            ));
+        }
+        *restarting = true;
+        Ok(())
+    }
+
+    /// The restart did not happen (the install failed): operations are admitted again.
+    pub fn end_restart(&self) {
+        *lock(&self.restarting) = false;
+    }
+
+    /// Counts an operation or user fetch in, unless gg is restarting to update (`busy`).
+    /// `count` runs with the admission lock held.
+    pub(crate) fn admit(&self, count: impl FnOnce()) -> Result<()> {
+        let restarting = lock(&self.restarting);
+        if *restarting {
+            return Err(restarting_error());
+        }
+        count();
+        Ok(())
+    }
+
+    /// `busy` if gg is restarting to update (a hint for the caller; [`RepoManager::admit`]
+    /// is what holds).
+    pub fn refuse_if_restarting(&self) -> Result<()> {
+        if *lock(&self.restarting) {
+            return Err(restarting_error());
+        }
+        Ok(())
+    }
+
+    /// The name (its folder's) of an open repository where an operation runs or waits for
+    /// its turn, or a fetch the user asked for runs; `None` when nothing does. Restarting gg
+    /// to update it waits until then.
+    pub fn busy_repo(&self) -> Option<String> {
+        let repos: Vec<Arc<Repo>> = lock(&self.repos).values().cloned().collect();
+        repos
+            .iter()
+            .find(|repo| {
+                repo.op_queue.try_lock().is_err()
+                    || repo.op_waiting.load(Ordering::SeqCst) > 0
+                    || repo.user_fetch.load(Ordering::SeqCst)
+            })
+            .map(|repo| {
+                repo.root.file_name().map_or_else(
+                    || repo.root.to_string_lossy().into_owned(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+            })
+    }
+
     /// `Ok` if repository `repo_id` is open, else `unknown_repo`.
     pub fn check_open(&self, repo_id: u32) -> Result<()> {
         self.get(repo_id).map(|_| ())
@@ -2751,6 +2820,10 @@ fn bare_repo() -> CoreError {
         ErrorCode::BareRepo,
         "This folder is a bare repository, which has no working tree to show.",
     )
+}
+
+fn restarting_error() -> CoreError {
+    CoreError::new(ErrorCode::Busy, "gg is restarting to update.")
 }
 
 fn busy_with_fetch() -> CoreError {

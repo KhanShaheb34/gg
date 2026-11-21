@@ -714,6 +714,60 @@ function fakeTools(home: string): string {
   return tools;
 }
 
+/** The folder the devserver's stand-in for the updater answers from (`--fake-updates`). */
+function updatesDir(home: string): string {
+  const dir = path.join(home, "updates");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * The stand-in for gg's updater (gg-devserver's `--fake-updates`): what the update source
+ * offers, what fails, why this copy cannot update itself, and the restarts asked for. Read
+ * by the devserver at each check, so a test may change it between checks.
+ */
+export type FakeUpdates = {
+  /** The running version (default: the core's). */
+  running(version: string): void;
+  /** The update source offers `version` (null: nothing newer). */
+  offer(version: string | null): void;
+  /** The check fails with `kind` (`offline`, `notFound`, `badManifest`, …) and `detail`. */
+  checkFails(kind: string, detail: string): void;
+  /** The download fails, or (null) works again. */
+  download(fail: { kind: string; detail: string } | null): void;
+  /** Downloads stop halfway until `openDownloadGate`. */
+  holdDownloads(): void;
+  openDownloadGate(): void;
+  /** Why this copy cannot update itself (`translocated`, `diskImage`, `notWritable <folder>`, …); null: it can. */
+  blocker(reason: string | null): void;
+  /** The restarts asked for (the running version each), oldest first. */
+  restarts(): string[];
+};
+
+function fakeUpdates(home: string): FakeUpdates {
+  const dir = updatesDir(home);
+  const put = (name: string, text: string) => writeFileSync(path.join(dir, name), text);
+  return {
+    running: (version) => put("version", version),
+    offer: (version) => put("check.json", JSON.stringify({ offer: version })),
+    checkFails: (kind, detail) => put("check.json", JSON.stringify({ fail: kind, detail })),
+    download(fail) {
+      if (fail) put("download.json", JSON.stringify({ fail: fail.kind, detail: fail.detail }));
+      else rmSync(path.join(dir, "download.json"), { force: true });
+    },
+    holdDownloads: () => put("download-gate", ""),
+    openDownloadGate: () => rmSync(path.join(dir, "download-gate"), { force: true }),
+    blocker(reason) {
+      if (reason) put("blocker", reason);
+      else rmSync(path.join(dir, "blocker"), { force: true });
+    },
+    restarts() {
+      const file = path.join(dir, "restarts");
+      return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter((l) => l !== "") : [];
+    },
+  };
+}
+
 /** The fake `gh` of a test (see FAKE_GH). */
 export type FakeGh = {
   /** Answers calls of `key` (`pr-list`, `pr-list-head`, `repo-view`, `pr-create`, `auth-token`). */
@@ -808,6 +862,8 @@ export function startDevserver(
       // gh and ssh: the fakes only (see FAKE_GH).
       "--tool-path",
       fakeTools(home),
+      // Updating gg: the stand-in only, answering from files (see FakeUpdates); nothing is downloaded.
+      ...(binary === DEVSERVER ? ["--fake-updates", updatesDir(home)] : []),
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
@@ -931,6 +987,8 @@ export type GG = {
   launches(): string[][];
   /** The fake `gh` the devserver runs (the real one never runs). */
   gh: FakeGh;
+  /** The stand-in for gg's updater. */
+  updates: FakeUpdates;
   /** The app quit and started again: a new devserver on the same config folder, the page loaded afresh. */
   relaunch(): Promise<void>;
 };
@@ -1019,7 +1077,7 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggCliFolders: nu
         await page.reload();
       };
 
-      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), relaunch });
+      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), updates: fakeUpdates(root), relaunch });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

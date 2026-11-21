@@ -230,6 +230,45 @@ command again (the command says so when it cannot find the app). On Windows the 
 `gg.cmd`, written into a folder of your own that is already on your `PATH` (such as
 `%LOCALAPPDATA%\Microsoft\WindowsApps`); it too starts the app from where it was installed.
 
+## Updates
+
+gg looks for a newer version shortly after its first rows are on screen (so the check never
+slows its start), and then about once a day while it runs. It asks GitHub for a small file
+describing the latest release (`latest.json`; GitHub answers through a redirect to its file
+host). The request carries nothing about you, what is on your machine or your repositories
+beyond what any web request does: your IP address, and a user agent naming the updater. When a
+newer version is there it is downloaded in the background and its signature checked against
+the key built into gg; then a notice says **gg X.Y.Z is ready.** with **Restart to update**.
+
+- gg never restarts by itself. Dismiss the notice and it comes back the next time gg starts;
+  **Settings → About** keeps saying it meanwhile, with its own **Restart to update**.
+- Restart is refused, with the reason, while git is working in an open repository (an
+  action, or a fetch you asked for): restart once it is done. Once you restart, gg starts no
+  new action until it has restarted (or the install failed): "gg is restarting to update." After the restart the new
+  version runs from the same place, with the repositories and tabs that were open.
+- A check or download that fails says nothing in a notice: **Settings → About** says what
+  happened (GitHub could not be reached, the download was not found, its signature did not
+  match, …) and gg tries again an hour later. A download whose signature does not match gg's
+  key is never installed.
+- Only a newer version is ever offered: never the one running, an older one or a
+  pre-release.
+- **Settings → About → Check for updates automatically** turns the checks off (a download
+  they started stops too); **Check now** looks at once, whatever the setting.
+
+Where gg cannot replace itself, a notice says **gg X.Y.Z is available.**, why, and links the
+download page (gg.shakirul.com):
+
+- on macOS, when gg runs from its disk image, or from where it was downloaded (macOS then
+  runs a temporary copy of it): drag gg to **Applications** and open it from there;
+- when gg's folder (or the app itself) cannot be written to by you;
+- on Linux, when gg was installed from the `.deb` package: update it with your package
+  manager (only the AppImage replaces itself).
+
+On macOS, an app installed with Homebrew updates itself like any other (it is in
+**Applications**); if it cannot, the notice and **Settings → About** also say
+`brew upgrade --cask gg` (when Homebrew set up the `gg` command, which is how gg knows). On Windows the
+installer runs to put the new version in place (a small progress window) and starts gg again.
+
 ## Upgrading from a build made before the rename
 
 The app was renamed to gg, which gives it a new identity on macOS. Your settings, recent

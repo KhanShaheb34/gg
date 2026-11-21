@@ -207,7 +207,32 @@ export type Settings = {
   worktreePattern: string;
   /** How dates are shown (see format.ts `DateFormat`). */
   dateFormat: "standard" | "relative" | "iso" | "locale";
+  /** gg looks for a new version of itself shortly after it starts and about once a day. */
+  checkForUpdates: boolean;
 };
+
+/**
+ * Where gg updating itself stands (the core's `UpdateStatus`, sent as `update-changed`):
+ * `unavailable` in a build that does not update itself; `available`: a newer version this
+ * copy cannot install itself (`reason` says why); `failed` says which step and why.
+ */
+export type UpdateStatus =
+  | { state: "unavailable" }
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "upToDate"; checkedAtMs: number }
+  | { state: "downloading"; version: string; received: number; total: number | null }
+  | { state: "ready"; version: string }
+  | { state: "installing"; version: string }
+  | { state: "available"; version: string; reason: string }
+  | {
+      state: "failed";
+      step: "check" | "download" | "install";
+      version: string | null;
+      message: string;
+      detail: string | null;
+      atMs: number;
+    };
 /** What `open_external` opens: a worktree (`path`; the active one when omitted) or an `https://` page. */
 export type ExternalRequest = { target: "editor" | "terminal" | "reveal"; path?: string } | { target: "url"; url: string };
 /**

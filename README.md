@@ -56,6 +56,20 @@ either way:
 
 After the first time it opens normally.
 
+### Updates
+
+gg updates itself. Shortly after it starts, and about once a day while it runs, it looks for a
+newer release; when there is one it downloads it in the background, checks its signature,
+and says **gg X.Y.Z is ready** with a **Restart to update** button. It never restarts by
+itself, and waits while git is working. Settings → About shows where this stands, has
+**Check now**, and turns the automatic checks off.
+
+Where gg cannot replace itself it says so, and links the download page instead: when it runs
+from the disk image or from where it was downloaded (move it to Applications first), from a
+folder you may not write to, or from a Linux `.deb` package (update that with your package
+manager; the AppImage updates itself). An app installed with Homebrew updates itself like any
+other; `brew upgrade --cask gg` works too, and gg names it when it cannot update itself.
+
 ### Windows and Linux
 
 Each release also has a Windows installer and a Linux AppImage and `.deb`, on the
@@ -248,8 +262,17 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
   ask on a terminal fails at once instead: commit signing with a loopback pinentry, an SSH
   key whose passphrase is not in an agent, hooks that read `/dev/tty`. Use an agent
   (ssh-agent, gpg-agent, 1Password) or a graphical pinentry such as pinentry-mac.
-- No telemetry and no account. The only network use is git talking to your own remotes,
-  and `gh` when you use pull requests.
+- No telemetry and no account. gg itself uses the network only to look for updates: shortly
+  after it starts and about once a day it asks GitHub, over HTTPS, for a small file describing
+  the latest release (`latest.json`; GitHub answers through a redirect to its file host), and
+  when there is a new version it downloads it from the same release. These requests carry
+  nothing about you, what is on your machine or your repositories beyond what any web request
+  does: your IP address, and a user agent naming the updater. Turn the checks off in
+  Settings → About. Otherwise the network is git talking to your own remotes, and `gh` when you
+  use pull requests.
+- Updates are signed. gg installs one only if its signature verifies with the public key
+  built into the app and was made for the version offered; anything else is refused and
+  nothing is installed. See [SECURITY.md](SECURITY.md#updates).
 - Credentials in URLs (`https://user:token@host/…`) are shown as `***` in everything gg
   displays: notices, errors and the command log.
 
@@ -328,7 +351,7 @@ Method, all numbers, the misses, and how to reproduce them:
 
 ## Status
 
-gg is at version 0.3.1. It is used every day on macOS. The Windows and Linux builds are built
+gg is at version 0.4.0. It is used every day on macOS. The Windows and Linux builds are built
 and tested on CI on every change, but have not been used for real yet.
 
 ## Contributing

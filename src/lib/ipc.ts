@@ -21,6 +21,7 @@ import type {
   RowsPage,
   ExternalRequest,
   Settings,
+  UpdateStatus,
   ViewOptions,
   WorktreeFiles,
   WorktreePath,
@@ -32,6 +33,7 @@ export type EventName =
   | "paths-opened"
   | "op-progress"
   | "cli-changed"
+  | "update-changed"
   | "menu-install-cli"
   | "menu-settings"
   | "menu-shortcuts";
@@ -392,6 +394,21 @@ export const api = {
   /** Removes the launchers the app wrote on the PATH; resolves to the command's state after. */
   /** Removes the launchers the app wrote; `removed`: the files that went (none: nothing to remove). */
   uninstallCli: () => call<CliState & { removed: string[] }>("uninstall_cli", {}),
+  /** Where gg updating itself stands. */
+  updateStatus: () => call<UpdateStatus>("update_status"),
+  /** Starts the update checks (once the first rows are shown; later calls do nothing). */
+  startUpdateChecks: () => call<UpdateStatus>("start_update_checks"),
+  /** Checks for a new version now ("Check now"); the outcome arrives as `update-changed`. */
+  async checkForUpdates(): Promise<void> {
+    await call("check_for_updates");
+  },
+  /**
+   * Puts the downloaded version in place and restarts gg. Refused (`busy`) while git works in
+   * an open repository; `io` when the install failed (the status says so too).
+   */
+  async restartToUpdate(): Promise<void> {
+    await call("restart_to_update");
+  },
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */

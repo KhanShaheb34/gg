@@ -2,11 +2,17 @@
 # Builds gg for macOS as one universal app (Apple silicon and Intel), puts the gg command's
 # launcher in it (Contents/Resources/gg, made by fill-launcher.sh), signs it ad hoc and
 # packs it in a disk image with a link to /Applications (made by hdiutil alone: no Finder
-# window styling through AppleScript). Writes into dist-release/ (git-ignored):
+# window styling through AppleScript), and packs the same signed app as the update the app
+# installs when it updates itself (scripts/update-archive.sh, which checks it extracts with
+# its signature intact). Writes into dist-release/ (git-ignored):
 #   gg-macos-universal.dmg
 #   gg-macos-universal.dmg.sha256   ("<sha256>  gg-macos-universal.dmg", as shasum -c reads)
-#   latest.json                      ({"version","file","sizeMb","sha256"} on one line, the
-#                                     shape the site's latest.json has)
+#   gg-macos-universal.app.tar.gz   the update (signed for the updater by the release
+#                                     workflow's sign job: gg-release sign)
+#   gg-macos-universal.app.tar.gz.sha256
+#   site-latest.json                 ({"version","file","sizeMb","sha256"} on one line, the
+#                                     shape the site's latest.json has; not the updater's
+#                                     latest.json, which the release workflow writes)
 # Needs the Rust targets aarch64-apple-darwin and x86_64-apple-darwin, pnpm and the UI's
 # packages. The version is the workspace Cargo.toml's.
 set -eu
@@ -75,7 +81,9 @@ check_launcher "$app"
 out=dist-release
 file=gg-macos-universal.dmg
 mkdir -p "$out"
-rm -f "$out/$file" "$out/$file.sha256" "$out/latest.json"
+update=gg-macos-universal.app.tar.gz
+rm -f "$out/$file" "$out/$file.sha256" "$out/site-latest.json" "$out/latest.json" \
+  "$out/$update" "$out/$update.sha256" "$out/$update.sig"
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/gg-dmg.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
@@ -86,17 +94,29 @@ check_launcher "$stage/gg.app"
 ln -s /Applications "$stage/Applications"
 hdiutil create -volname gg -srcfolder "$stage" -ov -format UDZO "$out/$file" >/dev/null
 
-# A pipe hides a failed shasum (sh has no pipefail): the hash is checked for its shape.
-sha=$(shasum -a 256 "$out/$file" | cut -d' ' -f1)
-printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$' || fail "could not compute the sha256 of $out/$file"
-printf '%s  %s\n' "$sha" "$file" >"$out/$file.sha256"
+# The update: the very app that went in the disk image (signed, with the launcher), checked
+# once extracted.
+sh scripts/update-archive.sh "$app" "$out/$update"
+
+# The sha256 of $out/$1 into $out/$1.sha256, as shasum -c reads it. A pipe hides a failed
+# shasum (sh has no pipefail): the hash is checked for its shape.
+checksum() {
+  cs_sha=$(shasum -a 256 "$out/$1" | cut -d' ' -f1)
+  printf '%s' "$cs_sha" | grep -Eq '^[0-9a-f]{64}$' || fail "could not compute the sha256 of $out/$1"
+  printf '%s  %s\n' "$cs_sha" "$1" >"$out/$1.sha256"
+}
+checksum "$file"
+checksum "$update"
+sha=$(cut -d' ' -f1 <"$out/$file.sha256")
 bytes=$(stat -f %z "$out/$file")
 # Megabytes as Finder counts them (10^6 bytes), one decimal.
 size=$(awk -v b="$bytes" 'BEGIN { printf "%.1f", b / 1000000 }')
 printf '{"version":"%s","file":"%s","sizeMb":%s,"sha256":"%s"}\n' \
-  "$version" "$file" "$size" "$sha" >"$out/latest.json"
+  "$version" "$file" "$size" "$sha" >"$out/site-latest.json"
 
 echo "release-macos: gg $version, $archs, $size MB"
 echo "  $out/$file"
 echo "  $out/$file.sha256"
-echo "  $out/latest.json"
+echo "  $out/$update (to be signed: gg-release sign --version $version $out/$update)"
+echo "  $out/$update.sha256"
+echo "  $out/site-latest.json"

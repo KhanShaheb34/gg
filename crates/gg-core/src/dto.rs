@@ -585,6 +585,9 @@ pub struct Settings {
     pub worktree_pattern: String,
     /// How dates are shown.
     pub date_format: DateFormat,
+    /// Whether gg looks for a new version of itself shortly after it starts and about once a
+    /// day while it runs (see [`crate::update`]).
+    pub check_for_updates: bool,
 }
 
 /// The default [`Settings::worktree_pattern`].
@@ -599,6 +602,7 @@ impl Default for Settings {
             terminal_command: None,
             worktree_pattern: DEFAULT_WORKTREE_PATTERN.to_owned(),
             date_format: DateFormat::Standard,
+            check_for_updates: true,
         }
     }
 }
@@ -1432,7 +1436,7 @@ mod tests {
                 "session": {"tabs": ["/r"], "active": null},
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                              "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
-                             "dateFormat": "standard"},
+                             "dateFormat": "standard", "checkForUpdates": true},
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,

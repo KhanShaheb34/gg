@@ -49,6 +49,7 @@ pub struct SettingsPatch {
     /// A blank pattern goes back to the default; any other must contain `{branch}`.
     pub worktree_pattern: Option<String>,
     pub date_format: Option<DateFormat>,
+    pub check_for_updates: Option<bool>,
 }
 
 /// A change to [`RepoPrefs`]: only the fields present are changed.
@@ -383,6 +384,9 @@ impl Store {
             if let Some(format) = patch.date_format {
                 data.settings.date_format = format;
             }
+            if let Some(check) = patch.check_for_updates {
+                data.settings.check_for_updates = check;
+            }
             if let Some(pattern) = patch.worktree_pattern {
                 // A blank pattern means the default.
                 data.settings.worktree_pattern = if pattern.trim().is_empty() {
@@ -526,6 +530,8 @@ impl StoreData {
                 worktree_pattern: field(settings, "worktreePattern")
                     .unwrap_or(defaults.worktree_pattern),
                 date_format: field(settings, "dateFormat").unwrap_or(defaults.date_format),
+                check_for_updates: field(settings, "checkForUpdates")
+                    .unwrap_or(defaults.check_for_updates),
             },
             repo_prefs,
         })
@@ -574,6 +580,7 @@ impl StoreData {
                     "terminalCommand",
                     "worktreePattern",
                     "dateFormat",
+                    "checkForUpdates",
                 ],
             )
             || lost_prefs
@@ -1431,6 +1438,50 @@ mod tests {
         let edited = Store::load(config.path()).settings();
         assert_eq!(edited.date_format, DateFormat::Standard);
         assert_eq!(edited.theme, Theme::Dark);
+    }
+
+    /// Checking for updates automatically: on by default, turned off and on, kept across a
+    /// reload; a value that is not a boolean reads as the default (on).
+    #[test]
+    fn check_for_updates_is_on_by_default_and_kept() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert!(store.settings().check_for_updates);
+        let s = store
+            .update_settings(patch(serde_json::json!({ "checkForUpdates": false })))
+            .unwrap();
+        assert!(!s.check_for_updates);
+        assert!(!Store::load(config.path()).settings().check_for_updates);
+        // Another setting's change leaves it alone.
+        let s = store
+            .update_settings(patch(serde_json::json!({ "theme": "dark" })))
+            .unwrap();
+        assert!(!s.check_for_updates);
+        assert!(
+            store
+                .update_settings(patch(serde_json::json!({ "checkForUpdates": true })))
+                .unwrap()
+                .check_for_updates
+        );
+        assert!(Store::load(config.path()).settings().check_for_updates);
+        assert!(
+            serde_json::from_value::<SettingsPatch>(serde_json::json!({"checkForUpdates": "no"}))
+                .is_err()
+        );
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"checkForUpdates": "no", "theme": "dark"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path()).settings();
+        assert!(edited.check_for_updates);
+        assert_eq!(edited.theme, Theme::Dark);
+        // Reset to defaults turns it back on.
+        let store = Store::load(config.path());
+        store
+            .update_settings(patch(serde_json::json!({ "checkForUpdates": false })))
+            .unwrap();
+        assert!(store.restore_default_settings().unwrap().check_for_updates);
     }
 
     /// "Reset to defaults" puts every setting back as a new install has it, and keeps the

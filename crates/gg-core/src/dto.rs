@@ -1383,6 +1383,52 @@ pub struct CliState {
     /// The folders the launcher can be written to, best first: on the login `PATH`,
     /// writable, not inside a repository.
     pub candidates: Vec<String>,
+    /// gg can turn off what shadows the command, with one line at the end of a start-up file
+    /// (see [`crate::shell_line`]), if the user asks: the shell's `gg` is an alias or a
+    /// function of zsh or bash, and that line is not there yet. `None` otherwise.
+    pub turn_off: Option<TurnOff>,
+    /// The start-up file holding a line gg added to turn off the shell's `gg`; `None` when
+    /// there is none.
+    pub shell_line: Option<String>,
+}
+
+/// What a line gg may add would turn off (see [`CliState::turn_off`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnOff {
+    /// The shell's `gg`: an alias or a function.
+    pub conflict: crate::shell_line::Conflict,
+    /// The start-up file the line would go at the end of.
+    pub file: String,
+}
+
+/// What asking gg to turn off the shell's `gg` did (`install_cli` with `turnOff`,
+/// `turn_off_shell_gg`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellLineAdded {
+    /// The start-up file the line went in, or was to go in.
+    pub file: String,
+    pub conflict: crate::shell_line::Conflict,
+    /// The line was added now; false when it was there already, or `problem` stopped it.
+    pub added: bool,
+    /// Why it could not be added (nothing was written); `None` when the line is in the file.
+    pub problem: Option<String>,
+    /// The login shell answered when asked again after: `CliState::shadowed_by` says whether
+    /// the line worked. False when it could not be asked, or did not answer.
+    pub checked: bool,
+}
+
+/// What taking gg's line out of the start-up files did (`remove_shell_line`, and
+/// `uninstall_cli`, which does it too).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellLineRemoved {
+    /// The files a line of gg's was taken out of (none when there was none).
+    pub line_removed_from: Vec<String>,
+    /// Why a line could not be taken out, or a line marked as gg's was left alone (changed
+    /// since); `None` when nothing stands in the way.
+    pub line_problem: Option<String>,
 }
 
 /// Who made the link that is the `gg` command (see [`CliState::link`]).
@@ -1425,6 +1471,11 @@ mod tests {
                 link: Some(CliLink::Homebrew),
                 shadowed_by: None,
                 candidates: vec!["/b".into()],
+                turn_off: Some(TurnOff {
+                    conflict: crate::shell_line::Conflict::Alias,
+                    file: "/h/.zshrc".into(),
+                }),
+                shell_line: None,
             },
             version: "0.1.0".into(),
         };
@@ -1443,7 +1494,9 @@ mod tests {
                 "settingsFile": "/c/state.json",
                 "gitProblem": null,
                 "cli": {"installed": "/b/gg", "link": "homebrew", "shadowedBy": null,
-                        "candidates": ["/b"]},
+                        "candidates": ["/b"],
+                        "turnOff": {"conflict": "alias", "file": "/h/.zshrc"},
+                        "shellLine": null},
                 "version": "0.1.0"
             })
         );

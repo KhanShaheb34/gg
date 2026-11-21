@@ -7,9 +7,13 @@
 //! one in the macOS app bundle, `gg.app/Contents/Resources/gg`, which a Homebrew cask links
 //! into its `bin`) is the command too, but it belongs to whoever made it: the app shows it as
 //! installed and never replaces, removes or writes through it. The app never needs
-//! administrator rights and never edits shell files, the `PATH` or the registry; when the
-//! user's shell already has a `gg` (an alias, a function, another program earlier on `PATH`),
-//! the app says so ([`shadowed_by`]).
+//! administrator rights and never edits the `PATH` or the registry; when the user's shell
+//! already has a `gg` (an alias, a function, another program earlier on `PATH`), the app says
+//! so ([`shadowed_by`]). Only when the user asks (a box ticked in the install dialog, a button
+//! in Settings) does it add one marked line to the end of their zsh or bash start-up file to
+//! turn off an alias or function called `gg`, and it takes that line out again when they
+//! remove the command in gg or ask in Settings ([`crate::shell_line`]); nothing else writes
+//! to a shell file.
 //!
 //! On Windows the launcher is `gg.cmd` (`src-tauri/resources/gg.cmd`), written into a folder
 //! of the user's own already on their `PATH` (`%LOCALAPPDATA%\Microsoft\WindowsApps`, which
@@ -24,8 +28,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::Core;
-use crate::dto::{CliLink, CliState};
+use crate::dto::{CliLink, CliState, ShellLineAdded, ShellLineRemoved, TurnOff};
 use crate::error::{CoreError, ErrorCode, Result};
+use crate::shell_line::{self, Conflict, Shell};
 
 /// The launcher, with `@GG_VERSION@` and `@GG_APP@` to fill in (see [`launcher_script`]).
 const TEMPLATE: &str = include_str!("../../../src-tauri/resources/gg");
@@ -519,12 +524,46 @@ pub fn shadowed_by(shell: &Path) -> Option<String> {
 }
 
 fn shadowed_by_within(shell: &Path, timeout: Duration) -> Option<String> {
+    ask_shell(shell, timeout)?.shadow.map(|s| s.what)
+}
+
+/// What the shell's own `gg` is: in a few words, and whether a line can turn it off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Shadow {
+    pub(crate) what: String,
+    /// An alias or a function; `None` for a program, a builtin, anything else.
+    pub(crate) conflict: Option<Conflict>,
+}
+
+/// The login shell's answer: what `gg` is to it, and its `ZDOTDIR` (where zsh reads
+/// `.zshrc` from; usually set in `~/.zshenv`, so only the shell itself knows it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Answer {
+    shadow: Option<Shadow>,
+    zdotdir: Option<PathBuf>,
+}
+
+/// Asks the login shell `shell` (see [`shadowed_by`]); `None` when it does not answer.
+fn ask_shell(shell: &Path, timeout: Duration) -> Option<Answer> {
     #[cfg(unix)]
     {
-        let script = "printf '\\n__GG_WHICH__'; command -V gg; printf '__GG_WHICH__'";
+        use std::os::unix::ffi::OsStrExt;
+        let script = "printf '\\n__GG_WHICH__'; command -V gg; printf '__GG_WHICH__%s__GG_WHICH__' \"${ZDOTDIR-}\"";
         let out = crate::git::runner::shell_output(shell, &["-ilc", script], timeout)?;
         let answer = crate::git::runner::between_markers(&out, WHICH_MARKER)?;
-        describe(&String::from_utf8_lossy(answer))
+        // What follows the answer's closing marker, up to the next one.
+        let rest = &out[out
+            .windows(WHICH_MARKER.len())
+            .position(|w| w == WHICH_MARKER)?
+            + WHICH_MARKER.len()
+            + answer.len()..];
+        let zdotdir = crate::git::runner::between_markers(rest, WHICH_MARKER)
+            .filter(|z| !z.is_empty())
+            .map(|z| PathBuf::from(OsStr::from_bytes(z)));
+        Some(Answer {
+            shadow: describe(&String::from_utf8_lossy(answer)),
+            zdotdir,
+        })
     }
     #[cfg(not(unix))]
     {
@@ -565,20 +604,24 @@ fn windows_shadowed_by(
 /// The shell's answer to `command -V gg` (zsh's, bash's or a POSIX sh's), in a few words;
 /// `None` when it is not found, is a launcher the app wrote, or the answer is not understood.
 #[cfg(unix)]
-fn describe(answer: &str) -> Option<String> {
+fn describe(answer: &str) -> Option<Shadow> {
     let line = answer.lines().map(str::trim).find(|l| !l.is_empty())?;
     let what = line.strip_prefix("gg is ")?.trim();
+    let shadow = |what: String, conflict| Some(Shadow { what, conflict });
     // zsh: "an alias for …"; bash: "aliased to `…'".
     if let Some(value) = what.strip_prefix("aliased to ") {
         let value = value.trim_start_matches(['`', '\'']).trim_end_matches('\'');
-        return Some(format!("an alias for {value}"));
+        return shadow(format!("an alias for {value}"), Some(Conflict::Alias));
     }
     if what.starts_with("an alias") {
-        return Some(what.to_owned());
+        return shadow(what.to_owned(), Some(Conflict::Alias));
     }
     // bash: "a function"; zsh: "a shell function (from …)".
     if what == "a function" {
-        return Some("a shell function".to_owned());
+        return shadow("a shell function".to_owned(), Some(Conflict::Function));
+    }
+    if what.starts_with("a shell function") {
+        return shadow(what.to_owned(), Some(Conflict::Function));
     }
     // A program: "/usr/local/bin/gg", or bash's "hashed (/usr/local/bin/gg)".
     let program = what
@@ -590,9 +633,9 @@ fn describe(answer: &str) -> Option<String> {
         if launcher_at(Path::new(program)).is_some() {
             return None;
         }
-        return Some(format!("the program {program}"));
+        return shadow(format!("the program {program}"), None);
     }
-    Some(what.to_owned())
+    shadow(what.to_owned(), None)
 }
 
 /// How [`Core::start_cli`] sets up the `gg` command.
@@ -616,6 +659,10 @@ pub(crate) struct CliContext {
     /// The last [`shadowed_by`] answer and the number of the check that gave it.
     shadowed_by: Option<String>,
     checked: u64,
+    /// Whether that answer is an alias or a function (one a line can turn off).
+    conflict: Option<Conflict>,
+    /// The login shell's `ZDOTDIR`, as it last said it.
+    zdotdir: Option<PathBuf>,
     /// Checks started so far.
     checks: u64,
 }
@@ -635,8 +682,48 @@ impl CliContext {
             app: app_program(),
             shadowed_by: None,
             checked: 0,
+            conflict: None,
+            zdotdir: None,
             checks: 0,
         }
+    }
+
+    /// The shell whose start-up file a line of gg's may go in, the home folder, and
+    /// `ZDOTDIR`: only on Unix, with a login shell to ask (none in tests that set none) and a
+    /// home folder. The shell is `None` when it is neither zsh nor bash (no line is offered;
+    /// one added before is still found and can be taken out).
+    fn shell_files(&self) -> Option<(Option<Shell>, PathBuf, Option<PathBuf>)> {
+        if !cfg!(unix) {
+            return None;
+        }
+        let shell = self.shell.as_deref()?;
+        let home = self.home.clone()?;
+        Some((Shell::of(shell), home, self.zdotdir.clone()))
+    }
+
+    /// What a line could turn off, and where it would go (see [`CliState::turn_off`]).
+    fn turn_off(&self) -> Option<(Conflict, PathBuf, Shell)> {
+        let (shell, home, zdotdir) = self.shell_files()?;
+        let shell = shell?;
+        self.shadowed_by.as_ref()?;
+        let conflict = self.conflict?;
+        let file =
+            shell_line::rc_file(shell, &home, zdotdir.as_deref(), cfg!(target_os = "macos"))?;
+        if !file.parent().is_some_and(Path::is_dir) {
+            return None;
+        }
+        if shell_line::file_holds_line_for(&file, conflict) {
+            return None;
+        }
+        Some((conflict, file, shell))
+    }
+
+    /// The first start-up file holding a line of gg's.
+    fn shell_line(&self) -> Option<PathBuf> {
+        let (_, home, zdotdir) = self.shell_files()?;
+        shell_line::rc_files(&home, zdotdir.as_deref())
+            .into_iter()
+            .find(|f| shell_line::file_holds_line(f))
     }
 }
 
@@ -674,8 +761,9 @@ impl Core {
     /// Asks the login shell what `gg` is and keeps the answer, unless a later check has
     /// answered meanwhile; a new answer is announced as `cli-changed` (with the command's
     /// state), since the UI may have read the state before it came. Blocks for up to
-    /// [`SHELL_TIMEOUT`].
-    fn check_shadow(&self) {
+    /// [`SHELL_TIMEOUT`]. Returns whether the shell answered (always, on Windows, where the
+    /// app looks itself; never without a shell to ask).
+    fn check_shadow(&self) -> bool {
         let (shell, number, search_path) = {
             let mut cli = crate::lock_ignoring_poison(&self.cli);
             cli.checks += 1;
@@ -683,31 +771,53 @@ impl Core {
         };
         let answer = if cfg!(windows) {
             // No login shell to ask: the app looks itself.
-            windows_shadowed_by(
+            let what = windows_shadowed_by(
                 &search_path.to_string_lossy(),
                 std::env::var("PATHEXT").ok().as_deref(),
                 &|f| Path::new(f).is_file(),
                 &|f| has_marker(Path::new(f)),
-            )
+            );
+            Some(Answer {
+                shadow: what.map(|what| Shadow {
+                    what,
+                    conflict: None,
+                }),
+                zdotdir: None,
+            })
         } else {
             let Some(shell) = shell else {
-                return;
+                return false;
             };
-            shadowed_by(&shell)
+            ask_shell(&shell, SHELL_TIMEOUT)
+        };
+        let answered = answer.is_some();
+        let (shadow, zdotdir) = match answer {
+            Some(a) => (a.shadow, Some(a.zdotdir)),
+            None => (None, None),
         };
         let changed = {
             let mut cli = crate::lock_ignoring_poison(&self.cli);
             let newest = number > cli.checked;
-            let changed = newest && cli.shadowed_by != answer;
+            let (what, conflict) = match shadow {
+                Some(s) => (Some(s.what), s.conflict),
+                None => (None, None),
+            };
+            let changed = newest && (cli.shadowed_by != what || cli.conflict != conflict);
             if newest {
                 cli.checked = number;
-                cli.shadowed_by = answer;
+                cli.shadowed_by = what;
+                cli.conflict = conflict;
+                // A shell that did not answer leaves the last ZDOTDIR known.
+                if let Some(z) = zdotdir {
+                    cli.zdotdir = z;
+                }
             }
             changed
         };
         if changed && let Ok(state) = serde_json::to_value(self.cli_state()) {
             self.sink.emit("cli-changed", state);
         }
+        answered
     }
 
     /// The `gg` command's state as it is now (the shell's answer as last known).
@@ -724,12 +834,25 @@ impl Core {
                 .into_iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect(),
+            turn_off: cli.turn_off().map(|(conflict, file, _)| TurnOff {
+                conflict,
+                file: file.to_string_lossy().into_owned(),
+            }),
+            shell_line: cli.shell_line().map(|f| f.to_string_lossy().into_owned()),
         }
     }
 
-    /// Writes the launcher into `dir`, which must be one of the candidates, then asks the
-    /// shell again. Blocking: call on the blocking pool.
-    pub(crate) fn install_cli(&self, dir: &Path) -> Result<CliState> {
+    /// Writes the launcher into `dir`, which must be one of the candidates; with `turn_off`
+    /// (the user ticked the box), then adds gg's line to turn off the shell's `gg` (see
+    /// [`Core::turn_off_shell_gg`]; that it could not is said in the outcome, the command is
+    /// installed all the same); then asks the shell again. The line is added only when gg can
+    /// offer it at that moment (`CliState::turn_off`): `None` otherwise. Blocking: call on the
+    /// blocking pool.
+    pub(crate) fn install_cli(
+        &self,
+        dir: &Path,
+        turn_off: bool,
+    ) -> Result<(CliState, Option<ShellLineAdded>)> {
         let (allowed, app) = {
             let cli = crate::lock_ignoring_poison(&self.cli);
             let allowed = candidates(&cli.search_path, cli.home.as_deref());
@@ -746,18 +869,114 @@ impl Core {
         }
         let script = platform_launcher(env!("CARGO_PKG_VERSION"), app.as_deref())?;
         install(dir, &script)?;
-        self.check_shadow();
-        Ok(self.cli_state())
+        let added = if turn_off {
+            self.add_shell_line()
+        } else {
+            None
+        };
+        let checked = self.check_shadow();
+        Ok((
+            self.cli_state(),
+            added.map(|a| ShellLineAdded { checked, ..a }),
+        ))
     }
 
-    /// Removes the launchers the app wrote on the `PATH`, then asks the shell again. Returns
-    /// the files actually removed (none when there was nothing to remove) and the new state.
-    /// Blocking: call on the blocking pool.
-    pub(crate) fn uninstall_cli(&self) -> Result<(Vec<PathBuf>, CliState)> {
+    /// Adds gg's line to the end of the shell's start-up file to turn off its `gg` (an alias
+    /// or a function of zsh or bash), as the user asked in Settings, then asks the shell
+    /// again: the outcome says whether it answered, and the state what `gg` is to it now.
+    /// Refused when there is nothing gg can turn off. Blocking: call on the blocking pool.
+    pub(crate) fn turn_off_shell_gg(&self) -> Result<(CliState, ShellLineAdded)> {
+        let Some(added) = self.add_shell_line() else {
+            return Err(CoreError::new(
+                ErrorCode::BadRequest,
+                "Your shell has no gg alias or function that gg can turn off.",
+            ));
+        };
+        let checked = self.check_shadow();
+        Ok((self.cli_state(), ShellLineAdded { checked, ..added }))
+    }
+
+    /// Adds the line, if gg can offer it now (`None` otherwise); `checked` is left false.
+    fn add_shell_line(&self) -> Option<ShellLineAdded> {
+        let (offer, home) = {
+            let cli = crate::lock_ignoring_poison(&self.cli);
+            (cli.turn_off(), cli.home.clone())
+        };
+        let (conflict, file, shell) = offer?;
+        // A missing .zshrc may be made: zsh reads it in every interactive shell, and the
+        // shell has just said it has a gg. Never a bash file (see `shell_line::rc_file`).
+        let create = shell == Shell::Zsh;
+        let outcome = shell_line::add(&file, conflict, create, home.as_deref());
+        Some(ShellLineAdded {
+            file: file.to_string_lossy().into_owned(),
+            conflict,
+            added: matches!(outcome, Ok(shell_line::Added::Now)),
+            problem: outcome.err().map(|e| said(&e)),
+            checked: false,
+        })
+    }
+
+    /// Takes gg's lines out of every start-up file that has one, as the user asked in
+    /// Settings, then asks the shell again. Blocking: call on the blocking pool.
+    pub(crate) fn remove_shell_line(&self) -> (CliState, ShellLineRemoved) {
+        let removed = self.take_shell_lines_out();
+        self.check_shadow();
+        (self.cli_state(), removed)
+    }
+
+    /// Takes gg's lines out of the start-up files (see [`shell_line::remove`]): where they
+    /// went, and what stood in the way.
+    fn take_shell_lines_out(&self) -> ShellLineRemoved {
+        let (files, home) = {
+            let cli = crate::lock_ignoring_poison(&self.cli);
+            let Some((_, home, zdotdir)) = cli.shell_files() else {
+                return ShellLineRemoved::default();
+            };
+            (shell_line::rc_files(&home, zdotdir.as_deref()), home)
+        };
+        let mut out = ShellLineRemoved::default();
+        let mut problems = Vec::new();
+        for file in files {
+            match shell_line::remove(&file, Some(&home)) {
+                Ok(removed) => {
+                    if removed.lines > 0 {
+                        out.line_removed_from
+                            .push(file.to_string_lossy().into_owned());
+                    }
+                    if removed.changed_left {
+                        problems.push(format!(
+                            "A line in {} is marked as added by gg but has been changed since; gg left it alone.",
+                            shell_line::shown(&file, Some(&home))
+                        ));
+                    }
+                }
+                Err(e) => problems.push(said(&e)),
+            }
+        }
+        out.line_problem = (!problems.is_empty()).then(|| problems.join(" "));
+        out
+    }
+
+    /// Removes the launchers the app wrote on the `PATH`, and the line gg added to a shell
+    /// file to turn off the shell's `gg`, if any (with the command gone it has no reason to
+    /// be there); then asks the shell again. Returns the files actually removed (none when
+    /// there was nothing to remove), what became of the line, and the new state. When a
+    /// launcher cannot be removed, nothing else is done. Blocking: call on the blocking pool.
+    pub(crate) fn uninstall_cli(&self) -> Result<(Vec<PathBuf>, ShellLineRemoved, CliState)> {
         let search_path = crate::lock_ignoring_poison(&self.cli).search_path.clone();
         let removed = uninstall(&search_path)?;
+        let line = self.take_shell_lines_out();
         self.check_shadow();
-        Ok((removed, self.cli_state()))
+        Ok((removed, line, self.cli_state()))
+    }
+}
+
+/// An error as one sentence for the UI: its message, and what the system said.
+fn said(e: &CoreError) -> String {
+    let message = e.message.trim_end_matches('.');
+    match &e.detail {
+        Some(detail) => format!("{message}: {}.", detail.trim_end_matches('.')),
+        None => format!("{message}."),
     }
 }
 
@@ -944,29 +1163,40 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn describes_what_the_shell_says() {
+        let what = |answer: &str| describe(answer).map(|s| (s.what, s.conflict));
+        let alias = Some(Conflict::Alias);
+        let function = Some(Conflict::Function);
         let zsh_alias = "gg is an alias for git log --graph";
-        assert_eq!(describe(zsh_alias).unwrap(), "an alias for git log --graph");
+        assert_eq!(
+            what(zsh_alias).unwrap(),
+            ("an alias for git log --graph".to_owned(), alias)
+        );
         let bash_alias = "gg is aliased to `git log --graph'";
         assert_eq!(
-            describe(bash_alias).unwrap(),
-            "an alias for git log --graph"
+            what(bash_alias).unwrap(),
+            ("an alias for git log --graph".to_owned(), alias)
         );
         assert_eq!(
-            describe("gg is a function\ngg () \n{\n  :\n}").unwrap(),
-            "a shell function"
+            what("gg is a function\ngg () \n{\n  :\n}").unwrap(),
+            ("a shell function".to_owned(), function)
         );
         let zsh_fn = "gg is a shell function from /x/.zshrc";
         assert_eq!(
-            describe(zsh_fn).unwrap(),
-            zsh_fn.strip_prefix("gg is ").unwrap()
+            what(zsh_fn).unwrap(),
+            (zsh_fn.strip_prefix("gg is ").unwrap().to_owned(), function)
         );
         assert_eq!(
-            describe("\ngg is /opt/x/gg\n").unwrap(),
-            "the program /opt/x/gg"
+            what("\ngg is /opt/x/gg\n").unwrap(),
+            ("the program /opt/x/gg".to_owned(), None)
         );
         assert_eq!(
-            describe("gg is hashed (/opt/x/gg)").unwrap(),
-            "the program /opt/x/gg"
+            what("gg is hashed (/opt/x/gg)").unwrap(),
+            ("the program /opt/x/gg".to_owned(), None)
+        );
+        // Not something a line turns off.
+        assert_eq!(
+            what("gg is a shell builtin").unwrap(),
+            ("a shell builtin".to_owned(), None)
         );
         assert_eq!(describe("gg not found"), None);
         assert_eq!(describe(""), None);
@@ -1419,12 +1649,17 @@ mod tests {
     }
 
     /// A stand-in login shell: a POSIX sh script that runs `setup` and then the command it
-    /// is given (`shell -ilc <command>`), never the user's own shell or its files.
+    /// is given (`shell -ilc <command>`), never the user's own shell or its files (nor a
+    /// `ZDOTDIR` of the user's).
     #[cfg(unix)]
     fn fake_shell(dir: &Path, setup: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let shell = dir.join("fake-shell");
-        fs::write(&shell, format!("#!/bin/sh\n{setup}\neval \"$2\"\n")).unwrap();
+        fs::write(
+            &shell,
+            format!("#!/bin/sh\nunset ZDOTDIR\n{setup}\neval \"$2\"\n"),
+        )
+        .unwrap();
         fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
         shell
     }
@@ -1476,7 +1711,9 @@ mod tests {
         );
         fs::remove_file(&launcher).unwrap();
         assert_eq!(
-            describe(&format!("gg is {}", bin.join("gg").display())).unwrap(),
+            describe(&format!("gg is {}", bin.join("gg").display()))
+                .unwrap()
+                .what,
             format!("the program {}", bin.join("gg").display())
         );
 
@@ -1489,6 +1726,33 @@ mod tests {
     fn set_executable(file: &Path) {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The shell says its `ZDOTDIR` with its answer (set in `~/.zshenv`, the app's own
+    /// environment does not have it), and nothing when it has none.
+    #[cfg(unix)]
+    #[test]
+    fn the_shell_says_its_zdotdir_with_its_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let zdot = dir.path().join("zsh config");
+        let shell = fake_shell(
+            dir.path(),
+            &format!(
+                "PATH=/usr/bin:/bin\nZDOTDIR='{}'\necho noise\nalias gg=x",
+                zdot.display()
+            ),
+        );
+        let answer = ask_shell(&shell, SHELL_TIMEOUT).unwrap();
+        assert_eq!(answer.zdotdir, Some(zdot));
+        assert_eq!(answer.shadow.unwrap().conflict, Some(Conflict::Alias));
+        let shell = fake_shell(dir.path(), "PATH=/usr/bin:/bin");
+        assert_eq!(
+            ask_shell(&shell, SHELL_TIMEOUT).unwrap(),
+            Answer {
+                shadow: None,
+                zdotdir: None
+            }
+        );
     }
 
     #[cfg(unix)]

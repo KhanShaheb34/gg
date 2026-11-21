@@ -127,14 +127,37 @@ struct Opened {
     opened_worktree: Option<String>,
 }
 
-/// What `uninstall_cli` returns: the command's state, and the files it removed (none when
-/// there was nothing to remove).
+/// What `uninstall_cli` returns: the command's state, the files it removed (none when
+/// there was nothing to remove), and what became of gg's line in a shell file.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Uninstalled {
     #[serde(flatten)]
     state: crate::dto::CliState,
     removed: Vec<String>,
+    #[serde(flatten)]
+    line: crate::dto::ShellLineRemoved,
+}
+
+/// What `install_cli` and `turn_off_shell_gg` return: the command's state, and what adding
+/// gg's line to a shell file did (`null` when it was not asked for, or there was nothing to
+/// turn off).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliWithLine {
+    #[serde(flatten)]
+    state: crate::dto::CliState,
+    shell_line_added: Option<crate::dto::ShellLineAdded>,
+}
+
+/// What `remove_shell_line` returns: the command's state, and what taking the line out did.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliLineRemoved {
+    #[serde(flatten)]
+    state: crate::dto::CliState,
+    #[serde(flatten)]
+    line: crate::dto::ShellLineRemoved,
 }
 
 #[derive(Deserialize)]
@@ -236,6 +259,9 @@ struct AppLinkArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InstallCliArgs {
     dir: PathBuf,
+    /// The user ticked "Turn off that alias for me": add gg's line to their shell file too.
+    #[serde(default)]
+    turn_off: bool,
 }
 
 #[derive(Deserialize)]
@@ -510,20 +536,39 @@ impl Core {
             }
             "install_cli" => {
                 let a: InstallCliArgs = parse(cmd, args)?;
-                to_json(
-                    self.off_runtime(move |core| core.install_cli(&a.dir))
-                        .await?,
-                )
+                let (state, shell_line_added) = self
+                    .off_runtime(move |core| core.install_cli(&a.dir, a.turn_off))
+                    .await?;
+                to_json(CliWithLine {
+                    state,
+                    shell_line_added,
+                })
+            }
+            "turn_off_shell_gg" => {
+                let NoArgs {} = parse(cmd, args)?;
+                let (state, added) = self.off_runtime(|core| core.turn_off_shell_gg()).await?;
+                to_json(CliWithLine {
+                    state,
+                    shell_line_added: Some(added),
+                })
+            }
+            "remove_shell_line" => {
+                let NoArgs {} = parse(cmd, args)?;
+                let (state, line) = self
+                    .off_runtime(|core| Ok(core.remove_shell_line()))
+                    .await?;
+                to_json(CliLineRemoved { state, line })
             }
             "uninstall_cli" => {
                 let NoArgs {} = parse(cmd, args)?;
-                let (removed, state) = self.off_runtime(|core| core.uninstall_cli()).await?;
+                let (removed, line, state) = self.off_runtime(|core| core.uninstall_cli()).await?;
                 to_json(Uninstalled {
                     state,
                     removed: removed
                         .iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect(),
+                    line,
                 })
             }
             "update_status" => {

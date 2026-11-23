@@ -1,0 +1,138 @@
+<!doctype html>
+<!-- Made by site/scripts/changelog.mjs from site/changelog.md. Edit that file, not this one. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelog · gg</title>
+<meta name="description" content="What changed in each release of gg, the small, fast desktop git client built around the commit graph. Newest first, with a link to each version's downloads.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfbfc">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
+<link rel="canonical" href="https://gg.shakirul.com/changelog">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="gg">
+<meta property="og:url" content="https://gg.shakirul.com/changelog">
+<meta property="og:title" content="Changelog · gg">
+<meta property="og:description" content="What changed in each release of gg, the desktop git client built around the commit graph.">
+<meta property="og:image" content="https://gg.shakirul.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="gg: the commit graph, without the editor. A screenshot of its commit graph.">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Changelog · gg">
+<meta name="twitter:description" content="What changed in each release of gg, the desktop git client built around the commit graph.">
+<meta name="twitter:image" content="https://gg.shakirul.com/og.png">
+<meta name="twitter:image:alt" content="gg: the commit graph, without the editor. A screenshot of its commit graph.">
+<meta name="author" content="Shakirul">
+<meta name="robots" content="index, follow">
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/main.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <a class="brand" href="/">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><use href="#mark"/></svg>
+    <span>gg</span>
+  </a>
+  <a class="top-link" href="/changelog" aria-current="page">Changelog</a>
+  <a class="top-link" href="/github">GitHub</a>
+  <button class="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
+  </button>
+</header>
+
+<div class="log">
+<main id="main">
+
+  <section class="block hero changelog-hero" aria-labelledby="title">
+    <span class="node node-head" aria-hidden="true"></span>
+    <p class="refs" aria-hidden="true"><span class="ref ref-head">main</span></p>
+    <h1 id="title" class="pitch">Changelog</h1>
+    <p class="lede">What changed in each release of gg, newest first. Each version links to its release on GitHub, with the downloads for every system and their checksums.</p>
+  </section>
+
+  <article class="block release" id="v0.4.0" aria-labelledby="v0.4.0-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.4.0-title"><a class="ref ref-tag" href="#v0.4.0"><span class="sr-only">gg </span>v0.4.0</a></h2>
+      <span class="ref ref-latest">latest</span>
+      <p class="release-meta"><time datetime="2026-11-21">21 November 2026</time><a href="/github/releases/tag/v0.4.0">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">From this release on, gg updates itself. This is the last version you need to download or <code>brew upgrade</code> by hand.</p>
+    <h3>What changed</h3>
+    <ul class="changes">
+      <li><b>gg updates itself.</b> Shortly after it starts, and about once a day while it runs, gg looks for a new version, downloads it in the background and says <b>gg X.Y.Z is ready</b> with a <b>Restart to update</b> button. It never restarts by itself, and your tabs come back after the restart. <b>Settings → About</b> shows where updating stands, has <b>Check now</b>, and a switch to turn the automatic checks off.</li>
+      <li><b>Updates are signed.</b> gg installs an update only if its signature verifies with the public key built into the app, and only if it is newer than the version running. A file that was changed, signed with another key, or signed for another version is refused and nothing is installed. See <a href="/github/blob/main/SECURITY.md#updates">SECURITY.md</a>.</li>
+      <li><b>What the check sends.</b> The check asks GitHub for a small file describing the latest release. It carries nothing beyond what any web request does: your IP address and a user agent naming the updater. There is still no telemetry and no account.</li>
+      <li><b>gg can turn off a shell alias called <code>gg</code>, if you ask.</b> When your shell already has an alias or function named <code>gg</code> (Oh My Zsh's git plugin defines one), the install dialog now has a checkbox, off by default: <b>Turn off that alias for me</b>. Ticked, gg adds one marked line to the end of your zsh or bash start-up file, then asks your shell again and tells you whether it worked. <b>Settings → Command line</b> offers the same, also when Homebrew installed the command, and takes the line out again. gg edits no shell file unless you ask.</li>
+      <li><b>Empty commits.</b> With nothing ticked in the commit panel, <b>Commit with no changes</b> makes an empty commit, for example to run CI again. Thanks to the contributor who asked for it in <a href="/github/issues/10">#10</a>.</li>
+    </ul>
+    <h3>Where gg cannot update itself</h3>
+    <ul class="changes">
+      <li>Installed from the Linux <code>.deb</code>: update it with your package manager. The AppImage updates itself.</li>
+      <li>Running from a folder you may not write to, or straight from the disk image: gg says a new version is available, why it cannot install it, and links the download page.</li>
+      <li>Installed with Homebrew, gg updates itself like any other copy; <code>brew upgrade --cask gg</code> works too.</li>
+    </ul>
+    <h3>Not yet tried for real</h3>
+    <p>Updating was tested end to end on macOS against a local test server: download, signature check, replacing the app, restarting with the tabs back. Not yet tried: an update of a copy in <code>/Applications</code> on a real Mac (macOS may ask for permission), and self-update on Windows and Linux. The first real update will be from 0.4.0 to the next version. If it goes wrong for you, please open an <a href="/github/issues">issue</a>; downloading the new version by hand always works.</p>
+  </article>
+
+  <article class="block release" id="v0.3.1" aria-labelledby="v0.3.1-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.3.1-title"><a class="ref ref-tag" href="#v0.3.1"><span class="sr-only">gg </span>v0.3.1</a></h2>
+      <p class="release-meta"><time datetime="2026-11-20">20 November 2026</time><a href="/github/releases/tag/v0.3.1">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">A small release that makes installing with Homebrew complete.</p>
+    <h3>What changed</h3>
+    <ul class="changes">
+      <li><b>The <code>gg</code> terminal command now comes with a Homebrew install.</b> The macOS app carries the command's launcher inside it, and the Homebrew cask links it into Homebrew's <code>bin</code>. After <code>brew install --cask khanshaheb34/tap/gg</code>, <code>gg</code> in a terminal opens the repository you are in.</li>
+      <li><b>gg recognises a command it did not install itself.</b> When the <code>gg</code> on your <code>PATH</code> is Homebrew's link, Settings → Command line says “Installed by Homebrew” and where, and gg neither replaces nor removes it. Any other link to gg's launcher is shown as a link and left alone too.</li>
+    </ul>
+    <p>Nothing else changes. If you installed the command from the app (<b>gg → Install ‘gg’ Command…</b>), it keeps working as before.</p>
+    <p>If your shell has an alias called <code>gg</code> (Oh My Zsh's git plugin defines one), the alias still wins until you remove it, for example with <code>unalias gg</code> at the end of your <code>~/.zshrc</code>.</p>
+  </article>
+
+  <article class="block release" id="v0.3.0" aria-labelledby="v0.3.0-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.3.0-title"><a class="ref ref-tag" href="#v0.3.0"><span class="sr-only">gg </span>v0.3.0</a></h2>
+      <p class="release-meta"><time datetime="2026-11-19">19 November 2026</time><a href="/github/releases/tag/v0.3.0">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">The first public release of gg, a small, fast desktop Git client.</p>
+    <h3>What it does</h3>
+    <ul class="changes">
+      <li><b>Commit graph</b> of the whole repository, each repository in its own tab, with search and branch filters.</li>
+      <li><b>Right-click actions</b> on commits, branches, tags and stashes: check out, create a branch or tag, merge, rebase, cherry-pick, revert, reset, push, pull, and a force push that always uses <code>--force-with-lease</code>.</li>
+      <li><b>Worktrees as first-class citizens</b>: a side panel lists every worktree of the repository with its branch and uncommitted changes, and adds, switches between, deletes and prunes them.</li>
+      <li><b>Commit panel</b>: tick the files to commit, write the message, and commit or commit and push in one step.</li>
+      <li><b>Pull requests</b> on GitHub through the <code>gh</code> CLI: create one from a branch or worktree, and see open ones as markers beside their branches. gg never reads or stores a GitHub token.</li>
+      <li><b>Conflicts</b>: when a merge, rebase, cherry-pick or revert stops, a banner lists the conflicted files and offers to continue, skip or abort.</li>
+      <li><b>Light and dark themes</b>, a log of every git command gg ran, and a <code>gg</code> command to open a repository from the terminal.</li>
+    </ul>
+    <p>More in the <a href="/github#readme">README</a> and the <a href="/github/blob/main/docs/usage.md">usage guide</a>.</p>
+  </article>
+
+</main>
+
+<footer class="block foot">
+  <span class="node node-root" aria-hidden="true"></span>
+  <p>gg is free and open source, under the MIT licence.</p>
+  <p class="foot-links"><a href="/">Home page</a><a href="/github">Source on GitHub</a><a href="https://shakirul.com">Built by Shakirul</a></p>
+</footer>
+</div>
+
+<svg width="0" height="0" class="sprite" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#17181c"/><path d="M11 7v18" stroke="#6b9bff" stroke-width="2.5" stroke-linecap="round" fill="none"/><path d="M21 10.5c0 6-10 4.5-10 11" stroke="#fb8a4e" stroke-width="2.5" stroke-linecap="round" fill="none"/><circle cx="11" cy="8" r="3.2" fill="#6b9bff"/><circle cx="21" cy="10.5" r="3.2" fill="#fb8a4e"/><circle cx="11" cy="24" r="3.2" fill="#6b9bff"/></symbol>
+</svg>
+</body>
+</html>

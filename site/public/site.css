@@ -935,6 +935,140 @@ h3 {
   color: var(--ink);
 }
 
+/* ---- Changelog (/changelog, made by scripts/changelog.mjs) --------------------------------
+   Each release is a commit on the lane, labelled with its tag as the app labels one. */
+
+.top-link[aria-current="page"] {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.changelog-hero {
+  padding-bottom: 8px;
+}
+
+.changelog-hero .lede {
+  max-width: 600px;
+  margin-bottom: 0;
+}
+
+.release {
+  --node-y: 86px; /* the tag's middle: padding-top + 14px */
+  padding-top: 72px;
+  padding-bottom: 8px;
+  max-width: calc(var(--gutter) + 720px);
+}
+
+.release-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.release-version {
+  margin: 0;
+  font-size: inherit;
+  line-height: 1;
+}
+
+.release-version .ref {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+
+.release-version .ref:hover {
+  background: color-mix(in srgb, var(--c) 20%, transparent);
+}
+
+.ref-latest {
+  --c: var(--accent);
+}
+
+.release-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.release-meta > * + *::before {
+  content: "·";
+  display: inline-block;
+  margin: 0 8px;
+  color: var(--line-strong);
+}
+
+.release-meta a {
+  color: var(--ink);
+}
+
+.release p,
+.release li {
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.release p {
+  margin: 14px 0 0;
+}
+
+.release .release-lede {
+  margin-top: 18px;
+  color: var(--ink);
+  font-size: 19px;
+  font-weight: 550;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+}
+
+.release h3 {
+  margin: 30px 0 0;
+  font-size: 17px;
+}
+
+.release b,
+.release p a,
+.release li a {
+  color: var(--ink);
+}
+
+.release b {
+  font-weight: 600;
+}
+
+.changes {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.changes li {
+  position: relative;
+  padding-left: 20px;
+}
+
+.changes li + li {
+  margin-top: 10px;
+}
+
+/* A small commit, as the lane draws one. */
+.changes li::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0.62em;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+}
+
 /* ---- Narrower screens ------------------------------------------------------------------- */
 
 @media (max-width: 980px) {
@@ -1041,6 +1175,15 @@ h3 {
   .next-list {
     --branch: calc(var(--rail) - var(--gutter) + 14px);
     padding-left: 12px;
+  }
+
+  .release {
+    --node-y: 62px;
+    padding-top: 48px;
+  }
+
+  .release .release-lede {
+    font-size: 17.5px;
   }
 
   .fork {

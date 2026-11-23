@@ -321,6 +321,70 @@ async fn refs_branches_tags_remotes() {
     assert_eq!(read_remotes(&git, repo.path()).await.unwrap(), ["origin"]);
 }
 
+/// The commit each branch points at comes with the branches, from the same one
+/// `for-each-ref`: committer time, author and subject (a multi-line first paragraph joined as
+/// git joins it); tags keep none, annotated or not.
+#[tokio::test]
+async fn refs_carry_their_commits_time_author_and_subject() {
+    let repo = TestRepo::new();
+    let one = repo.commit_as("Start the parser", "Ada Lovelace", "ada@example.com");
+    repo.git(&["tag", "-a", "v1", "-m", "release one"]);
+    repo.git(&["tag", "light"]);
+    repo.branch("topic");
+    repo.write("x.txt", "x");
+    repo.git(&["add", "-A"]);
+    repo.git(&[
+        "-c",
+        "user.name=Grace Hopper",
+        "commit",
+        "-q",
+        "--date=@1700000000 +0000",
+        "-m",
+        "First line\nsecond line\n\nThe body.",
+    ]);
+    let _origin = repo.clone_as_remote();
+
+    let git = runner().await;
+    let refs = read_refs(&git, repo.path()).await.unwrap();
+    let find = |kind: RefKind, name: &str| {
+        refs.iter()
+            .find(|r| r.kind == kind && r.name == name)
+            .unwrap_or_else(|| panic!("{name} in {refs:?}"))
+    };
+    let committed = |rev: &str| -> i64 {
+        repo.git(&["log", "-1", "--format=%ct", rev])
+            .parse()
+            .unwrap()
+    };
+
+    let main = find(RefKind::Branch, "main");
+    assert_eq!(main.subject, "First line second line");
+    assert_eq!(main.author, "Grace Hopper");
+    assert_eq!(main.time, committed("main"));
+    assert!(main.time > 0);
+    let topic = find(RefKind::Branch, "topic");
+    assert_eq!(
+        (topic.hash.as_str(), topic.author.as_str()),
+        (one.as_str(), "Ada Lovelace")
+    );
+    assert_eq!(topic.subject, "Start the parser");
+    assert_eq!(topic.time, committed("topic"));
+    let remote = find(RefKind::Remote, "origin/main");
+    assert_eq!(
+        (remote.subject.as_str(), remote.time),
+        ("First line second line", main.time)
+    );
+    for tag in ["v1", "light"] {
+        let t = find(RefKind::Tag, tag);
+        assert_eq!(
+            (t.time, t.author.as_str(), t.subject.as_str()),
+            (0, "", ""),
+            "{tag}"
+        );
+        assert_eq!(t.hash, one);
+    }
+}
+
 #[tokio::test]
 async fn refs_upstream_gone_keeps_name_with_zero_counts() {
     let repo = TestRepo::new();

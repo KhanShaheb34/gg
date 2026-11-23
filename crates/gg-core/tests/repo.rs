@@ -338,6 +338,16 @@ async fn snapshot_lists_refs_sorted_with_idle_fetch_state() {
         snap.remote_branches,
         ["origin/alpha", "origin/main", "origin/zeta"]
     );
+    // Each branch's commit, in the same order as the names.
+    assert_eq!(snap.branch_tips.len(), snap.branches.len());
+    assert_eq!(snap.remote_branch_tips.len(), snap.remote_branches.len());
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    for tip in snap.branch_tips.iter().chain(&snap.remote_branch_tips) {
+        assert_eq!(tip.hash, head);
+        assert_eq!(tip.subject, "one");
+        assert_eq!(tip.author, "Test");
+        assert!(tip.time > 0);
+    }
     assert_eq!(snap.remotes, ["origin"]);
     assert_eq!(snap.status.changed + snap.status.untracked, 0);
     assert_eq!(snap.view_options, all_refs());

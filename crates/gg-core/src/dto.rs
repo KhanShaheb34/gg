@@ -350,6 +350,10 @@ pub struct RepoSnapshot {
     pub branches: Vec<String>,
     /// Remote-tracking branch short names (`origin/main`), sorted.
     pub remote_branches: Vec<String>,
+    /// The commit each of `branches` points at: `branch_tips[i]` is that of `branches[i]`.
+    pub branch_tips: Vec<BranchTip>,
+    /// The commit each of `remote_branches` points at, in the same order.
+    pub remote_branch_tips: Vec<BranchTip>,
     pub remotes: Vec<String>,
     pub worktrees: Vec<WorktreeInfo>,
     /// Status of the active worktree.
@@ -369,6 +373,19 @@ pub struct RepoSnapshot {
     /// `repo-changed`) and with every operation's outcome; a plain read repeats the latest.
     /// The UI drops a snapshot whose `seq` is below the one it has.
     pub seq: u64,
+}
+
+/// The commit a branch points at, as the branch picker shows it: read with the branches
+/// themselves (one `for-each-ref`), never per branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchTip {
+    /// Full hash.
+    pub hash: String,
+    /// Committer time, unix seconds (0 when unknown).
+    pub time: i64,
+    pub author: String,
+    pub subject: String,
 }
 
 /// The operation a repository is busy with.
@@ -1713,6 +1730,8 @@ mod tests {
                 head: HeadInfo::default(),
                 branches: vec![],
                 remote_branches: vec![],
+                branch_tips: vec![],
+                remote_branch_tips: vec![],
                 remotes: vec![],
                 worktrees: vec![],
                 status: WorktreeStatus::default(),
@@ -1992,6 +2011,18 @@ mod tests {
             },
             branches: vec!["main".into()],
             remote_branches: vec!["origin/main".into()],
+            branch_tips: vec![BranchTip {
+                hash: "c".repeat(40),
+                time: 1_700_000_000,
+                author: "Ada".into(),
+                subject: "Fix the parser".into(),
+            }],
+            remote_branch_tips: vec![BranchTip {
+                hash: "d".repeat(40),
+                time: 5,
+                author: "Grace".into(),
+                subject: "Start".into(),
+            }],
             remotes: vec!["origin".into()],
             worktrees: vec![],
             status: WorktreeStatus {
@@ -2043,7 +2074,12 @@ mod tests {
                 "repoId": 7, "name": "r", "rootPath": "/r", "activeWorktree": "/w",
                 "generation": 3, "totalRows": 10, "loading": true, "maxLane": 2,
                 "head": {"branch": null, "hash": "h"},
-                "branches": ["main"], "remoteBranches": ["origin/main"], "remotes": ["origin"],
+                "branches": ["main"], "remoteBranches": ["origin/main"],
+                "branchTips": [{"hash": "c".repeat(40), "time": 1_700_000_000, "author": "Ada",
+                                "subject": "Fix the parser"}],
+                "remoteBranchTips": [{"hash": "d".repeat(40), "time": 5, "author": "Grace",
+                                      "subject": "Start"}],
+                "remotes": ["origin"],
                 "worktrees": [], "status": {"changed": 2, "untracked": 1, "conflicted": 0,
                            "conflictedPaths": []},
                 "uncommittedSubject": "Uncommitted changes (3)",

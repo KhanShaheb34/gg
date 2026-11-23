@@ -1,6 +1,6 @@
 // Rows, labels and snapshots for the menu builders' tests, and ways to look into menus.
 
-import type { CommitRow, InProgress, PullRequest, RefLabel, RepoSnapshot, WorktreeInfo } from "../types";
+import type { BranchTip, CommitRow, InProgress, PullRequest, RefLabel, RepoSnapshot, WorktreeInfo } from "../types";
 import type { MenuItem } from "./types";
 
 export const HASH = "a".repeat(40);
@@ -42,6 +42,11 @@ export function label(overrides: Partial<RefLabel> = {}): RefLabel {
   };
 }
 
+/** A branch's commit, made at 1,700,000,000. */
+function tip(hash: string, author: string, subject: string): BranchTip {
+  return { hash, time: 1_700_000_000, author, subject };
+}
+
 export function snap(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
   return {
     repoId: 1,
@@ -55,6 +60,8 @@ export function snap(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     head: { branch: "main", hash: HEAD_HASH },
     branches: ["main", "feature/x"],
     remoteBranches: ["origin/main"],
+    branchTips: [tip(HEAD_HASH, "Ada", "Add the parser"), tip("c".repeat(40), "Ada", "Start x")],
+    remoteBranchTips: [tip(HEAD_HASH, "Ada", "Add the parser")],
     remotes: ["origin"],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },

@@ -8,12 +8,20 @@ pub use crate::dto::{HeadInfo, RefKind};
 use crate::error::Result;
 use crate::git::runner::{CmdKind, GitRunner, git_failed};
 
-/// `for-each-ref` format: NUL-separated fields (NUL cannot occur in ref names), one ref per
-/// line. Fields: refname, object type, object, peeled type, peeled object (both empty unless
-/// the ref is an annotated tag; git peels nested tags fully), upstream, upstream tracking
-/// (`[ahead N, behind M]`, `[gone]` or empty), symref target.
-const REF_FORMAT: &str = "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(symref)";
-const REF_FIELDS: usize = 8;
+/// `for-each-ref` format: NUL-separated fields (NUL cannot occur in a ref name, and git
+/// refuses it in a commit message), each ref's record ending in a NUL before git's own newline, so that the
+/// subject, the last field, can never run into the next record. Fields: refname, object
+/// type, object, peeled type, peeled object (both empty unless the ref is an annotated tag;
+/// git peels nested tags fully), upstream, upstream tracking (`[ahead N, behind M]`,
+/// `[gone]` or empty), symref target; then of the commit a branch points at (empty for an
+/// annotated tag, whose object is the tag), its committer time (unix seconds), author name
+/// and subject (git joins a first paragraph of several lines with spaces). These last three
+/// come from the commit object `%(objecttype)` reads anyway: no other git command is needed
+/// for them.
+const REF_FORMAT: &str = "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(symref)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)%00";
+const REF_FIELDS: usize = 11;
+/// What ends a record: the format's final NUL and git's newline.
+const RECORD_END: &[u8] = b"\0\n";
 
 /// A branch, remote-tracking branch or tag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -30,6 +38,13 @@ pub struct RefInfo {
     pub ahead: u32,
     /// Commits on the upstream that are not on this branch (0 when there is none).
     pub behind: u32,
+    /// Of a branch or remote-tracking branch, its commit's committer time, unix seconds (0
+    /// when unknown, and for tags).
+    pub time: i64,
+    /// Of a branch or remote-tracking branch, its commit's author name (empty for tags).
+    pub author: String,
+    /// Of a branch or remote-tracking branch, its commit's subject (empty for tags).
+    pub subject: String,
 }
 
 /// Local branches, remote-tracking branches and tags, sorted by full ref name. Remote
@@ -81,9 +96,24 @@ pub async fn read_head(r: &GitRunner, cwd: &Path) -> Result<HeadInfo> {
 }
 
 fn parse_refs(out: &[u8]) -> Vec<RefInfo> {
-    out.split(|&b| b == b'\n')
-        .filter_map(parse_ref_line)
-        .collect()
+    records(out).filter_map(parse_ref_line).collect()
+}
+
+/// The records of `out`, each without its [`RECORD_END`].
+fn records(out: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut rest = out;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let at = rest.windows(RECORD_END.len()).position(|w| w == RECORD_END);
+        let (record, next) = match at {
+            Some(at) => (&rest[..at], &rest[at + RECORD_END.len()..]),
+            None => (rest, &rest[rest.len()..]),
+        };
+        rest = next;
+        Some(record)
+    })
 }
 
 fn parse_ref_line(line: &[u8]) -> Option<RefInfo> {
@@ -91,8 +121,19 @@ fn parse_ref_line(line: &[u8]) -> Option<RefInfo> {
         .splitn(REF_FIELDS, |&b| b == 0)
         .map(|f| String::from_utf8_lossy(f).into_owned())
         .collect();
-    let [refname, ty, obj, peeled_ty, peeled, upstream, track, symref] =
-        <[String; REF_FIELDS]>::try_from(fields).ok()?;
+    let [
+        refname,
+        ty,
+        obj,
+        peeled_ty,
+        peeled,
+        upstream,
+        track,
+        symref,
+        time,
+        author,
+        subject,
+    ] = <[String; REF_FIELDS]>::try_from(fields).ok()?;
     let (kind, name) = [
         ("refs/heads/", RefKind::Branch),
         ("refs/remotes/", RefKind::Remote),
@@ -115,6 +156,12 @@ fn parse_ref_line(line: &[u8]) -> Option<RefInfo> {
         return None;
     }
     let (ahead, behind) = parse_track(&track);
+    // A tag's commit is not shown anywhere these are: not kept.
+    let (time, author, subject) = if kind == RefKind::Tag {
+        (0, String::new(), String::new())
+    } else {
+        (time.trim().parse().unwrap_or(0), author, subject)
+    };
     Some(RefInfo {
         kind,
         name: name.to_owned(),
@@ -122,6 +169,9 @@ fn parse_ref_line(line: &[u8]) -> Option<RefInfo> {
         upstream: non_empty(short_name(&upstream)),
         ahead,
         behind,
+        time,
+        author,
+        subject,
     })
 }
 
@@ -167,7 +217,8 @@ mod tests {
     const C: &str = "cccccccccccccccccccccccccccccccccccccccc";
     const T: &str = "dddddddddddddddddddddddddddddddddddddddd";
 
-    /// One `for-each-ref` line in `REF_FORMAT` field order.
+    /// One `for-each-ref` record in `REF_FORMAT` field order, its commit made at time 7 by
+    /// Ada with subject "Tip" (none for an annotated tag, as git gives it).
     fn line(
         refname: &str,
         ty: &str,
@@ -178,7 +229,29 @@ mod tests {
         symref: &str,
     ) -> String {
         let peeled_ty = if peeled.is_empty() { "" } else { "commit" };
-        format!("{refname}\0{ty}\0{obj}\0{peeled_ty}\0{peeled}\0{upstream}\0{track}\0{symref}\n")
+        let commit = if ty == "commit" {
+            "7\0Ada\0Tip"
+        } else {
+            "\0\0"
+        };
+        format!(
+            "{refname}\0{ty}\0{obj}\0{peeled_ty}\0{peeled}\0{upstream}\0{track}\0{symref}\0{commit}\0\n"
+        )
+    }
+
+    /// A branch's or remote branch's `RefInfo` from `line`: its commit is Ada's "Tip" at 7.
+    fn tip(kind: RefKind, name: &str, hash: &str, upstream: Option<&str>, ahead: u32) -> RefInfo {
+        RefInfo {
+            kind,
+            name: name.into(),
+            hash: hash.into(),
+            upstream: upstream.map(Into::into),
+            ahead,
+            behind: 0,
+            time: 7,
+            author: "Ada".into(),
+            subject: "Tip".into(),
+        }
     }
 
     #[test]
@@ -212,47 +285,53 @@ mod tests {
         assert_eq!(
             refs,
             [
+                tip(RefKind::Branch, "main", C, Some("origin/main"), 1),
+                tip(RefKind::Branch, "feature/ünï-✨", C, None, 0),
+                tip(RefKind::Remote, "origin/main", C, None, 0),
+                // Tags keep no commit details, annotated or not.
                 RefInfo {
-                    kind: RefKind::Branch,
-                    name: "main".into(),
-                    hash: C.into(),
-                    upstream: Some("origin/main".into()),
-                    ahead: 1,
-                    behind: 0,
+                    time: 0,
+                    author: String::new(),
+                    subject: String::new(),
+                    ..tip(RefKind::Tag, "v1", C, None, 0)
                 },
                 RefInfo {
-                    kind: RefKind::Branch,
-                    name: "feature/ünï-✨".into(),
-                    hash: C.into(),
-                    upstream: None,
-                    ahead: 0,
-                    behind: 0,
-                },
-                RefInfo {
-                    kind: RefKind::Remote,
-                    name: "origin/main".into(),
-                    hash: C.into(),
-                    upstream: None,
-                    ahead: 0,
-                    behind: 0,
-                },
-                RefInfo {
-                    kind: RefKind::Tag,
-                    name: "v1".into(),
-                    hash: C.into(),
-                    upstream: None,
-                    ahead: 0,
-                    behind: 0,
-                },
-                RefInfo {
-                    kind: RefKind::Tag,
-                    name: "light".into(),
-                    hash: C.into(),
-                    upstream: None,
-                    ahead: 0,
-                    behind: 0,
+                    time: 0,
+                    author: String::new(),
+                    subject: String::new(),
+                    ..tip(RefKind::Tag, "light", C, None, 0)
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_subject_with_line_ends_stays_in_its_record() {
+        // git joins a first paragraph's lines; a message made otherwise (or an older git) may
+        // still bring a line end: the record ends only at NUL and newline together.
+        let out = format!(
+            "refs/heads/a\0commit\0{C}\0\0\0\0\0\01700000000\0Ada Lovelace\0one\ntwo\0\n\
+             refs/heads/b\0commit\0{C}\0\0\0\0\0\0\0Grace\0\0\n"
+        );
+        let refs = parse_refs(out.as_bytes());
+        assert_eq!(refs.len(), 2, "{refs:?}");
+        assert_eq!(
+            (
+                refs[0].time,
+                refs[0].author.as_str(),
+                refs[0].subject.as_str()
+            ),
+            (1_700_000_000, "Ada Lovelace", "one\ntwo")
+        );
+        // No time (unreadable) counts as 0; an empty subject stays empty.
+        assert_eq!(
+            (
+                refs[1].name.as_str(),
+                refs[1].time,
+                refs[1].author.as_str(),
+                refs[1].subject.as_str()
+            ),
+            ("b", 0, "Grace", "")
         );
     }
 
@@ -276,7 +355,7 @@ mod tests {
     fn skips_tags_that_do_not_point_at_commits() {
         let out = [
             line("refs/tags/tree", "tree", C, "", "", "", ""),
-            format!("refs/tags/blobtag\0tag\0{T}\0blob\0{C}\0\0\0\n"),
+            format!("refs/tags/blobtag\0tag\0{T}\0blob\0{C}\0\0\0\0\0\0\0\n"),
         ]
         .concat();
         assert!(parse_refs(out.as_bytes()).is_empty());
@@ -301,15 +380,28 @@ mod tests {
         assert!(parse_refs(b"\xFF\xFE\0\0").is_empty());
         // Truncated records: too few fields, missing hash, unknown namespace.
         assert!(parse_refs(b"refs/heads/main\0commit\0").is_empty());
-        assert!(parse_refs(b"refs/heads/main\0commit\0\0\0\0\0\0\n").is_empty());
-        assert!(parse_refs(format!("refs/notes/x\0commit\0{C}\0\0\0\0\0\n").as_bytes()).is_empty());
-        assert!(parse_refs(format!("refs/heads/\0commit\0{C}\0\0\0\0\0\n").as_bytes()).is_empty());
+        assert!(parse_refs(b"refs/heads/main\0commit\0\0\0\0\0\0\0\0\0\0\n").is_empty());
+        assert!(
+            parse_refs(format!("refs/notes/x\0commit\0{C}\0\0\0\0\0\0\0\0\0\n").as_bytes())
+                .is_empty()
+        );
+        assert!(
+            parse_refs(format!("refs/heads/\0commit\0{C}\0\0\0\0\0\0\0\0\0\n").as_bytes())
+                .is_empty()
+        );
+        // A record of the format before the commit's fields (8 fields) is not taken.
+        assert!(parse_refs(format!("refs/heads/a\0commit\0{C}\0\0\0\0\0\n").as_bytes()).is_empty());
         // Non-UTF-8 names decode lossily.
-        let refs = parse_refs(format!("refs/heads/a\u{FFFD}\0commit\0{C}\0\0\0\0\0\n").as_bytes());
+        let refs =
+            parse_refs(format!("refs/heads/a\u{FFFD}\0commit\0{C}\0\0\0\0\0\0\0\0\0\n").as_bytes());
         assert_eq!(refs.len(), 1);
         let mut raw = b"refs/heads/b\xFF".to_vec();
-        raw.extend_from_slice(format!("\0commit\0{C}\0\0\0\0\0").as_bytes());
-        assert_eq!(parse_refs(&raw)[0].name, "b\u{FFFD}");
+        raw.extend_from_slice(format!("\0commit\0{C}\0\0\0\0\0\0\0").as_bytes());
+        raw.extend_from_slice(b"A\xFF\0s\xFE\0\n");
+        let refs = parse_refs(&raw);
+        assert_eq!(refs[0].name, "b\u{FFFD}");
+        assert_eq!(refs[0].author, "A\u{FFFD}");
+        assert_eq!(refs[0].subject, "s\u{FFFD}");
     }
 
     #[test]

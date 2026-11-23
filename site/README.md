@@ -19,7 +19,7 @@ sh scripts/deploy.sh      # publish to gg.shakirul.com; checks the download is p
   `public/download/<file>` before deploying. `index.html` carries the version too, as the
   fallback for visitors without JavaScript.
 - `changelog.md`: what changed in each release, newest first, shown at `/changelog`.
-  `node site/scripts/changelog.mjs` makes `public/changelog.html` from it and dates the page's
+  `node site/scripts/changelog.mjs` (from the repository's root) makes `public/changelog.html` from it and dates the page's
   line in `public/sitemap.xml`; both are committed. To add a release, with each release of the
   app:
 
@@ -31,7 +31,7 @@ sh scripts/deploy.sh      # publish to gg.shakirul.com; checks the download is p
      `changelog.md`, `public/changelog.html` and `public/sitemap.xml` together.
 
   The script stops, naming the line, on anything the page cannot show or on releases out of
-  order. `deploy.sh` runs `node scripts/changelog.mjs --check` first and refuses to publish
+  order. `deploy.sh` runs it with `--check` first and refuses to publish
   when the page differs from `changelog.md`, or when the newest entry is not
   `public/latest.json`'s version (so a release cannot go out without its entry, and an
   unreleased version cannot be listed).

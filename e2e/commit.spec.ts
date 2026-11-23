@@ -565,7 +565,7 @@ test("Commit & Push is not offered on a detached HEAD; a stopped rebase is said 
     await api.setActiveWorktree(app.activeRepoId!, wt);
   }, topic);
   // Detached mid-rebase: the active worktree is named by its folder.
-  await expect(page.getByRole("button", { name: /^Active worktree: .*commit\.worktrees\/topic/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Switch branch: .*, in the active worktree .*commit\.worktrees\/topic/ })).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
   await message(page).fill("Not now");
   await expect(reason(page)).toHaveText("A rebase is stopped here: Continue, in the banner, commits its changes (or abort it).");

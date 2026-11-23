@@ -39,16 +39,21 @@ async function openPicker(page: Page) {
   await expect(field(page)).toBeFocused();
 }
 
-/** Records the commands the page sends the core from now on. */
+/**
+ * Records the commands the page sends the core from now on, but for the graph's own paging
+ * of rows (`get_rows`), which a snapshot arriving late on a slow machine may ask for.
+ */
 function recordInvokes(page: Page): () => string[] {
   const cmds: string[] = [];
   page.on("request", (request) => {
     if (!request.url().endsWith("/invoke")) return;
+    let cmd = "?";
     try {
-      cmds.push(String(JSON.parse(request.postData() ?? "{}").cmd));
+      cmd = String(JSON.parse(request.postData() ?? "{}").cmd);
     } catch {
-      cmds.push("?");
+      // Recorded as "?".
     }
+    if (cmd !== "get_rows") cmds.push(cmd);
   });
   return () => cmds;
 }

@@ -47,7 +47,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   branch, its uncommitted changes (kept up to date as files change), how it stands with its
   upstream, and what is unusual (locked, folder missing, a merge stopped there). In a window
   narrower than 840 px it lies over the graph. The **active** worktree, where every action
-  runs, is marked there and named in the toolbar; double-click another (or "Make active")
+  runs, is marked there and named, with its branch, at the top of the window (the branch
+  opens the branch picker; while the panel is hidden, the worktree count beside it shows the
+  panel); double-click another (or "Make active")
   to switch. ⌘⌥1…⌘⌥9 switch to a worktree by its place in the list (Ctrl+Shift+1…9 on
   Windows and Linux).
 - **Add worktree…** (the panel's + or menu, or a branch or commit menu) makes a folder for a
@@ -83,6 +85,38 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 - **Settings** (⌘,): theme (system, light or dark), date format, background fetch, the
   editor and terminal the worktree menu opens, the worktree location pattern, and the `gg`
   command. **?** lists the keyboard shortcuts.
+
+## Switching branches
+
+The branch picker (⌘P, Ctrl+P on Windows and Linux, or a click on the branch name at the top
+of the window) works on the active tab's repository, in its active worktree.
+
+- It lists the local branches, then the remote ones (whether or not the graph shows remote
+  branches), each group newest commit first. Each row shows the branch, how long ago its
+  last commit was made, and on a second line that commit's author and subject. The branch
+  checked out is marked with a ring; one checked out in another worktree says "in worktree
+  *folder*".
+- Typing keeps the branches whose name contains the text, ignoring case, anywhere in it
+  (`log` finds `feature/login` and `origin/backlog`); the matching part is marked. A branch
+  named exactly as typed comes first. ↑/↓, Page Up/Down and Home/End move, Enter (or a
+  click) chooses; typing puts you back on the first row.
+- **A local branch** is checked out as its menu's **Check out** does: one behind its upstream
+  asks whether to fast-forward it first. **The current branch** just closes the picker. **A
+  branch checked out in another worktree** makes that worktree active instead (no git runs).
+- **A remote branch** checks out the local branch of the same name if there is one (`origin/x`
+  → `x`); otherwise it makes that local branch, tracking the remote one, and checks it out.
+- **Create new branch ‘*name*’** makes the branch typed at HEAD and checks it out (one
+  `git checkout -b`). It is the first row when no branch matches, so a new name and Enter
+  are all it takes. A name that is a local branch's offers that branch instead. A name git
+  would refuse says why under the row and in red under the field, and nothing runs. With the
+  field empty, **Create new branch…** asks for the name in the same field.
+- **Create new branch from…** lists HEAD and the branches to start from, filtered the same
+  way; choosing one makes the branch there (at that commit; a remote branch chosen is not
+  made its upstream) and checks it out, asking for the name first if none was typed.
+- Esc, or Backspace in an empty field, goes back a step; Esc in the first step closes the
+  picker, as does a click outside it.
+- Uncommitted changes in the way, conflicts, a merge or rebase in progress, an action already
+  running: the same notices and refusals as the same checkout from the graph.
 
 ## Actions
 
@@ -177,6 +211,7 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | Esc | Clear the selection, close the search, a dialog, a menu or a panel |
 | ⌘⇧F | Fetch from all remotes |
 | ⌘R | Refresh (and the pull requests) |
+| ⌘P | The branch picker: switch branch, or create one |
 | ⌘K | The commit panel, its message focused |
 | ⌘Enter | Commit what is ticked (in the commit message) |
 | Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |

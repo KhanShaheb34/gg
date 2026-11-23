@@ -115,6 +115,86 @@ async fn create_branch_with_checkout_switches_to_it() {
     );
 }
 
+/// Creating a branch and checking it out is one git command (the branch picker's create, the
+/// Create branch dialog's): nothing else in the operation names the new branch, and it is the
+/// operation's only write. Without checking out, likewise one `branch`.
+#[tokio::test]
+async fn create_branch_is_one_git_command() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    repo.commit("two");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    for (name, checkout) in [("made", false), ("fix", true)] {
+        let mark = h.last_log_id();
+        let request = OpRequest::CreateBranch {
+            name: name.into(),
+            at: first.clone(),
+            checkout,
+            expect_worktree: here_wt(),
+        };
+        let out = h.run(id, request).await;
+        assert_eq!(out.status, OpStatus::Done, "{out:?}");
+        let ran: Vec<_> = h
+            .log
+            .since(mark)
+            .into_iter()
+            .filter(|r| r.op_id == Some(out.op_id))
+            .collect();
+        let naming: Vec<_> = ran
+            .iter()
+            .filter(|r| r.args.iter().any(|a| a.contains(name)))
+            .map(|r| r.args.clone())
+            .collect();
+        let expected = if checkout {
+            vec!["checkout", "-b", name, first.as_str()]
+        } else {
+            vec!["branch", "--", name, first.as_str()]
+        };
+        assert_eq!(naming, [expected], "{ran:#?}");
+        let writes = ran.iter().filter(|r| r.kind == CmdKind::Write).count();
+        assert_eq!(writes, 1, "{ran:#?}");
+    }
+    assert_eq!(current_branch(&repo).as_deref(), Some("fix"));
+}
+
+/// A taken name is refused as a bad name, the branch left where it was: one gg has read is
+/// refused without git; one made since (in a terminal) as git refuses it, writing nothing.
+#[tokio::test]
+async fn create_branch_refuses_a_taken_name_and_moves_nothing() {
+    let repo = TestRepo::new();
+    let first = repo.commit("one");
+    let second = repo.commit("two");
+    repo.git(&["branch", "known", &first]);
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    // Made after the open: gg may not have read it by the time the request runs.
+    repo.git(&["branch", "late", &first]);
+
+    for name in ["known", "late"] {
+        for checkout in [false, true] {
+            let request = OpRequest::CreateBranch {
+                name: name.into(),
+                at: second.clone(),
+                checkout,
+                expect_worktree: here_wt(),
+            };
+            let err =
+                h.m.run_op(id, in_wt(repo.path(), request), &[])
+                    .await
+                    .unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadName, "{name}: {err:?}");
+            assert_eq!(
+                err.message,
+                format!("A branch named \u{201c}{name}\u{201d} already exists.")
+            );
+            assert_eq!(repo.git(&["rev-parse", name]), first, "{name} stays put");
+            assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+        }
+    }
+}
+
 #[tokio::test]
 async fn rename_branch_renames_it_and_keeps_head_on_it() {
     let repo = TestRepo::new();

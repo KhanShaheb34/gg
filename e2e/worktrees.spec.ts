@@ -59,15 +59,22 @@ test("every worktree is listed with how it stands, the main one first and the ac
   await expect(row(page, "hotfix").locator(".badge")).toHaveText("merging");
   await expect(row(page, "hotfix").locator(".changes")).toHaveClass(/conflicts/);
 
-  // The header names the active worktree; clicking it puts the focus in the list.
+  // The header names the active worktree and its branch; the branch opens the branch picker.
   const header = page.getByTestId("active-worktree");
   await expect(header.locator(".wt-branch")).toHaveText("main");
   await expect(page.locator(".repo-head .wt-folders")).toHaveText("~/repos/");
   await expect(page.locator(".repo-head .wt-folder")).toHaveText("worktrees");
-  await expect(header).toHaveAttribute("aria-label", /^Active worktree: main, in ~\/repos\/worktrees, one of 8 worktrees/);
+  await expect(header).toHaveAttribute("aria-label", /^Switch branch: main, in the active worktree ~\/repos\/worktrees, one of 8 worktrees/);
   // Rows hold no interactive element inside an option: a grid of rows, buttons in their own cells.
   await expect(list(page).locator('[role="option"]')).toHaveCount(0);
   await header.click();
+  await expect(page.getByTestId("branch-picker")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("branch-picker")).toHaveCount(0);
+  // With the panel hidden, the header counts the worktrees; the count shows them, the focus in the list.
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(list(page)).toHaveCount(0);
+  await page.getByTestId("worktree-count").click();
   await expect(list(page)).toBeFocused();
 });
 

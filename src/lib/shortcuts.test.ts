@@ -106,6 +106,19 @@ describe("region and panel shortcuts", () => {
     expect(repeatable({ kind: "commit" })).toBe(false);
   });
 
+  it("Cmd+P opens the branch picker (Ctrl+P elsewhere), also while typing, once per press", () => {
+    expect(shortcutFor(key("p", { metaKey: true }), true)).toEqual({ kind: "branches" });
+    expect(shortcutFor(key("P", { ctrlKey: true }), false)).toEqual({ kind: "branches" });
+    // In a text field too: the window's handler takes it, so the webview never prints.
+    expect(shortcutFor(key("p", { metaKey: true }), true, true)).toEqual({ kind: "branches" });
+    expect(shortcutFor(key("p", { ctrlKey: true }), false, true)).toEqual({ kind: "branches" });
+    expect(shortcutFor(key("p", { ctrlKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("p", { metaKey: true }), false)).toBeNull();
+    expect(shortcutFor(key("p", { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("p"), true)).toBeNull();
+    expect(repeatable({ kind: "branches" })).toBe(false);
+  });
+
   it("Cmd+Shift+L shows or hides the command log (Ctrl+Shift+L elsewhere)", () => {
     expect(shortcutFor(key("L", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "log" });
     expect(shortcutFor(key("l", { ctrlKey: true, shiftKey: true }), false)).toEqual({ kind: "log" });

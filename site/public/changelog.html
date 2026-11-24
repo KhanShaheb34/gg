@@ -60,11 +60,30 @@
     <p class="lede">What changed in each release of gg, newest first. Each version links to its release on GitHub, with the downloads for every system and their checksums.</p>
   </section>
 
+  <article class="block release" id="v0.4.1" aria-labelledby="v0.4.1-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.4.1-title"><a class="ref ref-tag" href="#v0.4.1"><span class="sr-only">gg </span>v0.4.1</a></h2>
+      <span class="ref ref-latest">latest</span>
+      <p class="release-meta"><time datetime="2026-11-24">24 November 2026</time><a href="/github/releases/tag/v0.4.1">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">A branch picker: press ⌘P, type, press Enter.</p>
+    <h3>What changed</h3>
+    <ul class="changes">
+      <li><b>Switch branches from the keyboard.</b> ⌘P (Ctrl+P on Windows and Linux), or a click on the branch name in the header, opens a search field at the top of the window. Typing filters your local branches, then the remote ones, newest commit first. Each row shows the branch, when its last commit was, its author and its subject. Enter or a click checks the branch out.</li>
+      <li><b>Create a branch the same way.</b> When no branch has the name you typed, <b>Create new branch ‘name’</b> is the first row: Enter creates it where you are and checks it out. <b>Create new branch from…</b> lets you pick HEAD or any branch to start from. A name git would refuse says why, in place.</li>
+      <li><b>Remote branches need no dialog.</b> Choosing <code>origin/foo</code> checks out your local <code>foo</code>, or creates it tracking the remote if you have none.</li>
+      <li><b>Worktrees are respected.</b> A branch that is checked out in another worktree makes that worktree the active one, since git will not check it out twice.</li>
+      <li><b>It is fast.</b> Opening the picker and typing run no git at all, and only the rows on screen are drawn: with 15,000 branches a keystroke takes under a millisecond. Creating a branch is now one git command, not two.</li>
+      <li><b>The header's branch name opens the picker.</b> It used to move to the worktree list; the worktree count beside it is now a button of its own for that.</li>
+    </ul>
+    <p>If you run 0.4.0, gg offers this update by itself: this is the first release delivered that way.</p>
+  </article>
+
   <article class="block release" id="v0.4.0" aria-labelledby="v0.4.0-title">
     <span class="node" aria-hidden="true"></span>
     <header class="release-head">
       <h2 class="release-version" id="v0.4.0-title"><a class="ref ref-tag" href="#v0.4.0"><span class="sr-only">gg </span>v0.4.0</a></h2>
-      <span class="ref ref-latest">latest</span>
       <p class="release-meta"><time datetime="2026-11-21">21 November 2026</time><a href="/github/releases/tag/v0.4.0">Downloads on GitHub</a></p>
     </header>
     <p class="release-lede">From this release on, gg updates itself. This is the last version you need to download or <code>brew upgrade</code> by hand.</p>

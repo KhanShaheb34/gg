@@ -17,6 +17,21 @@ as the rest of the site does. Anything else stops the script with the line it is
 the newest entry here is not the version in public/latest.json.
 -->
 
+## 0.4.1 (2026-11-24)
+
+A branch picker: press ⌘P, type, press Enter.
+
+### What changed
+
+- **Switch branches from the keyboard.** ⌘P (Ctrl+P on Windows and Linux), or a click on the branch name in the header, opens a search field at the top of the window. Typing filters your local branches, then the remote ones, newest commit first. Each row shows the branch, when its last commit was, its author and its subject. Enter or a click checks the branch out.
+- **Create a branch the same way.** When no branch has the name you typed, **Create new branch ‘name’** is the first row: Enter creates it where you are and checks it out. **Create new branch from…** lets you pick HEAD or any branch to start from. A name git would refuse says why, in place.
+- **Remote branches need no dialog.** Choosing `origin/foo` checks out your local `foo`, or creates it tracking the remote if you have none.
+- **Worktrees are respected.** A branch that is checked out in another worktree makes that worktree the active one, since git will not check it out twice.
+- **It is fast.** Opening the picker and typing run no git at all, and only the rows on screen are drawn: with 15,000 branches a keystroke takes under a millisecond. Creating a branch is now one git command, not two.
+- **The header's branch name opens the picker.** It used to move to the worktree list; the worktree count beside it is now a button of its own for that.
+
+If you run 0.4.0, gg offers this update by itself: this is the first release delivered that way.
+
 ## 0.4.0 (2026-11-21)
 
 From this release on, gg updates itself. This is the last version you need to download or `brew upgrade` by hand.

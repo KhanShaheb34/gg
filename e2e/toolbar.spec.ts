@@ -386,3 +386,23 @@ test("a filtered repository opens with a Graph column wide enough for its header
   expect(graph.width).toBeGreaterThanOrEqual(52);
   await expect(page.getByRole("columnheader", { name: "Graph" }).locator(".hlabel")).toBeVisible();
 });
+
+test("the branch filter's field holds its icon and its text side by side, centred in 30 px", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("small"));
+  await filterButton(page).click();
+  const input = filterDialog(page).getByRole("combobox", { name: "Filter branches" });
+  const field = input.locator("xpath=..");
+  const [box, icon, text, popover] = await Promise.all(
+    [field, field.locator("svg"), input, filterDialog(page)].map(async (l) => (await l.boundingBox())!),
+  );
+  expect(box.height).toBe(30);
+  // On one row: the icon before the text, both centred on the field's middle.
+  const middle = box.y + box.height / 2;
+  expect(icon.x + icon.width).toBeLessThanOrEqual(text.x);
+  expect(Math.abs(icon.y + icon.height / 2 - middle)).toBeLessThanOrEqual(1);
+  expect(Math.abs(text.y + text.height / 2 - middle)).toBeLessThanOrEqual(1);
+  // Right under the popover's edge and padding, with no margin of its own above it.
+  expect(box.y - popover.y).toBe(7);
+});

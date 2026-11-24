@@ -82,6 +82,16 @@ for (const theme of ["light", "dark"] as const) {
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `toolbar-${theme}.png`) });
 
+    // View open, tags hidden: the button in the accent colour.
+    await page.getByTestId("view-options").click();
+    const view = page.getByRole("dialog", { name: "View", exact: true });
+    await view.getByRole("checkbox", { name: "Tags", exact: true }).click();
+    await page.mouse.move(1000, 60);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `toolbar-view-${theme}.png`) });
+    await view.getByRole("checkbox", { name: "Tags", exact: true }).click();
+    await page.keyboard.press("Escape");
+
     // The branch filter open, filtered to "feature", one branch ticked.
     await page.getByRole("button", { name: /^Branches:/ }).click();
     const dialog = page.getByRole("dialog", { name: "Branch filter" });

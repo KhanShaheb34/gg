@@ -1,6 +1,6 @@
 <!--
-  The graph's toolbar, in the repository header: which branches the graph shows, whether it
-  shows remote branches, tags and stashes, then the running operation, search, fetch and
+  The graph's toolbar, in the repository header: which branches the graph shows, the View
+  button (remote branches, tags and stashes), then the running operation, search, fetch and
   refresh. Every control changes at once when used; the work it starts shows as it runs
   (spinning icons, a loading line along the header's bottom edge). An operation shows once
   it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
@@ -24,6 +24,7 @@
   import BranchFilter from "./BranchFilter.svelte";
   import MiddleText from "./MiddleText.svelte";
   import SearchBox from "./SearchBox.svelte";
+  import ViewOptions from "./ViewOptions.svelte";
 
   let { view }: { view: RepoView } = $props();
 
@@ -33,7 +34,7 @@
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
   const sideShown = $derived(panelShown(view.repoId));
-  /** A narrow window: the toggles show as icons (their names in tooltips), so nothing is cut off. */
+  /** A narrow window: View shows as its icon (its name in its tooltip), so nothing is cut off. */
   const compact = $derived(sidePanel.windowW < NARROW_W);
 
   function toggleLog() {
@@ -45,7 +46,6 @@
 
   /** A repository without commits: filtering and searching have nothing to work on. */
   const noCommits = $derived(!view.snapshot.loading && view.snapshot.totalRows === 0);
-  const NO_COMMITS = "Nothing to show yet: this repository has no commits";
   const fetchInfo = $derived(view.snapshot.fetch);
   const noRemotes = $derived(view.snapshot.remotes.length === 0);
   const fetchState = $derived(view.fetching ? "running" : fetchInfo.lastError ? "error" : "idle");
@@ -145,46 +145,7 @@
   <span class="divider" aria-hidden="true"></span>
   <BranchFilter {view} disabled={noCommits} />
 
-{#snippet toggle(label: string, checked: boolean, set: (on: boolean) => void, glyph: string)}
-    <label class="toggle" title={noCommits ? NO_COMMITS : compact ? label : undefined}>
-      <input
-        type="checkbox"
-        class="checkbox"
-        aria-label={label}
-        disabled={noCommits}
-        {checked}
-        onchange={(e) => set(e.currentTarget.checked)}
-      />
-      {#if compact}
-        <svg class="glyph" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-          <path d={glyph} fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      {:else}
-        <span aria-hidden="true">{label}</span>
-      {/if}
-    </label>
-  {/snippet}
-  <!-- A cloud: the remotes' branches. -->
-  {@render toggle(
-    "Remote branches",
-    view.viewOptions.showRemotes,
-    (on) => view.setViewOptions({ showRemotes: on }),
-    "M4.9 12.2h6.3a2.8 2.8 0 0 0 .35-5.58 3.7 3.7 0 0 0-7.1-.32A2.95 2.95 0 0 0 4.9 12.2z",
-  )}
-  <!-- A tag. -->
-  {@render toggle(
-    "Tags",
-    view.viewOptions.showTags,
-    (on) => view.setViewOptions({ showTags: on }),
-    "M2.6 7.8V3.4c0-.45.35-.8.8-.8h4.4l5.9 5.9-5.2 5.2zM5.6 5.4h.01",
-  )}
-  <!-- Stacked boxes: stashes. With a branch selection, the stashes on its commits show. -->
-  {@render toggle(
-    "Stashes",
-    view.viewOptions.showStashes,
-    (on) => view.setViewOptions({ showStashes: on }),
-    "M3 5.2h10v7.6H3zM4.6 3h6.8M6.4 8.2h3.2",
-  )}
+  <ViewOptions {view} disabled={noCommits} {compact} />
 
   <span class="spacer"></span>
 
@@ -321,16 +282,6 @@
     gap: 2px;
   }
 
-  .compact .toggle {
-    gap: 5px;
-    padding: 0 7px 0 6px;
-  }
-
-  .glyph {
-    display: block;
-    color: var(--text-muted);
-  }
-
   /* Separates the repository's name and path from the controls. */
   .divider {
     flex: none;
@@ -338,33 +289,6 @@
     height: 18px;
     margin: 0 10px 0 2px;
     background: var(--border-strong);
-  }
-
-  .toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    height: 28px;
-    padding: 0 9px 0 8px;
-    border-radius: var(--radius);
-    color: var(--text);
-    font-size: var(--fs-sm);
-    white-space: nowrap;
-    transition: background-color 80ms linear;
-  }
-
-  .toggle:hover {
-    background: var(--bg-hover);
-  }
-
-  .toggle:active {
-    background: var(--bg-pressed);
-  }
-
-  /* Off (a repository without commits): faint, and no hover. */
-  .toggle:has(:disabled) {
-    background: transparent;
-    color: var(--text-faint);
   }
 
   .spacer {

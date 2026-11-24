@@ -445,7 +445,7 @@ test("the toolbar is never cut off, down to the least window width", async ({ gg
   await open(page, gg.repoPath("worktrees"));
   for (const width of [800, 900]) {
     await page.setViewportSize({ width, height: 560 });
-    const buttons = page.locator(".repo-head .toolbar").locator("button, label.toggle");
+    const buttons = page.locator(".repo-head .toolbar").locator("button");
     const count = await buttons.count();
     expect(count).toBeGreaterThan(6);
     for (let i = 0; i < count; i++) {

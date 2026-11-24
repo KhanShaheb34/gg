@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { BIG_COMMITS, bigSubject, closeButton, expect, test } from "./fixtures";
+import { BIG_COMMITS, bigSubject, closeButton, expect, test, viewOption } from "./fixtures";
 
 test.use({ timezoneId: "UTC" });
 
@@ -284,8 +284,8 @@ test("an empty repository says so, and the controls that need commits are off", 
   await expect(page.getByText("No commits yet")).toBeVisible();
   await expect(page.getByText("Commits made on main show up here.")).toBeVisible();
   await expect(page.getByRole("button", { name: /^Branches:/ })).toBeDisabled();
-  await expect(page.getByRole("checkbox", { name: "Remote branches" })).toBeDisabled();
-  await expect(page.getByRole("checkbox", { name: "Tags" })).toBeDisabled();
+  await expect(page.getByTestId("view-options")).toBeDisabled();
+  await expect(page.getByTestId("view-options")).toHaveAttribute("title", /no commits/i);
   await expect(page.getByRole("button", { name: "Search commits" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Search commits" })).toHaveAttribute("title", /no commits/i);
   await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
@@ -709,7 +709,7 @@ test("stashes: one row each with a stash label; the Stashes toggle hides them an
   expect(dark.stash).not.toBe(light.stash);
   await page.evaluate(() => (document.documentElement.dataset.theme = "light"));
 
-  const toggle = page.getByRole("checkbox", { name: "Stashes" });
+  const toggle = await viewOption(page, "Stashes");
   await expect(toggle).toBeChecked();
   await toggle.click();
   await expect(toggle).not.toBeChecked();
@@ -718,9 +718,9 @@ test("stashes: one row each with a stash label; the Stashes toggle hides them an
   await expect(subject(row(page, 0))).toHaveText(bigSubject(300));
 
   await page.reload();
-  await expect(page.getByRole("checkbox", { name: "Stashes" })).not.toBeChecked();
+  await expect(await viewOption(page, "Stashes")).not.toBeChecked();
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 1));
-  await page.getByRole("checkbox", { name: "Stashes" }).click();
+  await (await viewOption(page, "Stashes")).click();
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
   await expect(row(page, 1).locator('[data-ref="stash@{1}"]')).toBeVisible();
 });
@@ -737,7 +737,7 @@ test("hiding and showing stashes keeps the selected commit and the first visible
   await target.click();
   await expect(target).toHaveAttribute("aria-selected", "true");
 
-  const toggle = page.getByRole("checkbox", { name: "Stashes" });
+  const toggle = await viewOption(page, "Stashes");
   await toggle.click();
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 1));
   await expect.poll(async () => (await firstVisible(page)).subject).toBe(before.subject);
@@ -778,7 +778,7 @@ test("with a branch selection, the stashes on its commits show, and the Stashes 
   // Both stashes are on commits of main.
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));
   await expect(row(page, 0).locator('[data-ref="stash@{0}"]')).toBeVisible();
-  const toggle = page.getByRole("checkbox", { name: "Stashes" });
+  const toggle = await viewOption(page, "Stashes");
   await expect(toggle).toBeEnabled();
   await toggle.click();
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 1));

@@ -116,7 +116,7 @@ afterwards and says which it is.
   branch, remote branch, tag and stash labels on their commits; ahead and behind counts on
   a branch's label.
 - Search subjects, authors and hashes; filter which branches are shown; show or hide remote
-  branches, tags and stashes.
+  branches, tags and stashes (View, in the toolbar).
 - Select a commit for its details: full hash, parents, author, date, message, and the files
   it changed with added and deleted line counts, as a tree or a list.
 - The uncommitted changes of the active worktree as a row at the top.

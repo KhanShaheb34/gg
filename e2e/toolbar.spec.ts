@@ -1,8 +1,8 @@
-// The toolbar above the graph against real repositories: branch filter, remote branches and
-// tags toggles, search, fetch and refresh.
+// The toolbar above the graph against real repositories: branch filter, the View popover
+// (remote branches, tags, stashes), search, fetch and refresh.
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { BIG_COMMITS, bigSubject, closeButton, expect, makeRepo, test } from "./fixtures";
+import { BIG_COMMITS, bigSubject, closeButton, expect, makeRepo, test, viewOption, viewPopover } from "./fixtures";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -148,7 +148,7 @@ test("unticking Remote branches removes origin from every label", async ({ gg })
   const labels = grid(page).locator("[data-ref]");
   await expect(labels.filter({ hasText: "origin" }).first()).toBeVisible();
 
-  const remotes = page.getByRole("checkbox", { name: "Remote branches" });
+  const remotes = await viewOption(page, "Remote branches");
   await expect(remotes).toBeChecked();
   await remotes.click();
   await expect(remotes).not.toBeChecked();
@@ -156,7 +156,7 @@ test("unticking Remote branches removes origin from every label", async ({ gg })
   await expect(labels.filter({ hasText: "develop" })).toHaveCount(1);
 
   // Tags go the same way.
-  const tags = page.getByRole("checkbox", { name: "Tags" });
+  const tags = await viewOption(page, "Tags");
   await expect(grid(page).locator('[data-ref="v1.0"]')).toHaveCount(1);
   await tags.click();
   await expect(grid(page).locator('[data-ref="v1.0"]')).toHaveCount(0);
@@ -405,4 +405,139 @@ test("the branch filter's field holds its icon and its text side by side, centre
   expect(Math.abs(text.y + text.height / 2 - middle)).toBeLessThanOrEqual(1);
   // Right under the popover's edge and padding, with no margin of its own above it.
   expect(box.y - popover.y).toBe(7);
+});
+
+test("View: each tick applies at once and is remembered, the popover stays open, and the button says what is hidden", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  const view = page.getByTestId("view-options");
+  await expect(view).toHaveAccessibleName("View");
+  await expect(view).toHaveAttribute("aria-haspopup", "dialog");
+  await expect(view).toHaveAttribute("aria-expanded", "false");
+  await expect(view).toHaveAttribute("title", "What the graph shows");
+  await expect(view.getByText("View")).toBeVisible();
+  const colour = () => view.evaluate((e) => getComputedStyle(e).color);
+  const plain = await colour();
+
+  await view.click();
+  await expect(view).toHaveAttribute("aria-expanded", "true");
+  const popover = viewPopover(page);
+  const group = popover.getByRole("group", { name: "Show in the graph" });
+  await expect(group.getByRole("checkbox")).toHaveCount(3);
+  for (const name of ["Remote branches", "Tags", "Stashes"]) await expect(group.getByRole("checkbox", { name, exact: true })).toBeChecked();
+  // Narrower than the branch filter's.
+  expect((await popover.boundingBox())!.width).toBeLessThanOrEqual(240);
+
+  const tag = grid(page).locator('[data-ref="v1.0"]');
+  await expect(tag).toHaveCount(1);
+  await group.getByRole("checkbox", { name: "Tags", exact: true }).click();
+  await expect(tag).toHaveCount(0);
+  await expect(popover).toBeVisible();
+  // Something hidden: the button reads in the accent colour, and says what.
+  await expect(view).toHaveClass(/hiding/);
+  await expect(view).toHaveAttribute("title", "Hidden: tags");
+  await expect.poll(colour).not.toBe(plain);
+  await group.getByRole("checkbox", { name: "Remote branches", exact: true }).click();
+  await expect(view).toHaveAttribute("title", "Hidden: remote branches, tags");
+  await expect(grid(page).locator("[data-ref]").filter({ hasText: "origin" })).toHaveCount(0);
+
+  // Remembered.
+  await page.reload();
+  await expect(page.getByTestId("view-options")).toHaveAttribute("title", "Hidden: remote branches, tags");
+  await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
+  await expect(tag).toHaveCount(0);
+  await expect(await viewOption(page, "Tags")).not.toBeChecked();
+  await expect(await viewOption(page, "Stashes")).toBeChecked();
+  await (await viewOption(page, "Tags")).click();
+  await (await viewOption(page, "Remote branches")).click();
+  await expect(tag).toHaveCount(1);
+  await expect(view).not.toHaveClass(/hiding/);
+  await expect(view).toHaveAttribute("title", "What the graph shows");
+  await expect.poll(colour).toBe(plain);
+
+  // A press outside closes it.
+  await page.mouse.click(700, 500);
+  await expect(popover).toHaveCount(0);
+  await expect(view).toHaveAttribute("aria-expanded", "false");
+});
+
+test("View works from the keyboard, and only one of the toolbar's popovers is open at a time", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  const view = page.getByTestId("view-options");
+  const popover = viewPopover(page);
+  const box = (name: string) => popover.getByRole("checkbox", { name, exact: true });
+
+  // Down on the button opens it, the focus on the first row; Up, Down, Home and End move.
+  await view.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(box("Remote branches")).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(box("Tags")).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(box("Stashes")).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(box("Stashes")).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(box("Remote branches")).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(box("Stashes")).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(box("Tags")).toBeFocused();
+  // Space and Enter tick, and it stays open.
+  await page.keyboard.press("Space");
+  await expect(box("Tags")).not.toBeChecked();
+  await expect(grid(page).locator('[data-ref="v1.0"]')).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(box("Tags")).toBeChecked();
+  await expect(grid(page).locator('[data-ref="v1.0"]')).toHaveCount(1);
+  // Esc closes, the focus back on the button.
+  await page.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await expect(view).toBeFocused();
+  // Enter on the button opens it too.
+  await page.keyboard.press("Enter");
+  await expect(box("Remote branches")).toBeFocused();
+
+  // Back to the button, then on to the branch filter: View closes, and the filter opens alone.
+  await page.keyboard.press("Shift+Tab");
+  await expect(view).toBeFocused();
+  await expect(popover).toBeVisible();
+  await page.keyboard.press("Shift+Tab");
+  await expect(filterButton(page)).toBeFocused();
+  await expect(popover).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(filterDialog(page).getByRole("combobox", { name: "Filter branches" })).toBeFocused();
+  // And from the filter's field on to View: the filter closes, View opens alone.
+  await page.keyboard.press("Tab");
+  await expect(view).toBeFocused();
+  await expect(filterDialog(page)).toHaveCount(0);
+  await page.keyboard.press("ArrowDown");
+  await expect(box("Remote branches")).toBeFocused();
+  // A click on the filter's button: View closes, the filter opens.
+  await filterButton(page).click();
+  await expect(popover).toHaveCount(0);
+  await expect(filterDialog(page)).toBeVisible();
+  await view.click();
+  await expect(filterDialog(page)).toHaveCount(0);
+  await expect(popover).toBeVisible();
+});
+
+test("in a narrow window View shows as its icon, its name in its tooltip", async ({ gg }) => {
+  const { page } = gg;
+  await page.setViewportSize({ width: 900, height: 560 });
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  const view = page.getByTestId("view-options");
+  await expect(view).toHaveAccessibleName("View");
+  // The eye and the chevron only.
+  expect((await view.boundingBox())!.width).toBeLessThanOrEqual(42);
+  await expect(view).toHaveAttribute("title", "View\nWhat the graph shows");
+  await (await viewOption(page, "Stashes")).click();
+  await expect(view).toHaveAttribute("title", "View\nHidden: stashes");
+  await expect(view).toHaveClass(/hiding/);
+  const popover = (await viewPopover(page).boundingBox())!;
+  expect(popover.x + popover.width).toBeLessThanOrEqual(900);
 });

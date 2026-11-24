@@ -292,11 +292,16 @@
     data-testid="side-toggle"
     onclick={() => toggleWorktrees(view)}
   >
-    <!-- A window with a panel on its right. -->
+    <!-- Two folders, one behind the other: the repository's worktrees. -->
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" />
-      <path d="M9.8 3.4v9.2" stroke="currentColor" stroke-width="1.4" />
-      <path d="M11.4 6h1M11.4 8h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      <path
+        d="M2 6.3c0-.6.5-1.1 1.1-1.1h2.2l1.2 1.3h4.4c.6 0 1.1.5 1.1 1.1v4.9c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1zM4.6 5V3.5c0-.6.5-1.1 1.1-1.1h2.1l1.2 1.3h3.9c.6 0 1.1.5 1.1 1.1v4.7c0 .6-.5 1.1-1.1 1.1h-.7"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
     </svg>
   </button>
 

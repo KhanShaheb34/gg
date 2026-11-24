@@ -18,7 +18,7 @@
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
   import { clearProgress, progressDue, progressLine, PROGRESS_AFTER_MS, watchOpProgress } from "../state/opProgress.svelte";
-  import { NARROW_W, panelState, sidePanel, sideShows, toggleCommit, toggleWorktrees } from "../state/worktrees.svelte";
+  import { commitShownForActive, NARROW_W, panelState, sidePanel, sideShows, toggleCommit, toggleWorktrees } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
@@ -39,7 +39,7 @@
   /** The active worktree's uncommitted files, as its row in the worktree list counts them. */
   const changes = $derived(view.snapshot.status.changed + view.snapshot.status.untracked);
   const commitTitle = $derived.by(() => {
-    if (shows === "commit") return `Hide the commit panel (${PANEL_KEYS})`;
+    if (commitShownForActive(view)) return `Hide the commit panel (${PANEL_KEYS})`;
     const s = view.snapshot.status;
     const parts = [];
     if (s.changed > 0) parts.push(`${s.changed} changed`);

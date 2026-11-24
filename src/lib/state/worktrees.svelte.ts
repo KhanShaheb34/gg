@@ -134,12 +134,17 @@ export function showWorktreeList(view: RepoView, focus = false): void {
 }
 
 /**
- * The toolbar's Commit button: the active worktree's commit panel, as ⌘K opens it; the side
- * panel hidden when it shows a commit panel already.
+ * The toolbar's Commit button: the active worktree's commit panel, as ⌘K opens it (from
+ * another worktree's commit panel too); the side panel hidden when it shows that one already.
  */
 export function toggleCommit(view: RepoView): void {
-  if (sideShows(view) === "commit") setPanelShown(view.repoId, false);
+  if (commitShownForActive(view)) setPanelShown(view.repoId, false);
   else openCommit(view);
+}
+
+/** `view`'s side panel shows the active worktree's commit panel. */
+export function commitShownForActive(view: RepoView): boolean {
+  return sideShows(view) === "commit" && committingIn(view)?.path === view.snapshot.activeWorktree;
 }
 
 /**

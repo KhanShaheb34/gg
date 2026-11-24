@@ -685,11 +685,32 @@ test("the toolbar's Commit and Worktrees buttons are the side panel's two views,
   await pressed(false, true);
 });
 
+test("the Commit button, from another worktree's commit panel, opens the active worktree's (as the shortcut does)", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("commit"));
+  await worktreeRow(page, "topic").click({ button: "right" });
+  await item(page, "Commit…").click();
+  await expect(page.getByTestId("side-detail")).toHaveText("topic");
+  const commit = page.getByTestId("commit-toggle");
+  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)/);
+
+  await commit.click();
+  await expect(page.getByTestId("side-detail")).toHaveText("main");
+  await expect(message(page)).toBeFocused();
+  await expect(commit).toHaveAttribute("title", /^Hide the commit panel/);
+  await commit.click();
+  await expect(page.locator('[data-region="side-panel"]')).toHaveCount(0);
+});
+
 test("the Commit button counts the active worktree's uncommitted files, without moving the toolbar; the count goes with the commit", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   const repo = gg.repoPath("small");
   await open(page, repo);
+  // The app commits here: the repository needs an identity (a machine without one refuses).
+  gg.git("small", "config", "user.name", "Ada Lovelace");
+  gg.git("small", "config", "user.email", "ada@example.com");
   const commit = page.getByTestId("commit-toggle");
   const badge = commit.getByTestId("commit-badge");
   await expect(badge).toHaveCount(0);

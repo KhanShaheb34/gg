@@ -17,6 +17,18 @@ as the rest of the site does. Anything else stops the script with the line it is
 the newest entry here is not the version in public/latest.json.
 -->
 
+## 0.4.2 (2026-11-24)
+
+A tidier toolbar: one View menu, and a Commit button beside Worktrees.
+
+### What changed
+
+- **A Commit button in the toolbar.** It opens the commit panel of the active worktree, as ⌘K (Ctrl+K) does, and shows a small count of your uncommitted files.
+- **Commit and Worktrees are a pair.** The side panel has two views, and each button is highlighted for the one that shows. Pressing the other switches the panel; pressing the highlighted one hides it. The Worktrees button has a new icon, two folders, in place of the side-panel one.
+- **One View menu.** The three checkboxes for remote branches, tags and stashes are now one **View** button beside the branch filter. It is coloured while anything is hidden, and its tooltip says what.
+- **The branch filter's search field is fixed.** Its search icon sat above the text; they are side by side again.
+- **Smaller things.** The worktree count in the header always opens the worktree list. The list no longer takes the keyboard focus each time it reappears.
+
 ## 0.4.1 (2026-11-24)
 
 A branch picker: press ⌘P, type, press Enter.

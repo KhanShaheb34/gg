@@ -54,11 +54,10 @@
   const cellId = (i: number) => `wt-${uid}-${i}-cell`;
 
   // "Show the worktrees" asks for the focus here.
-  let seenFocus = 0;
   $effect(() => {
     const request = panel.focusRequest;
-    if (request === seenFocus) return;
-    seenFocus = request;
+    if (request === panel.focusDone) return;
+    panel.focusDone = request;
     void tick().then(() => {
       if (panel.selected === null) panel.selected = rows.find((w) => w.active)?.path ?? null;
       list?.focus();

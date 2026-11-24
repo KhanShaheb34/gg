@@ -1,7 +1,7 @@
 // The commit panel against the real core: committing a subset of the changed files, Commit &
 // Push to a local bare remote, an empty commit, a failing hook (its output shown, the message kept), the list
-// cut at 5,000 files, the ways in (the shortcut, the worktree menu and its row, the graph's
-// uncommitted row), another worktree made active in one click, the keyboard, what stops a
+// cut at 5,000 files, the ways in (the shortcut, the toolbar's Commit button, the worktree menu
+// and its row, the graph's uncommitted row), another worktree made active in one click, the keyboard, what stops a
 // commit said under the buttons, and the worktree menu's launchers (recorded, never started).
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -605,4 +605,118 @@ test("looks: a disabled Commit & Push looks disabled; the old side of a rename k
   const row = file(page, renamed);
   await expect(row.locator(".mid").last()).toHaveAttribute("data-shown", "Summary.tsx");
   await expect(row.locator(".old")).toHaveAttribute("data-shown", "Totals.tsx");
+});
+
+test("the toolbar's Commit and Worktrees buttons are the side panel's two views, each pressed for its own", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("commit"));
+  const commit = page.getByTestId("commit-toggle");
+  const worktrees = page.getByTestId("side-toggle");
+  const side = page.locator('[data-region="side-panel"]');
+  const list = page.getByRole("grid", { name: "Worktrees" });
+  const pressed = async (c: boolean, w: boolean) => {
+    await expect(commit).toHaveAttribute("aria-pressed", String(c));
+    await expect(worktrees).toHaveAttribute("aria-pressed", String(w));
+  };
+  await expect(commit).toHaveAccessibleName("Commit");
+  await expect(commit).toBeEnabled();
+
+  // The list shows: Worktrees is pressed.
+  await expect(list).toBeVisible();
+  await pressed(false, true);
+  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)\nUncommitted: 5 changed, 1 new$/);
+  await expect(worktrees).toHaveAttribute("title", /^Hide the worktrees \((⌘|Ctrl\+)B\)$/);
+
+  // Commit: the active worktree's commit panel, the focus in its message, as Cmd+K.
+  await commit.click();
+  await expect(panel(page)).toBeVisible();
+  await expect(message(page)).toBeFocused();
+  await expect(page.getByTestId("side-detail")).toHaveText("main");
+  await pressed(true, false);
+  await expect(commit).toHaveAttribute("title", /^Hide the commit panel \((⌘|Ctrl\+)B\)$/);
+  await expect(worktrees).toHaveAttribute("title", "Show the worktrees");
+
+  // Worktrees from the commit panel: the list, the panel still shown, the focus in it (as Back).
+  await worktrees.click();
+  await expect(panel(page)).toHaveCount(0);
+  await expect(list).toBeFocused();
+  await pressed(false, true);
+  // Pressed again, it hides the panel.
+  await worktrees.click();
+  await expect(side).toHaveCount(0);
+  await pressed(false, false);
+  await expect(worktrees).toHaveAttribute("title", /^Show the worktrees \((⌘|Ctrl\+)B\)$/);
+  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)/);
+
+  // Commit with the panel hidden shows it with the commit panel; pressed again, hides it.
+  await commit.click();
+  await expect(panel(page)).toBeVisible();
+  await expect(message(page)).toBeFocused();
+  await pressed(true, false);
+  await commit.click();
+  await expect(side).toHaveCount(0);
+  await pressed(false, false);
+
+  // Cmd+B shows the panel as it was hidden: the commit panel.
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(panel(page)).toBeVisible();
+  await pressed(true, false);
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(side).toHaveCount(0);
+  // Worktrees always lands on the list (where Cmd+B would bring back the commit panel, it does
+  // not name the shortcut).
+  await expect(worktrees).toHaveAttribute("title", "Show the worktrees");
+  await worktrees.click();
+  await expect(list).toBeVisible();
+  await expect(panel(page)).toHaveCount(0);
+  await pressed(false, true);
+  // Shown again, the list does not take the focus once more.
+  await page.waitForTimeout(200);
+  await expect(worktrees).toBeFocused();
+
+  // So does the header's worktree count, shown while the panel is hidden.
+  await commit.click();
+  await expect(panel(page)).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+b");
+  await page.getByTestId("worktree-count").click();
+  await expect(list).toBeFocused();
+  await expect(panel(page)).toHaveCount(0);
+  await pressed(false, true);
+});
+
+test("the Commit button counts the active worktree's uncommitted files, without moving the toolbar; the count goes with the commit", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("small");
+  await open(page, repo);
+  const commit = page.getByTestId("commit-toggle");
+  const badge = commit.getByTestId("commit-badge");
+  await expect(badge).toHaveCount(0);
+  const before = (await page.getByTestId("side-toggle").boundingBox())!;
+
+  writeFileSync(path.join(repo, "src", "part1.txt"), "changed\n");
+  writeFileSync(path.join(repo, "notes.txt"), "new\n");
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(badge).toHaveText("2");
+  await expect(badge).toHaveAttribute("aria-hidden", "true");
+  await expect(commit).toHaveAttribute("title", /\nUncommitted: 1 changed, 1 new$/);
+  expect(await page.getByTestId("side-toggle").boundingBox()).toEqual(before);
+  // It stays inside the header.
+  const head = (await page.locator(".repo-head").boundingBox())!;
+  const b = (await badge.boundingBox())!;
+  expect(b.y).toBeGreaterThanOrEqual(head.y);
+  expect(b.x + b.width).toBeLessThanOrEqual(before.x + 4);
+
+  await commit.click();
+  await expect(message(page)).toBeFocused();
+  await expect(badge).toHaveText("2"); // still, while the commit panel shows
+  await message(page).fill("Both");
+  await commitButton(page).click();
+  await expect(notice(page, /Committed 2 files to main/)).toBeVisible();
+  await expect(badge).toHaveCount(0);
+  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)$/);
 });

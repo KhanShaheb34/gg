@@ -150,11 +150,11 @@ afterwards and says which it is.
   <img alt="The commit panel: six changed files, each ticked, with its status letter, a message box with a subject and a body, and the Commit and Commit and Push to origin/main buttons" src="docs/screens/commit-panel-light.png" width="640">
 </picture>
 
-Press ⌘K (or click a worktree's change count) to commit the files you tick, with
-**Commit & Push** to send the branch upstream in the same step. Files you staged but did not
-tick stay staged and out of the commit. With nothing ticked, **Commit with no changes** makes an
-empty commit (to run CI again, say). When a merge is being concluded, its message is filled
-in for you.
+Press ⌘K (or click Commit in the toolbar, or a worktree's change count) to commit the files
+you tick, with **Commit & Push** to send the branch upstream in the same step. Files you
+staged but did not tick stay staged and out of the commit. With nothing ticked, **Commit with
+no changes** makes an empty commit (to run CI again, say). When a merge is being concluded,
+its message is filled in for you.
 
 **Pull requests**
 
@@ -244,7 +244,7 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 | ⌘R | Refresh |
 | ⌘P | Switch branch, or create one (the branch picker) |
 | ⌘K | Commit (the commit panel, its message focused); ⌘Enter commits |
-| ⌘B | Show or hide the side panel (worktrees) |
+| ⌘B | Show or hide the side panel (the worktrees, or the commit panel) |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active |
 | ⌘⇧L | Show or hide the command log |
 | ⌘1…⌘9, Ctrl+Tab | Switch tabs |

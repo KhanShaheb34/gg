@@ -14,6 +14,12 @@ export class PanelState {
   switching: string | null = $state(null);
   /** Asks to move the focus into the list (bumped; the list follows it). */
   focusRequest = $state(0);
+  /**
+   * The `focusRequest` the list last followed: kept here, not in the list, so a list shown
+   * again (the panel shown again, or back from the commit panel) does not take the focus
+   * once more.
+   */
+  focusDone = 0;
   /** The worktree whose commit panel shows (its path), or null: the worktree list. */
   commitFor: string | null = $state(null);
   /** Asks to move the focus to the commit message (bumped; the commit panel follows it). */

@@ -42,6 +42,7 @@
     activateWorktree,
     addWorktree,
     closeCommit,
+    committingIn,
     listedWorktrees,
     docked,
     openCommit,
@@ -49,6 +50,7 @@
     openPanelMenu,
     panelShown,
     setPanelShown,
+    showWorktreeList,
     sidePanel,
   } from "./lib/state/worktrees.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
@@ -119,9 +121,9 @@
     }
   }
 
-  /** Shows the side panel with the focus in its list (the header's worktree button). */
+  /** Shows the side panel's worktree list with the focus in it (the header's worktree count). */
   function showWorktrees() {
-    if (active) setPanelShown(active.repoId, true, true);
+    if (active) showWorktreeList(repoView(active.repoId), true);
   }
 
   /** Files are being dragged over the window (app only). */
@@ -384,9 +386,8 @@
             </div>
             {#if panelShown(active.repoId)}
               {@const view = repoView(active.repoId)}
-              {@const panel = panelState(active.repoId)}
               <!-- The commit panel of a worktree still listed; else the worktree list. -->
-              {@const committing = panel.commitFor === null ? null : (view.snapshot.worktrees.find((w) => w.path === panel.commitFor) ?? null)}
+              {@const committing = committingIn(view)}
               <SidePanel
                 title={committing ? "Commit" : "Worktrees"}
                 count={committing === null && view.snapshot.worktrees.length > 1 ? String(view.snapshot.worktrees.length) : null}

@@ -18,7 +18,7 @@
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
   import { clearProgress, progressDue, progressLine, PROGRESS_AFTER_MS, watchOpProgress } from "../state/opProgress.svelte";
-  import { NARROW_W, panelShown, setPanelShown, sidePanel } from "../state/worktrees.svelte";
+  import { NARROW_W, panelState, sidePanel, sideShows, toggleCommit, toggleWorktrees } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
@@ -33,7 +33,28 @@
   const REFRESH_KEYS = mac ? "⌘R" : "Ctrl+R";
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
-  const sideShown = $derived(panelShown(view.repoId));
+  const COMMIT_KEYS = mac ? "⌘K" : "Ctrl+K";
+  /** What the side panel shows: Commit and Worktrees are its two views, each pressed for its own. */
+  const shows = $derived(sideShows(view));
+  /** The active worktree's uncommitted files, as its row in the worktree list counts them. */
+  const changes = $derived(view.snapshot.status.changed + view.snapshot.status.untracked);
+  const commitTitle = $derived.by(() => {
+    if (shows === "commit") return `Hide the commit panel (${PANEL_KEYS})`;
+    const s = view.snapshot.status;
+    const parts = [];
+    if (s.changed > 0) parts.push(`${s.changed} changed`);
+    if (s.untracked > 0) parts.push(`${s.untracked} new`);
+    if (s.conflicted > 0) parts.push(`${s.conflicted} with conflicts`);
+    return `Commit (${COMMIT_KEYS})` + (parts.length > 0 ? `\nUncommitted: ${parts.join(", ")}` : "");
+  });
+  // ⌘B shows and hides the side panel as it was: named here only where it does what the button does.
+  const worktreesTitle = $derived(
+    shows === "worktrees"
+      ? `Hide the worktrees (${PANEL_KEYS})`
+      : shows === "hidden" && panelState(view.repoId).commitFor === null
+        ? `Show the worktrees (${PANEL_KEYS})`
+        : "Show the worktrees",
+  );
   /** A narrow window: View shows as its icon (its name in its tooltip), so nothing is cut off. */
   const compact = $derived(sidePanel.windowW < NARROW_W);
 
@@ -246,11 +267,30 @@
 
   <button
     class="icon-btn tool"
+    aria-label="Commit"
+    aria-pressed={shows === "commit"}
+    title={commitTitle}
+    data-testid="commit-toggle"
+    onclick={() => toggleCommit(view)}
+  >
+    <!-- A commit: a circle on a line. -->
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.45" />
+      <path d="M1.6 8h3.8M10.6 8h3.8" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" />
+    </svg>
+    {#if changes > 0}
+      <!-- How many files there are to commit; over the button's corner, so nothing moves when it comes. -->
+      <span class="badge" aria-hidden="true" data-testid="commit-badge">{changes > 99 ? "99+" : changes}</span>
+    {/if}
+  </button>
+
+  <button
+    class="icon-btn tool"
     aria-label="Worktrees"
-    aria-pressed={sideShown}
-    title="{sideShown ? 'Hide' : 'Show'} the worktrees ({PANEL_KEYS})"
+    aria-pressed={shows === "worktrees"}
+    title={worktreesTitle}
     data-testid="side-toggle"
-    onclick={() => setPanelShown(view.repoId)}
+    onclick={() => toggleWorktrees(view)}
   >
     <!-- A window with a panel on its right. -->
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -410,6 +450,31 @@
     border-radius: 50%;
     background: var(--warning);
     box-shadow: 0 0 0 2px var(--bg);
+  }
+
+  /* A quiet count, ringed in the header's colour so it stands clear of the icon under it. */
+  .badge {
+    position: absolute;
+    top: -2px;
+    right: -3px;
+    min-width: 13px;
+    height: 13px;
+    padding: 0 3.5px;
+    border-radius: 6.5px;
+    background: var(--text-faint);
+    box-shadow: 0 0 0 1.5px var(--bg);
+    color: var(--bg);
+    font-size: 9.5px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    line-height: 13px;
+    text-align: center;
+    pointer-events: none;
+  }
+
+  .tool[aria-pressed="true"] .badge {
+    background: var(--accent);
+    color: var(--accent-contrast);
   }
 
   .loading {

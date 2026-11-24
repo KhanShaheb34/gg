@@ -105,6 +105,53 @@ export function closeCommit(repoId: number): void {
   state.focusRequest++;
 }
 
+/**
+ * The worktree whose commit panel `view`'s side panel holds in place of the worktree list
+ * (one still listed), or null: the list. Whether the panel shows at all is `panelShown`'s.
+ */
+export function committingIn(view: RepoView): WorktreeInfo | null {
+  const path = panelState(view.repoId).commitFor;
+  return path === null ? null : (view.snapshot.worktrees.find((w) => w.path === path) ?? null);
+}
+
+/** What `view`'s side panel shows now: nothing, the worktree list or a commit panel. */
+export function sideShows(view: RepoView): "hidden" | "worktrees" | "commit" {
+  if (!panelShown(view.repoId)) return "hidden";
+  return committingIn(view) === null ? "worktrees" : "commit";
+}
+
+/**
+ * Shows `view`'s side panel with the worktree list, not the commit panel it last held.
+ * `focus`: the focus goes into the list.
+ */
+export function showWorktreeList(view: RepoView, focus = false): void {
+  const state = panelState(view.repoId);
+  if (state.commitFor !== null) {
+    state.selected = state.commitFor;
+    state.commitFor = null;
+  }
+  setPanelShown(view.repoId, true, focus);
+}
+
+/**
+ * The toolbar's Commit button: the active worktree's commit panel, as ⌘K opens it; the side
+ * panel hidden when it shows a commit panel already.
+ */
+export function toggleCommit(view: RepoView): void {
+  if (sideShows(view) === "commit") setPanelShown(view.repoId, false);
+  else openCommit(view);
+}
+
+/**
+ * The toolbar's Worktrees button: the worktree list, from the commit panel too (the focus
+ * going into it then, as Back does); the side panel hidden when it shows the list already.
+ */
+export function toggleWorktrees(view: RepoView): void {
+  const shows = sideShows(view);
+  if (shows === "worktrees") setPanelShown(view.repoId, false);
+  else showWorktreeList(view, shows === "commit");
+}
+
 /** A panel state for a repository with no view (never shown). */
 const NO_PANEL = new PanelState(null);
 

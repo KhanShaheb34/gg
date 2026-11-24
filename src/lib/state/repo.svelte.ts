@@ -64,6 +64,8 @@ function placeholder(repoId: number): RepoSnapshot {
     head: { branch: null, hash: null },
     branches: [],
     remoteBranches: [],
+    branchTips: [],
+    remoteBranchTips: [],
     remotes: [],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },

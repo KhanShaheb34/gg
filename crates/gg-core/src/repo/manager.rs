@@ -558,6 +558,16 @@ impl TreeState {
 }
 
 impl Repo {
+    /// Whether local branch `name` was there when the branches were last read (no git runs).
+    pub(crate) async fn knows_branch(&self, name: &str) -> bool {
+        let slot = self.slot.read().await;
+        slot.target()
+            .info()
+            .refs
+            .iter()
+            .any(|r| r.kind == RefKind::Branch && r.name == name)
+    }
+
     /// Why the repository's pull requests are not shown, as the last load said (`None`
     /// while they are, or before any load).
     pub(crate) async fn prs_unavailable(&self) -> Option<crate::dto::PrUnavailable> {

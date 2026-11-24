@@ -186,6 +186,15 @@ never reads or stores a GitHub token.
   separate **force push**, which always uses `--force-with-lease` pinned to the remote commit
   you were shown.
 
+**Switching branches**
+
+Press ⌘P (or click the branch name at the top of the window) for the branch picker: type a
+few letters of a branch, local or remote, and press Enter to check it out. Each branch shows
+when its last commit was made, by whom, and its subject; the newest come first. A remote
+branch becomes a local one that tracks it. A branch checked out in another worktree makes
+that worktree active instead. Type a name no branch has and press Enter to create it at HEAD
+and check it out, or choose **Create new branch from…** to start it at another branch.
+
 **Checkout, merge, push**
 
 The routine of updating a shared branch takes three clicks from the graph: check out
@@ -231,6 +240,7 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 | ⌘F | Search commits (Enter / Shift+Enter: next / previous) |
 | ⌘⇧F | Fetch from all remotes |
 | ⌘R | Refresh |
+| ⌘P | Switch branch, or create one (the branch picker) |
 | ⌘K | Commit (the commit panel, its message focused); ⌘Enter commits |
 | ⌘B | Show or hide the side panel (worktrees) |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active |

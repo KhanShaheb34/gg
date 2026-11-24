@@ -31,6 +31,7 @@
     toast,
     windowFocusChanged,
   } from "./lib/state/app.svelte";
+  import { openBranchPicker } from "./lib/state/picker";
   import { openCliDialog } from "./lib/state/cli.svelte";
   import { openSettings, openShortcuts } from "./lib/state/settings.svelte";
   import { initUpdates } from "./lib/state/updates.svelte";
@@ -38,9 +39,9 @@
   import { fromAppMenu, overlays } from "./lib/state/overlays.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import {
+    activateWorktree,
     addWorktree,
     closeCommit,
-    makeActive,
     listedWorktrees,
     docked,
     openCommit,
@@ -55,6 +56,7 @@
   const active = $derived(app.tabs.find((t) => t.repoId === app.activeRepoId) ?? null);
   const mac = isMac();
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
+  const PICKER_KEYS = mac ? "⌘P" : "Ctrl+P";
 
   // A commit panel whose worktree is no longer listed is closed for good: a worktree made
   // again at that path later is another one, and does not bring the panel back.
@@ -212,12 +214,7 @@
       toast("info", n <= 1 ? "This repository has one worktree." : `This repository has ${n} worktrees.`);
       return;
     }
-    if (wt.active) return;
-    if (wt.prunable) {
-      toast("info", `${wt.branch ?? shortHash(wt.head ?? "")} cannot be made active: its folder is missing.`);
-      return;
-    }
-    void makeActive(active.repoId, wt.path, view);
+    activateWorktree(view, wt);
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -260,6 +257,9 @@
         break;
       case "commit":
         if (view) openCommit(view);
+        break;
+      case "branches":
+        if (view) openBranchPicker(view.repoId);
         break;
       case "sidePanel":
         if (active) setPanelShown(active.repoId);
@@ -306,31 +306,40 @@
               <h1 class="repo-name">{active.name}</h1>
               {#if activeWorktree}
                 {@const hidden = !panelShown(active.repoId) && activeWorktree.count > 1}
-                <!-- Where every action runs: the active worktree, always in sight. Its branch keeps
-                     its room; its folder, after it, gives way first, down to its own name, then
-                     the repository's name. -->
+                <!-- Where every action runs: the active worktree's branch, always in sight; it
+                     opens the branch picker. Its branch keeps its room; its folder, after it,
+                     gives way first, down to its own name, then the repository's name. -->
                 <button
                   class="worktree"
                   data-testid="active-worktree"
-                  aria-label="Active worktree: {activeWorktree.name}, in {activeWorktree.path}{activeWorktree.count > 1
+                  aria-haspopup="dialog"
+                  aria-label="Switch branch: {activeWorktree.name}, in the active worktree {activeWorktree.path}{activeWorktree.count > 1
                     ? `, one of ${activeWorktree.count} worktrees`
-                    : ''}. Show the worktrees"
-                  title="Active worktree: {activeWorktree.path}{activeWorktree.count > 1
+                    : ''}"
+                  title="Switch branch ({PICKER_KEYS}). Active worktree: {activeWorktree.path}{activeWorktree.count > 1
                     ? ` (one of ${activeWorktree.count})`
-                    : ''}. Show the worktrees ({PANEL_KEYS})"
-                  onclick={showWorktrees}
+                    : ''}"
+                  onclick={() => openBranchPicker(active.repoId)}
                 >
                   <svg class="ring" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
                     <circle cx="5" cy="5" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7" />
                   </svg>
                   <MiddleText class="wt-branch" text={activeWorktree.name} keep={8} title={null} />
-                  {#if hidden}
-                    <!-- "worktrees" wraps out of sight when there is no room for it. -->
-                    <span class="wt-count" data-testid="worktree-count"
-                      ><span>· {activeWorktree.count}</span><span>&nbsp;worktrees</span></span
-                    >
-                  {/if}
+                  <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                    <path d="M2.5 3.8 5 6.3l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
                 </button>
+                {#if hidden}
+                  <!-- How many worktrees there are while the panel is hidden: shows them. "worktrees"
+                       wraps out of sight when there is no room for it. -->
+                  <button
+                    class="wt-count"
+                    data-testid="worktree-count"
+                    aria-label="Show the {activeWorktree.count} worktrees"
+                    title="Show the worktrees ({PANEL_KEYS})"
+                    onclick={showWorktrees}><span>· {activeWorktree.count}</span><span>&nbsp;worktrees</span></button
+                  >
+                {/if}
                 <!-- Right to left, wrapping: the folders show only whole, else wrap out of sight. -->
                 <span class="repo-path" title={activeWorktree.path}
                   ><bdi class="wt-folder">{activeWorktree.folder}</bdi><bdi class="wt-folders">{activeWorktree.folders}</bdi></span
@@ -576,16 +585,33 @@
     font-weight: 600;
   }
 
+  .chevron {
+    flex: none;
+    margin-left: -1px;
+    color: var(--text-muted);
+  }
+
   .wt-count {
     display: flex;
     flex-wrap: wrap;
     flex: 0 1 auto;
     min-width: 2.4em;
-    height: 18px;
+    height: 22px;
+    margin-left: -6px;
+    padding: 2px 6px;
     overflow: hidden;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
     color: var(--text-muted);
+    font-size: var(--fs-sm);
     line-height: 18px;
     white-space: nowrap;
+    transition: background-color 80ms linear;
+  }
+
+  .wt-count:hover {
+    background: var(--bg-hover);
   }
 
   /* The folders before the worktree's own name show only when they fit whole: laid out right

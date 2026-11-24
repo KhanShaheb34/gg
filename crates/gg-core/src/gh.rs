@@ -975,6 +975,9 @@ mod tests {
             upstream: None,
             ahead: 0,
             behind: 0,
+            time: 0,
+            author: String::new(),
+            subject: String::new(),
         }
     }
 

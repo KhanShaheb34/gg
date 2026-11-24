@@ -203,6 +203,35 @@ Measured on the first build; nothing since changed how history is loaded.
 | A page of 200 rows from memory | under 2 ms | 0.05 ms (0.3 ms more to serialise it) |
 | Search "feature" on r100k | under 150 ms | 6.9 ms (7,430 hits) |
 
+### The branch picker (0.4.1)
+
+The picker (⌘P) runs no git and asks the core nothing to open or to filter: the branches and
+each one's commit (time, author, subject) are in the snapshot, read by the same one
+`for-each-ref` as before, with three more fields. Measured in November 2026 on the machine
+above. **b10k** is `scripts/gen-synthetic-repo.sh <dir> 20000 10000`: 10,000 local and 5,001
+remote-tracking branches, loose refs.
+
+| Measure | r20k (200 + 101 branches) | b10k (10,000 + 5,001 branches) |
+|---|---|---|
+| `for-each-ref`, git alone, without → with the three fields (median of 15) | 36.9–39.4 → 38.4–41.0 ms | 849–1004 → 888–898 ms (in the noise: most of it is `upstream:track`) |
+| The same through the runner, with the fields (median of 7) | 35.1 ms | 1001 ms |
+| Snapshot as JSON, without → with the commits | 6,115 → 48,805 bytes | 259,716 → 2,373,482 bytes |
+| Serialising it (each `repo-changed`), without → with | 0.005 → 0.040 ms | 0.19 → 1.87 ms |
+| Building the snapshot, with | 0.03 ms | 1.23 ms |
+
+About 140 bytes per branch go with every snapshot. Parsing 2.8 MB of such JSON (15,000
+branches) takes about 3.4 ms in V8 against 0.3 ms without; for a few hundred branches it is
+under 0.1 ms.
+
+In the page (`src/lib/branchPicker.test.ts`, Node, 10,000 + 5,000 branches, median of 9 and
+21): the list built on open 3.2–3.3 ms (target 50 ms), a keystroke filtered with its first
+screen of rows 0.2–0.5 ms (target 16 ms). The test asserts the work (the list is built once
+per set of branches, a keystroke lowercases only the text and copies no branch, only the rows
+in view are made) and bounds the times at the targets, 15 and 30 times what they take here.
+In Chromium against the dev server (`e2e/branch-picker.spec.ts`, 12,002 branches): ⌘P to the
+frame that shows the picker 12 ms, a keystroke to its frame 7 ms; 14 of 12,003 rows rendered;
+no request to the core while it is open.
+
 ### The whole app, used end to end
 
 `scripts/walk.sh` drives the real window through its real controls, with the real core, git

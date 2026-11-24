@@ -1304,3 +1304,38 @@ for (const [prefix, width, height] of SIZES)
       await shot("lock-stale");
     });
   }
+
+for (const theme of ["light", "dark"] as const) {
+  test(`branch picker, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    await page.goto("/");
+    const repo = gg.repoPath("branchy");
+    // A branch checked out in a second worktree, as the picker marks it.
+    gg.git("branchy", "worktree", "add", "-q", path.join(path.dirname(repo), "branchy-release"), "release/1.0");
+    await open(page, repo);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    const picker = page.getByTestId("branch-picker");
+    const field = picker.getByRole("combobox");
+    const shot = async (name: string) => {
+      await page.waitForTimeout(200); // the picker's entrance
+      await page.screenshot({ path: path.join(OUT, `picker-${name}-${theme}.png`) });
+    };
+
+    await page.keyboard.press("ControlOrMeta+p");
+    await expect(field).toBeFocused();
+    await shot("empty");
+    await field.fill("fea");
+    await picker.locator('[role="option"]').nth(1).hover();
+    await shot("filter");
+    await field.fill("feature/export");
+    await shot("create");
+    await field.fill("has space");
+    await shot("refused");
+    await field.fill("feature/export");
+    await picker.locator('[role="option"][data-kind="createFrom"]').click();
+    await field.fill("de");
+    await shot("from");
+  });
+}

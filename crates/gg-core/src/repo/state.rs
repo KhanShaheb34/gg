@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::dto::{
-    CommitRow, FetchState, HeadInfo, InProgress, PrState, PullRequest, RefKind, RefLabel,
-    RepoSnapshot, RowKind, ViewOptions, WorktreeInfo, WorktreeStatus,
+    BranchTip, CommitRow, FetchState, HeadInfo, InProgress, PrState, PullRequest, RefKind,
+    RefLabel, RepoSnapshot, RowKind, ViewOptions, WorktreeInfo, WorktreeStatus,
 };
 use crate::git::log::{Commit, LOG_FORMAT, log_args};
 use crate::git::refs::RefInfo;
@@ -422,10 +422,9 @@ impl RepoState {
     }
 
     pub fn snapshot(&self, id: &RepoIdentity, loading: bool, fetch: &FetchState) -> RepoSnapshot {
-        let mut branches = names(&self.info.refs, RefKind::Branch);
-        branches.sort();
-        let mut remote_branches = names(&self.info.refs, RefKind::Remote);
-        remote_branches.sort();
+        let (branches, branch_tips) = branches_with_tips(&self.info.refs, RefKind::Branch);
+        let (remote_branches, remote_branch_tips) =
+            branches_with_tips(&self.info.refs, RefKind::Remote);
         RepoSnapshot {
             repo_id: id.repo_id,
             name: id.name.clone(),
@@ -439,6 +438,8 @@ impl RepoState {
             head: self.info.head.clone(),
             branches,
             remote_branches,
+            branch_tips,
+            remote_branch_tips,
             remotes: self.info.remotes.clone(),
             worktrees: self.info.worktrees.clone(),
             status: self.info.status.clone(),
@@ -665,6 +666,26 @@ fn names(refs: &[RefInfo], kind: RefKind) -> Vec<String> {
         .collect()
 }
 
+/// Short names of the refs of `kind`, sorted, and the commit each points at (in the same
+/// order).
+fn branches_with_tips(refs: &[RefInfo], kind: RefKind) -> (Vec<String>, Vec<BranchTip>) {
+    let mut of_kind: Vec<&RefInfo> = refs.iter().filter(|r| r.kind == kind).collect();
+    // git lists them sorted by full name already: this costs nothing then.
+    of_kind.sort_by(|a, b| a.name.cmp(&b.name));
+    of_kind
+        .into_iter()
+        .map(|r| {
+            let tip = BranchTip {
+                hash: r.hash.clone(),
+                time: r.time,
+                author: r.author.clone(),
+                subject: r.subject.clone(),
+            };
+            (r.name.clone(), tip)
+        })
+        .unzip()
+}
+
 /// Distinct commits the log starts from, resolved the way [`log_args`] resolves them.
 fn tips<'a>(info: &'a RepoInfo, view: &ViewOptions) -> BTreeSet<&'a str> {
     let hash_of = |kind: RefKind, name: &str| {
@@ -870,6 +891,9 @@ mod tests {
             upstream: None,
             ahead: 0,
             behind: 0,
+            time: 0,
+            author: String::new(),
+            subject: String::new(),
         }
     }
 
@@ -1718,8 +1742,18 @@ mod tests {
     fn snapshot_sorts_names_and_reports_state() {
         let mut i = dirty(info(), 1, 2);
         i.refs = vec![
-            rf(RefKind::Branch, "zeta", 'd'),
-            rf(RefKind::Branch, "main", 'd'),
+            RefInfo {
+                time: 30,
+                author: "Zed".into(),
+                subject: "Zeta's tip".into(),
+                ..rf(RefKind::Branch, "zeta", 'd')
+            },
+            RefInfo {
+                time: 20,
+                author: "Ada".into(),
+                subject: "Main's tip".into(),
+                ..rf(RefKind::Branch, "main", 'b')
+            },
             rf(RefKind::Remote, "origin/zeta", 'd'),
             rf(RefKind::Remote, "origin/alpha", 'a'),
             rf(RefKind::Tag, "v1", 'a'),
@@ -1740,6 +1774,24 @@ mod tests {
         assert!(snap.loading);
         assert_eq!(snap.branches, ["main", "zeta"]);
         assert_eq!(snap.remote_branches, ["origin/alpha", "origin/zeta"]);
+        // Each name's commit goes where the name went.
+        let tip = |hash: char, time: i64, author: &str, subject: &str| BranchTip {
+            hash: h(hash),
+            time,
+            author: author.into(),
+            subject: subject.into(),
+        };
+        assert_eq!(
+            snap.branch_tips,
+            [
+                tip('b', 20, "Ada", "Main's tip"),
+                tip('d', 30, "Zed", "Zeta's tip")
+            ]
+        );
+        assert_eq!(
+            snap.remote_branch_tips,
+            [tip('a', 0, "", ""), tip('d', 0, "", "")]
+        );
         assert_eq!(snap.remotes, ["origin"]);
         assert_eq!(snap.status, i.status);
         assert_eq!(snap.uncommitted_subject, "Uncommitted changes (3)");

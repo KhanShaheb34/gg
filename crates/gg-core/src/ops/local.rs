@@ -90,39 +90,51 @@ pub(crate) async fn checkout_commit(ctx: &OpCtx<'_>, hash: &str) -> Result<Step>
 }
 
 /// A new branch at `at`: `branch -- <name> <at>`, or with `checkout`,
-/// `checkout -b <name> <at>`. `bad_name` if a branch of that name exists (git is not asked
-/// to make it).
+/// `checkout -b <name> <at>`: one git command either way. `bad_name` if a branch of that name
+/// exists: refused without git when the branches as last read have it, else as git refuses it
+/// (git never moves an existing branch for these, and writes nothing when it refuses).
 pub(crate) async fn create_branch(
     ctx: &OpCtx<'_>,
     name: &str,
     at: &str,
     checkout: bool,
 ) -> Result<Step> {
-    let full = format!("refs/heads/{name}");
-    let exists = ctx
-        .read(&["rev-parse", "--verify", "--quiet", &full])
-        .await?;
-    if exists.code == 0 {
-        return Err(CoreError::new(
+    let taken = || {
+        CoreError::new(
             ErrorCode::BadName,
             format!("A branch named \u{201c}{name}\u{201d} already exists."),
-        ));
+        )
+    };
+    if ctx.repo.knows_branch(name).await {
+        return Err(taken());
     }
-    if checkout {
-        run(
-            ctx,
+    let (args, done): (&[&str], _) = if checkout {
+        (
             &["checkout", "-b", name, at],
             format!("Created branch {name} and checked it out."),
         )
-        .await
     } else {
-        run(
-            ctx,
+        (
             &["branch", "--", name, at],
             format!("Created branch {name}."),
         )
-        .await
+    };
+    let out = ctx.git(args).await?;
+    if out.code == 0 {
+        return Ok(Step::Done(done));
     }
+    // Made since the branches were last read (in a terminal, say).
+    if refused_as_taken(&out.stderr, name) {
+        return Err(taken());
+    }
+    Ok(explain(args, &out))
+}
+
+/// Whether git's `stderr` refuses to make branch `name` because it exists
+/// ("fatal: a branch named 'x' already exists"; git runs with `LC_ALL=C`).
+fn refused_as_taken(stderr: &str, name: &str) -> bool {
+    let said = format!("fatal: a branch named '{name}' already exists");
+    stderr.lines().any(|l| l.trim() == said)
 }
 
 /// `branch -m -- <old> <new>`.
@@ -679,7 +691,15 @@ pub(crate) async fn delete_tag(ctx: &OpCtx<'_>, name: &str) -> Result<Step> {
 
 #[cfg(test)]
 mod tests {
-    use super::autostash_conflicted;
+    use super::{autostash_conflicted, refused_as_taken};
+
+    #[test]
+    fn a_taken_branch_name_is_recognised_in_gits_words() {
+        let err = "fatal: a branch named 'feature/x' already exists\n";
+        assert!(refused_as_taken(err, "feature/x"));
+        assert!(!refused_as_taken(err, "feature"));
+        assert!(!refused_as_taken("fatal: invalid reference: x\n", "x"));
+    }
 
     #[test]
     fn an_autostash_that_conflicted_is_recognised_in_old_and_new_words() {

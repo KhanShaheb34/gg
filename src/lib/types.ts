@@ -90,6 +90,10 @@ export type RepoSnapshot = {
   head: { branch: string | null; hash: string | null };
   branches: string[];
   remoteBranches: string[];
+  /** The commit each of `branches` points at: `branchTips[i]` is that of `branches[i]`. */
+  branchTips: BranchTip[];
+  /** The commit each of `remoteBranches` points at, in the same order. */
+  remoteBranchTips: BranchTip[];
   remotes: string[];
   worktrees: WorktreeInfo[];
   status: WorktreeStatus;
@@ -104,6 +108,9 @@ export type RepoSnapshot = {
   /** Grows by one per repository with each snapshot that changes anything and each operation outcome; drop older ones. */
   seq: number;
 };
+
+/** The commit a branch points at, read with the branches (one `for-each-ref`). `time`: committer time, unix seconds (0: unknown). */
+export type BranchTip = { hash: string; time: number; author: string; subject: string };
 
 /**
  * What `open_repo` answers: the repository's snapshot. A folder in a linked worktree makes

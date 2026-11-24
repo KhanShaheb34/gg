@@ -17,6 +17,7 @@ export type Shortcut =
   | { kind: "log" }
   | { kind: "sidePanel" }
   | { kind: "commit" }
+  | { kind: "branches" }
   | { kind: "settings" }
   | { kind: "help" }
   | { kind: "worktree"; index: number };
@@ -34,6 +35,7 @@ export const SHORTCUT_KINDS = [
   "log",
   "sidePanel",
   "commit",
+  "branches",
   "settings",
   "help",
   "worktree",
@@ -159,6 +161,14 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   { group: "Graph", does: "Clear the selection; close the search", keys: [["Esc"]], where: "in the graph, in the search field" },
 
   // --- Actions --------------------------------------------------------------------------
+  {
+    group: "Actions",
+    does: "Switch branch, or create one: the branch picker",
+    keys: [["Mod", "P"]],
+    kind: "branches",
+    // Always taken (and its default prevented): never the webview's Print.
+    match: (e, c) => (c.command && !e.shiftKey && key(e) === "p" ? { kind: "branches" } : null),
+  },
   {
     group: "Actions",
     does: "Fetch from all remotes",

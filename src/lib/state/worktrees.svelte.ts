@@ -8,6 +8,7 @@
 import CreateWorktreeDialog, { type CreateFrom } from "../components/dialogs/CreateWorktreeDialog.svelte";
 import DeleteWorktreeDialog from "../components/dialogs/DeleteWorktreeDialog.svelte";
 import PushDialog from "../components/dialogs/PushDialog.svelte";
+import { shortHash } from "../format";
 import { api } from "../ipc";
 import { openExternal } from "./editor";
 import { shown } from "../menus/common";
@@ -153,6 +154,19 @@ export async function makeActive(repoId: number, path: string, view: RepoView | 
   } finally {
     state.switching = null;
   }
+}
+
+/**
+ * Makes worktree `wt` of `view`'s repository the active one, as ⌘⌥1…9 and the branch picker
+ * ask: nothing for the active one; one whose folder is missing is said, not tried.
+ */
+export function activateWorktree(view: RepoView, wt: WorktreeInfo): void {
+  if (wt.active) return;
+  if (wt.prunable) {
+    toast("info", `${wt.branch ?? shortHash(wt.head ?? "")} cannot be made active: its folder is missing.`);
+    return;
+  }
+  void makeActive(view.repoId, wt.path, view);
 }
 
 /**

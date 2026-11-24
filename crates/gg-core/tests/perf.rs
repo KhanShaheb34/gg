@@ -263,3 +263,71 @@ async fn r100k_full_load_rows_and_search() {
     assert!(!hits.is_empty());
     assert!(search_ms < 150.0, "search took {search_ms:.1} ms");
 }
+
+/// What carrying each branch's commit (`branchTips`, `remoteBranchTips`, for the branch
+/// picker) costs every snapshot: built and serialised as the transports do with each
+/// `repo-changed`, against the same snapshot without them. Also the one `for-each-ref` that
+/// reads them, through the runner. Prints the numbers; asserts only that the tips are there
+/// and that a snapshot with them stays cheap (`GG_PERF_BRANCHES`: a repository with many
+/// branches, `scripts/gen-synthetic-repo.sh <dir> 20000 10000` for 10,000).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "release-only perf test; needs GG_PERF_BRANCHES and/or GG_PERF_R20K"]
+async fn branch_tips_cost_per_snapshot() {
+    let _serial = SERIAL.lock().await;
+    for var in ["GG_PERF_R20K", "GG_PERF_BRANCHES"] {
+        let Some(path) = repo_path(var) else {
+            continue;
+        };
+        let o = open_loaded(&path).await;
+        let runner = GitRunner::detect(CommandLog::new()).await.unwrap();
+        let mut reads = Vec::new();
+        for _ in 0..7 {
+            let t = Instant::now();
+            let refs = gg_core::git::refs::read_refs(&runner, &path).await.unwrap();
+            reads.push(ms(t.elapsed()));
+            assert!(!refs.is_empty());
+        }
+        reads.sort_by(f64::total_cmp);
+
+        let calls = 50;
+        let (mut build, mut ser, mut ser_without) = (0.0, 0.0, 0.0);
+        let (mut bytes, mut bytes_without) = (0, 0);
+        for _ in 0..calls {
+            let t = Instant::now();
+            let snap = o.m.snapshot(o.id).await.unwrap();
+            build += ms(t.elapsed());
+            assert_eq!(snap.branch_tips.len(), snap.branches.len());
+            let t = Instant::now();
+            bytes = serde_json::to_vec(&snap).unwrap().len();
+            ser += ms(t.elapsed());
+            let mut without = snap.clone();
+            without.branch_tips.clear();
+            without.remote_branch_tips.clear();
+            let t = Instant::now();
+            bytes_without = serde_json::to_vec(&without).unwrap().len();
+            ser_without += ms(t.elapsed());
+        }
+        let snap = o.m.snapshot(o.id).await.unwrap();
+        let n = f64::from(calls);
+        println!(
+            "perf {var}: {} branches, {} remote branches; for-each-ref through the runner: \
+             median {:.1} ms (min {:.1}, max {:.1}); snapshot built in {:.3} ms; JSON {} bytes in \
+             {:.3} ms, without the tips {} bytes in {:.3} ms",
+            snap.branches.len(),
+            snap.remote_branches.len(),
+            reads[3],
+            reads[0],
+            reads[6],
+            build / n,
+            bytes,
+            ser / n,
+            bytes_without,
+            ser_without / n,
+        );
+        assert!(
+            ser / n < 50.0,
+            "serialising a snapshot took {:.1} ms",
+            ser / n
+        );
+    }
+}

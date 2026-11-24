@@ -67,6 +67,8 @@ function snapshot(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     head: { branch: "main", hash: core.hashes[0] ?? null },
     branches: ["main"],
     remoteBranches: [],
+    branchTips: [],
+    remoteBranchTips: [],
     remotes: ["origin"],
     worktrees: [],
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },

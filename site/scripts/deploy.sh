@@ -1,8 +1,11 @@
 #!/bin/sh
 # Deploys the site. Refuses to publish without the download that latest.json names,
 # and fetches it from the live site when it is missing here (it is not kept in git).
+# Refuses too when the changelog page differs from changelog.md, or has no entry for the
+# version in latest.json.
 set -eu
 cd "$(dirname "$0")/.."
+node scripts/changelog.mjs --check
 file=$(sed -n 's/.*"file":"\([^"]*\)".*/\1/p' public/latest.json)
 want=$(sed -n 's/.*"sha256":"\([^"]*\)".*/\1/p' public/latest.json)
 [ -n "$file" ] && [ -n "$want" ] || { echo "deploy: latest.json names no file or checksum" >&2; exit 1; }

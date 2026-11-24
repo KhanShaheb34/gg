@@ -1,7 +1,8 @@
 # gg.shakirul.com
 
 The landing page for gg: plain HTML, CSS and a little JavaScript in `public/`, served by
-Cloudflare Workers static assets (`wrangler.jsonc`, no Worker script). No build step.
+Cloudflare Workers static assets (`wrangler.jsonc`, no Worker script). No build step: the one
+generated page, the changelog, is committed as it is served.
 
 From this folder:
 
@@ -17,6 +18,23 @@ sh scripts/deploy.sh      # publish to gg.shakirul.com; checks the download is p
   appear only when set. The page links `/download/<file>`; put the DMG at
   `public/download/<file>` before deploying. `index.html` carries the version too, as the
   fallback for visitors without JavaScript.
+- `changelog.md`: what changed in each release, newest first, shown at `/changelog`.
+  `node site/scripts/changelog.mjs` (from the repository's root) makes `public/changelog.html` from it and dates the page's
+  line in `public/sitemap.xml`; both are committed. To add a release, with each release of the
+  app:
+
+  1. At the top of `changelog.md`, add `## X.Y.Z (YYYY-MM-DD)` (the GitHub release's
+     publication day, UTC) and under it the release notes' opening sentence and their "What
+     changed" section, without the downloads, first-launch and Windows/Linux parts that every
+     release repeats. GitHub links go through `/github/...`.
+  2. Run `node site/scripts/changelog.mjs`, look at `/changelog` in `wrangler dev`, and commit
+     `changelog.md`, `public/changelog.html` and `public/sitemap.xml` together.
+
+  The script stops, naming the line, on anything the page cannot show or on releases out of
+  order. `deploy.sh` runs it with `--check` first and refuses to publish
+  when the page differs from `changelog.md`, or when the newest entry is not
+  `public/latest.json`'s version (so a release cannot go out without its entry, and an
+  unreleased version cannot be listed).
 - `public/_redirects`: `/github` points at the source repository. Every GitHub link on the
   page goes through it, so a rename of the repository is a one-line change there.
 - `public/_headers`: security headers (a strict CSP: no third-party anything) and caching.

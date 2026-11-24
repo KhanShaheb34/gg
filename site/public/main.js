@@ -67,9 +67,11 @@
     for (var i = 0; i < els.length; i++) fn(els[i]);
   }
 
-  fetch("/latest.json", { cache: "no-cache" })
+  // Only a page that shows release details asks for them (the changelog shows none).
+  var wantsLatest = document.querySelector("[data-latest]");
+  (wantsLatest ? fetch("/latest.json", { cache: "no-cache" }) : Promise.resolve(null))
     .then(function (r) {
-      return r.ok ? r.json() : null;
+      return r && r.ok ? r.json() : null;
     })
     .then(function (d) {
       if (!d) return;

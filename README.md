@@ -70,6 +70,8 @@ folder you may not write to, or from a Linux `.deb` package (update that with yo
 manager; the AppImage updates itself). An app installed with Homebrew updates itself like any
 other; `brew upgrade --cask gg` works too, and gg names it when it cannot update itself.
 
+What changed in each version is on the [changelog](https://gg.shakirul.com/changelog).
+
 ### Windows and Linux
 
 Each release also has a Windows installer and a Linux AppImage and `.deb`, on the

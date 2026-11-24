@@ -247,7 +247,7 @@
   {#if open}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="popover" id="{id}-dialog" role="dialog" aria-label="Branch filter" tabindex="-1" onkeydown={onKeydown}>
-      <div class="field">
+      <div class="filter-field">
         <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6" />
           <path d="m10.5 10.5 3.2 3.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
@@ -406,7 +406,8 @@
     animation: pop 120ms var(--ease);
   }
 
-  .field {
+  /* Not named "field": the dialogs' global .field (a label above its input) would stack the icon on the text. */
+  .filter-field {
     display: flex;
     align-items: center;
     gap: 7px;
@@ -419,12 +420,12 @@
     color: var(--text-faint);
   }
 
-  .field:focus-within {
+  .filter-field:focus-within {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
   }
 
-  .field input {
+  .filter-field input {
     flex: 1;
     min-width: 0;
     height: 100%;
@@ -436,7 +437,7 @@
     font: inherit;
   }
 
-  .field input::placeholder {
+  .filter-field input::placeholder {
     color: var(--text-faint);
   }
 

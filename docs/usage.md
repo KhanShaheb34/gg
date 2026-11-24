@@ -64,9 +64,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   Its branch is deleted only if you tick that. **Prune** forgets worktrees whose folder is
   gone, after a confirmation naming them; if you moved a worktree's folder, run
   `git worktree repair <new path>` instead.
-- The **commit panel** (⌘K, or a worktree's change count) commits the files you tick, with
-  **Commit & Push** to the branch's upstream; when a merge is being concluded, its message is
-  filled in. With nothing ticked, **Commit with no changes** makes an empty commit
+- The **commit panel** (⌘K, the Commit button in the toolbar, or a worktree's change count)
+  commits the files you tick, with **Commit & Push** to the branch's upstream; when a merge
+  is being concluded, its message is filled in. With nothing ticked, **Commit with no changes** makes an empty commit
   (`git commit --allow-empty`), with or without the push. The notice after a commit offers the push. Known limit: if the app quits or
   crashes between making a commit and updating the staging area (during a slow
   `post-commit` hook, say), the staging area still holds the committed files as they were
@@ -215,7 +215,7 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘K | The commit panel, its message focused |
 | ⌘Enter | Commit what is ticked (in the commit message) |
 | Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |
-| ⌘B | Show or hide the side panel (worktrees) |
+| ⌘B | Show or hide the side panel (the worktrees, or the commit panel) |
 | ⌘⇧L | Show or hide the command log |
 | F6, Shift+F6 | Next region (graph, newest notice, side panel), the region before |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the side panel |

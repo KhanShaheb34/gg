@@ -8,7 +8,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test as base, type Page } from "@playwright/test";
+import { test as base, type Locator, type Page } from "@playwright/test";
 import type { OpOutcome, OpRequest } from "../src/lib/types";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -977,6 +977,17 @@ export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
 
 export function closeButton(page: Page, name: string) {
   return page.getByRole("tab", { name, exact: true }).locator("xpath=..").locator(".close");
+}
+
+/** The toolbar's View popover (open or not). */
+export function viewPopover(page: Page): Locator {
+  return page.getByRole("dialog", { name: "View", exact: true });
+}
+
+/** Opens the toolbar's View popover, unless it is open, and gives its checkbox `name`. */
+export async function viewOption(page: Page, name: "Remote branches" | "Tags" | "Stashes"): Promise<Locator> {
+  if (!(await viewPopover(page).isVisible())) await page.getByTestId("view-options").click();
+  return viewPopover(page).getByRole("checkbox", { name, exact: true });
 }
 
 export type GG = {

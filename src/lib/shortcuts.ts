@@ -197,7 +197,7 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   // --- Panels ---------------------------------------------------------------------------
   {
     group: "Panels",
-    does: "Show or hide the side panel (worktrees)",
+    does: "Show or hide the side panel (the worktrees, or the commit panel)",
     keys: [["Mod", "B"]],
     kind: "sidePanel",
     match: (e, c) => (c.command && !e.shiftKey && key(e) === "b" ? { kind: "sidePanel" } : null),

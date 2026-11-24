@@ -1,6 +1,6 @@
 <!--
-  The graph's toolbar, in the repository header: which branches the graph shows, whether it
-  shows remote branches, tags and stashes, then the running operation, search, fetch and
+  The graph's toolbar, in the repository header: which branches the graph shows, the View
+  button (remote branches, tags and stashes), then the running operation, search, fetch and
   refresh. Every control changes at once when used; the work it starts shows as it runs
   (spinning icons, a loading line along the header's bottom edge). An operation shows once
   it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
@@ -18,12 +18,13 @@
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
   import { clearProgress, progressDue, progressLine, PROGRESS_AFTER_MS, watchOpProgress } from "../state/opProgress.svelte";
-  import { NARROW_W, panelShown, setPanelShown, sidePanel } from "../state/worktrees.svelte";
+  import { commitShownForActive, NARROW_W, panelState, sidePanel, sideShows, toggleCommit, toggleWorktrees } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
   import MiddleText from "./MiddleText.svelte";
   import SearchBox from "./SearchBox.svelte";
+  import ViewOptions from "./ViewOptions.svelte";
 
   let { view }: { view: RepoView } = $props();
 
@@ -32,8 +33,29 @@
   const REFRESH_KEYS = mac ? "⌘R" : "Ctrl+R";
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
-  const sideShown = $derived(panelShown(view.repoId));
-  /** A narrow window: the toggles show as icons (their names in tooltips), so nothing is cut off. */
+  const COMMIT_KEYS = mac ? "⌘K" : "Ctrl+K";
+  /** What the side panel shows: Commit and Worktrees are its two views, each pressed for its own. */
+  const shows = $derived(sideShows(view));
+  /** The active worktree's uncommitted files, as its row in the worktree list counts them. */
+  const changes = $derived(view.snapshot.status.changed + view.snapshot.status.untracked);
+  const commitTitle = $derived.by(() => {
+    if (commitShownForActive(view)) return `Hide the commit panel (${PANEL_KEYS})`;
+    const s = view.snapshot.status;
+    const parts = [];
+    if (s.changed > 0) parts.push(`${s.changed} changed`);
+    if (s.untracked > 0) parts.push(`${s.untracked} new`);
+    if (s.conflicted > 0) parts.push(`${s.conflicted} with conflicts`);
+    return `Commit (${COMMIT_KEYS})` + (parts.length > 0 ? `\nUncommitted: ${parts.join(", ")}` : "");
+  });
+  // ⌘B shows and hides the side panel as it was: named here only where it does what the button does.
+  const worktreesTitle = $derived(
+    shows === "worktrees"
+      ? `Hide the worktrees (${PANEL_KEYS})`
+      : shows === "hidden" && panelState(view.repoId).commitFor === null
+        ? `Show the worktrees (${PANEL_KEYS})`
+        : "Show the worktrees",
+  );
+  /** A narrow window: View shows as its icon (its name in its tooltip), so nothing is cut off. */
   const compact = $derived(sidePanel.windowW < NARROW_W);
 
   function toggleLog() {
@@ -45,7 +67,6 @@
 
   /** A repository without commits: filtering and searching have nothing to work on. */
   const noCommits = $derived(!view.snapshot.loading && view.snapshot.totalRows === 0);
-  const NO_COMMITS = "Nothing to show yet: this repository has no commits";
   const fetchInfo = $derived(view.snapshot.fetch);
   const noRemotes = $derived(view.snapshot.remotes.length === 0);
   const fetchState = $derived(view.fetching ? "running" : fetchInfo.lastError ? "error" : "idle");
@@ -145,46 +166,7 @@
   <span class="divider" aria-hidden="true"></span>
   <BranchFilter {view} disabled={noCommits} />
 
-{#snippet toggle(label: string, checked: boolean, set: (on: boolean) => void, glyph: string)}
-    <label class="toggle" title={noCommits ? NO_COMMITS : compact ? label : undefined}>
-      <input
-        type="checkbox"
-        class="checkbox"
-        aria-label={label}
-        disabled={noCommits}
-        {checked}
-        onchange={(e) => set(e.currentTarget.checked)}
-      />
-      {#if compact}
-        <svg class="glyph" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-          <path d={glyph} fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      {:else}
-        <span aria-hidden="true">{label}</span>
-      {/if}
-    </label>
-  {/snippet}
-  <!-- A cloud: the remotes' branches. -->
-  {@render toggle(
-    "Remote branches",
-    view.viewOptions.showRemotes,
-    (on) => view.setViewOptions({ showRemotes: on }),
-    "M4.9 12.2h6.3a2.8 2.8 0 0 0 .35-5.58 3.7 3.7 0 0 0-7.1-.32A2.95 2.95 0 0 0 4.9 12.2z",
-  )}
-  <!-- A tag. -->
-  {@render toggle(
-    "Tags",
-    view.viewOptions.showTags,
-    (on) => view.setViewOptions({ showTags: on }),
-    "M2.6 7.8V3.4c0-.45.35-.8.8-.8h4.4l5.9 5.9-5.2 5.2zM5.6 5.4h.01",
-  )}
-  <!-- Stacked boxes: stashes. With a branch selection, the stashes on its commits show. -->
-  {@render toggle(
-    "Stashes",
-    view.viewOptions.showStashes,
-    (on) => view.setViewOptions({ showStashes: on }),
-    "M3 5.2h10v7.6H3zM4.6 3h6.8M6.4 8.2h3.2",
-  )}
+  <ViewOptions {view} disabled={noCommits} {compact} />
 
   <span class="spacer"></span>
 
@@ -285,17 +267,41 @@
 
   <button
     class="icon-btn tool"
-    aria-label="Worktrees"
-    aria-pressed={sideShown}
-    title="{sideShown ? 'Hide' : 'Show'} the worktrees ({PANEL_KEYS})"
-    data-testid="side-toggle"
-    onclick={() => setPanelShown(view.repoId)}
+    aria-label="Commit"
+    aria-pressed={shows === "commit"}
+    title={commitTitle}
+    data-testid="commit-toggle"
+    onclick={() => toggleCommit(view)}
   >
-    <!-- A window with a panel on its right. -->
+    <!-- A commit: a circle on a line. -->
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" />
-      <path d="M9.8 3.4v9.2" stroke="currentColor" stroke-width="1.4" />
-      <path d="M11.4 6h1M11.4 8h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.45" />
+      <path d="M1.6 8h3.8M10.6 8h3.8" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" />
+    </svg>
+    {#if changes > 0}
+      <!-- How many files there are to commit; over the button's corner, so nothing moves when it comes. -->
+      <span class="badge" aria-hidden="true" data-testid="commit-badge">{changes > 99 ? "99+" : changes}</span>
+    {/if}
+  </button>
+
+  <button
+    class="icon-btn tool"
+    aria-label="Worktrees"
+    aria-pressed={shows === "worktrees"}
+    title={worktreesTitle}
+    data-testid="side-toggle"
+    onclick={() => toggleWorktrees(view)}
+  >
+    <!-- Two folders, one behind the other: the repository's worktrees. -->
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M2 6.3c0-.6.5-1.1 1.1-1.1h2.2l1.2 1.3h4.4c.6 0 1.1.5 1.1 1.1v4.9c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1zM4.6 5V3.5c0-.6.5-1.1 1.1-1.1h2.1l1.2 1.3h3.9c.6 0 1.1.5 1.1 1.1v4.7c0 .6-.5 1.1-1.1 1.1h-.7"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
     </svg>
   </button>
 
@@ -321,16 +327,6 @@
     gap: 2px;
   }
 
-  .compact .toggle {
-    gap: 5px;
-    padding: 0 7px 0 6px;
-  }
-
-  .glyph {
-    display: block;
-    color: var(--text-muted);
-  }
-
   /* Separates the repository's name and path from the controls. */
   .divider {
     flex: none;
@@ -338,33 +334,6 @@
     height: 18px;
     margin: 0 10px 0 2px;
     background: var(--border-strong);
-  }
-
-  .toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    height: 28px;
-    padding: 0 9px 0 8px;
-    border-radius: var(--radius);
-    color: var(--text);
-    font-size: var(--fs-sm);
-    white-space: nowrap;
-    transition: background-color 80ms linear;
-  }
-
-  .toggle:hover {
-    background: var(--bg-hover);
-  }
-
-  .toggle:active {
-    background: var(--bg-pressed);
-  }
-
-  /* Off (a repository without commits): faint, and no hover. */
-  .toggle:has(:disabled) {
-    background: transparent;
-    color: var(--text-faint);
   }
 
   .spacer {
@@ -486,6 +455,31 @@
     border-radius: 50%;
     background: var(--warning);
     box-shadow: 0 0 0 2px var(--bg);
+  }
+
+  /* A quiet count, ringed in the header's colour so it stands clear of the icon under it. */
+  .badge {
+    position: absolute;
+    top: -2px;
+    right: -3px;
+    min-width: 13px;
+    height: 13px;
+    padding: 0 3.5px;
+    border-radius: 6.5px;
+    background: var(--text-faint);
+    box-shadow: 0 0 0 1.5px var(--bg);
+    color: var(--bg);
+    font-size: 9.5px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    line-height: 13px;
+    text-align: center;
+    pointer-events: none;
+  }
+
+  .tool[aria-pressed="true"] .badge {
+    background: var(--accent);
+    color: var(--accent-contrast);
   }
 
   .loading {

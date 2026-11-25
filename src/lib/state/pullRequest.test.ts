@@ -44,6 +44,7 @@ import {
   subjectOf,
   suggestionStamp,
   SUGGESTION_FRESH_MS,
+  suggestionTicket,
   unavailableHere,
   type AfterPush,
 } from "./pullRequest.svelte";
@@ -172,6 +173,16 @@ describe("the default branch", () => {
     expect(defaultBranch(snap({ remotes: [], remoteHeads: {}, remoteBranches: [] }))).toBeNull();
   });
 
+  it("a remote named like an object's own members has no HEAD it does not have (review)", () => {
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      const s = snap({ remotes: [name], remoteHeads: {}, remoteBranches: [`${name}/main`] });
+      expect(defaultBranch(s)).toBe("main");
+      expect(defaultBranch(snap({ remotes: [name], remoteHeads: {}, remoteBranches: [] }))).toBeNull();
+    }
+    const heads = JSON.parse('{"__proto__": "trunk"}') as Record<string, string>;
+    expect(defaultBranch(snap({ remotes: ["__proto__"], remoteHeads: heads, remoteBranches: [] }))).toBe("trunk");
+  });
+
   it("is the base repository's: upstream before origin, as the core picks it; or the remote named", () => {
     const fork = snap({ remotes: ["origin", "upstream"], remoteHeads: { origin: "mine", upstream: "main" }, remoteBranches: [] });
     expect(baseRemoteOf(fork.remotes)).toBe("upstream");
@@ -213,31 +224,72 @@ describe("the forms being filled in", () => {
 
   it("a suggestion fills only what the user has not changed; the base stays the user's in the same repository", () => {
     const d = prDraft("/r9", "a");
-    applySuggestion(d, suggestion(), "origin");
-    expect(d).toMatchObject({ title: "Add x", body: "- Add x", base: "main" });
+    applySuggestion(d, suggestion());
+    expect(d).toMatchObject({ title: "Add x", body: "- Add x", base: "main", baseRemote: "origin" });
     d.title = "Mine";
     d.titleTouched = true;
     d.base = "release";
     d.baseTouched = true;
-    applySuggestion(d, suggestion({ title: "Other", body: "- Other", base: "dev" }), "origin");
+    applySuggestion(d, suggestion({ title: "Other", body: "- Other", base: "dev" }));
     expect(d).toMatchObject({ title: "Mine", body: "- Other", base: "release" });
-    // Another repository than guessed: its base, whatever was picked.
-    applySuggestion(d, suggestion({ base: "trunk", baseRemote: "upstream" }), "origin");
-    expect(d.base).toBe("trunk");
+    // Another repository than the base was picked in: its base, whatever was picked.
+    applySuggestion(d, suggestion({ base: "trunk", baseRemote: "upstream" }));
+    expect(d).toMatchObject({ base: "trunk", baseRemote: "upstream", baseTouched: false });
     dropPrDraft("/r9", "a");
+  });
+
+  it("with origin and upstream, a base picked among upstream's branches holds through upstream's later suggestions (review: the guessed remote was origin)", () => {
+    const d = prDraft("/r10", "a");
+    // Guessed first (origin's main), then the core names upstream as the base repository.
+    d.base = "main";
+    d.baseRemote = "origin";
+    applySuggestion(d, suggestion({ baseRemote: "upstream", base: "main" }));
+    expect(d).toMatchObject({ base: "main", baseRemote: "upstream" });
+    // The user picks release, among upstream's branches.
+    d.base = "release";
+    d.baseTouched = true;
+    d.baseRemote = "upstream";
+    for (let i = 0; i < 3; i++) {
+      applySuggestion(d, suggestion({ baseRemote: "upstream", base: "main" }));
+      expect(d.base).toBe("release");
+    }
+    // The base repository changes: its own base, the user's no longer meaning anything there.
+    applySuggestion(d, suggestion({ baseRemote: "origin", base: "trunk" }));
+    expect(d).toMatchObject({ base: "trunk", baseRemote: "origin" });
+    dropPrDraft("/r10", "a");
   });
 });
 
 describe("what the core suggested", () => {
   it("is kept while the branch, where it was pushed and the list hold, for five minutes", () => {
     const s = suggestion();
-    keepSuggestion("/k", "feature/x", "A", s, 1000);
+    keepSuggestion("/k", "feature/x", "A", s, suggestionTicket(), 1000);
     expect(keptSuggestion("/k", "feature/x", "A", 2000)).toBe(s);
     expect(keptSuggestion("/k", "feature/x", "B", 2000)).toBeNull();
     expect(keptSuggestion("/k", "feature/x", "A", 1000 + SUGGESTION_FRESH_MS + 1)).toBeNull();
     expect(keptSuggestion("/k", "fix/y", "A", 2000)).toBeNull();
     forgetSuggestions("/k");
     expect(keptSuggestion("/k", "feature/x", "A", 2000)).toBeNull();
+  });
+
+  it("an older request's answer that comes last never replaces a later one's, for the same branch; another branch's is kept whenever it comes (review)", () => {
+    const r1 = suggestionTicket();
+    const r2 = suggestionTicket();
+    const older = suggestion({ existing: null });
+    const newer = suggestion({ existing: pullRequest({ number: 7 }) });
+    expect(keepSuggestion("/v", "feature/x", "A", newer, r2, 1000)).toBe(true);
+    expect(keepSuggestion("/v", "feature/x", "A", older, r1, 1001)).toBe(false);
+    expect(keptSuggestion("/v", "feature/x", "A", 1002)?.existing?.number).toBe(7);
+    // Another branch's late answer is still kept.
+    const other = suggestionTicket();
+    suggestionTicket();
+    expect(keepSuggestion("/v", "fix/y", "A", older, other, 1003)).toBe(true);
+    expect(keptSuggestion("/v", "fix/y", "A", 1004)).toBe(older);
+    // Asked before a Refresh forgot them, answered after: not kept.
+    const before = suggestionTicket();
+    forgetSuggestions("/v");
+    expect(keepSuggestion("/v", "feature/x", "A", older, before, 1005)).toBe(false);
+    expect(keepSuggestion("/v", "feature/x", "A", newer, suggestionTicket(), 1006)).toBe(true);
   });
 
   it("depends on the branch's commit, its remote namesake's, and when the list was loaded", () => {
@@ -266,6 +318,17 @@ describe("the branch's pull request", () => {
     // Reloaded since: the list says (here, it has it under another number).
     expect(knownPr({ ...s, prs: ready(6), branchPrs: { "fix/y": pullRequest({ number: 22 }) } }, "fix/y")?.number).toBe(22);
     expect(knownPr({ ...s, prs: ready(6) }, "fix/y")).toBeNull();
+  });
+
+  it("a branch named like an object's own members has no pull request it does not have (review)", () => {
+    const s = snap({ rootPath: "/o", prs: ready(5), branchPrs: {} });
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      expect(knownPr(s, name)).toBeNull();
+    }
+    // One that has one, by that name.
+    const listed = JSON.parse(JSON.stringify({ constructor: pullRequest({ number: 3, head: "constructor" }) })) as RepoSnapshot["branchPrs"];
+    expect(knownPr({ ...s, branchPrs: listed }, "constructor")?.number).toBe(3);
+    expect(prTabTitle({ ...s, branchPrs: {} }, "constructor", "⌘⇧P")).toBe("Pull request · none yet (⌘⇧P)");
   });
 
   it("its number comes from its page's address", () => {

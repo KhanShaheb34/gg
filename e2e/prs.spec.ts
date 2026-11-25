@@ -288,6 +288,8 @@ test("gh not installed: the tab says so and how to fix it, pushes and then opens
   await expect(box).toContainText("GitHub CLI (gh) is not installed.");
   await expect(box).toContainText("Install it (cli.github.com) and sign in, then refresh");
   await expect(box).toContainText("fix/typo is pushed to origin/fix/typo, then GitHub’s compare page opens");
+  await page.waitForTimeout(1000);
+  console.log("BTN", await panel(page).getByTestId("pr-create").textContent());
   const go = button(page, "Push and open the compare page");
   await expect(go).toBeEnabled();
   await go.click();
@@ -323,6 +325,8 @@ test("the compare page the tab promised is what happens, even if gh is installed
   await refresh(page);
   await expect(notice(page, "Pull requests need the GitHub CLI (gh)")).toBeVisible();
   await menuOn(page, "fix/typo", "Create pull request…");
+  await page.waitForTimeout(1000);
+  console.log("BTN", await panel(page).getByTestId("pr-create").textContent());
   const go = button(page, "Push and open the compare page");
   await expect(go).toBeEnabled();
   // gh appears while the tab shows the compare page (no form): it must not be used.
@@ -722,8 +726,99 @@ test("at the panel's least width the form fits: one line naming a long branch, e
     const b = (await el.boundingBox())!;
     expect(b.x + b.width).toBeLessThanOrEqual(s.x + s.width - 11);
   }
-  const buttons = await view.locator(".actions button").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().top));
-  expect(new Set(buttons.map((y) => Math.round(y))).size).toBe(1);
+  await expectActions(view, "stacked");
+});
+
+/** Wider glyphs than macOS's (as Linux's fonts have): the layout must not depend on them. */
+const WIDE_GLYPHS = "* { letter-spacing: 0.09em !important; }";
+
+/**
+ * The pull request view's two buttons: side by side, or (the panel narrower than 280 px)
+ * stacked, each the width of the row; either way inside the panel, their text never cut.
+ */
+async function expectActions(view: ReturnType<Page["locator"]>, layout: "row" | "stacked") {
+  const boxes = await view.locator(".actions button").evaluateAll((els) =>
+    els.map((e) => {
+      const r = e.getBoundingClientRect();
+      return { top: Math.round(r.top), left: Math.round(r.left), width: Math.round(r.width), clipped: e.scrollWidth > e.clientWidth };
+    }),
+  );
+  expect(boxes).toHaveLength(2);
+  for (const b of boxes) expect(b.clipped).toBe(false);
+  if (layout === "row") {
+    expect(boxes[0].top).toBe(boxes[1].top);
+    expect(boxes[1].left).toBeGreaterThan(boxes[0].left + boxes[0].width);
+  } else {
+    expect(boxes[1].top).toBeGreaterThan(boxes[0].top);
+    expect(boxes[1].left).toBe(boxes[0].left);
+    expect(boxes[1].width).toBe(boxes[0].width);
+  }
+}
+
+/** Every button of the tab's body: inside the panel, its text not cut. */
+async function expectButtonsFit(page: Page) {
+  const side = (await page.locator('[data-region="side-panel"]').boundingBox())!;
+  const boxes = await panel(page)
+    .locator("button:visible")
+    .evaluateAll((els) => els.map((e) => ({ text: e.textContent?.trim(), right: e.getBoundingClientRect().right, clipped: e.scrollWidth > e.clientWidth })));
+  expect(boxes.length).toBeGreaterThan(0);
+  for (const b of boxes) {
+    expect(b.clipped, `${b.text} is cut`).toBe(false);
+    expect(b.right, `${b.text} goes past the panel`).toBeLessThanOrEqual(side.x + side.width);
+  }
+  expect(await panel(page).evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+}
+
+test("whatever the font's widths: at the least width the view's buttons stack, at the default width they share a row; no button's text is cut", async ({ gg }) => {
+  const { page } = gg;
+  await page.addInitScript((css) => {
+    document.addEventListener("DOMContentLoaded", () => {
+      const style = document.createElement("style");
+      style.textContent = css;
+      document.head.append(style);
+    });
+  }, WIDE_GLYPHS);
+  gg.git("prs", "switch", "-q", "fix/typo");
+  await page.setViewportSize({ width: 900, height: 600 });
+  await openListed(gg, [pr(44, "docs/readme", "Explain the parser")]);
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+P");
+  // The form, at the least width.
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  expect(Math.round((await page.locator('[data-region="side-panel"]').boundingBox())!.width)).toBe(240);
+  await expectButtonsFit(page);
+  // The view, at the least width: stacked.
+  gg.git("prs", "switch", "-q", "docs/readme");
+  await refresh(page);
+  const view = panel(page).getByTestId("pr-view");
+  await expect(view.getByTestId("pr-number")).toHaveText("#44");
+  await expectActions(view, "stacked");
+  await expectButtonsFit(page);
+  // At the default width: one row.
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await expect.poll(async () => Math.round((await page.locator('[data-region="side-panel"]').boundingBox())!.width)).toBe(300);
+  await expectActions(view, "row");
+  await expectButtonsFit(page);
+});
+
+test("whatever the font's widths: without gh, the compare page's button keeps all its words at the least width", async ({ gg }) => {
+  const { page } = gg;
+  await page.addInitScript((css) => {
+    document.addEventListener("DOMContentLoaded", () => {
+      const style = document.createElement("style");
+      style.textContent = css;
+      document.head.append(style);
+    });
+  }, WIDE_GLYPHS);
+  gg.gh.uninstall();
+  await page.setViewportSize({ width: 900, height: 600 });
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await refresh(page);
+  await menuOn(page, "fix/typo", "Create pull request…");
+  const go = button(page, "Push and open the compare page");
+  await expect(go).toBeVisible();
+  await expectButtonsFit(page);
 });
 
 test("in a narrow window the shortcut shows the tab over the graph, and Escape hides it", async ({ gg }) => {
@@ -778,4 +873,48 @@ test("a suggestion for another branch that comes late never fills the form shown
   // docs/readme's, kept when it came, is there when its form shows.
   await menuOn(page, "docs/readme", "Create pull request…");
   await expect(title).toHaveValue("Explain the parser");
+});
+
+test("without gh, a commit made since the suggestion is pushed before the compare page opens (review: the suggestion said nothing to push)", async ({ gg }) => {
+  const { page } = gg;
+  gg.gh.uninstall();
+  // The core's answers say there is nothing to push, as one asked before the commit would.
+  await page.route("**/invoke", async (route) => {
+    if ((route.request().postDataJSON() as { cmd: string } | null)?.cmd !== "pr_suggest") return route.continue();
+    const answer = (await (await route.fetch()).json()) as { ok?: { needsPush: boolean } };
+    if (answer.ok) answer.ok.needsPush = false;
+    return route.fulfill({ json: answer });
+  });
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await refresh(page);
+  await menuOn(page, "docs/readme", "Create pull request…");
+  // On the remote, level: the compare page only.
+  await expect(button(page, "Open the compare page")).toBeVisible();
+  const ahead = gg.git("prs", "commit-tree", "docs/readme^{tree}", "-p", "docs/readme", "-m", "Explain the lexer").trim();
+  gg.git("prs", "branch", "-f", "docs/readme", ahead);
+  await refresh(page);
+  const go = button(page, "Push and open the compare page");
+  await expect(go).toBeEnabled();
+  await go.click();
+  await expect(notice(page, "Pushed docs/readme to origin/docs/readme. Finish on GitHub:")).toBeVisible();
+  expect(gg.git("prs", "rev-parse", "refs/remotes/origin/docs/readme").trim()).toBe(ahead);
+  await expect
+    .poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/compare/main...docs/readme?expand=1")))
+    .toBe(true);
+  await page.unrouteAll({ behavior: "wait" });
+});
+
+test("two branches at one commit, neither pushed: going from one to the other asks about the other (review: they share what a suggestion depends on)", async ({ gg }) => {
+  const { page } = gg;
+  gg.git("prs", "branch", "fix/again", "fix/typo");
+  await openListed(gg);
+  await menuOn(page, "fix/typo", "Create pull request…");
+  await expect(panel(page).getByTestId("push-note")).toHaveText("Pushes first to origin/fix/typo");
+  await menuOn(page, "fix/again", "Create pull request…");
+  await expect(page.getByTestId("pr-branch")).toContainText("fix/again");
+  await expect(panel(page).getByTestId("pr-waiting")).toHaveCount(0);
+  await expect(panel(page).getByTestId("push-note")).toHaveText("Pushes first to origin/fix/again");
+  await expect(button(page, "Push and create PR")).toBeEnabled();
+  expect(gg.gh.calls().filter((c) => c.includes("--head") && c.includes("fix/again"))).toHaveLength(1);
 });

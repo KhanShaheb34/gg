@@ -46,7 +46,8 @@ export function defaultBranch(
   remote: string | null = baseRemoteOf(snap.remotes),
 ): string | null {
   if (remote === null) return null;
-  const head = snap.remoteHeads[remote];
+  // Its own entries only: a remote may be named "constructor" or "__proto__".
+  const head = Object.hasOwn(snap.remoteHeads, remote) ? snap.remoteHeads[remote] : undefined;
   if (head) return head;
   return ["main", "master"].find((b) => snap.remoteBranches.includes(`${remote}/${b}`)) ?? null;
 }
@@ -73,7 +74,8 @@ export function rememberMade(snap: Pick<RepoSnapshot, "rootPath" | "prs">, branc
  * (gh may still know of one: see the suggestion's `existing`).
  */
 export function knownPr(snap: Pick<RepoSnapshot, "rootPath" | "branchPrs" | "prs">, branch: string): PullRequest | null {
-  const listed = snap.branchPrs[branch];
+  // Its own entries only: a branch may be named "constructor" or "__proto__".
+  const listed = Object.hasOwn(snap.branchPrs, branch) ? snap.branchPrs[branch] : undefined;
   if (listed) return listed;
   const just = made.get(key(snap.rootPath, branch));
   return just && just.listAt === snap.prs.loadedAtMs ? just.pr : null;
@@ -100,6 +102,12 @@ export type PrDraft = {
   titleTouched: boolean;
   bodyTouched: boolean;
   baseTouched: boolean;
+  /**
+   * The remote of the repository `base` is a branch of (the base repository's), when it was
+   * set: the user's base holds while the suggestions name that remote, and goes when they
+   * name another.
+   */
+  baseRemote: string | null;
   /** The request is out. */
   pending: boolean;
   /** The step it is at, as the core says it (pushing, creating). */
@@ -130,6 +138,7 @@ export function prDraft(root: string, branch: string): PrDraft {
     titleTouched: false,
     bodyTouched: false,
     baseTouched: false,
+    baseRemote: null,
     pending: false,
     step: null,
     progress: null,
@@ -147,18 +156,31 @@ export function dropPrDraft(root: string, branch: string): void {
 
 /**
  * Fills the fields of `draft` the user has not changed from `suggestion`. The base: the
- * suggested one, unless the user picked one in the same repository.
+ * suggested one, unless the user picked one of the same repository (the remote the base was
+ * set for is the one the suggestion names); another repository, its base.
  */
-export function applySuggestion(draft: PrDraft, suggestion: PrSuggestion, guessedRemote: string | null): void {
+export function applySuggestion(draft: PrDraft, suggestion: PrSuggestion): void {
   if (!draft.titleTouched) draft.title = suggestion.title;
   if (!draft.bodyTouched) draft.body = suggestion.body;
-  if (suggestion.baseRemote !== guessedRemote || !draft.baseTouched) draft.base = suggestion.baseRemote === null ? "" : suggestion.base;
+  if (draft.baseTouched && draft.baseRemote === suggestion.baseRemote) return;
+  draft.base = suggestion.baseRemote === null ? "" : suggestion.base;
+  draft.baseRemote = suggestion.baseRemote;
+  draft.baseTouched = false;
 }
 
 // --- What the core suggested, while it holds -----------------------------------------------
 
-type Kept = { stamp: string; at: number; suggestion: PrSuggestion };
+type Kept = { stamp: string; at: number; suggestion: PrSuggestion; ticket: number };
 const suggestions = new Map<string, Kept>();
+/** Numbers the requests for suggestions, in the order they are made. */
+let tickets = 0;
+/** The last ticket given out when each repository's suggestions were forgotten (by its root). */
+const forgotten = new Map<string, number>();
+
+/** A new request for a suggestion: its number, later than every one before. */
+export function suggestionTicket(): number {
+  return ++tickets;
+}
 /** A suggestion is asked for again after this long, whatever else changed. */
 export const SUGGESTION_FRESH_MS = 5 * 60_000;
 
@@ -182,9 +204,24 @@ export function keptSuggestion(root: string, branch: string, stamp: string, now 
   return kept.suggestion;
 }
 
-/** Keeps `suggestion` for `branch`, as of `stamp`. */
-export function keepSuggestion(root: string, branch: string, stamp: string, suggestion: PrSuggestion, now = Date.now()): void {
-  suggestions.set(key(root, branch), { stamp, at: now, suggestion });
+/**
+ * Keeps `suggestion` for `branch`, as of `stamp`, the answer to request `ticket`; unless an
+ * answer to a later request for the branch is kept already, or the repository's suggestions
+ * were forgotten (a Refresh) after the request was made. Whether it was kept.
+ */
+export function keepSuggestion(
+  root: string,
+  branch: string,
+  stamp: string,
+  suggestion: PrSuggestion,
+  ticket: number,
+  now = Date.now(),
+): boolean {
+  const k = key(root, branch);
+  const kept = suggestions.get(k);
+  if ((kept && kept.ticket > ticket) || (forgotten.get(root) ?? 0) >= ticket) return false;
+  suggestions.set(k, { stamp, at: now, suggestion, ticket });
+  return true;
 }
 
 /** The last suggestion for `branch`, whatever it was asked against (shown until a new one comes). */
@@ -195,6 +232,7 @@ export function lastSuggestion(root: string, branch: string): PrSuggestion | nul
 /** Forgets the suggestions of the repository at `root` (the user asked to refresh). */
 export function forgetSuggestions(root: string): void {
   for (const k of [...suggestions.keys()]) if (k.startsWith(`${root}\n`)) suggestions.delete(k);
+  forgotten.set(root, tickets);
 }
 
 // --- Showing the tab -----------------------------------------------------------------------

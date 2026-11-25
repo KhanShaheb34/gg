@@ -2,7 +2,8 @@
   A comment's body, drawn from the tree markdown.ts makes of it with this component's own
   elements only: no HTML of the comment reaches the DOM, nothing in it is fetched. Headings
   are drawn small (a comment is not a document); code scrolls sideways; tables scroll; task
-  boxes are read-only; <details> are closed disclosures. A link is a link only for an https
+  boxes are read-only; <details> are closed disclosures; an image is its alt text (or the word
+  "image"), muted, never loaded. A link is a link only for an https
   address: its full address in its tooltip, opened in the browser (`onlink`) on a click or
   Enter, never followed by the page itself (it has no href).
 -->
@@ -27,7 +28,12 @@
 
 {#snippet inline(nodes: Inline[])}
   {#each nodes as n, i (i)}
-    {#if n.k === "text"}{n.text}{:else if n.k === "br"}<br />{:else if n.k === "code"}<code class="md-code">{n.text}</code>{:else if n.k === "strong"}<strong>{@render inline(n.children)}</strong>{:else if n.k === "em"}<em>{@render inline(n.children)}</em>{:else if n.k === "del"}<del>{@render inline(n.children)}</del>{:else if n.k === "image"}<span class="md-image" title="An image, not loaded">[image: {n.alt}]</span>{:else if n.k === "link"}{#if n.url !== null}<span
+    {#if n.k === "text"}{n.text}{:else if n.k === "br"}<br />{:else if n.k === "code"}<code class="md-code">{n.text}</code>{:else if n.k === "strong"}<strong>{@render inline(n.children)}</strong>{:else if n.k === "em"}<em>{@render inline(n.children)}</em>{:else if n.k === "del"}<del>{@render inline(n.children)}</del>{:else if n.k === "image"}<span
+          class="md-image"
+          role="img"
+          title="An image, not loaded"
+          aria-label={n.alt ? `Image, not loaded: ${n.alt}` : "Image, not loaded"}>{n.alt || "image"}</span
+        >{:else if n.k === "link"}{#if n.url !== null}<span
           class="md-link"
           role="link"
           tabindex="0"
@@ -347,8 +353,9 @@
     outline-offset: 1px;
   }
 
+  /* An image, never loaded: its alt text (or "image"), quietly. */
   .md-image {
-    color: var(--text-faint);
+    color: var(--text-muted);
     font-size: var(--fs-xs);
   }
 

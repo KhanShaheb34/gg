@@ -419,6 +419,32 @@ test("from the keyboard: the checks' toggle, the filter, Show more and the links
   await expect(checksToggle(page)).toHaveAttribute("aria-expanded", "true");
 });
 
+test("a deployment bot's comment: no badge repeating its word, its button an ordinary link, nothing loaded", async ({ gg }) => {
+  const { page } = gg;
+  const body = [
+    "| Project | Deployment | Updated (UTC) |",
+    "| :--- | :----- | :------ |",
+    "| [web](https://bot.example/web) | ![Ready](https://bot.example/ready.svg) [Ready](https://bot.example/web/inspect) | Nov 25, 2026 |",
+    "",
+    '<a href="https://bot.example/review"><img src="https://bot.example/review.svg" alt="Request Review"></a>',
+    "",
+    "Built with ![a cat](https://bot.example/cat.png) and ![](https://bot.example/x.png).",
+  ].join("\n");
+  await showPr(gg, view(31, { comments: [comment("7", "deploybot", body, 5)], reviews: [] }), threads([], ["deploybot"]), 60_000);
+  const card = cards(page).first();
+  await expect(card).toContainText("Ready");
+  await expect(card).not.toContainText("[image");
+  await expect(card.locator("td", { hasText: "Ready" })).toHaveText("Ready");
+  // Images that are not dropped: their alt text, muted, named as not loaded.
+  await expect(card.getByRole("img", { name: "Image, not loaded: a cat" })).toHaveText("a cat");
+  await expect(card.getByRole("img", { name: "Image, not loaded", exact: true })).toHaveText("image");
+  const button = card.getByRole("link", { name: "Request Review" });
+  await expect(button).toHaveAttribute("title", "https://bot.example/review");
+  await button.click();
+  await expect.poll(() => gg.launches().some((l) => l.includes("https://bot.example/review"))).toBe(true);
+  expect(await card.locator("img, a[href]").count()).toBe(0);
+});
+
 test("the captured threads answer reads too (a resolved thread with the owner's reply)", async ({ gg }) => {
   const { page } = gg;
   await showPr(gg, view(31, { comments: [], reviews: [] }), THREADS_22, 60_000);

@@ -7,13 +7,17 @@
 //   - paragraphs, headings (drawn small), bold, italic, strikethrough, inline code, fenced
 //     code, lists with their task boxes (read-only), quotes (GitHub's "> [!NOTE]" alerts
 //     named), rules and tables;
-//   - links: a link only for an absolute https:// address (shown in full in its tooltip,
-//     opened through the core); anything else (another scheme, a relative address, an
-//     #anchor) is its text;
-//   - images (Markdown or <img>): never loaded; "[image: alt]", or nothing without alt text;
+//   - links (Markdown or <a href>): a link only for an absolute https:// address (shown in
+//     full in its tooltip, opened through the core); anything else (another scheme, a
+//     relative address, an #anchor) is its text;
+//   - images (Markdown or <img>): never loaded (see `settle`): nothing when the alt text
+//     only repeats the text beside it (a status badge before the same word); a link whose
+//     only content is an image is that link with the alt text as its words (a bot's
+//     button); any other image is its alt text, muted; one without alt text is nothing in a
+//     link that has other content, else a muted "image";
 //   - HTML: comments dropped with what is in them; <details><summary> a closed disclosure;
-//     <br> a line break; every other tag dropped, its text kept (script and style dropped
-//     with what is in them); entities decoded as text;
+//     <br> a line break; <a href> a link as above; every other tag dropped, its text kept
+//     (script and style dropped with what is in them); entities decoded as text;
 //   - bodies longer than MAX_BODY characters cut (said, with a way to GitHub), nesting deeper
 //     than MAX_DEPTH flattened to text, so no comment can hang the panel.
 
@@ -25,8 +29,11 @@ export type Inline =
   | { k: "code"; text: string }
   /** `url`: an absolute https:// address (null: shown as its text, never a link). */
   | { k: "link"; url: string | null; children: Inline[] }
+  /** An image, never loaded: `alt` its alt text ("" when it has none). */
   | { k: "image"; alt: string }
   | { k: "br" };
+
+type Link = Extract<Inline, { k: "link" }>;
 
 export type ListItem = { task: boolean | null; blocks: Block[] };
 
@@ -252,21 +259,48 @@ function add(out: Inline[], node: Inline): void {
 /** What a run of inline tokens reads, across tokens: dropping a raw element's content. */
 type InlineState = { skip: string | null };
 
-/** Adds what HTML piece `piece` draws inline to `out` (see the module comment). */
-function pieceInline(piece: HtmlPiece, out: Inline[], state: InlineState): void {
+/**
+ * A run of inline nodes being read: the nodes, and the HTML link (<a>) open in it, whose
+ * content goes into it until its </a> (or the run's end). Links never nest: an <a> closes
+ * the one open, and a Markdown link inside one is its text.
+ */
+class Run {
+  nodes: Inline[] = [];
+  open: Link | null = null;
+
+  /** Where the next node goes. */
+  get to(): Inline[] {
+    return this.open?.children ?? this.nodes;
+  }
+
+  add(node: Inline): void {
+    if (node.k === "link" && this.open) for (const n of node.children) add(this.to, n);
+    else add(this.to, node);
+  }
+}
+
+/** Adds what HTML piece `piece` draws inline to `run` (see the module comment). */
+function pieceInline(piece: HtmlPiece, run: Run, state: InlineState): void {
   if (state.skip !== null) {
     if (piece.t === "close" && piece.name === state.skip) state.skip = null;
     return;
   }
   if (piece.t === "text") {
-    add(out, { k: "text", text: shown(decodeEntities(piece.text).replace(/\s+/g, " ")) });
+    run.add({ k: "text", text: shown(decodeEntities(piece.text).replace(/\s+/g, " ")) });
   } else if (piece.t === "open" && RAW.has(piece.name) && !/\/\s*$/.test(piece.attrs)) {
     state.skip = piece.name;
   } else if (piece.t === "open" && piece.name === "img") {
-    const alt = attribute(piece.attrs, "alt")?.trim();
-    if (alt) add(out, { k: "image", alt: shown(alt) });
+    run.add({ k: "image", alt: shown(attribute(piece.attrs, "alt")?.trim() ?? "") });
   } else if (piece.t === "open" && piece.name === "br") {
-    add(out, { k: "br" });
+    run.add({ k: "br" });
+  } else if (piece.t !== "comment" && piece.name === "a") {
+    run.open = null;
+    if (piece.t === "open" && !/\/\s*$/.test(piece.attrs)) {
+      const href = attribute(piece.attrs, "href");
+      const link: Link = { k: "link", url: href === null ? null : safeUrl(href), children: [] };
+      run.add(link);
+      run.open = link;
+    }
   }
 }
 
@@ -283,8 +317,12 @@ function trimmed(list: Inline[]): Inline[] {
   return out;
 }
 
+/**
+ * The inline nodes of `tokens`, as read: not yet settled (`settle` is applied once a run is
+ * whole, where it becomes a block's, a cell's or a summary's).
+ */
 function inlines(tokens: readonly Token[] | undefined, depth: number, state: InlineState = { skip: null }): Inline[] {
-  const out: Inline[] = [];
+  const run = new Run();
   for (const t of tokens ?? []) {
     if (state.skip !== null && t.type !== "html") continue;
     switch (t.type) {
@@ -293,49 +331,139 @@ function inlines(tokens: readonly Token[] | undefined, depth: number, state: Inl
         // An escaped character ("\*") is itself, never a reference to decode.
         const tok = t as Tokens.Text;
         const literal = t.type === "escape" || tok.escaped === true;
-        if (tok.tokens && tok.tokens.length > 0) for (const n of inlines(tok.tokens, depth + 1, state)) add(out, n);
-        else add(out, { k: "text", text: shown(literal ? tok.text : decodeEntities(tok.text)) });
+        if (tok.tokens && tok.tokens.length > 0) for (const n of inlines(tok.tokens, depth + 1, state)) run.add(n);
+        else run.add({ k: "text", text: shown(literal ? tok.text : decodeEntities(tok.text)) });
         break;
       }
       case "strong":
       case "em":
       case "del": {
         const children = depth >= MAX_DEPTH ? [{ k: "text" as const, text: shown(textOf(t)) }] : inlines((t as Tokens.Strong).tokens, depth + 1, state);
-        if (children.length > 0) out.push({ k: t.type, children });
+        if (children.length > 0) run.to.push({ k: t.type, children });
         break;
       }
       case "codespan":
-        out.push({ k: "code", text: shown((t as Tokens.Codespan).text) });
+        run.to.push({ k: "code", text: shown((t as Tokens.Codespan).text) });
         break;
       case "br":
-        add(out, { k: "br" });
+        run.add({ k: "br" });
         break;
       case "link": {
         const link = t as Tokens.Link;
         const url = safeUrl(decodeEntities(link.href));
         const children = depth >= MAX_DEPTH ? [] : inlines(link.tokens, depth + 1, state).filter((n) => n.k !== "link");
         if (children.length === 0) children.push({ k: "text", text: shown(decodeEntities(link.text || link.href)) });
-        out.push({ k: "link", url, children });
+        run.add({ k: "link", url, children });
         break;
       }
-      case "image": {
-        const alt = decodeEntities((t as Tokens.Image).text).trim();
-        if (alt) add(out, { k: "image", alt: shown(alt) });
+      case "image":
+        run.add({ k: "image", alt: shown(decodeEntities((t as Tokens.Image).text).trim()) });
         break;
-      }
       case "html":
-        for (const piece of htmlPieces((t as Tokens.HTML).text)) pieceInline(piece, out, state);
+        for (const piece of htmlPieces((t as Tokens.HTML).text)) pieceInline(piece, run, state);
         break;
       case "checkbox":
         break;
       default: {
         const g = t as Tokens.Generic;
-        if (g.tokens) for (const n of inlines(g.tokens, depth + 1, state)) add(out, n);
-        else if (typeof g.text === "string") add(out, { k: "text", text: shown(decodeEntities(g.text)) });
+        if (g.tokens) for (const n of inlines(g.tokens, depth + 1, state)) run.add(n);
+        else if (typeof g.text === "string") run.add({ k: "text", text: shown(decodeEntities(g.text)) });
       }
     }
   }
+  return run.nodes;
+}
+
+// --- Images, never loaded ------------------------------------------------------------------
+
+/** `s` compared as GitHub's bots write it: case and whitespace ignored. */
+function compact(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, "");
+}
+
+/** `s` without the punctuation at its ends ("(Ready)." reads "Ready"). */
+function bare(s: string): string {
+  return s.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
+/** What `node` shows as text (an image: nothing, it is not text beside another). */
+function visible(node: Inline): string {
+  switch (node.k) {
+    case "text":
+    case "code":
+      return node.text;
+    case "br":
+    case "image":
+      return "";
+    default:
+      return node.children.map(visible).join("");
+  }
+}
+
+/** Whether `node` is only space: no neighbour, the one beyond it is. */
+function blank(node: Inline): boolean {
+  return node.k === "text" && node.text.trim() === "";
+}
+
+/**
+ * Whether alt text `alt` only repeats what is right beside it in `nodes` at `i`: the next or
+ * previous node's text (space between skipped), all of it or, for plain text, its words at
+ * that side ("![Ready](…) Ready (Inspect)"); case and whitespace ignored.
+ */
+function repeatsNeighbour(nodes: Inline[], i: number, alt: string): boolean {
+  const want = compact(bare(alt));
+  if (want === "") return false;
+  const words = alt.trim().split(/\s+/).length;
+  for (const step of [1, -1]) {
+    let j = i + step;
+    while (nodes[j] && blank(nodes[j])) j += step;
+    const n = nodes[j];
+    if (!n || n.k === "br" || n.k === "image") continue;
+    const text = visible(n).trim();
+    if (compact(bare(text)) === want) return true;
+    if (n.k === "text") {
+      const all = text.split(/\s+/);
+      const side = step === 1 ? all.slice(0, words) : all.slice(-words);
+      if (compact(bare(side.join(" "))) === want) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A whole run of inline nodes as drawn, with the image rules applied at every level (see the
+ * module comment): an image repeating its neighbour's text goes; a link whose only content
+ * is an image takes its alt text as its words; an image without alt text goes from a link
+ * that has other content; a link or emphasis left with nothing goes too.
+ */
+function settle(nodes: Inline[]): Inline[] {
+  const out: Inline[] = [];
+  nodes.forEach((n, i) => {
+    if (n.k === "image") {
+      if (n.alt === "" || !repeatsNeighbour(nodes, i, n.alt)) out.push(n);
+    } else if (n.k === "link") {
+      const solid = n.children.filter((c) => !blank(c) && c.k !== "br");
+      let children: Inline[];
+      if (solid.length === 1 && solid[0].k === "image") {
+        const alt = solid[0].alt;
+        children = alt === "" ? [solid[0]] : [{ k: "text", text: alt }];
+      } else {
+        children = settle(n.children.filter((c) => c.k !== "image" || c.alt !== ""));
+      }
+      if (children.some((c) => !blank(c))) out.push({ ...n, children });
+    } else if (n.k === "strong" || n.k === "em" || n.k === "del") {
+      const children = settle(n.children);
+      if (children.length > 0) out.push({ ...n, children });
+    } else {
+      add(out, n);
+    }
+  });
   return out;
+}
+
+/** `nodes` settled, without the line breaks and blank text at their ends. */
+function finished(nodes: Inline[]): Inline[] {
+  return trimmed(settle(nodes));
 }
 
 /** Everything `token` says, as plain text (for what is nested too deep to draw). */
@@ -381,13 +509,13 @@ function blocks(tokens: readonly Token[], depth: number): Block[] {
   const open: Details[] = [];
   const here = () => open[open.length - 1]?.blocks ?? root;
   // Text of HTML blocks, waiting to be a paragraph.
-  let pending: Inline[] = [];
+  let pending = new Run();
   // Where a <summary>'s text goes, while one is open.
-  let summary: Inline[] | null = null;
+  let summary: Run | null = null;
   const state: InlineState = { skip: null };
   const flush = () => {
-    const children = trimmed(pending);
-    pending = [];
+    const children = finished(pending.nodes);
+    pending = new Run();
     if (children.length > 0) here().push({ k: "p", children });
   };
   for (const t of tokens) {
@@ -407,7 +535,7 @@ function blocks(tokens: readonly Token[], depth: number): Block[] {
       if (piece.t === "text") {
         if (summary) pieceInline(piece, summary, state);
         // Space between two tags' text is kept (one space); at a paragraph's start it is not.
-        else if (piece.text.trim() !== "" || pending.length > 0) pieceInline(piece, pending, state);
+        else if (piece.text.trim() !== "" || pending.nodes.length > 0) pieceInline(piece, pending, state);
         continue;
       }
       if (piece.name === "details") {
@@ -420,7 +548,12 @@ function blocks(tokens: readonly Token[], depth: number): Block[] {
           open.push(d);
         }
       } else if (piece.name === "summary") {
-        summary = piece.t === "open" && open.length > 0 ? open[open.length - 1].summary : null;
+        summary = null;
+        if (piece.t === "open" && open.length > 0) {
+          // The run's nodes are the summary's own list, settled when the disclosure is done.
+          summary = new Run();
+          summary.nodes = open[open.length - 1].summary;
+        }
       } else if (!summary && BREAKS.has(piece.name)) {
         flush();
       } else {
@@ -435,7 +568,7 @@ function blocks(tokens: readonly Token[], depth: number): Block[] {
 
 /** A summary's text without the space around it; "Details" when it has none. */
 function trimSummary(d: Details): void {
-  d.summary = trimmed(d.summary);
+  d.summary = finished(d.summary);
   if (d.summary.length === 0) d.summary = [{ k: "text", text: "Details" }];
   for (const b of d.blocks) if (b.k === "details") trimSummary(b);
 }
@@ -444,17 +577,17 @@ function trimSummary(d: Details): void {
 function block(t: Token, depth: number): Block[] {
   switch (t.type) {
     case "paragraph": {
-      const children = inlines((t as Tokens.Paragraph).tokens, depth);
+      const children = settle(inlines((t as Tokens.Paragraph).tokens, depth));
       return children.length > 0 ? [{ k: "p", children }] : [];
     }
     case "text": {
       const tok = t as Tokens.Text;
-      const children = tok.tokens ? inlines(tok.tokens, depth) : [{ k: "text" as const, text: shown(decodeEntities(tok.text)) }];
+      const children = tok.tokens ? settle(inlines(tok.tokens, depth)) : [{ k: "text" as const, text: shown(decodeEntities(tok.text)) }];
       return children.length > 0 ? [{ k: "plain", children }] : [];
     }
     case "heading": {
       const h = t as Tokens.Heading;
-      const children = inlines(h.tokens, depth);
+      const children = settle(inlines(h.tokens, depth));
       return children.length > 0 ? [{ k: "heading", level: h.depth, children }] : [];
     }
     case "code": {
@@ -489,8 +622,8 @@ function block(t: Token, depth: number): Block[] {
         {
           k: "table",
           align: tb.align,
-          head: tb.header.map((c) => inlines(c.tokens, depth)),
-          rows: tb.rows.map((r) => r.map((c) => inlines(c.tokens, depth))),
+          head: tb.header.map((c) => settle(inlines(c.tokens, depth))),
+          rows: tb.rows.map((r) => r.map((c) => settle(inlines(c.tokens, depth)))),
         },
       ];
     }

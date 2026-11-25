@@ -1,8 +1,11 @@
 // The commit panel against the real core: committing a subset of the changed files, Commit &
 // Push to a local bare remote, an empty commit, a failing hook (its output shown, the message kept), the list
-// cut at 5,000 files, the ways in (the shortcut, the toolbar's Commit button, the worktree menu
-// and its row, the graph's uncommitted row), another worktree made active in one click, the keyboard, what stops a
-// commit said under the buttons, and the worktree menu's launchers (recorded, never started).
+// cut at 5,000 files, the ways in (the shortcut, the worktree menu and its row, the graph's
+// uncommitted row), another worktree made active in one click, the keyboard, what stops a
+// commit said under the buttons, the worktree menu's launchers (recorded, never started), and
+// the side panel around it: its one toolbar button (with the count of files to commit), its
+// Commit and Worktrees tabs (the last one used remembered per repository), another worktree's
+// commit panel on the Commit tab, and the tab strip at the panel's least width.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
@@ -13,7 +16,7 @@ test.use({ viewport: { width: 1280, height: 800 } });
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }
 
@@ -29,6 +32,9 @@ const notice = (page: Page, text: string | RegExp) => page.locator("[data-notice
 const worktreeRow = (page: Page, folder: string) =>
   page.getByRole("grid", { name: "Worktrees" }).locator(`[role="row"][data-path$="${path.sep}${folder}"]`);
 const item = (page: Page, name: string | RegExp) => page.getByRole("menuitem", { name, exact: typeof name === "string" });
+/** The side panel's tab `id`. */
+const tab = (page: Page, id: "commit" | "worktrees") => page.getByTestId(`side-tab-${id}`);
+const list = (page: Page) => page.getByRole("grid", { name: "Worktrees" });
 
 const DEEP = "packages/payments-service/src/components/checkout/summary/LineItemPriceBreakdown.tsx";
 const ALL = [
@@ -205,6 +211,8 @@ test("back to a tab whose commit panel is open, the focus stays where it was", a
   await page.keyboard.press("ControlOrMeta+k");
   await expect(message(page)).toBeFocused();
   await open(page, gg.repoPath("small"));
+  // The other repository's side panel on its worktree list.
+  await tab(page, "worktrees").click();
   // Back with the keyboard (⌘1), from the graph of the other tab (⌘2 there and back).
   await page.keyboard.press("ControlOrMeta+1");
   await expect(panel(page)).toBeVisible();
@@ -287,9 +295,10 @@ test("the ways in: the menu, the row's changes, the uncommitted row; another wor
   const topic = path.join(path.dirname(repo), "commit.worktrees", "topic");
 
   // The worktree menu's Commit… on a worktree that is not active: its files, and the offer.
+  await tab(page, "worktrees").click();
   await worktreeRow(page, "topic").click({ button: "right" });
   await item(page, "Commit…").click();
-  await expect(page.getByTestId("side-detail")).toHaveText("topic");
+  await expect(page.getByTestId("commit-worktree")).toHaveText("topic");
   await expect(files(page).getByRole("option")).toHaveCount(1);
   await expect(page.getByTestId("commit-elsewhere")).toContainText("Commits run in the active worktree.");
   await expect(commitButton(page)).toHaveCount(0);
@@ -306,11 +315,11 @@ test("the ways in: the menu, the row's changes, the uncommitted row; another wor
   // Back to the list; the main worktree's row: its changes are a button to its commit panel.
   await expect(page.getByRole("grid", { name: "Worktrees" })).toBeVisible();
   await worktreeRow(page, "commit").locator(".changes").click();
-  await expect(page.getByTestId("side-detail")).toHaveText("main");
+  await expect(page.getByTestId("commit-worktree")).toHaveText("main");
   await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
   // The draft survives going back and coming again.
   await message(page).fill("Half written");
-  await page.getByTestId("side-back").click();
+  await tab(page, "worktrees").click();
   await expect(panel(page)).toHaveCount(0);
   await worktreeRow(page, "commit").dblclick();
   await expect(page.getByTestId("active-worktree")).toContainText("main");
@@ -354,6 +363,7 @@ test("the worktree menu opens a worktree in the editor, a terminal and the file 
   const repo = gg.repoPath("commit");
   await open(page, repo);
   const topic = path.join(path.dirname(repo), "commit.worktrees", "topic");
+  await tab(page, "worktrees").click();
   for (const name of ["Open in editor", "Open in terminal", /^(Reveal in Finder|Show in File Explorer|Open containing folder)$/]) {
     await worktreeRow(page, "topic").click({ button: "right" });
     await item(page, name).click();
@@ -415,6 +425,7 @@ test("only the worktree shown commits, and only while it is active: elsewhere, a
     });
 
   // Shown but not active: Cmd+Enter in the message commits nothing, anywhere.
+  await tab(page, "worktrees").click();
   await worktreeRow(page, "topic").click({ button: "right" });
   await item(page, "Commit…").click();
   await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
@@ -462,6 +473,7 @@ test("a commit panel whose worktree is no longer listed is closed for good, not 
   const repo = gg.repoPath("commit");
   await open(page, repo);
   const topic = path.join(path.dirname(repo), "commit.worktrees", "topic");
+  await tab(page, "worktrees").click();
   await worktreeRow(page, "topic").click({ button: "right" });
   await item(page, "Commit…").click();
   await expect(panel(page)).toBeVisible();
@@ -607,103 +619,272 @@ test("looks: a disabled Commit & Push looks disabled; the old side of a rename k
   await expect(row.locator(".old")).toHaveAttribute("data-shown", "Totals.tsx");
 });
 
-test("the toolbar's Commit and Worktrees buttons are the side panel's two views, each pressed for its own", async ({ gg }) => {
+test("one toolbar button shows and hides the side panel, on the tab last used in the repository", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("commit"));
-  const commit = page.getByTestId("commit-toggle");
-  const worktrees = page.getByTestId("side-toggle");
+  const toggle = page.getByTestId("side-toggle");
   const side = page.locator('[data-region="side-panel"]');
-  const list = page.getByRole("grid", { name: "Worktrees" });
-  const pressed = async (c: boolean, w: boolean) => {
-    await expect(commit).toHaveAttribute("aria-pressed", String(c));
-    await expect(worktrees).toHaveAttribute("aria-pressed", String(w));
-  };
-  await expect(commit).toHaveAccessibleName("Commit");
-  await expect(commit).toBeEnabled();
+  await expect(toggle).toHaveAccessibleName("Side panel");
+  // The old pair is gone.
+  await expect(page.getByTestId("commit-toggle")).toHaveCount(0);
 
-  // The list shows: Worktrees is pressed.
-  await expect(list).toBeVisible();
-  await pressed(false, true);
-  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)\nUncommitted: 5 changed, 1 new$/);
-  await expect(worktrees).toHaveAttribute("title", /^Hide the worktrees \((⌘|Ctrl\+)B\)$/);
-
-  // Commit: the active worktree's commit panel, the focus in its message, as Cmd+K.
-  await commit.click();
+  // The first time in a repository: the Commit tab, the active worktree's commit panel.
+  await expect(side).toBeVisible();
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
   await expect(panel(page)).toBeVisible();
-  await expect(message(page)).toBeFocused();
-  await expect(page.getByTestId("side-detail")).toHaveText("main");
-  await pressed(true, false);
-  await expect(commit).toHaveAttribute("title", /^Hide the commit panel \((⌘|Ctrl\+)B\)$/);
-  await expect(worktrees).toHaveAttribute("title", "Show the worktrees");
+  await expect(page.getByTestId("commit-worktree")).toHaveCount(0);
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle).toHaveAttribute("title", /^Hide the side panel \((⌘|Ctrl\+)B\)\nUncommitted: 5 changed, 1 new$/);
 
-  // Worktrees from the commit panel: the list, the panel still shown, the focus in it (as Back).
-  await worktrees.click();
-  await expect(panel(page)).toHaveCount(0);
-  await expect(list).toBeFocused();
-  await pressed(false, true);
-  // Pressed again, it hides the panel.
-  await worktrees.click();
+  // Hidden and shown again: the same tab.
+  await toggle.click();
   await expect(side).toHaveCount(0);
-  await pressed(false, false);
-  await expect(worktrees).toHaveAttribute("title", /^Show the worktrees \((⌘|Ctrl\+)B\)$/);
-  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)/);
-
-  // Commit with the panel hidden shows it with the commit panel; pressed again, hides it.
-  await commit.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(toggle).toHaveAttribute("title", /^Show the side panel \((⌘|Ctrl\+)B\)\n/);
+  await toggle.click();
   await expect(panel(page)).toBeVisible();
-  await expect(message(page)).toBeFocused();
-  await pressed(true, false);
-  await commit.click();
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
+
+  // The Worktrees tab: the button and Cmd+B bring it back.
+  await tab(page, "worktrees").click();
+  await expect(list(page)).toBeVisible();
+  await toggle.click();
   await expect(side).toHaveCount(0);
-  await pressed(false, false);
-
-  // Cmd+B shows the panel as it was hidden: the commit panel.
-  await page.keyboard.press("ControlOrMeta+b");
-  await expect(panel(page)).toBeVisible();
-  await pressed(true, false);
+  await toggle.click();
+  await expect(list(page)).toBeVisible();
+  await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ControlOrMeta+b");
   await expect(side).toHaveCount(0);
-  // Worktrees always lands on the list (where Cmd+B would bring back the commit panel, it does
-  // not name the shortcut).
-  await expect(worktrees).toHaveAttribute("title", "Show the worktrees");
-  await worktrees.click();
-  await expect(list).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(list(page)).toBeVisible();
   await expect(panel(page)).toHaveCount(0);
-  await pressed(false, true);
-  // Shown again, the list does not take the focus once more.
+  // Shown again, the list does not take the focus.
   await page.waitForTimeout(200);
-  await expect(worktrees).toBeFocused();
+  await expect(list(page)).not.toBeFocused();
 
-  // So does the header's worktree count, shown while the panel is hidden.
-  await commit.click();
-  await expect(panel(page)).toBeVisible();
+  // Per repository: another one opens on the Commit tab, and this one keeps Worktrees.
+  await open(page, gg.repoPath("worktrees"));
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "commit", exact: true }).click();
+  await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
+  await expect(list(page)).toBeVisible();
+
+  // The header's worktree count, shown while the panel is hidden: the Worktrees tab, the focus in its list.
+  await tab(page, "commit").click();
   await page.keyboard.press("ControlOrMeta+b");
   await page.getByTestId("worktree-count").click();
-  await expect(list).toBeFocused();
-  await expect(panel(page)).toHaveCount(0);
-  await pressed(false, true);
+  await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
+  await expect(list(page)).toBeFocused();
 });
 
-test("the Commit button, from another worktree's commit panel, opens the active worktree's (as the shortcut does)", async ({ gg }) => {
+test("the side panel's tabs: Commit and Worktrees with their counts, switched by click and by the arrow keys", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("commit"));
-  await worktreeRow(page, "topic").click({ button: "right" });
-  await item(page, "Commit…").click();
-  await expect(page.getByTestId("side-detail")).toHaveText("topic");
-  const commit = page.getByTestId("commit-toggle");
-  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)/);
+  const strip = page.getByRole("tablist", { name: "Side panel" });
+  await expect(strip.getByRole("tab")).toHaveCount(2);
+  await expect(tab(page, "commit")).toHaveAccessibleName("Commit, 6 uncommitted files");
+  await expect(tab(page, "commit").locator(".count")).toHaveText("6");
+  await expect(tab(page, "worktrees")).toHaveAccessibleName("Worktrees, 2 worktrees");
+  await expect(tab(page, "worktrees").locator(".count")).toHaveText("2");
+  // The body is the selected tab's panel.
+  const body = page.locator("#side-tabpanel");
+  await expect(body).toHaveAttribute("aria-labelledby", "side-tab-commit");
+  await expect(tab(page, "commit")).toHaveAttribute("aria-controls", (await body.getAttribute("id"))!);
+  // Only the selected tab is in the Tab order; the add button belongs to the Worktrees tab.
+  await expect(tab(page, "commit")).toHaveAttribute("tabindex", "0");
+  await expect(tab(page, "worktrees")).toHaveAttribute("tabindex", "-1");
+  await expect(page.getByRole("button", { name: "Add worktree" })).toHaveCount(0);
 
-  await commit.click();
-  await expect(page.getByTestId("side-detail")).toHaveText("main");
-  await expect(message(page)).toBeFocused();
-  await expect(commit).toHaveAttribute("title", /^Hide the commit panel/);
-  await commit.click();
-  await expect(page.locator('[data-region="side-panel"]')).toHaveCount(0);
+  // By click.
+  await tab(page, "worktrees").click();
+  await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "false");
+  await expect(list(page)).toBeVisible();
+  await expect(panel(page)).toHaveCount(0);
+  await expect(body).toHaveAttribute("aria-labelledby", "side-tab-worktrees");
+  await expect(page.getByRole("button", { name: "Add worktree" })).toBeVisible();
+  await tab(page, "commit").click();
+  await expect(panel(page)).toBeVisible();
+  // Shown again by its tab, the commit panel leaves the focus where it is.
+  await expect(message(page)).not.toBeFocused();
+
+  // By the arrow keys (round the ends), Home and End: the focus moves with the selection,
+  // drawn as a ring.
+  await tab(page, "commit").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(tab(page, "worktrees")).toBeFocused();
+  await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
+  await expect(list(page)).toBeVisible();
+  expect(await tab(page, "worktrees").evaluate((el) => getComputedStyle(el).outlineStyle)).toBe("solid");
+  await page.keyboard.press("ArrowRight");
+  await expect(tab(page, "commit")).toBeFocused();
+  await expect(panel(page)).toBeVisible();
+  await page.keyboard.press("ArrowLeft");
+  await expect(tab(page, "worktrees")).toBeFocused();
+  await expect(list(page)).toBeVisible();
+  await page.keyboard.press("Home");
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("End");
+  await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
+  await expect(tab(page, "worktrees")).toBeFocused();
+  // Tab goes on from the selected tab, past the other.
+  await page.keyboard.press("Shift+Tab");
+  await expect(tab(page, "commit")).not.toBeFocused();
 });
 
-test("the Commit button counts the active worktree's uncommitted files, without moving the toolbar; the count goes with the commit", async ({ gg }) => {
+test("Cmd+K: the active worktree's Commit tab, from anywhere, its message focused", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("commit"));
+  const side = page.locator('[data-region="side-panel"]');
+  // From the Worktrees tab.
+  await tab(page, "worktrees").click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
+  await expect(message(page)).toBeFocused();
+  await expect(page.getByTestId("commit-worktree")).toHaveCount(0);
+  // Pressed again with it shown, it stays (the focus in the message).
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(side).toBeVisible();
+  await expect(message(page)).toBeFocused();
+  // The panel hidden on the Worktrees tab: shown, on the Commit tab.
+  await tab(page, "worktrees").click();
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(side).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
+  await expect(message(page)).toBeFocused();
+  // From another worktree's commit panel: the active one's.
+  await tab(page, "worktrees").click();
+  await worktreeRow(page, "topic").click({ button: "right" });
+  await item(page, "Commit…").click();
+  await expect(page.getByTestId("commit-worktree")).toHaveText("topic");
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByTestId("commit-worktree")).toHaveCount(0);
+  await expect(files(page).getByRole("option")).toHaveCount(6);
+  await expect(message(page)).toBeFocused();
+  // And Cmd+B, from there, remembers the Commit tab.
+  await page.keyboard.press("ControlOrMeta+b");
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(panel(page)).toBeVisible();
+});
+
+test("another worktree's commit panel shows on the Commit tab, named, with a way back to the active worktree's", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await open(page, gg.repoPath("commit"));
+  await tab(page, "worktrees").click();
+  // Its row's changes: the Commit tab, selected, on that worktree.
+  await worktreeRow(page, "topic").locator(".changes").click();
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
+  const line = page.getByTestId("commit-worktree");
+  await expect(line).toHaveText("topic");
+  await expect(line.locator(".mid")).toHaveAttribute("title", /commit\.worktrees\/topic$/);
+  await expect(files(page).getByRole("option")).toHaveCount(1);
+  await expect(page.getByTestId("commit-elsewhere")).toBeVisible();
+  const back = page.getByTestId("commit-worktree-return");
+  await expect(back).toHaveAccessibleName("Back to the active worktree's commit panel");
+  await expect(back).toHaveAttribute("title", "Back to the active worktree's commit panel (main)");
+  // The line sits under the tabs, inside the panel, on one line.
+  const side = (await page.locator('[data-region="side-panel"]').boundingBox())!;
+  const at = (await line.boundingBox())!;
+  const head = (await page.locator('[data-region="side-panel"] header').boundingBox())!;
+  expect(at.y).toBeGreaterThanOrEqual(head.y + head.height - 1);
+  expect(at.height).toBeLessThanOrEqual(31);
+  expect(at.x + at.width).toBeLessThanOrEqual(side.x + side.width + 0.5);
+
+  // Back: the active worktree's commit panel, the focus in its message.
+  await back.click();
+  await expect(line).toHaveCount(0);
+  await expect(page.getByTestId("commit-elsewhere")).toHaveCount(0);
+  await expect(files(page).getByRole("option")).toHaveCount(6);
+  await expect(message(page)).toBeFocused();
+  await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
+
+  // The Worktrees tab is the other way back, as the old Back button: the list, that worktree
+  // selected in it; the Commit tab then holds the active worktree's again.
+  await tab(page, "worktrees").click();
+  await worktreeRow(page, "topic").click({ button: "right" });
+  await item(page, "Commit…").click();
+  await expect(line).toHaveText("topic");
+  await tab(page, "worktrees").click();
+  await expect(panel(page)).toHaveCount(0);
+  await expect(worktreeRow(page, "topic")).toHaveAttribute("aria-selected", "true");
+  await tab(page, "commit").click();
+  await expect(line).toHaveCount(0);
+  await expect(files(page).getByRole("option")).toHaveCount(6);
+});
+
+test("at the panel's least width, both tabs fit inside it and its header stays one line", async ({ gg }) => {
+  const { page } = gg;
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.goto("/");
+  const repo = gg.repoPath("worktrees");
+  // Over 99 files to commit, and eight worktrees: the widest counts.
+  for (let i = 0; i < 120; i++) writeFileSync(path.join(repo, `new-${i}.txt`), "new\n");
+  await open(page, repo);
+  const side = page.locator('[data-region="side-panel"]');
+  await expect.poll(async () => (await side.boundingBox())!.width).toBe(240);
+  await expect(tab(page, "commit")).toHaveAccessibleName(/^Commit, 12\d uncommitted files$/);
+
+  const fits = async () => {
+    const s = (await side.boundingBox())!;
+    const head = side.locator("header");
+    const h = (await head.boundingBox())!;
+    expect(h.height).toBeCloseTo(28, 0);
+    // Nothing overflows the header.
+    expect(await head.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+    for (const t of ["commit", "worktrees"] as const) {
+      const b = (await tab(page, t).boundingBox())!;
+      expect(b.x).toBeGreaterThanOrEqual(s.x);
+      expect(b.x + b.width).toBeLessThanOrEqual(s.x + s.width);
+      // Its label whole, on the header's one line.
+      const label = tab(page, t).locator(".label");
+      const l = (await label.boundingBox())!;
+      expect(l.y).toBeGreaterThanOrEqual(h.y);
+      expect(l.y + l.height).toBeLessThanOrEqual(h.y + h.height);
+      expect(l.x + l.width).toBeLessThanOrEqual(b.x + b.width);
+      expect(await label.evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5)).toBe(true);
+    }
+    // The buttons, Hide last, inside the panel and on the same line.
+    const hide = (await side.getByRole("button", { name: "Hide the side panel" }).boundingBox())!;
+    expect(hide.x + hide.width).toBeLessThanOrEqual(s.x + s.width);
+    expect(hide.y).toBeGreaterThanOrEqual(h.y);
+    expect(hide.y + hide.height).toBeLessThanOrEqual(h.y + h.height);
+    const commitTab = (await tab(page, "commit").boundingBox())!;
+    const worktreesTab = (await tab(page, "worktrees").boundingBox())!;
+    expect(worktreesTab.x).toBeGreaterThanOrEqual(commitTab.x + commitTab.width - 0.5);
+    return hide;
+  };
+  // The Commit tab, then the Worktrees tab with its own two buttons.
+  await fits();
+  await tab(page, "worktrees").click();
+  await expect(list(page)).toBeVisible();
+  const hide = await fits();
+  const add = (await side.getByRole("button", { name: "Add worktree" }).boundingBox())!;
+  const tabs = (await tab(page, "worktrees").boundingBox())!;
+  expect(add.x).toBeGreaterThanOrEqual(tabs.x + tabs.width);
+  expect(add.x + add.width).toBeLessThanOrEqual(hide.x);
+
+  // At its default width the counts show.
+  await page.setViewportSize({ width: 1280, height: 700 });
+  await expect.poll(async () => (await side.boundingBox())!.width).toBe(300);
+  await fits();
+  for (const t of ["commit", "worktrees"] as const) {
+    const count = tab(page, t).locator(".count");
+    const c = (await count.boundingBox())!;
+    const b = (await tab(page, t).boundingBox())!;
+    expect(c.y).toBeGreaterThanOrEqual(b.y);
+    expect(c.y + c.height).toBeLessThanOrEqual(b.y + b.height);
+  }
+  await expect(tab(page, "commit").locator(".count")).toHaveText("99+");
+  await expect(tab(page, "worktrees").locator(".count")).toHaveText("8");
+});
+
+test("the side panel button counts the active worktree's uncommitted files, without moving the toolbar; the count goes with the commit", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   const repo = gg.repoPath("small");
@@ -711,10 +892,11 @@ test("the Commit button counts the active worktree's uncommitted files, without 
   // The app commits here: the repository needs an identity (a machine without one refuses).
   gg.git("small", "config", "user.name", "Ada Lovelace");
   gg.git("small", "config", "user.email", "ada@example.com");
-  const commit = page.getByTestId("commit-toggle");
-  const badge = commit.getByTestId("commit-badge");
+  const toggle = page.getByTestId("side-toggle");
+  const badge = toggle.getByTestId("commit-badge");
   await expect(badge).toHaveCount(0);
-  const before = (await page.getByTestId("side-toggle").boundingBox())!;
+  const before = (await toggle.boundingBox())!;
+  const log = (await page.getByTestId("log-toggle").boundingBox())!;
 
   writeFileSync(path.join(repo, "src", "part1.txt"), "changed\n");
   writeFileSync(path.join(repo, "notes.txt"), "new\n");
@@ -724,20 +906,23 @@ test("the Commit button counts the active worktree's uncommitted files, without 
   });
   await expect(badge).toHaveText("2");
   await expect(badge).toHaveAttribute("aria-hidden", "true");
-  await expect(commit).toHaveAttribute("title", /\nUncommitted: 1 changed, 1 new$/);
-  expect(await page.getByTestId("side-toggle").boundingBox()).toEqual(before);
-  // It stays inside the header.
+  await expect(toggle).toHaveAttribute("title", /\nUncommitted: 1 changed, 1 new$/);
+  await expect(tab(page, "commit").locator(".count")).toHaveText("2");
+  expect(await toggle.boundingBox()).toEqual(before);
+  expect(await page.getByTestId("log-toggle").boundingBox()).toEqual(log);
+  // It stays inside the header, over the button's corner.
   const head = (await page.locator(".repo-head").boundingBox())!;
   const b = (await badge.boundingBox())!;
   expect(b.y).toBeGreaterThanOrEqual(head.y);
-  expect(b.x + b.width).toBeLessThanOrEqual(before.x + 4);
+  expect(b.x + b.width).toBeLessThanOrEqual(head.x + head.width);
+  expect(b.x).toBeGreaterThan(before.x);
 
-  await commit.click();
+  await page.keyboard.press("ControlOrMeta+k");
   await expect(message(page)).toBeFocused();
-  await expect(badge).toHaveText("2"); // still, while the commit panel shows
   await message(page).fill("Both");
   await commitButton(page).click();
   await expect(notice(page, /Committed 2 files to main/)).toBeVisible();
   await expect(badge).toHaveCount(0);
-  await expect(commit).toHaveAttribute("title", /^Commit \((⌘|Ctrl\+)K\)$/);
+  await expect(tab(page, "commit").locator(".count")).toHaveCount(0);
+  await expect(toggle).toHaveAttribute("title", /^(Show|Hide) the side panel \((⌘|Ctrl\+)B\)$/);
 });

@@ -7,7 +7,7 @@ import { BIG_COMMITS, bigSubject, closeButton, expect, makeRepo, test, viewOptio
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
 }
 
 const grid = (page: Page) => page.getByRole("grid", { name: "Commits" });

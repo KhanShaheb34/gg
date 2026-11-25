@@ -1,13 +1,13 @@
 <!--
   The graph's toolbar, in the repository header: which branches the graph shows, the View
-  button (remote branches, tags and stashes), then the running operation, search, fetch and
-  refresh. Every control changes at once when used; the work it starts shows as it runs
-  (spinning icons, a loading line along the header's bottom edge). An operation shows once
-  it has run for BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued
-  behind it show as a count. Once it has run for a second, git's latest progress line (or the
-  step it is at) shows beside its title, cut in the middle. One that has run for
-  STOP_AFTER_MS offers Stop: a hook that hangs, or git waiting on something that never
-  comes, must not hold the repository.
+  button (remote branches, tags and stashes), then the running operation, search, fetch,
+  refresh, the command log and the side panel (with a count of the files to commit). Every
+  control changes at once when used; the work it starts shows as it runs (spinning icons, a
+  loading line along the header's bottom edge). An operation shows once it has run for
+  BUSY_DELAY_MS, so one that ends at once does not flicker; requests queued behind it show as
+  a count. Once it has run for a second, git's latest progress line (or the step it is at)
+  shows beside its title, cut in the middle. One that has run for STOP_AFTER_MS offers Stop: a
+  hook that hangs, or git waiting on something that never comes, must not hold the repository.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
@@ -18,7 +18,7 @@
   import { logPrefs, setLogOpen } from "../state/commandLog.svelte";
   import { ops } from "../state/ops.svelte";
   import { clearProgress, progressDue, progressLine, PROGRESS_AFTER_MS, watchOpProgress } from "../state/opProgress.svelte";
-  import { commitShownForActive, NARROW_W, panelState, sidePanel, sideShows, toggleCommit, toggleWorktrees } from "../state/worktrees.svelte";
+  import { NARROW_W, panelShown, setPanelShown, sidePanel } from "../state/worktrees.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
@@ -33,28 +33,17 @@
   const REFRESH_KEYS = mac ? "⌘R" : "Ctrl+R";
   const LOG_KEYS = mac ? "⌘⇧L" : "Ctrl+Shift+L";
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
-  const COMMIT_KEYS = mac ? "⌘K" : "Ctrl+K";
-  /** What the side panel shows: Commit and Worktrees are its two views, each pressed for its own. */
-  const shows = $derived(sideShows(view));
+  const shown = $derived(panelShown(view.repoId));
   /** The active worktree's uncommitted files, as its row in the worktree list counts them. */
   const changes = $derived(view.snapshot.status.changed + view.snapshot.status.untracked);
-  const commitTitle = $derived.by(() => {
-    if (commitShownForActive(view)) return `Hide the commit panel (${PANEL_KEYS})`;
+  const panelTitle = $derived.by(() => {
     const s = view.snapshot.status;
     const parts = [];
     if (s.changed > 0) parts.push(`${s.changed} changed`);
     if (s.untracked > 0) parts.push(`${s.untracked} new`);
     if (s.conflicted > 0) parts.push(`${s.conflicted} with conflicts`);
-    return `Commit (${COMMIT_KEYS})` + (parts.length > 0 ? `\nUncommitted: ${parts.join(", ")}` : "");
+    return `${shown ? "Hide" : "Show"} the side panel (${PANEL_KEYS})` + (parts.length > 0 ? `\nUncommitted: ${parts.join(", ")}` : "");
   });
-  // ⌘B shows and hides the side panel as it was: named here only where it does what the button does.
-  const worktreesTitle = $derived(
-    shows === "worktrees"
-      ? `Hide the worktrees (${PANEL_KEYS})`
-      : shows === "hidden" && panelState(view.repoId).commitFor === null
-        ? `Show the worktrees (${PANEL_KEYS})`
-        : "Show the worktrees",
-  );
   /** A narrow window: View shows as its icon (its name in its tooltip), so nothing is cut off. */
   const compact = $derived(sidePanel.windowW < NARROW_W);
 
@@ -265,44 +254,25 @@
     </svg>
   </button>
 
+  <!-- The side panel, on the tab last used in this repository (as ⌘B shows it). -->
   <button
     class="icon-btn tool"
-    aria-label="Commit"
-    aria-pressed={shows === "commit"}
-    title={commitTitle}
-    data-testid="commit-toggle"
-    onclick={() => toggleCommit(view)}
+    aria-label="Side panel"
+    aria-pressed={shown}
+    title={panelTitle}
+    data-testid="side-toggle"
+    onclick={() => setPanelShown(view.repoId)}
   >
-    <!-- A commit: a circle on a line. -->
+    <!-- A window with a column on its right: the side panel. -->
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.45" />
-      <path d="M1.6 8h3.8M10.6 8h3.8" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" />
+      <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" />
+      <path d="M9.9 3.4v9.2" stroke="currentColor" stroke-width="1.4" />
+      <path d="M11.6 6h.7M11.6 8h.7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
     </svg>
     {#if changes > 0}
       <!-- How many files there are to commit; over the button's corner, so nothing moves when it comes. -->
       <span class="badge" aria-hidden="true" data-testid="commit-badge">{changes > 99 ? "99+" : changes}</span>
     {/if}
-  </button>
-
-  <button
-    class="icon-btn tool"
-    aria-label="Worktrees"
-    aria-pressed={shows === "worktrees"}
-    title={worktreesTitle}
-    data-testid="side-toggle"
-    onclick={() => toggleWorktrees(view)}
-  >
-    <!-- Two folders, one behind the other: the repository's worktrees. -->
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        d="M2 6.3c0-.6.5-1.1 1.1-1.1h2.2l1.2 1.3h4.4c.6 0 1.1.5 1.1 1.1v4.9c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1zM4.6 5V3.5c0-.6.5-1.1 1.1-1.1h2.1l1.2 1.3h3.9c.6 0 1.1.5 1.1 1.1v4.7c0 .6-.5 1.1-1.1 1.1h-.7"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.4"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    </svg>
   </button>
 
   {#if view.snapshot.loading}

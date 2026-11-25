@@ -23,8 +23,11 @@ const park = (page: Page) => page.mouse.move(1000, 20);
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toBeVisible();
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toBeVisible();
 }
+
+/** The side panel's Worktrees tab (the panel shows on its Commit tab at first). */
+const showWorktrees = (page: Page) => page.getByTestId("side-tab-worktrees").click();
 
 for (const theme of ["light", "dark"] as const) {
   test(`welcome and open tab, ${theme}`, async ({ gg }) => {
@@ -922,6 +925,7 @@ for (const [prefix, width, height] of SIZES)
       await open(page, repo);
       const grid = page.getByRole("grid", { name: "Commits" });
       await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+      await showWorktrees(page);
       const list = page.getByRole("grid", { name: "Worktrees" });
       const row = (folder: string) => list.locator(`[role="row"][data-path$="/${folder}"]`);
       const shot = async (name: string) => {
@@ -1023,6 +1027,7 @@ for (const theme of ["light", "dark"] as const) {
       parent,
     );
     await open(page, solo);
+    await showWorktrees(page);
     await expect(page.getByTestId("worktrees-intro")).toBeVisible();
     await park(page);
     await page.waitForTimeout(200);
@@ -1046,6 +1051,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.evaluate(() => localStorage.setItem("gg.side.v1", JSON.stringify({ width: 240 })));
     await page.reload();
     await open(page, many);
+    await showWorktrees(page);
     await expect(page.getByRole("grid", { name: "Worktrees" }).getByRole("row")).toHaveCount(21);
     await park(page);
     await page.waitForTimeout(1000);
@@ -1053,6 +1059,61 @@ for (const theme of ["light", "dark"] as const) {
     await page.evaluate(() => localStorage.removeItem("gg.side.v1"));
   });
 }
+
+// The side panel: its one toolbar button with the count of files to commit, its Commit and
+// Worktrees tabs (with their counts), the tab strip at the panel's least width, another
+// worktree's commit panel (the line naming it), and a tab focused from the keyboard.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+    test(`side panel tabs, ${width}x${height}, ${theme}`, async ({ gg }) => {
+      const { page } = gg;
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.goto("/");
+      await open(page, gg.repoPath("commit"));
+      const shot = async (name: string, clip?: { x: number; y: number; width: number; height: number }) => {
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`), clip });
+      };
+      const side = page.locator('[data-region="side-panel"]');
+      await expect(page.getByTestId("commit-panel").getByRole("option")).toHaveCount(6);
+      await park(page);
+      await shot("side-commit");
+      // The toolbar's right end and the panel's header, closer.
+      const head = (await page.locator(".repo-head").boundingBox())!;
+      const s = (await side.boundingBox())!;
+      await shot("side-toolbar", { x: Math.max(0, s.x - 260), y: head.y, width: width - Math.max(0, s.x - 260), height: head.height + 60 });
+
+      await page.getByTestId("side-tab-worktrees").click();
+      await park(page);
+      await shot("side-worktrees");
+
+      // Another worktree's commit panel, on the Commit tab.
+      await page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"][data-path$="/topic"] .changes').click();
+      await expect(page.getByTestId("commit-worktree")).toBeVisible();
+      await park(page);
+      await shot("side-commit-elsewhere");
+
+      // A tab focused from the keyboard, the panel hidden then shown on it.
+      await page.getByTestId("side-tab-commit").focus();
+      await page.keyboard.press("ArrowRight");
+      await shot("side-tab-focus", { x: s.x, y: s.y, width: s.width, height: 80 });
+
+      // The least width: 240 px, many files to commit and many worktrees.
+      for (let i = 0; i < 120; i++) writeFileSync(path.join(gg.repoPath("commit"), `new-${i}.txt`), "new\n");
+      await page.evaluate(() => localStorage.setItem("gg.side.v1", JSON.stringify({ width: 240 })));
+      await page.reload();
+      await open(page, gg.repoPath("commit"));
+      await expect(side).toBeVisible();
+      await expect(page.getByTestId("side-tab-commit")).toHaveAccessibleName(/12\d uncommitted files/);
+      await park(page);
+      await shot("side-least-commit");
+      await page.getByTestId("side-tab-worktrees").click();
+      await park(page);
+      await shot("side-least-worktrees");
+      await page.evaluate(() => localStorage.removeItem("gg.side.v1"));
+    });
+  }
 
 // The commit panel: the files of the active worktree with a message; some unticked with what
 // stops a commit said; another worktree offered to be made active; a merge with a conflict
@@ -1098,8 +1159,8 @@ for (const [prefix, width, height] of SIZES)
       await shot("commit-hook-failed");
       await failed.getByRole("button", { name: /Dismiss/ }).click();
 
-      // Another worktree: its files, and the offer to make it active.
-      await page.getByTestId("side-back").click();
+      // Another worktree: its files, the line naming it, and the offer to make it active.
+      await showWorktrees(page);
       const topic = page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"][data-path$="/topic"]');
       await topic.click({ button: "right" });
       await page.getByRole("menuitem", { name: "Commit…" }).click();
@@ -1114,6 +1175,7 @@ for (const [prefix, width, height] of SIZES)
       await page.emulateMedia({ colorScheme: theme });
       await page.goto("/");
       await open(page, gg.repoPath("worktrees"));
+      await showWorktrees(page);
       const hotfix = page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"][data-path$="/hotfix"]');
       await hotfix.dblclick();
       await expect(page.getByTestId("active-worktree")).toContainText("hotfix");
@@ -1180,7 +1242,7 @@ for (const [prefix, width, height] of SIZES)
         await page.waitForTimeout(250);
         await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
       };
-      if (width < 1000) await page.getByRole("button", { name: /Worktrees/ }).first().click();
+      if (width < 1000) await page.getByTestId("side-toggle").click();
       await park(page);
       await shot("prs-markers");
 

@@ -16,7 +16,7 @@ const SEARCH = "feature/search-indexing-across-every-workspace-package";
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }
 
@@ -75,6 +75,7 @@ test("open pull requests are marked on their branches and worktrees; a marker op
   expect(after).toBe("12");
 
   // The worktree on feature/login shows it too, and says so to assistive technology.
+  await page.getByTestId("side-tab-worktrees").click();
   const wt = worktrees(page).locator('[role="row"][data-path$="login"]');
   await expect(wt.locator("button.pr-chip")).toHaveText("#12");
   await expect(wt).toHaveAttribute("aria-label", /pull request #12/);

@@ -41,8 +41,8 @@
   import {
     activateWorktree,
     addWorktree,
-    closeCommit,
-    committingIn,
+    commitPath,
+    holdCommit,
     listedWorktrees,
     docked,
     openCommit,
@@ -50,7 +50,7 @@
     openPanelMenu,
     panelShown,
     setPanelShown,
-    showWorktreeList,
+    showSideTab,
     sidePanel,
   } from "./lib/state/worktrees.svelte";
   import { trackWindowFocus } from "./lib/windowFocus";
@@ -60,15 +60,22 @@
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
   const PICKER_KEYS = mac ? "⌘P" : "Ctrl+P";
 
-  // A commit panel whose worktree is no longer listed is closed for good: a worktree made
-  // again at that path later is another one, and does not bring the panel back.
+  // A commit panel whose worktree is no longer listed is closed for good (back to the worktree
+  // list): a worktree made again at that path later is another one, and does not bring the
+  // panel back.
   $effect(() => {
     if (!active) return;
     const panel = panelState(active.repoId);
     const listed = repoView(active.repoId).snapshot.worktrees;
     if (panel.commitFor !== null && listed.length > 0 && !listed.some((w) => w.path === panel.commitFor)) {
       panel.commitFor = null;
+      panel.tab = "worktrees";
     }
+  });
+
+  // The Commit tab, shown, holds the worktree it shows (see holdCommit).
+  $effect(() => {
+    if (active) holdCommit(repoView(active.repoId));
   });
 
   /** The active tab's active worktree, as its snapshot has it. */
@@ -121,9 +128,9 @@
     }
   }
 
-  /** Shows the side panel's worktree list with the focus in it (the header's worktree count). */
+  /** Shows the side panel's Worktrees tab with the focus in its list (the header's worktree count). */
   function showWorktrees() {
-    if (active) showWorktreeList(repoView(active.repoId), true);
+    if (active) showSideTab(repoView(active.repoId), "worktrees", true);
   }
 
   /** Files are being dragged over the window (app only). */
@@ -386,14 +393,27 @@
             </div>
             {#if panelShown(active.repoId)}
               {@const view = repoView(active.repoId)}
-              <!-- The commit panel of a worktree still listed; else the worktree list. -->
-              {@const committing = committingIn(view)}
+              {@const panel = panelState(active.repoId)}
+              {@const status = view.snapshot.status}
+              {@const changes = status.changed + status.untracked}
+              {@const worktrees = view.snapshot.worktrees.length}
               <SidePanel
-                title={committing ? "Commit" : "Worktrees"}
-                count={committing === null && view.snapshot.worktrees.length > 1 ? String(view.snapshot.worktrees.length) : null}
-                detail={committing ? (committing.branch ?? `${shortHash(committing.head ?? "")} (detached)`) : null}
-                detailTitle={committing ? shortenPath(committing.path, app.homeDir) : undefined}
-                onback={committing ? () => closeCommit(active.repoId) : undefined}
+                tabs={[
+                  {
+                    id: "commit",
+                    label: "Commit",
+                    count: changes > 0 ? (changes > 99 ? "99+" : String(changes)) : null,
+                    countLabel: `${changes} uncommitted file${changes === 1 ? "" : "s"}`,
+                  },
+                  {
+                    id: "worktrees",
+                    label: "Worktrees",
+                    count: worktrees > 1 ? String(worktrees) : null,
+                    countLabel: `${worktrees} worktrees`,
+                  },
+                ]}
+                tab={panel.tab}
+                onselect={(tab) => showSideTab(view, tab)}
                 overlay={!docked()}
                 top={bannerH}
                 onhide={() => {
@@ -402,7 +422,7 @@
                 }}
               >
                 {#snippet actions()}
-                  {#if !committing}
+                  {#if panel.tab === "worktrees"}
                   <button
                     class="icon-btn small"
                     aria-label="Add worktree"
@@ -431,10 +451,13 @@
                   </button>
                   {/if}
                 {/snippet}
-                {#if committing}
-                  {#key committing.path}
-                    <CommitPanel {view} path={committing.path} />
-                  {/key}
+                {#if panel.tab === "commit"}
+                  {@const path = commitPath(view)}
+                  {#if path}
+                    {#key path}
+                      <CommitPanel {view} {path} />
+                    {/key}
+                  {/if}
                 {:else}
                   <WorktreePanel {view} />
                 {/if}

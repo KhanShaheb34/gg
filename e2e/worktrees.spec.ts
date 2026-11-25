@@ -10,11 +10,13 @@ import { expect, test } from "./fixtures";
 
 test.use({ viewport: { width: 1280, height: 800 } });
 
-async function open(page: Page, dir: string) {
+/** Opens `dir`; `list`: on the side panel's Worktrees tab (the panel shown, docked). */
+async function open(page: Page, dir: string, list = true) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
+  if (list) await page.getByTestId("side-tab-worktrees").click();
 }
 
 const grid = (page: Page) => page.getByRole("grid", { name: "Commits" });
@@ -339,12 +341,22 @@ test("the panel is shown and hidden with Cmd+B, remembered per repository, and l
   await page.keyboard.press("ControlOrMeta+b");
   await expect(panel).toHaveCount(0);
   await expect(page.getByTestId("side-toggle")).toHaveAttribute("aria-pressed", "false");
-  // Remembered for this repository.
+  // Remembered for this repository (once the core has it: a reload would drop the request).
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { api } = await import("/src/lib/ipc.ts");
+        const { app } = await import("/src/lib/state/app.svelte.ts");
+        return (await api.getRepoPrefs(app.activeRepoId!)).sidePanel;
+      }),
+    )
+    .toBe(false);
   await page.reload();
-  await open(page, repo);
+  await open(page, repo, false);
   await expect(panel).toHaveCount(0);
   await page.getByTestId("side-toggle").click();
   await expect(panel).toBeVisible();
+  await page.getByTestId("side-tab-worktrees").click();
 
   // Resized by its edge, within its limits; the width is kept.
   const edge = panel.getByRole("separator", { name: "Resize the side panel" });
@@ -386,7 +398,7 @@ test("over the graph, the panel starts below the conflict banner, whose buttons 
   await page.setViewportSize({ width: 820, height: 560 });
   await page.goto("/");
   const repo = gg.repoPath("worktrees");
-  await open(page, repo);
+  await open(page, repo, false);
   // A merge stopped in the main worktree: the banner shows.
   gg.git("worktrees", "checkout", "-q", "-b", "clash");
   writeFileSync(path.join(repo, "README.md"), "ours\n");

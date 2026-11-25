@@ -12,7 +12,7 @@ test.use({ viewport: { width: 1280, height: 800 } });
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }
 
@@ -165,6 +165,7 @@ test("the keyboard shortcuts sheet lists every group, opens with ? but not while
   await page.keyboard.press("Escape");
 
   // ⌘⌥2 (Ctrl+Shift+2 elsewhere): the second worktree as the panel lists it.
+  await page.getByTestId("side-tab-worktrees").click();
   const second = page.getByRole("grid", { name: "Worktrees" }).locator('[role="row"]').nth(1);
   const target = await second.getAttribute("data-path");
   await grid(page).focus();

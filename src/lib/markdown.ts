@@ -13,8 +13,9 @@
 //   - images (Markdown or <img>): never loaded (see `settle`): nothing when the alt text
 //     only repeats the text beside it (a status badge before the same word); a link whose
 //     only content is an image is that link with the alt text as its words (a bot's
-//     button); any other image is its alt text, muted; one without alt text is nothing in a
-//     link that has other content, else a muted "image";
+//     button); any other image is its alt text, muted; one without alt text is nothing
+//     (a decorative icon), unless it is all a link holds: then the link's word is a muted
+//     "image";
 //   - HTML: comments dropped with what is in them; <details><summary> a closed disclosure;
 //     <br> a line break; <a href> a link as above; every other tag dropped, its text kept
 //     (script and style dropped with what is in them); entities decoded as text;
@@ -469,14 +470,14 @@ function selfClosing(attrs: string): boolean {
 /**
  * A whole run of inline nodes as drawn, with the image rules applied at every level (see the
  * module comment): an image repeating its neighbour's text goes; a link whose only content
- * is an image takes its alt text as its words; an image without alt text goes from a link
- * that has other content; a link or emphasis left with nothing goes too.
+ * is an image takes its alt text as its words; an image without alt text goes, unless it is all a
+ * link holds; a link or emphasis left with nothing goes too.
  */
 function settle(nodes: Inline[]): Inline[] {
   const out: Inline[] = [];
   nodes.forEach((n, i) => {
     if (n.k === "image") {
-      if (n.alt === "" || !repeatsNeighbour(nodes, i, n.alt)) out.push(n);
+      if (n.alt !== "" && !repeatsNeighbour(nodes, i, n.alt)) out.push(n);
     } else if (n.k === "link") {
       const solid = n.children.filter((c) => !blank(c) && c.k !== "br");
       let children: Inline[];

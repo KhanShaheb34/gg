@@ -273,17 +273,17 @@ describe("images, never loaded, drawn by what they are next to", () => {
     ]);
   });
 
-  it("an image without alt text is nothing in a link with other content, else a muted “image”", () => {
+  it("an image without alt text is nothing, unless it is all a link holds: then a muted “image”", () => {
     expect(nodes("[![](https://x/i.svg) Home](https://x/home)")).toEqual([{ k: "link", url: "https://x/home", children: [{ k: "text", text: " Home" }] }]);
     expect(nodes('<a href="https://x/home"><img src="https://x/i.svg" alt=""> Home</a>')).toEqual([{ k: "link", url: "https://x/home", children: [{ k: "text", text: " Home" }] }]);
-    expect(first("![](https://x/y.png)")).toEqual({ k: "p", children: [{ k: "image", alt: "" }] });
-    expect(first('<img src="https://x/y.png">')).toEqual({ k: "p", children: [{ k: "image", alt: "" }] });
+    expect(nodes("![](https://x/y.png) after")).toEqual([{ k: "text", text: " after" }]);
+    expect(nodes('<img src="https://x/y.png"> after')).toEqual([{ k: "text", text: " after" }]);
     expect(nodes('**![](https://x/cog.svg) Run configuration**')).toEqual([
-      { k: "strong", children: [{ k: "image", alt: "" }, { k: "text", text: " Run configuration" }] },
+      { k: "strong", children: [{ k: "text", text: " Run configuration" }] },
     ]);
     // A link whose only content is one: the link, drawn as “image”.
     expect(nodes("[![](https://x/y.png)](https://x/go)")).toEqual([{ k: "link", url: "https://x/go", children: [{ k: "image", alt: "" }] }]);
-    const html = drawn("![](https://x/y.png)").replace(/<!--[^>]*-->/g, "");
+    const html = drawn("[![](https://x/y.png)](https://x/go)").replace(/<!--[^>]*-->/g, "");
     expect(html).toMatch(/<span class="md-image[^"]*" role="img" title="An image, not loaded" aria-label="Image, not loaded">image<\/span>/);
   });
 

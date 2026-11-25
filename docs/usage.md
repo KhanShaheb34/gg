@@ -112,8 +112,8 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   from the web. An image shows as its alt text, small and muted (its tooltip says it is not
   loaded); one whose alt text only repeats the text or link beside it (a bot's "Ready" badge
   before "Ready") shows as nothing; one that is all of a link (a bot's button) shows as that
-  link, its alt text as its words; one with no alt text shows as "image", or as nothing in a
-  link with other words. A link to an `https://` address opens in your browser (its address
+  link, its alt text as its words; one with no alt text (a decorative icon) shows as nothing, or
+  as "image" when it is all of a link. A link to an `https://` address opens in your browser (its address
   in its tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
   are asked of `gh` when the tab shows the pull request, on Refresh, after the list reloads
   and after a push of the branch, and every 15 s only while a check runs, the tab shows and

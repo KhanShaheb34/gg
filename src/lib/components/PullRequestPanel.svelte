@@ -84,7 +84,14 @@
   const wanted = $derived(branch !== null && known === null && unavailable !== "no_remote" && unavailable !== "not_github" && !isDefault);
   const stamp = $derived(branch === null ? "" : suggestionStamp(snap, branch));
 
+  /**
+   * Asks the core what to suggest for the tab's branch (or takes what it suggested before, while
+   * that holds). Every call is a new request: an answer is taken only while it is the latest
+   * one and the tab is still about its branch, so an answer for another branch that comes late
+   * never fills this one's form.
+   */
   async function suggest(force = false) {
+    const n = ++asked;
     const b = branch;
     if (b === null) return;
     const root = snap.rootPath;
@@ -98,7 +105,6 @@
         return;
       }
     }
-    const n = ++asked;
     // Shown meanwhile: what was suggested for it before, if anything.
     if (suggestionFor !== b) {
       suggestion = lastSuggestion(root, b);
@@ -107,11 +113,12 @@
     suggestFailed = null;
     try {
       const s = await api.prSuggest(view.repoId, b);
-      if (n !== asked) return;
+      // Kept for its branch whenever it comes; shown only if still asked for, for this branch.
       keepSuggestion(root, b, at, s);
+      if (n !== asked || b !== branch) return;
       suggestion = s;
     } catch (e) {
-      if (n !== asked) return;
+      if (n !== asked || b !== branch) return;
       suggestFailed = e instanceof Error ? e.message : String(e);
     }
   }
@@ -121,7 +128,11 @@
   $effect(() => {
     void stamp;
     const refreshed = panel.prRefresh;
-    if (!wanted) return;
+    if (!wanted) {
+      // Nothing to ask for this branch: an answer still out for another is not taken.
+      asked++;
+      return;
+    }
     const force = refreshed !== seenRefresh;
     seenRefresh = refreshed;
     // Only what is read above is followed: not what asking reads and writes.

@@ -492,6 +492,8 @@ test("after a push: the tab shows for the branch pushed, without taking the focu
   const ahead = gg.git("prs", "commit-tree", "docs/readme^{tree}", "-p", "docs/readme", "-m", "Explain the lexer").trim();
   gg.git("prs", "branch", "-f", "docs/readme", ahead);
   await refresh(page);
+  // The graph has the new commit (a menu opened while the rows change closes).
+  await expect(grid(page).locator('[role="row"]', { hasText: "Explain the lexer" })).toHaveCount(1);
   await menuOn(page, "docs/readme", /^Push/);
   await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
   await expect(notice(page, /docs\/readme/)).toBeVisible();
@@ -526,6 +528,7 @@ test("after a push: the tab shows for the branch pushed, without taking the focu
   await expect(page.locator('[data-region="side-panel"]')).toHaveCount(0);
   gg.git("prs", "branch", "spike", "fix/typo");
   await refresh(page);
+  await expect(label(page, "spike")).toBeVisible();
   await menuOn(page, "spike", "Push…");
   await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
   await expect(notice(page, /spike/)).toBeVisible();
@@ -735,4 +738,40 @@ test("in a narrow window the shortcut shows the tab over the graph, and Escape h
   await expect(button(page, "Push and create PR")).toBeInViewport({ ratio: 1 });
   await page.keyboard.press("Escape");
   await expect(side).toHaveCount(0);
+});
+
+test("a suggestion for another branch that comes late never fills the form shown", async ({ gg }) => {
+  const { page } = gg;
+  await openListed(gg);
+  // fix/typo's suggestion, kept.
+  await menuOn(page, "fix/typo", "Create pull request…");
+  const title = panel(page).getByTestId("pr-title");
+  await expect(title).toHaveValue("Fix a typo in the README");
+  // docs/readme's is held back by the core.
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  let asked = false;
+  await page.route("**/invoke", async (route) => {
+    const body = route.request().postDataJSON() as { cmd: string; args: { branch?: string } } | null;
+    if (body?.cmd === "pr_suggest" && body.args.branch === "docs/readme") {
+      asked = true;
+      await held;
+    }
+    return route.continue();
+  });
+  await menuOn(page, "docs/readme", "Create pull request…");
+  await expect.poll(() => asked).toBe(true);
+  // Back to fix/typo (its suggestion kept) before docs/readme's answer comes.
+  await menuOn(page, "fix/typo", "Create pull request…");
+  await expect(page.getByTestId("pr-branch")).toContainText("fix/typo");
+  await expect(title).toHaveValue("Fix a typo in the README");
+  release();
+  await page.waitForTimeout(800);
+  await expect(page.getByTestId("pr-branch")).toContainText("fix/typo");
+  await expect(title).toHaveValue("Fix a typo in the README");
+  await expect(panel(page).getByTestId("pr-body")).toHaveValue("- Fix a typo in the README");
+  await page.unrouteAll({ behavior: "wait" });
+  // docs/readme's, kept when it came, is there when its form shows.
+  await menuOn(page, "docs/readme", "Create pull request…");
+  await expect(title).toHaveValue("Explain the parser");
 });

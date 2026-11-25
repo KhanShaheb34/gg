@@ -202,11 +202,12 @@ test("a name no branch has: Enter makes it at HEAD and checks it out, in one git
   expect(current(gg)).toBe("brand-new");
   expect(gg.git("routine", "rev-parse", "brand-new").trim()).toBe(head);
 
-  // The command log has the one command.
+  // The command log has the one command that wrote (reads of the new branch, such as its
+  // base for Committed on branch, may follow).
   const log = await page.evaluate(async () => {
     const { api } = await import("/src/lib/ipc.ts");
     const { app } = await import("/src/lib/state/app.svelte.ts");
-    const records: { args: string[] }[] = await api.commandLog(0, { repoId: app.activeRepoId! });
+    const records: { args: string[] }[] = await api.commandLog(0, { repoId: app.activeRepoId!, writesOnly: true });
     return records.filter((r) => r.args.some((a) => a.includes("brand-new"))).map((r) => r.args);
   });
   expect(log).toEqual([["checkout", "-b", "brand-new", head]]);

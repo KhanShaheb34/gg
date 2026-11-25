@@ -70,6 +70,8 @@ export function snap(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
     op: null,
     prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
+    branchPrs: {},
+    remoteHeads: {},
     inProgress: null,
     seq: 1,
     ...overrides,

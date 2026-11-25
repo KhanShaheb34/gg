@@ -50,6 +50,7 @@ pub struct SettingsPatch {
     pub worktree_pattern: Option<String>,
     pub date_format: Option<DateFormat>,
     pub check_for_updates: Option<bool>,
+    pub open_pr_tab_after_push: Option<bool>,
 }
 
 /// A change to [`RepoPrefs`]: only the fields present are changed.
@@ -387,6 +388,9 @@ impl Store {
             if let Some(check) = patch.check_for_updates {
                 data.settings.check_for_updates = check;
             }
+            if let Some(open) = patch.open_pr_tab_after_push {
+                data.settings.open_pr_tab_after_push = open;
+            }
             if let Some(pattern) = patch.worktree_pattern {
                 // A blank pattern means the default.
                 data.settings.worktree_pattern = if pattern.trim().is_empty() {
@@ -532,6 +536,8 @@ impl StoreData {
                 date_format: field(settings, "dateFormat").unwrap_or(defaults.date_format),
                 check_for_updates: field(settings, "checkForUpdates")
                     .unwrap_or(defaults.check_for_updates),
+                open_pr_tab_after_push: field(settings, "openPrTabAfterPush")
+                    .unwrap_or(defaults.open_pr_tab_after_push),
             },
             repo_prefs,
         })
@@ -581,6 +587,7 @@ impl StoreData {
                     "worktreePattern",
                     "dateFormat",
                     "checkForUpdates",
+                    "openPrTabAfterPush",
                 ],
             )
             || lost_prefs
@@ -1482,6 +1489,55 @@ mod tests {
             .update_settings(patch(serde_json::json!({ "checkForUpdates": false })))
             .unwrap();
         assert!(store.restore_default_settings().unwrap().check_for_updates);
+    }
+
+    /// Showing the Pull request tab after a push: on by default, turned off and on, kept
+    /// across a reload and apart from the other settings; a value that is not a boolean reads
+    /// as the default (on); reset to defaults turns it back on.
+    #[test]
+    fn open_pr_tab_after_push_is_on_by_default_and_kept() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert!(store.settings().open_pr_tab_after_push);
+        let s = store
+            .update_settings(patch(serde_json::json!({ "openPrTabAfterPush": false })))
+            .unwrap();
+        assert!(!s.open_pr_tab_after_push);
+        assert!(s.check_for_updates, "another setting is left alone");
+        assert!(!Store::load(config.path()).settings().open_pr_tab_after_push);
+        let s = store
+            .update_settings(patch(serde_json::json!({ "checkForUpdates": false })))
+            .unwrap();
+        assert!(!s.open_pr_tab_after_push);
+        assert!(
+            store
+                .update_settings(patch(serde_json::json!({ "openPrTabAfterPush": true })))
+                .unwrap()
+                .open_pr_tab_after_push
+        );
+        assert!(Store::load(config.path()).settings().open_pr_tab_after_push);
+        assert!(
+            serde_json::from_value::<SettingsPatch>(serde_json::json!({"openPrTabAfterPush": 1}))
+                .is_err()
+        );
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"openPrTabAfterPush": "no", "theme": "dark"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path()).settings();
+        assert!(edited.open_pr_tab_after_push);
+        assert_eq!(edited.theme, Theme::Dark);
+        let store = Store::load(config.path());
+        store
+            .update_settings(patch(serde_json::json!({ "openPrTabAfterPush": false })))
+            .unwrap();
+        assert!(
+            store
+                .restore_default_settings()
+                .unwrap()
+                .open_pr_tab_after_push
+        );
     }
 
     /// "Reset to defaults" puts every setting back as a new install has it, and keeps the

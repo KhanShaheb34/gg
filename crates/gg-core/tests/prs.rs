@@ -238,6 +238,91 @@ async fn open_pull_requests_are_listed_and_marked_on_their_branches() {
     );
 }
 
+/// The snapshot names each local branch's open pull request (`branchPrs`), whatever the graph
+/// shows of the branch (a filtered-out one too), and only local branches; a pull request no
+/// longer listed goes from it. Each remote's default branch, as its `HEAD` names it, is in
+/// `remoteHeads` (the side panel's Pull request tab offers no pull request from it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_snapshot_names_each_local_branchs_pull_request_and_each_remotes_default_branch() {
+    let s = setup().await;
+    for b in ["feature", "hidden", "plain"] {
+        s.repo.branch(b);
+    }
+    s.repo.git(&["push", "-q", "origin", "feature", "hidden"]);
+    s.repo.git(&["fetch", "-q", "origin"]);
+    // Shown in the graph: main only.
+    s.h.m
+        .set_view_options(
+            s.id,
+            gg_core::dto::ViewOptions {
+                branches: Some(vec!["main".into()]),
+                show_remotes: false,
+                show_tags: true,
+                show_stashes: true,
+            },
+        )
+        .await
+        .unwrap();
+    s.gh.reply(
+        "pr-list",
+        0,
+        &list(&[
+            pr(31, "feature", "octo", false, false),
+            pr(32, "hidden", "octo", false, true),
+        ]),
+        "",
+    );
+    let snap = s.load().await;
+    let named: Vec<(&str, u32, PullRequestState)> = snap
+        .branch_prs
+        .iter()
+        .map(|(b, p)| (b.as_str(), p.number, p.state))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("feature", 31, PullRequestState::Open),
+            ("hidden", 32, PullRequestState::Draft)
+        ]
+    );
+    assert_eq!(snap.branch_prs["hidden"].head, "hidden");
+    assert!(
+        !snap.branch_prs.contains_key("origin/feature"),
+        "local branches only"
+    );
+    let v = serde_json::to_value(&snap).unwrap();
+    assert_eq!(v["branchPrs"]["feature"]["number"], 31);
+
+    // Without a HEAD for origin (git's fetch may have set one), none; with one, the branch
+    // it names, whatever its name.
+    s.repo.git(&["remote", "set-head", "origin", "-d"]);
+    s.h.m.refresh(s.id).await.unwrap();
+    let snap = s.h.m.snapshot(s.id).await.unwrap();
+    assert!(snap.remote_heads.is_empty(), "{:?}", snap.remote_heads);
+    assert_eq!(
+        serde_json::to_value(&snap).unwrap()["remoteHeads"],
+        json!({})
+    );
+    s.repo.git(&["remote", "set-head", "origin", "feature"]);
+    s.h.m.refresh(s.id).await.unwrap();
+    let snap = s.h.m.snapshot(s.id).await.unwrap();
+    assert_eq!(
+        snap.remote_heads,
+        std::collections::BTreeMap::from([("origin".to_owned(), "feature".to_owned())])
+    );
+
+    // Merged meanwhile: gone.
+    s.h.m.set_prs_every(Duration::ZERO);
+    s.gh.reply(
+        "pr-list",
+        0,
+        &list(&[pr(32, "hidden", "octo", false, true)]),
+        "",
+    );
+    let snap = s.load().await;
+    assert_eq!(snap.branch_prs.keys().collect::<Vec<_>>(), ["hidden"]);
+}
+
 /// Forks: a pull request's head is matched to a branch only by its name AND the owner of the
 /// remote the branch is pushed to; another owner's branch of the same name is not ours.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

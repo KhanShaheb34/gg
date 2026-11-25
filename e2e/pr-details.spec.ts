@@ -429,6 +429,8 @@ test("a deployment bot's comment: no badge repeating its word, its button an ord
     '<a href="https://bot.example/review"><img src="https://bot.example/review.svg" alt="Request Review"></a>',
     "",
     "Built with ![a cat](https://bot.example/cat.png) and ![](https://bot.example/x.png).",
+    "",
+    "Logs: [![](https://bot.example/logs.svg)](https://bot.example/logs)",
   ].join("\n");
   await showPr(gg, view(31, { comments: [comment("7", "deploybot", body, 5)], reviews: [] }), threads([], ["deploybot"]), 60_000);
   const card = cards(page).first();
@@ -437,7 +439,13 @@ test("a deployment bot's comment: no badge repeating its word, its button an ord
   await expect(card.locator("td", { hasText: "Ready" })).toHaveText("Ready");
   // Images that are not dropped: their alt text, muted, named as not loaded.
   await expect(card.getByRole("img", { name: "Image, not loaded: a cat" })).toHaveText("a cat");
-  await expect(card.getByRole("img", { name: "Image, not loaded", exact: true })).toHaveText("image");
+  // One with no alt text standing alone: nothing ("Built with a cat and ."); one that is all a
+  // link holds: the link, its word a muted "image".
+  await expect(card.getByText(/Built with a cat and \.$/)).toBeVisible();
+  const logs = card.getByRole("link", { name: "Image, not loaded" });
+  await expect(logs).toHaveAttribute("title", "https://bot.example/logs");
+  await expect(logs.getByRole("img", { name: "Image, not loaded", exact: true })).toHaveText("image");
+  await expect(card.getByRole("img", { name: "Image, not loaded", exact: true })).toHaveCount(1);
   const button = card.getByRole("link", { name: "Request Review" });
   await expect(button).toHaveAttribute("title", "https://bot.example/review");
   await button.click();

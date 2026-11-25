@@ -229,3 +229,68 @@ test("asked for again when HEAD or the base moves, not for a file written or a r
   await expect(page.getByTestId("branch-files-count")).toHaveText("3");
   expect(asks()).toBeGreaterThan(afterBase);
 });
+
+test("none while the branch is where its base is, then the list once the base moves back (review)", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("branchfiles");
+  // A branch at main's commit, with no upstream: the base is origin/main, at the same commit.
+  gg.git("branchfiles", "switch", "-q", "-c", "same", "main");
+  await open(page, repo);
+  await expect(page.getByRole("button", { name: /^Switch branch: same,/ })).toBeVisible();
+  await page.waitForTimeout(300);
+  await expect(section(page)).toHaveCount(0);
+  // origin's main goes back one commit: the branch now has one of its own.
+  gg.git("branchfiles", "push", "-q", "--force", "origin", "main~1:main");
+  gg.git("branchfiles", "fetch", "-q", "origin");
+  await page.keyboard.press("ControlOrMeta+r");
+  await expect(page.getByTestId("branch-files-count")).toHaveText("1");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page).first()).toHaveAttribute("data-path", "main-only.txt");
+});
+
+test("a read that fails says so with Retry, keeping what was shown; with nothing shown, the header and that line (review)", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  const repo = gg.repoPath("branchfiles");
+  // Every branch_files request fails while `failing` is set.
+  let failing = true;
+  await page.route(
+    (url) => url.pathname.endsWith("/invoke"),
+    async (route) => {
+      if (failing && (route.request().postData() ?? "").includes('"cmd":"branch_files"')) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ err: { code: "git_failed", message: "git merge-base failed: bad object" } }) });
+      } else {
+        await route.fallback();
+      }
+    },
+  );
+  await open(page, repo);
+  // Nothing read yet: the header and the reason, with Retry; no count, no rows.
+  const error = page.getByTestId("branch-files-error");
+  await expect(error).toContainText("Could not read the branch's files: git merge-base failed: bad object");
+  await expect(toggle(page)).toHaveText("Committed on branch");
+  await expect(page.getByTestId("branch-files-count")).toHaveCount(0);
+  await expect(rows(page)).toHaveCount(0);
+  // Retry, still failing: still said. Then working: the list, the line gone.
+  await page.getByTestId("branch-files-retry").click();
+  await expect(error).toBeVisible();
+  failing = false;
+  await page.getByTestId("branch-files-retry").click();
+  await expect(rows(page)).toHaveCount(5);
+  await expect(error).toHaveCount(0);
+
+  // A later read failing (HEAD moved): the list as it was stays, with the line and Retry.
+  failing = true;
+  writeFileSync(path.join(repo, "later.txt"), "later\n");
+  gg.git("branchfiles", "add", "later.txt");
+  gg.git("branchfiles", "commit", "-q", "-m", "Later");
+  await nudge(page);
+  await expect(error).toBeVisible();
+  await expect(rows(page)).toHaveCount(5);
+  await expect(page.getByTestId("branch-files-count")).toHaveText("5");
+  failing = false;
+  await page.getByTestId("branch-files-retry").click();
+  await expect(page.getByTestId("branch-files-count")).toHaveText("6");
+  await expect(error).toHaveCount(0);
+});

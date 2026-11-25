@@ -89,7 +89,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   worktree has changes to commit and open while it has none; a click on its header holds only
   until that changes (changes appear, or are all committed), then the default applies again;
   it is not remembered when gg restarts. It is read again only when the branch's commit, the
-  base or the base's commit moves, never for a file written. Known limit: if the app quits or
+  base or the base's commit moves (or a better base comes into reach, such as the pull
+  request's base once fetched), never for a file written. A read that fails keeps what was
+  shown and says why in one line, with Retry. Known limit: if the app quits or
   crashes between making a commit and updating the staging area (during a slow
   `post-commit` hook, say), the staging area still holds the committed files as they were
   before the commit, so `git status` shows staged changes that would undo it; `git reset`

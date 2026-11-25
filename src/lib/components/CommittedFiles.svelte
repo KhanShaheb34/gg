@@ -12,7 +12,9 @@
   open while it has none; the user's click holds until that changes (BranchFold).
 
   Asked for only when what it depends on moves (branchFilesKey), never with every snapshot:
-  the core reads git again only for a new HEAD, base or base commit.
+  the core reads git again only for a new HEAD, base or base commit. A read that fails keeps
+  what was shown and says so in one line with Retry; with nothing shown yet, the header and
+  that line alone.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
@@ -36,23 +38,28 @@
   const root = $derived(snap.rootPath);
   const wt = $derived(snap.worktrees.find((w) => w.path === path) ?? null);
   const known = $derived(branchFilesOf(root, path));
-  /** The base last answered: what the key follows the commit of. */
-  const lastBase = $derived(known?.data?.base ?? null);
-  const key = $derived(branchFilesKey(snap, path, lastBase));
+  const key = $derived(branchFilesKey(snap, path));
 
-  // Asked again only when the key moves (and not for a worktree the snapshot does not list).
+  // Asked again only when the key moves (and not for a worktree the snapshot does not list),
+  // or when the last request for it failed (its key then stands unanswered).
   $effect(() => {
     const k = key;
     if (k === "") return;
     untrack(() => {
       if (branchFilesOf(root, path)?.key === k) return;
-      const at = snap;
-      void loadBranchFiles(view.repoId, root, path, k, (base) => branchFilesKey(at, path, base));
+      void loadBranchFiles(view.repoId, root, path, k);
     });
   });
 
+  function retry() {
+    if (key !== "") void loadBranchFiles(view.repoId, root, path, key);
+  }
+
   /** The list, while it is of the branch checked out there now. */
   const data = $derived(known?.data && wt?.branch === known.data.branch ? known.data : null);
+  /** Why the last read failed (said while there is a branch to read). */
+  const error = $derived(wt?.branch ? (known?.error ?? null) : null);
+  const retrying = $derived(known?.loading ?? false);
 
   const fold = $derived(panelState(view.repoId).branchFold);
   $effect(() => fold.see(path, dirty));
@@ -96,6 +103,13 @@
   );
 </script>
 
+{#snippet failure(why: string)}
+  <p class="error" role="status" data-testid="branch-files-error">
+    <span class="why">Could not read the branch's files: {why}</span>
+    <button class="retry" disabled={retrying} onclick={retry} data-testid="branch-files-retry">{retrying ? "Retrying…" : "Retry"}</button>
+  </p>
+{/snippet}
+
 {#if data}
   <section class="committed" class:open aria-labelledby="cb-{uid}" data-testid="branch-files" data-base={data.base}>
     <button
@@ -112,6 +126,7 @@
       <span class="count" data-testid="branch-files-count">{groupDigits(data.total)}</span>
       <span class="base" data-testid="branch-files-base">vs {visibleText(data.base)}</span>
     </button>
+    {#if error !== null}{@render failure(error)}{/if}
     {#if open}
       <ul class="list" id="cb-list-{uid}" aria-label="Files committed on {data.branch}" data-testid="branch-files-list">
         {#each data.files as f (f.path)}
@@ -135,6 +150,14 @@
         {/if}
       </ul>
     {/if}
+  </section>
+{:else if error !== null}
+  <!-- Nothing read yet: the header alone, and why. -->
+  <section class="committed" aria-labelledby="cb-{uid}" data-testid="branch-files">
+    <p id="cb-{uid}" class="head static" data-testid="branch-files-toggle">
+      <span class="label">Committed on branch</span>
+    </p>
+    {@render failure(error)}
   </section>
 {/if}
 
@@ -172,8 +195,53 @@
     cursor: default;
   }
 
-  .head:hover {
+  .head:hover:not(.static) {
     background: var(--bg-hover);
+  }
+
+  .head.static {
+    margin: 0;
+  }
+
+  /* A read that failed: one quiet line, its Retry at the end. */
+  .error {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0;
+    padding: 0 12px 6px 24px;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+  }
+
+  .error .why {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .retry {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font-size: var(--fs-xs);
+    font-weight: 550;
+  }
+
+  .retry:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
+  .retry:disabled {
+    color: var(--text-faint);
+  }
+
+  .retry:focus-visible {
+    border-radius: 3px;
+    outline-offset: 2px;
   }
 
   .head:focus-visible {

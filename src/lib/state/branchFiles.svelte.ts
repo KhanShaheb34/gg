@@ -1,8 +1,8 @@
 // The Commit tab's "Committed on branch": the files the branch checked out in the worktree it
 // shows changes in its own commits (branch_files), by repository and worktree, kept while the
 // app runs. Asked for only when what the list depends on moves (branchFilesKey: the worktree's
-// HEAD and branch, what its base is chosen from, the base's commit), never with every
-// snapshot; the core reads git again only for a new HEAD, base or base commit, and shares a
+// HEAD and branch, what its base is chosen from, the commit of every ref that could be the
+// base), never with every snapshot, and again after a failure (Retry); the core reads git again only for a new HEAD, base or base commit, and shares a
 // read that runs. An answer is taken only while it is the latest asked for that worktree.
 //
 // Whether the section is open (BranchFold) follows the worktree: closed while it has
@@ -21,7 +21,7 @@ export type BranchFilesEntry = {
   error: string | null;
   /** The number of the latest request. */
   asked: number;
-  /** What the list was last asked for (branchFilesKey), or null: never. */
+  /** What the list was last asked for and answered or is being read for (branchFilesKey), or null: never, or the last request failed. */
   key: string | null;
 };
 
@@ -50,12 +50,28 @@ function tipOf(snap: RepoSnapshot, name: string): string {
 }
 
 /**
+ * The refs the core may choose as the base of `branch`, in no particular order: the pull
+ * request's base on every remote and as a local branch, and every remote's default branch.
+ */
+function candidates(snap: RepoSnapshot, prBase: string | null): string[] {
+  const refs: string[] = [];
+  for (const remote of snap.remotes) {
+    if (prBase !== null) refs.push(`${remote}/${prBase}`);
+    if (Object.hasOwn(snap.remoteHeads, remote)) refs.push(`${remote}/${snap.remoteHeads[remote]}`);
+  }
+  if (prBase !== null) refs.push(prBase);
+  return refs;
+}
+
+/**
  * What the list of worktree `path` depends on, as `snap` shows it: its HEAD and branch, what
  * its base is chosen from (the branch's pull request's base, its upstream, the remotes and
- * their default branches) and the commit of `base`, the base last answered. "" for a worktree
- * `snap` does not list. Two equal keys: nothing to ask again.
+ * their default branches) and the commit of every ref that could be the base ("" while one is
+ * missing): a better base coming into reach, or the base moving, changes it, whatever the
+ * last answer was (none too). "" for a worktree `snap` does not list. Two equal keys: nothing
+ * to ask again.
  */
-export function branchFilesKey(snap: RepoSnapshot, path: string, base: string | null): string {
+export function branchFilesKey(snap: RepoSnapshot, path: string): string {
   const wt = snap.worktrees.find((w) => w.path === path);
   if (!wt) return "";
   const branch = wt.branch;
@@ -68,8 +84,8 @@ export function branchFilesKey(snap: RepoSnapshot, path: string, base: string | 
     prBase,
     snap.remotes,
     snap.remoteHeads,
-    base,
-    base === null ? null : tipOf(snap, base),
+    // Detached, nothing to compare: no base to follow.
+    branch === null ? [] : candidates(snap, prBase).map((ref) => [ref, tipOf(snap, ref)]),
   ]);
 }
 
@@ -80,12 +96,12 @@ function messageOf(e: unknown): string {
 }
 
 /**
- * Asks the core for the list of worktree `path` of repository `repoId` (at `root`), for `key`.
- * `keyOf` gives the key for a base: once answered, the entry is taken as asked for the key of
- * the base the answer names (as the snapshot of the request showed it), so the answer itself
- * asks for nothing more. What was shown stays while it loads, and when it fails.
+ * Asks the core for the list of worktree `path` of repository `repoId` (at `root`), for `key`
+ * (branchFilesKey). What was shown stays while it loads, and when it fails; a failure leaves
+ * `key` unanswered, so the next ask for it (Retry, the panel shown again, anything that moves)
+ * goes to the core again.
  */
-export async function loadBranchFiles(repoId: number, root: string, path: string, key: string, keyOf: (base: string | null) => string): Promise<void> {
+export async function loadBranchFiles(repoId: number, root: string, path: string, key: string): Promise<void> {
   const e = entry(root, path);
   const n = ++e.asked;
   e.key = key;
@@ -95,10 +111,10 @@ export async function loadBranchFiles(repoId: number, root: string, path: string
     if (n !== e.asked) return;
     e.data = d;
     e.error = null;
-    e.key = keyOf(d?.base ?? null);
   } catch (err) {
     if (n !== e.asked) return;
     e.error = messageOf(err);
+    e.key = null;
   } finally {
     if (n === e.asked) e.loading = false;
   }

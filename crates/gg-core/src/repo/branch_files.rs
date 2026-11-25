@@ -2,8 +2,11 @@
 //! tab's "Committed on branch". Read-only: two git reads, never a write.
 //!
 //! The branch is the one checked out in the worktree; its base is, in this order: the base
-//! branch of its open pull request (as the snapshot knows it, `branchPrs`), the default
-//! branch of the remote it tracks (`remoteHeads`), the default branch of the first remote.
+//! branch of its open pull request (as the snapshot knows it, `branchPrs`) on the remote the
+//! pull requests were listed from (the base repository: `upstream` before `origin` in a
+//! fork), else on the remote the branch tracks, else on any remote, else that local branch;
+//! the default branch of the remote it tracks (`remoteHeads`); the default branch of the
+//! first remote.
 //! The files are those of `merge-base(base, HEAD)..HEAD` (`git diff-tree -M --raw
 //! --numstat`, read as a commit's are): what the branch's commits change, not the working
 //! tree. None at all (`null`) when HEAD is detached there, the branch is the base's own
@@ -43,8 +46,11 @@ pub(crate) struct BranchFilesLoad {
     answer: Arc<OnceCell<Result<Option<BranchFiles>>>>,
 }
 
-/// What the base is chosen from: the snapshot's names, tips and pull requests.
+/// What the base is chosen from: the snapshot's names, tips and pull requests, and the remote
+/// the pull requests were listed from.
 pub(crate) struct Known<'a> {
+    /// The remote naming the repository the pull requests go to (`None`: not listed).
+    pub pr_remote: Option<&'a str>,
     pub remotes: &'a [String],
     pub remote_heads: &'a BTreeMap<String, String>,
     pub branch_prs: &'a BTreeMap<String, PullRequest>,
@@ -55,8 +61,9 @@ pub(crate) struct Known<'a> {
 }
 
 impl<'a> Known<'a> {
-    pub(crate) fn of(snap: &'a RepoSnapshot) -> Self {
+    pub(crate) fn of(snap: &'a RepoSnapshot, pr_remote: Option<&'a str>) -> Self {
         Self {
+            pr_remote,
             remotes: &snap.remotes,
             remote_heads: &snap.remote_heads,
             branch_prs: &snap.branch_prs,
@@ -112,16 +119,19 @@ pub(crate) fn choose_base(
 ) -> Option<(String, String)> {
     let tracked = upstream.and_then(|u| known.remote_of(u));
     let from_pr = known.branch_prs.get(branch).and_then(|pr| {
-        // Where the pull request goes: on the remote the branch tracks, else the first
-        // remote that has that branch, else the local branch of that name.
+        // Where the pull request goes: on the repository it was listed from, else the remote
+        // the branch tracks, else the first remote that has that branch, else the local
+        // branch of that name.
         let on = |remote: &str| {
             let name = format!("{remote}/{}", pr.base);
             known
                 .remote_tip(&name)
                 .map(|tip| (name, tip, pr.base.as_str()))
         };
-        tracked
+        known
+            .pr_remote
             .and_then(on)
+            .or_else(|| tracked.and_then(on))
             .or_else(|| known.remotes.iter().find_map(|r| on(r)))
             .or_else(|| {
                 known
@@ -164,7 +174,16 @@ impl RepoManager {
             return Ok(None);
         }
         let upstream = wt.upstream.as_ref().map(|u| u.name.as_str());
-        let Some((base, base_commit)) = choose_base(&Known::of(&snap), branch, upstream) else {
+        // The repository the pull requests were listed from (and go to).
+        let pr_remote = {
+            let slot = repo.slot.read().await;
+            slot.prs
+                .data
+                .as_ref()
+                .and_then(|d| d.facts.base_remote().map(str::to_owned))
+        };
+        let known = Known::of(&snap, pr_remote.as_deref());
+        let Some((base, base_commit)) = choose_base(&known, branch, upstream) else {
             return Ok(None);
         };
         let range = Range {
@@ -296,6 +315,7 @@ mod tests {
     }
 
     struct Facts {
+        pr_remote: Option<String>,
         remotes: Vec<String>,
         heads: BTreeMap<String, String>,
         prs: BTreeMap<String, PullRequest>,
@@ -306,6 +326,7 @@ mod tests {
     impl Facts {
         fn new(remotes: &[&str], heads: &[(&str, &str)], remote_branches: &[&str]) -> Self {
             Self {
+                pr_remote: None,
                 remotes: remotes.iter().map(|r| (*r).into()).collect(),
                 heads: heads
                     .iter()
@@ -327,6 +348,7 @@ mod tests {
             };
             let (bt, rt) = (tips(&self.branches), tips(&self.remote_branches));
             let known = Known {
+                pr_remote: self.pr_remote.as_deref(),
                 remotes: &self.remotes,
                 remote_heads: &self.heads,
                 branch_prs: &self.prs,
@@ -379,6 +401,37 @@ mod tests {
         assert_eq!(f.choose("feature", None), base("origin/main"));
         f.branches.push("gone".into());
         assert_eq!(f.choose("feature", None), base("gone"));
+    }
+
+    /// A fork: the branch tracks the fork (`origin`), its pull request goes to `upstream`
+    /// (the remote the pull requests were listed from): the base is upstream's branch, not
+    /// the fork's copy of it; without upstream's, the fallbacks as before.
+    #[test]
+    fn a_pull_requests_base_is_on_the_repository_it_goes_to() {
+        let mut f = Facts::new(
+            &["origin", "upstream"],
+            &[("origin", "main"), ("upstream", "main")],
+            &["origin/main", "upstream/main", "origin/develop"],
+        );
+        f.prs.insert("feature".into(), pr("main"));
+        f.pr_remote = Some("upstream".into());
+        assert_eq!(
+            f.choose("feature", Some("origin/feature")),
+            base("upstream/main")
+        );
+        // Its base not fetched from upstream: the tracked remote's, as before.
+        f.prs.insert("feature".into(), pr("develop"));
+        assert_eq!(
+            f.choose("feature", Some("origin/feature")),
+            base("origin/develop")
+        );
+        // Listed from origin: origin's.
+        f.prs.insert("feature".into(), pr("main"));
+        f.pr_remote = Some("origin".into());
+        assert_eq!(
+            f.choose("feature", Some("upstream/feature")),
+            base("origin/main")
+        );
     }
 
     #[test]

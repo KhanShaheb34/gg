@@ -324,3 +324,85 @@ async fn the_base_is_the_pull_requests_when_it_has_one() {
         [change("feature.txt", None, FileStatus::A, Some(1), Some(0))]
     );
 }
+
+/// A fork: the branch tracks the fork (`origin`, ada/cat), its pull request goes to the
+/// repository the pull requests are listed from (`upstream`, octo/cat). The base is
+/// upstream's main, not the fork's stale copy of it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn in_a_fork_the_base_is_on_the_repository_the_pull_request_goes_to() {
+    use gg_core::testutil::FakeGh;
+
+    let repo = TestRepo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    let upstream = repo.clone_as_remote_named("upstream");
+    let fork = repo.clone_as_remote_named("origin");
+    for (remote, url, bare) in [
+        ("upstream", "https://github.com/octo/cat.git", &upstream),
+        ("origin", "https://github.com/ada/cat.git", &fork),
+    ] {
+        repo.git(&["remote", "set-url", remote, url]);
+        let key = format!("url.{}.insteadOf", bare.path().display());
+        repo.git(&["config", "--add", &key, url]);
+    }
+    // upstream's main moves on; the fork's stays behind.
+    repo.write("upstream.txt", "u\n");
+    repo.commit_all("upstream moves");
+    repo.git(&["push", "-q", "upstream", "main"]);
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("feature.txt", "f\n");
+    repo.commit_all("feature");
+    repo.git(&["push", "-q", "-u", "origin", "feature"]);
+    repo.git(&["fetch", "-q", "--all"]);
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    repo.git(&["remote", "set-head", "upstream", "main"]);
+
+    let gh = FakeGh::new();
+    let h = harness().await;
+    h.m.set_tool_path(Some(gh.path()));
+    let id = h.open(repo.path()).await.repo_id;
+    // No pull request known: the tracked remote's default, the fork's stale main.
+    let got = files_of(&h, id, repo.path()).await.unwrap();
+    assert_eq!(got.base, "origin/main");
+    assert_eq!(got.files.len(), 2);
+
+    gh.reply(
+        "pr-list",
+        0,
+        &serde_json::json!([{
+            "number": 8,
+            "title": "Feature",
+            "url": "https://github.com/octo/cat/pull/8",
+            "isDraft": false,
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "headRepositoryOwner": {"id": "A", "login": "ada"},
+            "isCrossRepository": true,
+        }])
+        .to_string(),
+        "",
+    );
+    let before = h.m.prs_loads(id);
+    h.m.refresh_by_user(id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, h.m.wait_prs_loads(id, before))
+        .await
+        .expect("the pull requests load");
+    let listed = gh.calls_of(&["pr", "list"]);
+    assert!(
+        listed
+            .iter()
+            .any(|c| c.argv.windows(2).any(|w| w == ["--repo", "octo/cat"])),
+        "listed from upstream: {listed:?}"
+    );
+    assert_eq!(
+        h.m.snapshot(id).await.unwrap().branch_prs["feature"].base,
+        "main"
+    );
+    let got = files_of(&h, id, repo.path()).await.unwrap();
+    assert_eq!(got.base, "upstream/main");
+    assert_eq!(
+        got.files,
+        [change("feature.txt", None, FileStatus::A, Some(1), Some(0))]
+    );
+}

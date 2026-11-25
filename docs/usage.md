@@ -78,8 +78,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   Under the message, **Committed on branch** (with how many files) lists, read-only, what the
   branch checked out there changes in its own commits: from where it left its base
   (`git merge-base`) to its last commit, the working tree's changes left out. The base, named
-  in the header ("vs origin/main"), is the base branch of the branch's open pull request, else
-  the default branch of the remote the branch tracks (as that remote's `HEAD` names it), else
+  in the header ("vs origin/main"), is the base branch of the branch's open pull request, on
+  the repository the pull request goes to (in a fork, `upstream/main` rather than the fork's
+  copy), else the default branch of the remote the branch tracks (as that remote's `HEAD` names it), else
   the first remote's. Each file shows its name, its folder, the lines added and removed (none
   for a binary file) and its status (M, A, D, R; a rename is one row, its old path beside it);
   the first 500, then how many more. A file opens nothing (gg has no view of one file's

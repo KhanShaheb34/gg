@@ -93,10 +93,14 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   threads on the code (path:line, Resolved, Outdated, with their replies), oldest first, with
   an All / Humans / Bots filter. A resolved thread, and any comment longer than about a dozen
   lines, starts shortened (**Show more**). A comment is drawn from its Markdown without its
-  HTML: HTML comments are dropped, `<details>` stays a closed disclosure, other tags keep only
-  their text, and no image or anything else is loaded from the web (an image shows as
-  "[image: …]"); a link to an `https://` address opens in your browser (its address in its
-  tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
+  HTML: HTML comments are dropped, `<details>` stays a closed disclosure, `<a href>` is a link
+  like Markdown's, other tags keep only their text, and no image or anything else is loaded
+  from the web. An image shows as its alt text, small and muted (its tooltip says it is not
+  loaded); one whose alt text only repeats the text or link beside it (a bot's "Ready" badge
+  before "Ready") shows as nothing; one that is all of a link (a bot's button) shows as that
+  link, its alt text as its words; one with no alt text shows as "image", or as nothing in a
+  link with other words. A link to an `https://` address opens in your browser (its address
+  in its tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
   are asked of `gh` when the tab shows the pull request, on Refresh, after the list reloads
   and after a push of the branch, and every 15 s only while a check runs, the tab shows and
   the window is in front (never more than once every 10 s per pull request). A failure keeps

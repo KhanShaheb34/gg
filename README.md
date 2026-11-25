@@ -129,10 +129,11 @@ afterwards and says which it is.
   <img alt="The worktree panel beside the graph: eight worktrees, each with its branch, its uncommitted changes and how it stands with its upstream, and markers for a merge in progress, a missing folder and a locked worktree" src="docs/screens/worktrees-light.png" width="640">
 </picture>
 
-- The side panel (⌘B) lists every worktree of the repository, including ones made in a
-  terminal or by other tools, each with its branch, its uncommitted changes (kept up to date
-  as files change) and how it stands with its upstream, and says what is unusual: locked,
-  folder missing, a merge stopped there.
+- The side panel (⌘B, or its button at the right of the toolbar) has two tabs, Commit and
+  Worktrees, and opens on the one you used last. Worktrees lists every worktree of the
+  repository, including ones made in a terminal or by other tools, each with its branch, its
+  uncommitted changes (kept up to date as files change) and how it stands with its upstream,
+  and says what is unusual: locked, folder missing, a merge stopped there.
 - Make any worktree the **active** one, where every action runs, with a double-click or
   ⌘⌥1…9.
 - **Add worktree…** makes a folder for a new or existing branch, beside the repository by
@@ -150,7 +151,7 @@ afterwards and says which it is.
   <img alt="The commit panel: six changed files, each ticked, with its status letter, a message box with a subject and a body, and the Commit and Commit and Push to origin/main buttons" src="docs/screens/commit-panel-light.png" width="640">
 </picture>
 
-Press ⌘K (or click Commit in the toolbar, or a worktree's change count) to commit the files
+Press ⌘K (or open the side panel's Commit tab, or click a worktree's change count) to commit the files
 you tick, with **Commit & Push** to send the branch upstream in the same step. Files you
 staged but did not tick stay staged and out of the commit. With nothing ticked, **Commit with
 no changes** makes an empty commit (to run CI again, say). When a merge is being concluded,
@@ -243,8 +244,8 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 | ⌘⇧F | Fetch from all remotes |
 | ⌘R | Refresh |
 | ⌘P | Switch branch, or create one (the branch picker) |
-| ⌘K | Commit (the commit panel, its message focused); ⌘Enter commits |
-| ⌘B | Show or hide the side panel (the worktrees, or the commit panel) |
+| ⌘K | Commit (the side panel's Commit tab, its message focused); ⌘Enter commits |
+| ⌘B | Show or hide the side panel, on the tab last used (Commit or Worktrees) |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active |
 | ⌘⇧L | Show or hide the command log |
 | ⌘1…⌘9, Ctrl+Tab | Switch tabs |

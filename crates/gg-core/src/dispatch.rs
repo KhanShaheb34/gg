@@ -178,6 +178,13 @@ struct PrSuggestArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrDetailsArgs {
+    repo_id: u32,
+    number: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SetActiveWorktreeArgs {
     repo_id: u32,
     path: PathBuf,
@@ -422,6 +429,10 @@ impl Core {
             "pr_suggest" => {
                 let a: PrSuggestArgs = parse(cmd, args)?;
                 to_json(self.repos()?.pr_suggest(a.repo_id, &a.branch).await?)
+            }
+            "pr_details" => {
+                let a: PrDetailsArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_details(a.repo_id, a.number).await?)
             }
             "set_window_focused" => {
                 let a: FocusArgs = parse(cmd, args)?;

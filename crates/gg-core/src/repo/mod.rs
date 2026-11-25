@@ -4,6 +4,7 @@
 mod fetch;
 mod loader;
 mod manager;
+mod pr_details;
 pub(crate) mod prs;
 pub mod state;
 

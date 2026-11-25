@@ -68,6 +68,48 @@ export type PrSuggestion = {
   pushTo: string | null;
   needsPush: boolean;
 };
+/**
+ * What `pr_details` gives of one pull request, as gh knows it now (read when the Pull request
+ * tab shows it; at most once every 10 s per pull request in the core). Comments are oldest
+ * first, the newest 200; bodies are untrusted Markdown with HTML in it.
+ */
+export type PrDetails = {
+  number: number;
+  url: string;
+  state: "open" | "merged" | "closed" | "unknown";
+  merge: MergeStatus;
+  review: ReviewDecision;
+  checks: PrCheck[];
+  checksSummary: ChecksSummary;
+  comments: PrComment[];
+  commentsOmitted: number;
+  /** Why the review threads could not be read (the rest is shown). */
+  threadsError: string | null;
+  /** More review threads than were read (the first 50). */
+  threadsPartial: boolean;
+  loadedAtMs: number;
+};
+export type MergeStatus = "draft" | "conflicts" | "behind" | "blocked" | "unstable" | "ready" | "unknown";
+export type ReviewDecision = "none" | "approved" | "changes_requested" | "review_required";
+export type CheckState = "pending" | "passing" | "failing" | "skipped" | "cancelled" | "neutral" | "unknown";
+export type PrCheck = {
+  name: string;
+  workflow: string | null;
+  state: CheckState;
+  startedAtMs: number | null;
+  completedAtMs: number | null;
+  /** Its page (https only), if any. */
+  url: string | null;
+};
+export type ChecksSummary = Record<CheckState, number> & { total: number };
+export type PrReply = { id: string; author: string; isBot: boolean; createdAtMs: number | null; body: string; url: string };
+export type PrComment = PrReply & {
+  kind: "comment" | "review" | "thread";
+  reviewState: "approved" | "changes_requested" | "commented" | "dismissed" | "pending" | "unknown" | null;
+  thread: { path: string; line: number | null; resolved: boolean; outdated: boolean; replies: PrReply[] } | null;
+  /** Hidden on GitHub by a maintainer. */
+  minimized: boolean;
+};
 /** `conflictedPaths`: the conflicted paths, sorted, the first 200 of them. */
 export type WorktreeStatus = { changed: number; untracked: number; conflicted: number; conflictedPaths: string[] };
 /** `lastError`: why the last fetch failed, in one line; `lastErrorDetail`: git's whole stderr of it. */
@@ -247,7 +289,8 @@ export type UpdateStatus =
       atMs: number;
     };
 /** What `open_external` opens: a worktree (`path`; the active one when omitted) or an `https://` page. */
-export type ExternalRequest = { target: "editor" | "terminal" | "reveal"; path?: string } | { target: "url"; url: string };
+/** `url`: a page of the repository's GitHub host; `link`: a link of a comment or check (any https address). */
+export type ExternalRequest = { target: "editor" | "terminal" | "reveal"; path?: string } | { target: "url" | "link"; url: string };
 /**
  * Kept per repository. Defaults: mergeNoFf true, sidePanel true. `activeWorktree`: the worktree
  * remembered as active (null = the main one); set by the core. `sidePanel`: the side panel

@@ -255,7 +255,10 @@ impl RepoManager {
     /// `gh` for listing `repo`'s open pull requests, and the remote facts they are matched
     /// with; or why they cannot be listed: the repository's remote is not on GitHub, or `gh`
     /// is not installed.
-    async fn gh_for_list(&self, repo: &Repo) -> std::result::Result<(Gh, RemoteFacts), Unloaded> {
+    pub(super) async fn gh_for_list(
+        &self,
+        repo: &Repo,
+    ) -> std::result::Result<(Gh, RemoteFacts), Unloaded> {
         let facts = self
             .remote_facts(repo, &repo.runner, &repo.root)
             .await

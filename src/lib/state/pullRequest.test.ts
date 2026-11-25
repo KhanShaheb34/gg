@@ -346,6 +346,9 @@ describe("the branch's pull request", () => {
       "Pull request (⌘⇧P)",
     );
     expect(prTabTitle(s, null, "⌘⇧P")).toBe("Pull request (⌘⇧P)");
+    // With its checks, when known.
+    expect(prTabTitle(s, "feature/x", "⌘⇧P", "checks failing")).toBe("Pull request · #12 open · checks failing (⌘⇧P)");
+    expect(prTabTitle(s, "main", "⌘⇧P", "checks failing")).toBe("Pull request · none yet (⌘⇧P)");
   });
 });
 
@@ -436,5 +439,15 @@ describe("after a push", () => {
     afterPush(2, "fix/y");
     expect(sideShows(v)).toBe("commit");
     expect(panelState(2).tab).toBe("commit");
+  });
+
+  it("a push of the tab's own branch has its pull request's checks asked for again; another branch's does not", () => {
+    const v = view();
+    openPullRequestTab(v, "feature/x", false);
+    const before = panelState(1).prPushed;
+    afterPush(1, "feature/x");
+    expect(panelState(1).prPushed).toBe(before + 1);
+    afterPush(1, "fix/y");
+    expect(panelState(1).prPushed).toBe(before + 1);
   });
 });

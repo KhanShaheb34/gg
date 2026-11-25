@@ -171,6 +171,13 @@ pub struct RepoManager {
     /// Tests only: the least time between two loads of the pull requests, instead of 60 s.
     #[cfg(any(test, feature = "testutil"))]
     pub(super) prs_every: Mutex<Option<Duration>>,
+    /// Tests and the devserver only: the least time between two loads of a pull request's
+    /// details, instead of 10 s.
+    #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
+    pub(super) pr_details_every: Mutex<Option<Duration>>,
+    /// Tests only: loads of pull request details started.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) details_loads: AtomicU64,
 }
 
 /// Tests only: a point in the core where the next task to pass stops. `reached` is
@@ -276,6 +283,8 @@ pub(crate) struct Repo {
     pub(super) prs_gate: Mutex<super::prs::PrGate>,
     /// Pull request loads ended so far (tests wait on it).
     pub(super) prs_loads: watch::Sender<u64>,
+    /// Each pull request's last (or running) load of its details, by number.
+    pub(super) pr_details: Mutex<HashMap<u32, super::pr_details::DetailsLoad>>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -757,6 +766,10 @@ impl RepoManager {
             tool_path: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
             prs_every: Mutex::new(None),
+            #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
+            pr_details_every: Mutex::new(None),
+            #[cfg(any(test, feature = "testutil"))]
+            details_loads: AtomicU64::new(0),
         })
     }
 
@@ -962,6 +975,7 @@ impl RepoManager {
             scheduled_running: Arc::new(tokio::sync::Mutex::new(())),
             prs_gate: Mutex::new(super::prs::PrGate::default()),
             prs_loads: watch::channel(0).0,
+            pr_details: Mutex::new(HashMap::new()),
         });
         repo.stashes_read(self.sink.as_ref(), stash_error);
 

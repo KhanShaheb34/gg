@@ -20,7 +20,8 @@ use crate::platform::Lookup;
 use crate::repo::{RepoManager, canonical, canonical_paths};
 
 /// What `open_external` opens: a worktree in the editor, a terminal in it, the file manager
-/// showing it, or a web page (`url`).
+/// showing it, a page of the repository's GitHub host (`url`: a pull request), or a link the
+/// user chose in a pull request's comments or checks (`link`: any `https://` address).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum External {
@@ -28,7 +29,11 @@ pub enum External {
     Terminal,
     Reveal,
     Url,
+    Link,
 }
+
+/// Longest web address a link opens (`link`): longer is refused, not cut.
+pub const MAX_LINK_LEN: usize = 2048;
 
 /// A page or file of gg itself that the settings screen opens (`open_app_link`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -91,7 +96,9 @@ impl RepoManager {
     /// The editor and the terminal are `programs` (see [`terminal_plan`] for the terminal
     /// found without one). A web page must be an `https://` address; it is parsed and written
     /// out again (no spaces, no control characters, no user name or password in it) before
-    /// the system's opener gets it.
+    /// the system's opener gets it: for `url`, on the repository's GitHub host or github.com
+    /// only; for `link` (a link in a comment, a check's page: anywhere), at most
+    /// [`MAX_LINK_LEN`] characters, as asked and as written out.
     ///
     /// `bad_request` for a path that is not absolute or no worktree of the repository, a missing or wrong
     /// address, or an argument that does not belong to the target; `path_missing` for a
@@ -106,6 +113,21 @@ impl RepoManager {
     ) -> Result<Option<String>> {
         let os = std::env::consts::OS;
         let bad = |message: &str| CoreError::new(ErrorCode::BadRequest, message.to_owned());
+        if target == External::Link {
+            self.get(repo_id)?;
+            if path.is_some() {
+                return Err(bad("A link is opened by its address, not a path."));
+            }
+            let asked = url.ok_or_else(|| bad("No web address to open."))?;
+            if asked.len() > MAX_LINK_LEN {
+                return Err(bad("Not opened: the web address is too long."));
+            }
+            let url = web_address(asked)?;
+            if url.len() > MAX_LINK_LEN {
+                return Err(bad("Not opened: the web address is too long."));
+            }
+            return self.start(url_plan(os, &url), None);
+        }
         if target == External::Url {
             let repo = self.get(repo_id)?;
             if path.is_some() {
@@ -136,7 +158,7 @@ impl RepoManager {
                 )
             }
             External::Reveal => return self.start(reveal_plan(os, &dir)?, None),
-            External::Url => unreachable!("handled above"),
+            External::Url | External::Link => unreachable!("handled above"),
         };
         self.start(plan, Some(setting))
     }

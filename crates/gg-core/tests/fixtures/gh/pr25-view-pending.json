@@ -1,0 +1,43 @@
+{
+ "number": 25,
+ "state": "OPEN",
+ "isDraft": false,
+ "mergeable": "MERGEABLE",
+ "mergeStateStatus": "UNSTABLE",
+ "reviewDecision": "",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "0001-01-01T00:00:00Z",
+   "conclusion": "",
+   "detailsUrl": "https://github.com/KhanShaheb34/gg/actions/runs/45586596695/job/139109667050",
+   "name": "macos-latest",
+   "startedAt": "2026-11-25T09:33:58Z",
+   "status": "IN_PROGRESS",
+   "workflowName": "CI"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "0001-01-01T00:00:00Z",
+   "conclusion": "",
+   "detailsUrl": "https://github.com/KhanShaheb34/gg/actions/runs/45586596695/job/139109668298",
+   "name": "ubuntu-latest",
+   "startedAt": "2026-11-25T09:33:57Z",
+   "status": "IN_PROGRESS",
+   "workflowName": "CI"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "0001-01-01T00:00:00Z",
+   "conclusion": "",
+   "detailsUrl": "https://github.com/KhanShaheb34/gg/actions/runs/45586596695/job/139109667524",
+   "name": "windows-latest",
+   "startedAt": "2026-11-25T09:33:58Z",
+   "status": "IN_PROGRESS",
+   "workflowName": "CI"
+  }
+ ],
+ "comments": [],
+ "reviews": [],
+ "url": "https://github.com/KhanShaheb34/gg/pull/25"
+}

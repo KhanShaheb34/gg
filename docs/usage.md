@@ -84,7 +84,25 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   branch's or a worktree's) showed it; then a line at the top names that branch, with a
   button back to the current one. With an open pull request, it shows its number, state
   (open or draft), title, base ← head, **Open in browser** and **Copy link** (and "as of …"
-  when the list may be out of date; the tab's Refresh loads it again). Without one, it shows
+  when the list may be out of date; the tab's Refresh loads it again). Below, read-only, what
+  `gh` says of it now: a status line (Ready to merge, Checks running, Checks failing,
+  Conflicts with or Behind its base, Blocked, Draft, Merged; Approved, Changes requested,
+  Review required); its **Checks**, summed up ("1 failing · 2 passing"), open while one fails
+  or runs (your own choice wins once made), failing first, each with how long it took or has
+  run and its page; and its **Comments**: the conversation, review summaries and review
+  threads on the code (path:line, Resolved, Outdated, with their replies), oldest first, with
+  an All / Humans / Bots filter. A resolved thread, and any comment longer than about a dozen
+  lines, starts shortened (**Show more**). A comment is drawn from its Markdown without its
+  HTML: HTML comments are dropped, `<details>` stays a closed disclosure, other tags keep only
+  their text, and no image or anything else is loaded from the web (an image shows as
+  "[image: …]"); a link to an `https://` address opens in your browser (its address in its
+  tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
+  are asked of `gh` when the tab shows the pull request, on Refresh, after the list reloads
+  and after a push of the branch, and every 15 s only while a check runs, the tab shows and
+  the window is in front (never more than once every 10 s per pull request). A failure keeps
+  what was shown and says so in one line, with Retry. The tab's icon has a dot while its
+  pull request's checks are known: red when one fails, amber while one runs, green when all
+  passed (its tooltip says which). Without one, it shows
   the form: a title and description suggested from the branch's commits, the branch it goes
   into (the one last used, else the repository's default), and **Create as draft**; the
   button pushes the branch first when it needs to, and the line above it says where. What
@@ -96,7 +114,13 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   branch with no pull request, other than the default branch, the tab shows by itself,
   without taking the focus (turn this off in Settings › Pull requests). Open pull requests
   show as markers beside their branches and worktrees, loaded with each fetch (at most once
-  a minute). The app never reads or stores a GitHub token. Note that `gh`, by its
+  a minute). What gg asks `gh`: `gh pr list` for the open pull requests (and a branch's,
+  with `--head`), `gh repo view` for the default branch, `gh pr create` for a new one, `gh
+  auth token --hostname` whether a host other than github.com is GitHub (its answer never
+  read), `gh pr view <number> --json …` for one's
+  merge status, checks, comments and reviews, and `gh api graphql` with one read-only query
+  for its review threads; each names the repository. The app never reads or stores a GitHub
+  token. Note that `gh`, by its
   own design, sends a token it finds in your environment (`GH_TOKEN`, `GITHUB_TOKEN`) to
   github.com and to any `*.ghe.com` host (GitHub's own enterprise cloud): a repository whose
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise

@@ -267,12 +267,15 @@ export function unavailableHere(prs: PrState, remotes: readonly string[]): PrUna
   return prs.reason;
 }
 
-/** The tab's tooltip: what it is, the state of its branch's pull request, its shortcut. */
-export function prTabTitle(snap: RepoSnapshot, subject: string | null, keys: string): string {
+/**
+ * The tab's tooltip: what it is, the state of its branch's pull request (and of its checks,
+ * `checks`: "checks failing", when known), its shortcut.
+ */
+export function prTabTitle(snap: RepoSnapshot, subject: string | null, keys: string, checks: string | null = null): string {
   let state = "";
   if (subject !== null) {
     const pr = knownPr(snap, subject);
-    if (pr) state = ` · #${pr.number} ${pr.state === "draft" ? "draft" : "open"}`;
+    if (pr) state = ` · #${pr.number} ${pr.state === "draft" ? "draft" : "open"}${checks ? ` · ${checks}` : ""}`;
     else if (snap.prs.status === "ready") state = " · none yet";
   }
   return `Pull request${state} (${keys})`;
@@ -314,6 +317,8 @@ export function opensAfterPush(a: AfterPush): boolean {
 export function afterPush(repoId: number, branch: string): void {
   const view = findRepoView(repoId);
   if (!view) return;
+  // The tab's own branch: its pull request's checks have started again.
+  if (subjectOf(view) === branch) panelState(repoId).prPushed++;
   const go = opensAfterPush({
     setting: app.settings.openPrTabAfterPush,
     dialogOpen: overlays.dialog !== null,

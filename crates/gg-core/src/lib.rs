@@ -15,6 +15,7 @@ pub mod launch;
 mod mask;
 pub mod ops;
 mod platform;
+pub mod pr_details;
 pub mod repo;
 pub mod shell_line;
 pub mod store;
@@ -208,6 +209,15 @@ impl Core {
     pub fn set_tool_path(&self, path: Option<std::ffi::OsString>) {
         if let Ok(repos) = self.repos() {
             repos.set_tool_path(path);
+        }
+    }
+
+    /// Sets the least time between two loads of a pull request's details instead of 10 s:
+    /// for the devserver's end-to-end runs only (the `tool-path` feature, never in the app).
+    #[cfg(feature = "tool-path")]
+    pub fn set_pr_details_every(&self, every: std::time::Duration) {
+        if let Ok(repos) = self.repos() {
+            repos.set_pr_details_every(every);
         }
     }
 

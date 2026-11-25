@@ -216,7 +216,7 @@ test("while a check runs the tab asks again, and stops when all finish, when it 
   await expect.poll(() => viewCalls(gg, 31), { timeout: 10_000 }).toBeGreaterThan(blurred);
 
   // The side panel hidden: none either.
-  await page.getByRole("button", { name: "Hide the side panel" }).click();
+  await page.getByTestId("side-toggle").click();
   await expect(side(page)).toHaveCount(0);
   await page.waitForTimeout(POLL_MS);
   const gone = viewCalls(gg, 31);
@@ -386,7 +386,7 @@ test("at the panel's least width everything fits: the status, the checks, the fi
   for (const row of await page.getByTestId("pr-check").all()) expect((await row.boundingBox())!.height).toBeLessThanOrEqual(27);
 
   // In a narrow window, over the graph: the same.
-  await page.getByRole("button", { name: "Hide the side panel" }).click();
+  await page.getByTestId("side-toggle").click();
   await page.setViewportSize({ width: 760, height: 700 });
   await page.getByRole("button", { name: "Side panel" }).click();
   await expect(side(page)).toHaveClass(/overlay/);

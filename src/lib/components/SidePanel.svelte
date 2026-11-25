@@ -1,6 +1,6 @@
 <!--
   The side panel on the right of a repository: a header (a strip of icon tabs on the left, the
-  selected one underlined; the shown tab's own buttons and Hide on the right) over a body the
+  selected one underlined; the shown tab's own buttons on the right) over a body the
   shown tab fills (the commit panel, the branch's pull request, the worktree list). A tab
   says what it is in its tooltip and accessible name; one with something waiting (files to
   commit) has a dot at its corner. The tabs take the arrow keys, Home and End, as the ARIA tabs
@@ -9,11 +9,12 @@
   sits beside the graph (at its least width below NARROW_W, where it does not resize); in a
   narrow one (`overlay`) it lies over the graph's right side with a shadow, below the conflict
   banner (`top`), and Escape inside hides it. Its header lines up with the graph's column
-  header, and is the same at every width: four tabs and three buttons fit at the least one.
+  header, and is the same at every width: four tabs and two buttons fit at the least one. It
+  has no Hide button of its own: the toolbar's side panel button and ⌘B (Escape too, over the
+  graph) hide it.
 -->
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
-  import { isMac } from "../platform";
   import { tabForKey, type SideTab } from "../state/panelState.svelte";
   import { clampWidth, dockedWidth, NARROW_W, saveWidth, SIDE_DEFAULT_W, sidePanel } from "../state/worktrees.svelte";
   import Splitter from "./Splitter.svelte";
@@ -40,15 +41,15 @@
     overlay: boolean;
     /** Over the graph: how far from the top it starts (below the conflict banner), px. */
     top?: number;
+    /** Hides it (Escape, over the graph). */
     onhide: () => void;
-    /** The shown tab's own buttons, before Hide. */
+    /** The shown tab's own buttons. */
     actions?: Snippet;
     children: Snippet;
   };
 
   let { tabs, tab, onselect, overlay, top = 0, onhide, actions, children }: Props = $props();
 
-  const HIDE_KEYS = isMac() ? "⌘B" : "Ctrl+B";
   /** Over the graph, the panel leaves the graph at least this much of the window. */
   const OVERLAY_GAP = 120;
 
@@ -167,13 +168,6 @@
     <span class="spacer"></span>
     <div class="actions">
       {@render actions?.()}
-      <button class="icon-btn small" aria-label="Hide the side panel" title="Hide the side panel ({HIDE_KEYS})" onclick={onhide}>
-        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-          <rect x="1.8" y="2.3" width="10.4" height="9.4" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.25" />
-          <path d="M8.6 2.6v8.8" stroke="currentColor" stroke-width="1.25" />
-          <path d="M4 7h2.6M5.3 5.6 6.6 7 5.3 8.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
     </div>
   </header>
   <div class="body" id="side-tabpanel" role="tabpanel" aria-labelledby="side-tab-{tab}">

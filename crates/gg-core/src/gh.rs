@@ -146,6 +146,10 @@ pub(crate) struct Gh {
     limit: TimeLimit,
     /// The repository as `gh` takes it: `owner/name` on github.com, else `host/owner/name`.
     repo: String,
+    /// Its owner and name, for GitHub's GraphQL API (`gh api graphql`, which takes no
+    /// `--repo`: the query names them).
+    owner: String,
+    name: String,
 }
 
 impl Gh {
@@ -187,12 +191,19 @@ impl Gh {
             cwd: cwd.to_owned(),
             limit: TimeLimit::total(limit),
             repo,
+            owner: on.owner.clone(),
+            name: on.name.clone(),
         })
     }
 
     /// The repository every command names (`--repo <this>`).
     pub(crate) fn repo(&self) -> &str {
         &self.repo
+    }
+
+    /// The repository's owner and name, as a GraphQL query names them.
+    pub(crate) fn owner_and_name(&self) -> (&str, &str) {
+        (&self.owner, &self.name)
     }
 
     /// What every `gh` command gets: no prompt, no update notice, no colour, no repository

@@ -157,6 +157,193 @@ pub struct PrSuggestion {
     pub needs_push: bool,
 }
 
+/// What `pr_details` gives of one pull request, as `gh` knows it now: where it stands for
+/// merging, its checks, and its comments (read-only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrDetails {
+    pub number: u32,
+    /// Its page (an `https://` address), as `gh` gave it.
+    pub url: String,
+    /// Open, merged or closed as `gh` says it now (the list shown may be older).
+    pub state: PrLifecycle,
+    pub merge: MergeStatus,
+    pub review: ReviewDecision,
+    /// Its checks, in the order `gh` gave them (the UI orders them).
+    pub checks: Vec<PrCheck>,
+    pub checks_summary: ChecksSummary,
+    /// Conversation comments, review summaries and review threads, oldest first: the newest
+    /// [`crate::pr_details::MAX_COMMENTS`] of them.
+    pub comments: Vec<PrComment>,
+    /// Older comments left out (more than were kept).
+    pub comments_omitted: u32,
+    /// Why the review threads (code comments) could not be read, when they could not: the
+    /// rest is still shown.
+    pub threads_error: Option<String>,
+    /// More review threads than were read (the first 50 are).
+    pub threads_partial: bool,
+    /// When this was read from `gh`, unix milliseconds.
+    pub loaded_at_ms: i64,
+}
+
+/// A pull request's state as `gh pr view` says it now. Serialized lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrLifecycle {
+    Open,
+    Merged,
+    Closed,
+    Unknown,
+}
+
+/// Where a pull request stands for merging (GitHub's `mergeStateStatus`, with its draft and
+/// conflict flags). Serialized snake_case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeStatus {
+    /// A draft: not ready for review.
+    Draft,
+    /// Its head conflicts with the base.
+    Conflicts,
+    /// Its head is behind the base, which a rule requires it to be up to date with.
+    Behind,
+    /// A rule blocks the merge (a required review or check).
+    Blocked,
+    /// Mergeable, but some check is failing or still running.
+    Unstable,
+    /// Ready to merge.
+    Ready,
+    /// GitHub has not worked it out (yet), or said something else.
+    Unknown,
+}
+
+/// The review decision GitHub gives a pull request. Serialized snake_case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    /// None given (no review rule, or no decision yet).
+    None,
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
+/// One check of a pull request: a check run (GitHub Actions and apps) or a commit status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrCheck {
+    pub name: String,
+    /// The workflow it is a job of (check runs of GitHub Actions), if any.
+    pub workflow: Option<String>,
+    pub state: CheckState,
+    pub started_at_ms: Option<i64>,
+    pub completed_at_ms: Option<i64>,
+    /// Its page (an `https://` address), if it has one.
+    pub url: Option<String>,
+}
+
+/// How a check stands. Serialized lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckState {
+    /// Queued or running.
+    Pending,
+    Passing,
+    Failing,
+    Skipped,
+    Cancelled,
+    Neutral,
+    /// Said in a way this version does not know.
+    Unknown,
+}
+
+/// How many checks stand each way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksSummary {
+    pub total: u32,
+    pub passing: u32,
+    pub failing: u32,
+    pub pending: u32,
+    pub skipped: u32,
+    pub cancelled: u32,
+    pub neutral: u32,
+    pub unknown: u32,
+}
+
+/// What a comment of a pull request is. Serialized lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommentKind {
+    /// A comment on the conversation.
+    Comment,
+    /// A review's summary (its body; reviews with none are left out).
+    Review,
+    /// A review thread on the code: its first comment, with the replies under it.
+    Thread,
+}
+
+/// A review's verdict, for its summary. Serialized snake_case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    Commented,
+    Dismissed,
+    Pending,
+    Unknown,
+}
+
+/// One comment of a pull request (see [`CommentKind`]). Its body is untrusted Markdown, as
+/// written (the UI renders it without its HTML).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrComment {
+    /// GitHub's id of it.
+    pub id: String,
+    pub kind: CommentKind,
+    /// Its author's login (without a bot's `[bot]`); `ghost` for a deleted account.
+    pub author: String,
+    pub is_bot: bool,
+    pub created_at_ms: Option<i64>,
+    pub body: String,
+    /// Its page on GitHub (an `https://` address).
+    pub url: String,
+    /// A review summary's verdict.
+    pub review_state: Option<ReviewState>,
+    /// A review thread's place in the code, state and replies.
+    pub thread: Option<PrThread>,
+    /// Hidden on GitHub (minimized) by a maintainer.
+    pub minimized: bool,
+}
+
+/// Where a review thread is, how it stands, and its replies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrThread {
+    pub path: String,
+    /// Its line in the file (its original line once outdated), if it is on one.
+    pub line: Option<u32>,
+    pub resolved: bool,
+    /// The code it is on has changed since.
+    pub outdated: bool,
+    /// The comments after the first, oldest first.
+    pub replies: Vec<PrReply>,
+}
+
+/// A reply in a review thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReply {
+    pub id: String,
+    pub author: String,
+    pub is_bot: bool,
+    pub created_at_ms: Option<i64>,
+    pub body: String,
+    pub url: String,
+}
+
 /// Change counts for one worktree.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

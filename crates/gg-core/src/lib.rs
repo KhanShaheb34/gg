@@ -15,6 +15,7 @@ pub mod launch;
 mod mask;
 pub mod ops;
 mod platform;
+pub mod pr_details;
 pub mod repo;
 pub mod shell_line;
 pub mod store;

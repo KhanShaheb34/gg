@@ -905,7 +905,7 @@ impl GitRunner {
                 .push(self.tags, kind, cwd, args, started, -1, b"", &err.message);
             err
         })?;
-        let output = child.wait_with_output();
+        let output = output_then_wait(child);
         tokio::pin!(output);
         let finished = tokio::select! {
             out = &mut output => Some(out),
@@ -972,9 +972,11 @@ impl GitRunner {
     /// terminal, as every git child does; elsewhere only git itself is killed. An operation's
     /// Stop cancels it too (see [`Stop`]).
     ///
-    /// The group's id is git's pid, taken at spawn. On timeout the group is killed even when
-    /// git has already exited (a helper it started still holding its output open): a group
-    /// id is not reused while the group has members. Then git is waited for. Without a
+    /// The group's id is git's pid, taken at spawn. git is waited for (reaped) only once its
+    /// output has ended, so until then that id is still git's, even when git has already
+    /// exited (a helper it started still holding its output open): on timeout the group is
+    /// killed then, and git waited for after. A git that has been reaped (cancelled, it ended
+    /// within the grace) is sent nothing more: its id may be another process's. Without a
     /// controlling terminal, a helper that wants to ask on the terminal (an ssh passphrase
     /// or host-key prompt; git's own prompts are off) cannot open it and fails at once,
     /// whether or not the app was started from a terminal. Askpass helpers still work.
@@ -1462,8 +1464,12 @@ async fn exec_limited(
         tokio::join!(read_out, read_err, write_in);
         (take(&out), take(&err))
     };
+    // git is waited for only once its output has ended: until then it is not reaped, so its
+    // pid, and with it its process group's id, stays its own, and the group can be ended
+    // below without the signal reaching a process that has been given the id since.
     let run = async {
-        let ((out, err), status) = tokio::join!(read, child.wait());
+        let (out, err) = read.await;
+        let status = child.wait().await;
         (out, err, status)
     };
     let deadline = tokio::time::Instant::now() + limit.total;
@@ -1504,19 +1510,20 @@ async fn exec_limited(
             () = cancelled => Expired::Cancelled,
         }
     };
-    let finished = {
+    let (finished, ended) = {
         tokio::pin!(run);
         let finished = tokio::select! {
             done = &mut run => Ok(done),
             hit = expired => Err(hit),
         };
         // Cancelled: ask git to stop, so that it removes its lock files, and give it a
-        // moment before it is killed with the rest.
+        // moment before it is killed with the rest. Ended within it, git has been reaped.
+        let mut ended = None;
         if let Err(Expired::Cancelled) = finished {
             tree.terminate();
-            let _ = tokio::time::timeout(CANCEL_GRACE, &mut run).await;
+            ended = tokio::time::timeout(CANCEL_GRACE, &mut run).await.ok();
         }
-        finished
+        (finished, ended)
     };
     match finished {
         Ok((out, err, Ok(status))) => {
@@ -1533,23 +1540,60 @@ async fn exec_limited(
         }
         Ok((_, _, Err(e))) => Err(fail(e)),
         Err(hit) => {
-            tree.kill();
-            let _ = child.kill().await;
+            let (stdout, stderr) = match ended {
+                // git ended at the request and has been reaped: its group's id may be
+                // another process's by now, so nothing more is sent to it (on Windows, the
+                // tree, dropped unreleased, ends what is left of it).
+                Some((out, err, _)) => (out, err),
+                // Not reaped yet (its output has not ended, or it has not been waited for):
+                // the group's id is still git's.
+                None => {
+                    tree.kill();
+                    let _ = child.kill().await;
+                    (take(&out), take(&err))
+                }
+            };
             exec.log
                 .push(exec.tags, kind, cwd, args, started, -1, b"", "timed out");
             Ok(Err(TimedOut {
                 limit: hit,
-                stdout: take(&out),
-                stderr: String::from_utf8_lossy(&take(&err)).into_owned(),
+                stdout,
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
             }))
         }
     }
 }
 
+/// [`Child::wait_with_output`], except that `child` is waited for (reaped) only once its
+/// stdout and stderr have both ended, never while they are still read: while this is
+/// pending, the child's process group's id is still the child's, and the group can be
+/// signalled (see [`crate::platform::ProcessTree`]). Dropped, the child is killed.
+async fn output_then_wait(mut child: Child) -> io::Result<std::process::Output> {
+    use tokio::io::{AsyncRead, AsyncReadExt};
+
+    async fn read_all(pipe: Option<impl AsyncRead + Unpin>) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut bytes).await?;
+        }
+        Ok(bytes)
+    }
+    let (stdout, stderr) =
+        tokio::try_join!(read_all(child.stdout.take()), read_all(child.stderr.take()))?;
+    let status = child.wait().await?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 /// Ends the process tree `tree` of a stopped command whose output (not yet polled to its
-/// end) is `output`, and returns that output if it ends: asked to end (SIGTERM on Unix, so
-/// git removes its lock files; on Windows it ends at once), then killed if it has not ended
-/// after [`CANCEL_GRACE`], then up to [`KILLED_GRACE`] for the pipes to close.
+/// end, and waiting for the child only after its pipes, as [`output_then_wait`] does, so the
+/// tree's group is still the child's) is `output`, and returns that output if it ends: asked
+/// to end (SIGTERM on Unix, so git removes its lock files; on Windows it ends at once), then
+/// killed if it has not ended after [`CANCEL_GRACE`], then up to [`KILLED_GRACE`] for the
+/// pipes to close.
 async fn end_group<F: std::future::Future + Unpin>(
     tree: &crate::platform::ProcessTree,
     output: &mut F,
@@ -1803,7 +1847,10 @@ pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Op
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
+            // Not known to be unreaped: its group's id may be another process's.
+            Err(_) => return None,
+            // Not reaped: the group's id is still the shell's.
+            Ok(None) => {
                 if let Ok(pid) = i32::try_from(child.id()) {
                     // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
                     unsafe {
@@ -2238,6 +2285,135 @@ mod tests {
         stop.stop();
         let out = run.await.unwrap().unwrap().expect_err("stopped");
         assert_eq!(out.limit, Expired::Cancelled);
+    }
+
+    /// The pid written to `file` by the command under test, once it is there.
+    #[cfg(unix)]
+    async fn pid_in(file: &Path) -> libc::pid_t {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(pid) = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+            {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "the command wrote its pid");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Asserts that every signal sent to process group `group` was sent while its leader
+    /// had not been reaped (its id was still its own), and returns them.
+    #[cfg(unix)]
+    fn sent_while_unreaped(group: libc::pid_t) -> Vec<libc::c_int> {
+        let sent = crate::platform::signals::to(group);
+        assert!(
+            sent.iter().all(|s| !s.leader_reaped),
+            "a signal went to group {group} after its leader was reaped: {sent:?}"
+        );
+        sent.iter().map(|s| s.signal).collect()
+    }
+
+    /// A stopped command that ends at the request (SIGTERM), within the grace, has been
+    /// reaped: nothing more is sent to its group, whose id may by then be another process's
+    /// (another git of the app's, which leads a group of its own).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_that_ends_when_stopped_is_sent_nothing_once_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let stop = Stop::new();
+        let tool = sh_tool(CommandLog::new(), Some(stop.clone()));
+        let path = dir.path().to_path_buf();
+        let script = format!("echo $$ > '{}'; exec sleep 30", pidfile.display());
+        let run = tokio::spawn(async move {
+            tool.run(
+                &path,
+                &["-c", &script],
+                CmdKind::Write,
+                StdinPolicy::Null,
+                TimeLimit::total(Duration::from_secs(60)),
+            )
+            .await
+        });
+        let pid = pid_in(&pidfile).await;
+        stop.stop();
+        let out = run.await.unwrap().unwrap().expect_err("stopped");
+        assert_eq!(out.limit, Expired::Cancelled);
+        assert_eq!(sent_while_unreaped(pid), [libc::SIGTERM]);
+    }
+
+    /// git can exit while a helper it started (in its group) still holds its output open:
+    /// git is not reaped before its output ends, so at the time limit its group's id is
+    /// still its own when the group (the helper) is killed.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_timed_out_group_is_killed_before_git_is_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (git_pid, helper_pid) = (dir.path().join("git"), dir.path().join("helper"));
+        let alias = format!(
+            "alias.probe=!sleep 30 & echo $! > '{}'; echo $PPID > '{}'",
+            helper_pid.display(),
+            git_pid.display()
+        );
+        let timed_out = plain_runner()
+            .run_with_timeout(
+                dir.path(),
+                &["-c", &alias, "probe"],
+                CmdKind::Read,
+                TimeLimit::total(Duration::from_secs(2)),
+            )
+            .await
+            .unwrap()
+            .expect_err("gave up");
+        assert_eq!(timed_out.limit, Expired::Total(Duration::from_secs(2)));
+        let (group, helper) = (pid_in(&git_pid).await, pid_in(&helper_pid).await);
+        assert_eq!(sent_while_unreaped(group), [libc::SIGKILL]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(helper, 0) } == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the helper was killed with the group"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// The same for a stopped operation's git that has exited while a helper holds its
+    /// output open: its group is asked to end while git is not yet reaped.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stopped_group_is_signalled_before_git_is_reaped() {
+        let stop = Stop::new();
+        let runner = GitRunner {
+            stop: Some(stop.clone()),
+            ..plain_runner()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let git_pid = dir.path().join("git");
+        let alias = format!(
+            "alias.probe=!sleep 30 & echo $PPID > '{}'",
+            git_pid.display()
+        );
+        let cwd = dir.path().to_path_buf();
+        let run = tokio::spawn(async move {
+            runner
+                .run_unchecked(&cwd, &["-c", &alias, "probe"], CmdKind::Write)
+                .await
+        });
+        let group = pid_in(&git_pid).await;
+        // git exits as soon as the alias has; the helper keeps its output open.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        stop.stop();
+        let err = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .expect("ends once stopped")
+            .unwrap()
+            .expect_err("stopped");
+        assert_eq!(err.message, STOPPED);
+        assert_eq!(sent_while_unreaped(group), [libc::SIGTERM]);
     }
 
     /// The version is read from `git --version`, and one older than 2.29 is a problem

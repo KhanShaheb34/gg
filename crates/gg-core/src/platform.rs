@@ -198,6 +198,13 @@ pub(crate) fn windows_absolute(path: &str) -> bool {
 /// A child's process tree: what ends it and everything it started. On Unix the process
 /// group it leads (its pid; the child is made a session leader at its start); on Windows the
 /// job object it was put in before it ran.
+///
+/// On Unix the group's id is only the child's while the child has not been waited for
+/// (reaped): until then its pid, ended or not, is given to no other process, nor is a group
+/// of that id made. Once reaped, the id is free, and may be another process's group (every
+/// git child of the app's leads one) by the time a signal is sent. So the tree is signalled
+/// only while its child has not been waited for: callers wait for the child after deciding
+/// whether to end the tree, never before.
 pub struct ProcessTree {
     #[cfg(unix)]
     group: Option<i32>,
@@ -240,11 +247,53 @@ impl ProcessTree {
     #[cfg(unix)]
     fn signal(&self, signal: libc::c_int) {
         if let Some(group) = self.group {
+            #[cfg(test)]
+            signals::record(group, signal);
             // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
             unsafe {
                 libc::killpg(group, signal);
             }
         }
+    }
+}
+
+/// The signals sent to process trees (unit tests): each with whether the group's leader had
+/// already been reaped then, which must never be (see [`ProcessTree`]).
+#[cfg(all(test, unix))]
+pub(crate) mod signals {
+    use std::sync::Mutex;
+
+    /// A signal sent to a group.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Sent {
+        pub group: i32,
+        pub signal: libc::c_int,
+        /// No process had the group's id: its leader had been reaped.
+        pub leader_reaped: bool,
+    }
+
+    static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
+
+    pub(super) fn record(group: i32, signal: libc::c_int) {
+        // Signal 0 only checks: a leader that has ended but not been reaped still answers.
+        // SAFETY: signal 0 sends nothing.
+        let leader_reaped = unsafe { libc::kill(group, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        SENT.lock().unwrap_or_else(|e| e.into_inner()).push(Sent {
+            group,
+            signal,
+            leader_reaped,
+        });
+    }
+
+    /// The signals sent so far to group `group`.
+    pub(crate) fn to(group: i32) -> Vec<Sent> {
+        SENT.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|s| s.group == group)
+            .copied()
+            .collect()
     }
 }
 

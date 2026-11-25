@@ -123,7 +123,10 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   the window is in front (never more than once every 10 s per pull request). A failure keeps
   what was shown and says so in one line, with Retry. The tab's icon has a dot while its
   pull request's checks are known: red when one fails, amber while one runs, green when all
-  passed (its tooltip says which). Without one, it shows
+  passed (its tooltip says which). Until the first list of pull requests has loaded, the tab
+  says it is looking for one ("Looking for a pull request…", under the branch's name) rather
+  than offering to make one; a pull request found then shows at once, its checks and comments
+  following. What you typed in the form is kept meanwhile. Without one, it shows
   the form: a title and description suggested from the branch's commits, the branch it goes
   into (the one last used, else the repository's default), and **Create as draft**; the
   button pushes the branch first when it needs to, and the line above it says where. What

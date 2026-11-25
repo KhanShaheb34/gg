@@ -268,6 +268,17 @@ export function unavailableHere(prs: PrState, remotes: readonly string[]): PrUna
 }
 
 /**
+ * Whether the app knows, from `prs`, whether a branch has an open pull request: the list has
+ * loaded (an older one kept after a reload failed counts, as the markers take it), or it
+ * cannot be had and says why (gh missing, signed out, not GitHub, the load failed). Not while
+ * the first list is still unknown or loading: the branch may well have one, and the tab must
+ * not offer to make it.
+ */
+export function prsKnown(prs: PrState): boolean {
+  return prs.status === "ready" || prs.status === "unavailable";
+}
+
+/**
  * The tab's tooltip: what it is, the state of its branch's pull request (and of its checks,
  * `checks`: "checks failing", when known), its shortcut.
  */

@@ -6,7 +6,10 @@
   else why none can be made there, plainly, with what to do: HEAD detached, no remote, a
   remote not on GitHub, the default branch, gh missing or signed out (where the branch can
   still be pushed and GitHub's compare page opened). While the list of pull requests loads
-  for the first time, the form shows, waiting on the core's suggestion.
+  for the first time, the tab says it is looking (the branch, and a quiet line): the form shows
+  only once the app knows the branch has none (the list loaded, or gh cannot be asked and says
+  why); a pull request gh names meanwhile (the suggestion's) shows at once. What is typed in
+  the form is kept per branch (pullRequest.svelte.ts), so a form that waits loses nothing.
 
   What the core suggests (`pr_suggest`, which also asks gh whether the branch has a pull
   request) is asked when the form or the compare page would show, and kept while the branch,
@@ -21,6 +24,7 @@
   import {
     defaultBranch,
     keepSuggestion,
+    prsKnown,
     suggestionTicket,
     keptSuggestion,
     knownPr,
@@ -69,6 +73,7 @@
     | { kind: "unavailable"; why: "no_remote" | "not_github" }
     | { kind: "default"; branch: string }
     | { kind: "pr"; pr: PullRequest }
+    | { kind: "looking"; branch: string }
     | { kind: "form"; branch: string; compare: "no_gh" | "signed_out" | null };
 
   const shown: Shown = $derived.by(() => {
@@ -78,6 +83,8 @@
     if (pr) return { kind: "pr", pr };
     if (unavailable === "not_github") return { kind: "unavailable", why: "not_github" };
     if (isDefault) return { kind: "default", branch };
+    // Not known yet whether it has one: never the form for a branch that may have a pull request.
+    if (!prsKnown(settled)) return { kind: "looking", branch };
     return { kind: "form", branch, compare: unavailable === "no_gh" || unavailable === "signed_out" ? unavailable : null };
   });
 
@@ -262,6 +269,13 @@
         onPushPlan={() => void suggest(true)}
       />
     {/key}
+  {:else if shown.kind === "looking"}
+    <!-- The first list of pull requests is on its way: the branch, and a quiet line, the size
+         of a pull request's header so nothing jumps when it comes. -->
+    <div class="looking" role="status" data-testid="pr-looking">
+      <MiddleText class="looking-branch" text={shown.branch} keep={12} />
+      <p class="looking-line">Looking for a pull request…</p>
+    </div>
   {:else}
     <div class="message" data-testid="pr-none" data-why={shown.kind === "unavailable" ? shown.why : shown.kind}>
       <div class="box">
@@ -317,6 +331,27 @@
     width: 22px;
     height: 22px;
     border-radius: 5px;
+  }
+
+  .looking {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: none;
+    padding: 12px 12px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-sm);
+  }
+
+  .looking :global(.looking-branch) {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .looking-line {
+    margin: 0;
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
   }
 
   .message {

@@ -1,12 +1,13 @@
 //! `branch_files`: the files a worktree's branch changes in its own commits, for the Commit
 //! tab's "Committed on branch". Read-only: two git reads, never a write.
 //!
-//! The branch is the one checked out in the worktree; its base is, in this order: the base
-//! branch of its open pull request (as the snapshot knows it, `branchPrs`) on the remote the
-//! pull requests were listed from (the base repository: `upstream` before `origin` in a
-//! fork), else on the remote the branch tracks, else on any remote, else that local branch;
-//! the default branch of the remote it tracks (`remoteHeads`); the default branch of the
-//! first remote.
+//! The branch is the one checked out in the worktree; its base is its open pull request's
+//! base (as the snapshot knows it, `branchPrs`) on the repository the pull request goes to
+//! (the remote the pull requests were listed from: `upstream` before `origin` in a fork), else
+//! on the remote the branch tracks, else on any remote, else that local branch; without one,
+//! the branch's base on the base remote as the pull request form has it (`repo/base.rs`: the
+//! base remembered for it, the branch it was created from, the nearest by history, the
+//! remote's HEAD, `main`).
 //! The files are those of `merge-base(base, HEAD)..HEAD` (`git diff-tree -M --raw
 //! --numstat`, read as a commit's are): what the branch's commits change, not the working
 //! tree. None at all (`null`) when HEAD is detached there, the branch is the base's own
@@ -26,8 +27,10 @@ use tokio::sync::OnceCell;
 
 use crate::dto::{BranchFiles, BranchTip, MAX_BRANCH_FILES, PullRequest, RepoSnapshot};
 use crate::error::{CoreError, ErrorCode, Result};
+use crate::gh::RemoteFacts;
 use crate::git::details::parse_files;
 use crate::git::runner::{CmdKind, git_failed};
+use crate::repo::base::default_base;
 use crate::repo::manager::{Repo, RepoManager, canonical, lock};
 
 /// What one read is for: the branch, its commit, the base and the base's commit.
@@ -52,7 +55,6 @@ pub(crate) struct Known<'a> {
     /// The remote naming the repository the pull requests go to (`None`: not listed).
     pub pr_remote: Option<&'a str>,
     pub remotes: &'a [String],
-    pub remote_heads: &'a BTreeMap<String, String>,
     pub branch_prs: &'a BTreeMap<String, PullRequest>,
     pub branches: &'a [String],
     pub branch_tips: &'a [BranchTip],
@@ -65,7 +67,6 @@ impl<'a> Known<'a> {
         Self {
             pr_remote,
             remotes: &snap.remotes,
-            remote_heads: &snap.remote_heads,
             branch_prs: &snap.branch_prs,
             branches: &snap.branches,
             branch_tips: &snap.branch_tips,
@@ -99,53 +100,36 @@ impl<'a> Known<'a> {
             .max_by_key(|r| r.len())
             .map(String::as_str)
     }
-
-    /// Remote `remote`'s default branch, as a remote-tracking branch with its commit.
-    fn default_of(&self, remote: &str) -> Option<(String, &'a str, &'a str)> {
-        let branch = self.remote_heads.get(remote)?;
-        let name = format!("{remote}/{branch}");
-        let tip = self.remote_tip(&name)?;
-        Some((name, tip, branch.as_str()))
-    }
 }
 
-/// The base of branch `branch` (tracking `upstream`, if it does), with its commit and the
-/// base's own branch name: see the module comment for the order. `None` when none is known,
-/// or when the branch is the base's own (the default branch itself).
-pub(crate) fn choose_base(
+/// Step 1: the base of branch `branch` (tracking `upstream`, if it does) from its open pull
+/// request, with its commit: the pull request's base on the repository it was listed from,
+/// else on the remote the branch tracks, else on the first remote that has that branch, else
+/// the local branch of that name. `None` without a pull request, or with none of those.
+pub(crate) fn pr_base(
     known: &Known<'_>,
     branch: &str,
     upstream: Option<&str>,
 ) -> Option<(String, String)> {
     let tracked = upstream.and_then(|u| known.remote_of(u));
-    let from_pr = known.branch_prs.get(branch).and_then(|pr| {
-        // Where the pull request goes: on the repository it was listed from, else the remote
-        // the branch tracks, else the first remote that has that branch, else the local
-        // branch of that name.
-        let on = |remote: &str| {
-            let name = format!("{remote}/{}", pr.base);
-            known
-                .remote_tip(&name)
-                .map(|tip| (name, tip, pr.base.as_str()))
-        };
-        known
-            .pr_remote
-            .and_then(on)
-            .or_else(|| tracked.and_then(on))
-            .or_else(|| known.remotes.iter().find_map(|r| on(r)))
-            .or_else(|| {
-                known
-                    .local_tip(&pr.base)
-                    .map(|tip| (pr.base.clone(), tip, pr.base.as_str()))
-            })
-    });
-    let (base, tip, own) = from_pr
-        .or_else(|| tracked.and_then(|r| known.default_of(r)))
-        .or_else(|| known.remotes.first().and_then(|r| known.default_of(r)))?;
-    if own == branch {
+    let pr = known.branch_prs.get(branch)?;
+    if pr.base == branch {
         return None;
     }
-    Some((base, tip.to_owned()))
+    let on = |remote: &str| {
+        let name = format!("{remote}/{}", pr.base);
+        known.remote_tip(&name).map(|tip| (name, tip.to_owned()))
+    };
+    known
+        .pr_remote
+        .and_then(on)
+        .or_else(|| tracked.and_then(on))
+        .or_else(|| known.remotes.iter().find_map(|r| on(r)))
+        .or_else(|| {
+            known
+                .local_tip(&pr.base)
+                .map(|tip| (pr.base.clone(), tip.to_owned()))
+        })
 }
 
 /// A full object name, as git prints one.
@@ -183,7 +167,34 @@ impl RepoManager {
                 .and_then(|d| d.facts.base_remote().map(str::to_owned))
         };
         let known = Known::of(&snap, pr_remote.as_deref());
-        let Some((base, base_commit)) = choose_base(&known, branch, upstream) else {
+        let chosen = match pr_base(&known, branch, upstream) {
+            Some(chosen) => Some(chosen),
+            // Steps 2 to 5 (repo/base.rs) on the base remote, as the suggestion has them.
+            None => {
+                let remote = match pr_remote.clone() {
+                    Some(r) => Some(r),
+                    None => RemoteFacts::read(&repo.runner, &repo.root)
+                        .await
+                        .ok()
+                        .and_then(|f| f.base_remote().map(str::to_owned)),
+                };
+                match remote {
+                    // The default branch itself: nothing to compare.
+                    Some(r) if snap.remote_heads.get(&r) != Some(branch) => {
+                        let name = match self.recorded_base(&repo, &snap, branch, &r).await {
+                            Some((b, _)) => b,
+                            None => default_base(&snap, Some(&r), None),
+                        };
+                        let full = format!("{r}/{name}");
+                        (name != *branch)
+                            .then(|| known.remote_tip(&full).map(|tip| (full, tip.to_owned())))
+                            .flatten()
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let Some((base, base_commit)) = chosen else {
             return Ok(None);
         };
         let range = Range {
@@ -317,21 +328,16 @@ mod tests {
     struct Facts {
         pr_remote: Option<String>,
         remotes: Vec<String>,
-        heads: BTreeMap<String, String>,
         prs: BTreeMap<String, PullRequest>,
         branches: Vec<String>,
         remote_branches: Vec<String>,
     }
 
     impl Facts {
-        fn new(remotes: &[&str], heads: &[(&str, &str)], remote_branches: &[&str]) -> Self {
+        fn new(remotes: &[&str], _heads: &[(&str, &str)], remote_branches: &[&str]) -> Self {
             Self {
                 pr_remote: None,
                 remotes: remotes.iter().map(|r| (*r).into()).collect(),
-                heads: heads
-                    .iter()
-                    .map(|(r, b)| ((*r).into(), (*b).into()))
-                    .collect(),
                 prs: BTreeMap::new(),
                 branches: vec!["main".into(), "feature".into(), "develop".into()],
                 remote_branches: remote_branches.iter().map(|b| (*b).into()).collect(),
@@ -350,14 +356,13 @@ mod tests {
             let known = Known {
                 pr_remote: self.pr_remote.as_deref(),
                 remotes: &self.remotes,
-                remote_heads: &self.heads,
                 branch_prs: &self.prs,
                 branches: &self.branches,
                 branch_tips: &bt,
                 remote_branches: &self.remote_branches,
                 remote_branch_tips: &rt,
             };
-            choose_base(&known, branch, upstream)
+            pr_base(&known, branch, upstream)
         }
     }
 
@@ -366,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn the_base_is_the_pull_requests_then_the_tracked_remotes_default_then_the_first_remotes() {
+    fn a_pull_requests_base_on_the_tracked_remote_the_first_that_has_it_or_the_local_branch() {
         let mut f = Facts::new(
             &["origin", "upstream"],
             &[("origin", "main"), ("upstream", "trunk")],
@@ -377,13 +382,8 @@ mod tests {
                 "upstream/develop",
             ],
         );
-        // Tracking upstream: its default.
-        assert_eq!(
-            f.choose("feature", Some("upstream/feature")),
-            base("upstream/trunk")
-        );
-        // Tracking nothing: the first remote's default.
-        assert_eq!(f.choose("feature", None), base("origin/main"));
+        // No pull request: not this step's (repo/base.rs has the rest).
+        assert_eq!(f.choose("feature", Some("upstream/feature")), None);
         // A pull request into develop: develop on the tracked remote, else the first that has it.
         f.prs.insert("feature".into(), pr("develop"));
         assert_eq!(
@@ -391,14 +391,14 @@ mod tests {
             base("upstream/develop")
         );
         assert_eq!(f.choose("feature", None), base("origin/develop"));
-        // A base no remote has: the local branch of that name; none at all, the defaults.
+        // A base no remote has: the local branch of that name; none at all, none.
         f.prs.insert("feature".into(), pr("main"));
         assert_eq!(
             f.choose("feature", Some("upstream/feature")),
             base("origin/main")
         );
         f.prs.insert("feature".into(), pr("gone"));
-        assert_eq!(f.choose("feature", None), base("origin/main"));
+        assert_eq!(f.choose("feature", None), None);
         f.branches.push("gone".into());
         assert_eq!(f.choose("feature", None), base("gone"));
     }
@@ -435,36 +435,23 @@ mod tests {
     }
 
     #[test]
-    fn none_for_the_default_branch_itself_or_with_no_default_known() {
-        let f = Facts::new(&["origin"], &[("origin", "main")], &["origin/main"]);
-        assert_eq!(f.choose("main", Some("origin/main")), None);
-        assert_eq!(f.choose("main", None), None);
-        // No remote; a remote with no HEAD; a HEAD naming a branch not fetched.
-        assert_eq!(Facts::new(&[], &[], &[]).choose("feature", None), None);
-        assert_eq!(
-            Facts::new(&["origin"], &[], &["origin/main"]).choose("feature", None),
-            None
-        );
-        assert_eq!(
-            Facts::new(&["origin"], &[("origin", "main")], &[]).choose("feature", None),
-            None
-        );
-    }
-
-    #[test]
     fn the_tracked_remote_is_the_longest_name_that_fits() {
-        let f = Facts::new(
+        let mut f = Facts::new(
             &["team", "team/eu"],
             &[("team", "main"), ("team/eu", "trunk")],
-            &["team/main", "team/eu/trunk"],
+            &["team/trunk", "team/eu/trunk"],
         );
+        f.prs.insert("feature".into(), pr("trunk"));
         assert_eq!(
             f.choose("feature", Some("team/eu/feature")),
             base("team/eu/trunk")
         );
-        assert_eq!(f.choose("feature", Some("team/feature")), base("team/main"));
-        // An upstream on no known remote (a local branch): the first remote's default.
-        assert_eq!(f.choose("feature", Some("develop")), base("team/main"));
+        assert_eq!(
+            f.choose("feature", Some("team/feature")),
+            base("team/trunk")
+        );
+        // An upstream on no known remote (a local branch): the first remote that has it.
+        assert_eq!(f.choose("feature", Some("develop")), base("team/trunk"));
     }
 
     #[test]

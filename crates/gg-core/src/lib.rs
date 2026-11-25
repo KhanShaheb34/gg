@@ -299,16 +299,19 @@ impl repo::WorktreeMemory for StoreMemory {
         let _ = self.0.set_active_worktree(root, worktree);
     }
 
-    fn pr_base(&self, root: &std::path::Path) -> Option<String> {
-        self.0.repo_prefs(root).pr_base
+    fn pr_base(&self, root: &std::path::Path, branch: &str) -> Option<String> {
+        self.0.repo_prefs(root).pr_bases.get(branch).cloned()
     }
 
-    fn remember_pr_base(&self, root: &std::path::Path, base: &str) {
-        // Only the next pull request's suggestion would miss it.
+    fn remember_pr_base(&self, root: &std::path::Path, branch: &str, base: &str) {
+        // Only the branch's next pull request's suggestion would miss it.
         let _ = self.0.set_repo_prefs(
             root,
             store::RepoPrefsPatch {
-                pr_base: Some(Some(base.to_owned())),
+                pr_bases: Some(std::collections::BTreeMap::from([(
+                    branch.to_owned(),
+                    Some(base.to_owned()),
+                )])),
                 ..Default::default()
             },
         );

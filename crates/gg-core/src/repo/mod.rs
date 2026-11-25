@@ -1,6 +1,7 @@
 //! Open repositories: their in-memory state, the background log loader and the manager
 //! that ties them together.
 
+mod base;
 mod branch_files;
 mod fetch;
 mod loader;

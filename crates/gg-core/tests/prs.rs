@@ -590,8 +590,9 @@ async fn loads_go_with_fetches_and_user_refreshes_at_most_once_a_minute() {
 }
 
 /// `pr_suggest`: one commit's subject as the title, or the branch name as words; the
-/// subjects as the description; the base remembered, else gh's default branch, else the
-/// remote's HEAD, else main; `existing` asked of gh for that branch.
+/// subjects as the description; the branch's own base (here the one it was made from), else
+/// gh's default branch, else the remote's HEAD, else main; `existing` asked of gh for that
+/// branch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn suggestions_come_from_the_commits_and_the_base_from_what_is_known() {
     let s = setup().await;
@@ -660,10 +661,11 @@ async fn suggestions_come_from_the_commits_and_the_base_from_what_is_known() {
     );
     assert_eq!(two.existing.map(|p| p.number), Some(9));
 
-    // gh's default branch: develop (a branch on the remote).
+    // The branch it was made from (main, by `switch -c` there) comes before gh's default.
     s.repo.git(&["branch", "develop", "main"]);
     s.repo.git(&["push", "-q", "origin", "develop"]);
     s.repo.git(&["fetch", "-q", "origin"]);
+    s.h.m.refresh(s.id).await.unwrap();
     s.gh.reply(
         "repo-view",
         0,
@@ -676,6 +678,20 @@ async fn suggestions_come_from_the_commits_and_the_base_from_what_is_known() {
             .await
             .unwrap()
             .base,
+        "main"
+    );
+
+    // A branch with nothing to go by (made at a commit, never checked out where it was made;
+    // comparing by history given no time): gh's default branch.
+    let at = s.repo.git(&["rev-parse", "main"]);
+    s.repo.git(&["branch", "loose", &at]);
+    s.h.m.set_nearest_limit(Duration::ZERO);
+    s.h.m.refresh(s.id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, s.h.m.wait_loaded(s.id))
+        .await
+        .unwrap();
+    assert_eq!(
+        s.h.m.pr_suggest(s.id, "loose").await.unwrap().base,
         "develop"
     );
     // gh failing: the remote's HEAD.
@@ -685,25 +701,22 @@ async fn suggestions_come_from_the_commits_and_the_base_from_what_is_known() {
         "refs/remotes/origin/HEAD",
         "refs/remotes/origin/develop",
     ]);
+    s.h.m.refresh(s.id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, s.h.m.wait_loaded(s.id))
+        .await
+        .unwrap();
     assert_eq!(
-        s.h.m
-            .pr_suggest(s.id, "fix/pr_loading-state")
-            .await
-            .unwrap()
-            .base,
+        s.h.m.pr_suggest(s.id, "loose").await.unwrap().base,
         "develop"
     );
     // Nothing known: main.
     s.repo
         .git(&["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
-    assert_eq!(
-        s.h.m
-            .pr_suggest(s.id, "fix/pr_loading-state")
-            .await
-            .unwrap()
-            .base,
-        "main"
-    );
+    s.h.m.refresh(s.id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, s.h.m.wait_loaded(s.id))
+        .await
+        .unwrap();
+    assert_eq!(s.h.m.pr_suggest(s.id, "loose").await.unwrap().base, "main");
     // Not a local branch: refused.
     assert!(s.h.m.pr_suggest(s.id, "nope").await.is_err());
     assert!(s.h.m.pr_suggest(s.id, "-x").await.is_err());
@@ -817,18 +830,21 @@ async fn the_compare_page_fallback_keeps_the_title_and_description() {
 
 /// Remembers the pull request base given, as the app's store does.
 #[derive(Default)]
-struct Memory(std::sync::Mutex<Option<String>>);
+struct Memory(std::sync::Mutex<std::collections::HashMap<String, String>>);
 
 impl gg_core::repo::WorktreeMemory for Memory {
     fn remembered(&self, _root: &std::path::Path) -> Option<std::path::PathBuf> {
         None
     }
     fn remember(&self, _root: &std::path::Path, _worktree: Option<&std::path::Path>) {}
-    fn pr_base(&self, _root: &std::path::Path) -> Option<String> {
-        self.0.lock().unwrap().clone()
+    fn pr_base(&self, _root: &std::path::Path, branch: &str) -> Option<String> {
+        self.0.lock().unwrap().get(branch).cloned()
     }
-    fn remember_pr_base(&self, _root: &std::path::Path, base: &str) {
-        *self.0.lock().unwrap() = Some(base.to_owned());
+    fn remember_pr_base(&self, _root: &std::path::Path, branch: &str, base: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(branch.to_owned(), base.to_owned());
     }
 }
 
@@ -934,13 +950,22 @@ async fn a_pull_request_is_made_after_the_push_with_the_body_on_stdin() {
     assert!(!made[0].tty);
     // Remembered, and reloaded at once though the last load was just now.
     tokio::time::timeout(TIMEOUT, async {
-        while memory.0.lock().unwrap().is_none() {
+        while memory.0.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("the base is remembered");
-    assert_eq!(memory.0.lock().unwrap().as_deref(), Some("main"));
+    assert_eq!(
+        memory
+            .0
+            .lock()
+            .unwrap()
+            .get("feature/x")
+            .map(String::as_str),
+        Some("main"),
+        "remembered for its branch"
+    );
     tokio::time::timeout(TIMEOUT, s.h.m.wait_prs_loads(s.id, loads))
         .await
         .expect("reloaded at once");

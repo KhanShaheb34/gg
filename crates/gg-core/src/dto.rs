@@ -860,9 +860,13 @@ pub struct RepoPrefs {
     pub active_worktree: Option<String>,
     /// The side panel (worktrees) is shown while the window is wide enough to dock it.
     pub side_panel: bool,
-    /// The base branch of the last pull request made, offered for the next one.
-    pub pr_base: Option<String>,
+    /// The base each branch's last pull request was made into (branch → base), offered for
+    /// that branch's next one. (An older `prBase`, one base for every branch, is ignored.)
+    pub pr_bases: BTreeMap<String, String>,
 }
+
+/// Most branches whose pull request base [`RepoPrefs::pr_bases`] keeps per repository.
+pub const MAX_PR_BASES: usize = 200;
 
 impl Default for RepoPrefs {
     fn default() -> Self {
@@ -870,7 +874,7 @@ impl Default for RepoPrefs {
             merge_no_ff: true,
             active_worktree: None,
             side_panel: true,
-            pr_base: None,
+            pr_bases: BTreeMap::new(),
         }
     }
 }
@@ -2029,7 +2033,7 @@ mod tests {
         assert_eq!(serde_json::to_value(RowKind::Stash).unwrap(), "stash");
         assert_eq!(
             serde_json::to_value(RepoPrefs::default()).unwrap(),
-            json!({"mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBase": null})
+            json!({"mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBases": {}})
         );
         let suggestion = PrSuggestion {
             title: "t".into(),

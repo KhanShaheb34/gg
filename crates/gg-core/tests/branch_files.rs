@@ -205,11 +205,14 @@ async fn none_when_detached_on_the_default_branch_with_no_remote_or_nothing_chan
     repo.git(&["checkout", "-q", "--detach"]);
     refresh(&h, id).await;
     assert_eq!(files_of(&h, id, repo.path()).await, None);
-    // The remote's HEAD unknown: no base.
+    // The remote's HEAD unknown: the branch it was made from still says (main).
     repo.checkout("feature");
     repo.git(&["remote", "set-head", "origin", "-d"]);
     refresh(&h, id).await;
-    assert_eq!(files_of(&h, id, repo.path()).await, None);
+    assert_eq!(
+        files_of(&h, id, repo.path()).await.map(|f| f.base),
+        Some("origin/main".to_owned())
+    );
 
     // No remote at all.
     let alone = TestRepo::new();
@@ -261,8 +264,8 @@ async fn at_most_500_files_with_how_many_in_all() {
     assert_eq!(got.files[0].path, "f/0000.txt");
 }
 
-/// The base of a branch with an open pull request is the pull request's base (here
-/// `develop`), not the remote's default branch.
+/// The base of a branch with an open pull request is the pull request's base (here `main`),
+/// not the branch it was made from (`develop`), which is its base without one.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_base_is_the_pull_requests_when_it_has_one() {
@@ -287,10 +290,13 @@ async fn the_base_is_the_pull_requests_when_it_has_one() {
     let h = harness().await;
     h.m.set_tool_path(Some(gh.path()));
     let id = h.open(repo.path()).await.repo_id;
-    // Without the pull request known: the remote's default, main.
+    // Without the pull request known: the branch it was made from, develop.
     let got = files_of(&h, id, repo.path()).await.unwrap();
-    assert_eq!(got.base, "origin/main");
-    assert_eq!(got.files.len(), 2);
+    assert_eq!(got.base, "origin/develop");
+    assert_eq!(
+        got.files,
+        [change("feature.txt", None, FileStatus::A, Some(1), Some(0))]
+    );
 
     gh.reply(
         "pr-list",
@@ -301,7 +307,7 @@ async fn the_base_is_the_pull_requests_when_it_has_one() {
             "url": "https://github.com/octo/cat/pull/5",
             "isDraft": false,
             "headRefName": "feature",
-            "baseRefName": "develop",
+            "baseRefName": "main",
             "headRepositoryOwner": {"id": "X", "login": "octo"},
             "isCrossRepository": false,
         }])
@@ -315,14 +321,11 @@ async fn the_base_is_the_pull_requests_when_it_has_one() {
         .expect("the pull requests load");
     assert_eq!(
         h.m.snapshot(id).await.unwrap().branch_prs["feature"].base,
-        "develop"
+        "main"
     );
     let got = files_of(&h, id, repo.path()).await.unwrap();
-    assert_eq!(got.base, "origin/develop");
-    assert_eq!(
-        got.files,
-        [change("feature.txt", None, FileStatus::A, Some(1), Some(0))]
-    );
+    assert_eq!(got.base, "origin/main");
+    assert_eq!(got.files.len(), 2, "develop's commit and feature's");
 }
 
 /// A fork: the branch tracks the fork (`origin`, ada/cat), its pull request goes to the
@@ -362,10 +365,11 @@ async fn in_a_fork_the_base_is_on_the_repository_the_pull_request_goes_to() {
     let h = harness().await;
     h.m.set_tool_path(Some(gh.path()));
     let id = h.open(repo.path()).await.repo_id;
-    // No pull request known: the tracked remote's default, the fork's stale main.
+    // No pull request known: the branch it was made from (main) on the repository pull
+    // requests go to (upstream), as the pull request form has it; not the fork's stale main.
     let got = files_of(&h, id, repo.path()).await.unwrap();
-    assert_eq!(got.base, "origin/main");
-    assert_eq!(got.files.len(), 2);
+    assert_eq!(got.base, "upstream/main");
+    assert_eq!(got.files.len(), 1);
 
     gh.reply(
         "pr-list",

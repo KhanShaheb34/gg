@@ -2105,6 +2105,55 @@ async fn worktree_default_path_and_worktree_ops_via_dispatch() {
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
+/// `branch_files` answers a worktree's branch's committed files, camelCase, or null when
+/// there is no list (here: the default branch itself); unknown fields are refused.
+#[tokio::test]
+async fn branch_files_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let wt = first["activeWorktree"].clone();
+    let none = h
+        .call("branch_files", json!({ "repoId": id, "path": wt }))
+        .await;
+    assert_eq!(none, Value::Null);
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("b.txt", "b\n");
+    repo.commit_all("two");
+    h.call("refresh", json!({ "repoId": id })).await;
+    let mut got = Value::Null;
+    for _ in 0..100 {
+        got = h
+            .call("branch_files", json!({ "repoId": id, "path": wt }))
+            .await;
+        if !got.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(got["branch"], "feature");
+    assert_eq!(got["base"], "origin/main");
+    assert_eq!(got["total"], 1);
+    assert_eq!(
+        got["files"],
+        json!([{"path": "b.txt", "oldPath": null, "status": "A", "additions": 1, "deletions": 0}])
+    );
+    for key in ["baseCommit", "mergeBase", "head"] {
+        assert_eq!(got[key].as_str().map(str::len), Some(40), "{key}");
+    }
+    let err = h
+        .fail(
+            "branch_files",
+            json!({ "repoId": id, "path": wt, "base": "origin/main" }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
 /// `worktree_files` lists a worktree's changed files by path; a commit runs through
 /// `run_op` with its paths, message and push flag, and the bindings of `expectHead` and
 /// `expectWorktree`.

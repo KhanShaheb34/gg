@@ -124,7 +124,7 @@ fn parse_meta(out: &[u8]) -> Option<CommitDetails> {
 /// copy. Numstat entries follow: `<added>\t<deleted>\t<path>`, or `<added>\t<deleted>\t`
 /// then source and destination for a rename or copy; `-` counts mark binary files.
 /// Entries with an unknown status or missing paths are skipped.
-fn parse_files(out: &[u8]) -> Vec<FileChange> {
+pub(crate) fn parse_files(out: &[u8]) -> Vec<FileChange> {
     let mut files = Vec::new();
     let mut counts: HashMap<String, (Option<u32>, Option<u32>)> = HashMap::new();
     let mut tokens = out.split(|&b| b == 0);

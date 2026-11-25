@@ -285,6 +285,8 @@ pub(crate) struct Repo {
     pub(super) prs_loads: watch::Sender<u64>,
     /// Each pull request's last (or running) load of its details, by number.
     pub(super) pr_details: Mutex<HashMap<u32, super::pr_details::DetailsLoad>>,
+    /// Each worktree's last (or running) read of its branch's committed files, by path.
+    pub(super) branch_files: Mutex<HashMap<String, super::branch_files::BranchFilesLoad>>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -976,6 +978,7 @@ impl RepoManager {
             prs_gate: Mutex::new(super::prs::PrGate::default()),
             prs_loads: watch::channel(0).0,
             pr_details: Mutex::new(HashMap::new()),
+            branch_files: Mutex::new(HashMap::new()),
         });
         repo.stashes_read(self.sink.as_ref(), stash_error);
 

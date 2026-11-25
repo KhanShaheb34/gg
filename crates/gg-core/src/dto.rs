@@ -422,6 +422,31 @@ pub struct WorktreeFiles {
 /// Most files `worktree_files` lists.
 pub const MAX_LISTED_FILES: usize = 5000;
 
+/// What `branch_files` returns: the files a worktree's branch changes in its own commits,
+/// compared from where it left its base (`merge-base(base, HEAD)..HEAD`, renames found), in
+/// git's order (by path), the first [`MAX_BRANCH_FILES`] of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchFiles {
+    /// The branch checked out there.
+    pub branch: String,
+    /// What it is compared with: a remote-tracking branch (`origin/main`), or a local branch
+    /// when a pull request's base is only that.
+    pub base: String,
+    /// The commit `base` points at, as the snapshot had it.
+    pub base_commit: String,
+    /// Where the branch left the base (`git merge-base`).
+    pub merge_base: String,
+    /// The branch's commit (HEAD there).
+    pub head: String,
+    pub files: Vec<FileChange>,
+    /// How many files it changes in all (more than `files` holds when cut).
+    pub total: u32,
+}
+
+/// Most files `branch_files` lists.
+pub const MAX_BRANCH_FILES: usize = 500;
+
 /// How a file changed in a commit. Serialized as its single letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileStatus {

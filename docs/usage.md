@@ -43,9 +43,10 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 ## Worktrees, committing and pull requests
 
 - The side panel (⌘B, or the button at the right of the toolbar, which counts the files to
-  commit) has two tabs, **Commit** and **Worktrees**, and opens on the one last used in the
-  repository (←/→ move between them). Worktrees lists the repository's worktrees as git does,
-  including ones made in a terminal or by another tool: each with its branch, its uncommitted
+  commit) has two icon tabs, **Commit** (with a dot when there are files to commit) and
+  **Worktrees**, and opens on the one last used in the repository (←/→ move between them).
+  Worktrees lists the repository's worktrees as git does, including ones made in a terminal or
+  by another tool: each with its branch, its uncommitted
   changes (kept up to date as files change), how it stands with its upstream, and what is
   unusual (locked, folder missing, a merge stopped there). In a window narrower than 840 px
   the panel lies over the graph. The **active** worktree, where every action

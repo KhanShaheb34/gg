@@ -1,13 +1,15 @@
 <!--
-  The side panel on the right of a repository: a header (a strip of tabs, each with a quiet
-  count, then the shown tab's own buttons and Hide) over a body the shown tab fills (the commit
-  panel, the worktree list; pull requests later). The tabs take the arrow keys, Home and End,
-  as the ARIA tabs pattern has it; only the selected one is in the Tab order. Its left edge
+  The side panel on the right of a repository: a header (a strip of icon tabs on the left, the
+  selected one underlined; the shown tab's own buttons and Hide on the right) over a body the
+  shown tab fills (the commit panel, the worktree list; pull requests and files later). A tab
+  says what it is in its tooltip and accessible name; one with something waiting (files to
+  commit) has a dot at its corner. The tabs take the arrow keys, Home and End, as the ARIA tabs
+  pattern has it; only the selected one is in the Tab order. Its left edge
   resizes it (SIDE_MIN_W to SIDE_MAX_W, remembered; double-click resets). In a wide window it
   sits beside the graph (at its least width below NARROW_W, where it does not resize); in a
   narrow one (`overlay`) it lies over the graph's right side with a shadow, below the conflict
   banner (`top`), and Escape inside hides it. Its header lines up with the graph's column
-  header; at the panel's least width the tabs' counts give way, never the tabs or the buttons.
+  header, and is the same at every width: four tabs and three buttons fit at the least one.
 -->
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
@@ -18,11 +20,12 @@
 
   type Tab = {
     id: SideTab;
+    /** Its accessible name ("Commit"). */
     label: string;
-    /** Said after the label, quieter ("3"); gives way first when the panel is narrow. */
-    count?: string | null;
-    /** What the count counts, for the tab's tooltip and accessible name ("3 worktrees"). */
-    countLabel?: string;
+    /** Its tooltip ("Commit · 6 changed files (⌘K)"). */
+    title: string;
+    /** Something waiting there (files to commit): a dot at the icon's corner. */
+    dot?: boolean;
   };
 
   type Props = {
@@ -115,15 +118,33 @@
           id="side-tab-{t.id}"
           aria-selected={selected}
           aria-controls="side-tabpanel"
-          aria-label={t.count ? `${t.label}, ${t.countLabel ?? t.count}` : t.label}
+          aria-label={t.label}
           tabindex={selected ? 0 : -1}
-          title={t.count ? `${t.label}: ${t.countLabel ?? t.count}` : undefined}
+          title={t.title}
           data-tab={t.id}
           data-testid="side-tab-{t.id}"
           onclick={() => onselect(t.id)}
           onkeydown={onTabKeydown}
-          ><span class="label">{t.label}</span>{#if t.count}<span class="count" aria-hidden="true">{t.count}</span>{/if}</button
         >
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            {#if t.id === "commit"}
+              <!-- A commit: a circle on a line. -->
+              <circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5" />
+              <path d="M1.3 8h3.5M11.2 8h3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            {:else}
+              <!-- Two folders, one behind the other: the repository's worktrees. -->
+              <path
+                d="M2 6.3c0-.6.5-1.1 1.1-1.1h2.2l1.2 1.3h4.4c.6 0 1.1.5 1.1 1.1v4.9c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1zM4.6 5V3.5c0-.6.5-1.1 1.1-1.1h2.1l1.2 1.3h3.9c.6 0 1.1.5 1.1 1.1v4.7c0 .6-.5 1.1-1.1 1.1h-.7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            {/if}
+          </svg>
+          {#if t.dot}<span class="dot" aria-hidden="true" data-testid="side-tab-dot"></span>{/if}
+        </button>
       {/each}
     </div>
     <span class="spacer"></span>
@@ -181,47 +202,37 @@
     height: 28px;
     padding: 0 3px 0 4px;
     border-bottom: 1px solid var(--border);
-    container-type: inline-size;
   }
 
-  /* The tabs give way down to their labels (their counts wrap out of sight); never further. */
   .tabs {
     display: flex;
-    flex: 0 1 auto;
-    min-width: min-content;
+    flex: none;
+    gap: 2px;
     /* Over the header's bottom border: the selected tab's line takes its place. */
     margin-bottom: -1px;
   }
 
-  /* A label and its count on one line; the count, when the tab is squeezed, wraps onto a
-     second line, out of sight. */
+  /* An icon, as the header's buttons draw theirs, over the line that marks the selected tab. */
   .tab {
     position: relative;
-    display: flex;
-    flex-wrap: wrap;
-    align-content: flex-start;
-    column-gap: 5px;
-    flex: 0 1 auto;
-    min-width: min-content;
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 30px;
     height: 28px;
-    padding: 0 8px;
-    overflow: hidden;
+    padding: 0;
     border: 0;
     border-radius: 0;
     background: transparent;
     color: var(--text-muted);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    line-height: 28px;
-    white-space: nowrap;
     transition: color 80ms linear;
   }
 
-  .tab:hover {
-    color: var(--text);
+  .tab svg {
+    display: block;
   }
 
+  .tab:hover,
   .tab[aria-selected="true"] {
     color: var(--text);
   }
@@ -230,8 +241,8 @@
   .tab::after {
     content: "";
     position: absolute;
-    left: 6px;
-    right: 6px;
+    left: 5px;
+    right: 5px;
     bottom: 0;
     height: 2px;
     border-radius: 1px 1px 0 0;
@@ -252,18 +263,17 @@
     border-radius: 6px;
   }
 
-  .count {
-    color: var(--text-faint);
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Near the panel's least width the counts go, both at once, so the tabs keep their own
-     widths (the wrapping above is only the last resort). */
-  @container (max-width: 279px) {
-    .count {
-      display: none;
-    }
+  /* Something waiting there: a dot at the icon's top right, ringed in the header's colour. */
+  .dot {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1.5px var(--bg);
+    pointer-events: none;
   }
 
   .spacer {

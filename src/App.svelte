@@ -42,6 +42,7 @@
     activateWorktree,
     addWorktree,
     commitPath,
+    committingIn,
     holdCommit,
     listedWorktrees,
     docked,
@@ -59,6 +60,7 @@
   const mac = isMac();
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
   const PICKER_KEYS = mac ? "⌘P" : "Ctrl+P";
+  const COMMIT_KEYS = mac ? "⌘K" : "Ctrl+K";
 
   // A commit panel whose worktree is no longer listed is closed for good (back to the worktree
   // list): a worktree made again at that path later is another one, and does not bring the
@@ -394,23 +396,19 @@
             {#if panelShown(active.repoId)}
               {@const view = repoView(active.repoId)}
               {@const panel = panelState(active.repoId)}
-              {@const status = view.snapshot.status}
-              {@const changes = status.changed + status.untracked}
+              <!-- The worktree the Commit tab holds (or would show): its files to commit. -->
+              {@const status = commitPath(view) === view.snapshot.activeWorktree ? view.snapshot.status : (committingIn(view)?.status ?? null)}
+              {@const changes = status ? status.changed + status.untracked : 0}
               {@const worktrees = view.snapshot.worktrees.length}
               <SidePanel
                 tabs={[
                   {
                     id: "commit",
                     label: "Commit",
-                    count: changes > 0 ? (changes > 99 ? "99+" : String(changes)) : null,
-                    countLabel: `${changes} uncommitted file${changes === 1 ? "" : "s"}`,
+                    title: `Commit${changes > 0 ? ` · ${changes} changed file${changes === 1 ? "" : "s"}` : ""} (${COMMIT_KEYS})`,
+                    dot: changes > 0,
                   },
-                  {
-                    id: "worktrees",
-                    label: "Worktrees",
-                    count: worktrees > 1 ? String(worktrees) : null,
-                    countLabel: `${worktrees} worktrees`,
-                  },
+                  { id: "worktrees", label: "Worktrees", title: `Worktrees${worktrees > 1 ? ` · ${worktrees}` : ""}` },
                 ]}
                 tab={panel.tab}
                 onselect={(tab) => showSideTab(view, tab)}

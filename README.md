@@ -129,8 +129,8 @@ afterwards and says which it is.
   <img alt="The worktree panel beside the graph: eight worktrees, each with its branch, its uncommitted changes and how it stands with its upstream, and markers for a merge in progress, a missing folder and a locked worktree" src="docs/screens/worktrees-light.png" width="640">
 </picture>
 
-- The side panel (⌘B, or its button at the right of the toolbar) has two tabs, Commit and
-  Worktrees, and opens on the one you used last. Worktrees lists every worktree of the
+- The side panel (⌘B, or its button at the right of the toolbar) has two icon tabs, Commit
+  and Worktrees, and opens on the one you used last. Worktrees lists every worktree of the
   repository, including ones made in a terminal or by other tools, each with its branch, its
   uncommitted changes (kept up to date as files change) and how it stands with its upstream,
   and says what is unusual: locked, folder missing, a merge stopped there.

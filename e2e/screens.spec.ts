@@ -1061,7 +1061,7 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 // The side panel: its one toolbar button with the count of files to commit, its Commit and
-// Worktrees tabs (with their counts), the tab strip at the panel's least width, another
+// Worktrees icon tabs (the dot of files to commit), the tab strip at the panel's least width, another
 // worktree's commit panel (the line naming it), and a tab focused from the keyboard.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
@@ -1105,7 +1105,7 @@ for (const [prefix, width, height] of SIZES)
       await page.reload();
       await open(page, gg.repoPath("commit"));
       await expect(side).toBeVisible();
-      await expect(page.getByTestId("side-tab-commit")).toHaveAccessibleName(/12\d uncommitted files/);
+      await expect(page.getByTestId("side-tab-commit")).toHaveAttribute("title", /12\d changed files/);
       await park(page);
       await shot("side-least-commit");
       await page.getByTestId("side-tab-worktrees").click();

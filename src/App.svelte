@@ -31,6 +31,7 @@
     focusNewestNotice,
     toast,
     windowFocusChanged,
+    windowState,
   } from "./lib/state/app.svelte";
   import { openBranchPicker } from "./lib/state/picker";
   import { openCliDialog } from "./lib/state/cli.svelte";
@@ -40,6 +41,7 @@
   import { fromAppMenu, overlays } from "./lib/state/overlays.svelte";
   import { onUserPush } from "./lib/state/ops.svelte";
   import { afterPush, forgetSuggestions, openPullRequestTab, prTabTitle, subjectOf } from "./lib/state/pullRequest.svelte";
+  import { detailsBusy, prChecksOf } from "./lib/state/prDetails.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import {
     activateWorktree,
@@ -213,7 +215,12 @@
       if (!target?.closest("input, textarea, [contenteditable]")) e.preventDefault();
     };
     document.addEventListener("contextmenu", onContextMenu);
+    // Hidden (minimised, another space), the Pull request tab stops asking about running checks.
+    const onVisibility = () => (windowState.visible = document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVisibility);
+    onVisibility();
     return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
       stopUpdates();
       stopFocus();
       stopDrop();
@@ -422,15 +429,21 @@
               {@const status = commitPath(view) === view.snapshot.activeWorktree ? view.snapshot.status : (committingIn(view)?.status ?? null)}
               {@const changes = status ? status.changed + status.untracked : 0}
               {@const worktrees = view.snapshot.worktrees.length}
+              {@const prChecks = prChecksOf(view)}
               <SidePanel
                 tabs={[
                   {
                     id: "commit",
                     label: "Commit",
                     title: `Commit${changes > 0 ? ` · ${changes} changed file${changes === 1 ? "" : "s"}` : ""} (${COMMIT_KEYS})`,
-                    dot: changes > 0,
+                    dot: changes > 0 ? "accent" : false,
                   },
-                  { id: "pr", label: "Pull request", title: prTabTitle(view.snapshot, subjectOf(view), PR_KEYS) },
+                  {
+                    id: "pr",
+                    label: "Pull request",
+                    title: prTabTitle(view.snapshot, subjectOf(view), PR_KEYS, prChecks?.phrase ?? null),
+                    dot: prChecks?.tone ?? false,
+                  },
                   { id: "worktrees", label: "Worktrees", title: `Worktrees${worktrees > 1 ? ` · ${worktrees}` : ""}` },
                 ]}
                 tab={panel.tab}
@@ -444,7 +457,7 @@
               >
                 {#snippet actions()}
                   {#if panel.tab === "pr"}
-                    {@const busy = view.refreshing || view.snapshot.prs.status === "loading"}
+                    {@const busy = view.refreshing || view.snapshot.prs.status === "loading" || detailsBusy(view.snapshot.rootPath)}
                     <button
                       class="icon-btn small"
                       aria-label="Refresh the pull requests"

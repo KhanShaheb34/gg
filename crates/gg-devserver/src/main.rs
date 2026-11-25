@@ -13,6 +13,8 @@
 //! shell's (the UI's tests pass a folder holding a fake `gh` and `ssh`, never the real ones).
 //! With `--fake-updates <dir>`, updating gg is a stand-in that answers from files in `<dir>`
 //! (see `fake_updates.rs`); without it, updating is unavailable. Nothing is downloaded.
+//! `--pr-details-every-ms <ms>` sets the least time between two loads of a pull request's
+//! checks and comments (10 s otherwise), for the UI's tests of its polling.
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
@@ -29,7 +31,7 @@ const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--o
                      [--allow-origin <origin>]... [--exit-on-stdin-eof] \
                      [--record-launches <file>] [--cli-path <PATH>] \
                      [--cli-shell <program>] [--tool-path <PATH>] \
-                     [--fake-updates <dir>]";
+                     [--fake-updates <dir>] [--pr-details-every-ms <ms>]";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -51,6 +53,8 @@ struct Args {
     tool_path: Option<OsString>,
     /// The folder the stand-in for the updater answers from.
     fake_updates: Option<PathBuf>,
+    /// Least time between two loads of a pull request's details, instead of 10 s.
+    pr_details_every: Option<std::time::Duration>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -65,6 +69,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut cli_shell = None;
     let mut tool_path = None;
     let mut fake_updates = None;
+    let mut pr_details_every = None;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -99,6 +104,14 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
             "--cli-shell" => cli_shell = Some(PathBuf::from(value()?)),
             "--tool-path" => tool_path = Some(value()?),
             "--fake-updates" => fake_updates = Some(PathBuf::from(value()?)),
+            "--pr-details-every-ms" => {
+                let v = value()?;
+                let ms: u64 = v
+                    .to_str()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| format!("bad milliseconds: {}", v.to_string_lossy()))?;
+                pr_details_every = Some(std::time::Duration::from_millis(ms));
+            }
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -113,6 +126,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         cli_shell,
         tool_path,
         fake_updates,
+        pr_details_every,
     })
 }
 
@@ -185,6 +199,9 @@ async fn main() -> ExitCode {
     if args.tool_path.is_some() {
         core.set_tool_path(args.tool_path);
     }
+    if let Some(every) = args.pr_details_every {
+        core.set_pr_details_every(every);
+    }
     if let Some(dir) = args.fake_updates {
         core.set_update_backend(Arc::new(FakeUpdates::new(dir)));
     }
@@ -243,6 +260,7 @@ mod tests {
                 cli_shell: None,
                 tool_path: None,
                 fake_updates: None,
+                pr_details_every: None,
             }
         );
         assert_eq!(
@@ -267,6 +285,8 @@ mod tests {
                 "/fake/bin",
                 "--fake-updates",
                 "/fake/updates",
+                "--pr-details-every-ms",
+                "250",
             ])
             .unwrap(),
             Args {
@@ -280,8 +300,10 @@ mod tests {
                 cli_shell: Some("/fake/sh".into()),
                 tool_path: Some("/fake/bin".into()),
                 fake_updates: Some("/fake/updates".into()),
+                pr_details_every: Some(std::time::Duration::from_millis(250)),
             }
         );
+        assert!(parse(&["--config-dir", "/c", "--pr-details-every-ms", "soon"]).is_err());
         for bad in [
             "*",
             "null",

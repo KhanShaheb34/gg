@@ -14,6 +14,7 @@ import type {
   OpOutcome,
   OpenedRepo,
   OpRequest,
+  PrDetails,
   PrSuggestion,
   Recent,
   RepoPrefs,
@@ -340,6 +341,8 @@ export const api = {
   /** Re-reads the repository; `prs`: the user asked, so the pull requests load too (at most once a minute). */
   refresh: (repoId: number, prs = false) => call<RepoSnapshot>("refresh", prs ? { repoId, prs } : { repoId }),
   prSuggest: (repoId: number, branch: string) => call<PrSuggestion>("pr_suggest", { repoId, branch }),
+  /** Pull request `number`'s merge status, checks and comments (gh is asked at most once every 10 s per pull request). */
+  prDetails: (repoId: number, number: number) => call<PrDetails>("pr_details", { repoId, number }),
   async setWindowFocused(focused: boolean): Promise<void> {
     await call("set_window_focused", { focused });
   },

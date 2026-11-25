@@ -328,11 +328,18 @@ export function activate(repoId: number): void {
 }
 
 /**
+ * Whether the window is focused (and visible), and whether the page is visible, as last
+ * reported: the Pull request tab asks gh again while checks run only when both are.
+ */
+export const windowState = $state({ focused: true, visible: true });
+
+/**
  * The window gained or lost focus. Coming back, only the active repository is re-read (its
  * working tree may have changed; only git dirs are watched); the others are re-read when
  * they are next shown. The core is told too: it runs scheduled fetches only around focus.
  */
 export function windowFocusChanged(focused: boolean): void {
+  windowState.focused = focused;
   api.setWindowFocused(focused).catch(() => {
     // Focus only tunes background work; a missed report is harmless.
   });

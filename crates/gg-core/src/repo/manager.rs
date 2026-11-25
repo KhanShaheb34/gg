@@ -171,9 +171,9 @@ pub struct RepoManager {
     /// Tests only: the least time between two loads of the pull requests, instead of 60 s.
     #[cfg(any(test, feature = "testutil"))]
     pub(super) prs_every: Mutex<Option<Duration>>,
-    /// Tests only: the least time between two loads of a pull request's details, instead of
-    /// 10 s.
-    #[cfg(any(test, feature = "testutil"))]
+    /// Tests and the devserver only: the least time between two loads of a pull request's
+    /// details, instead of 10 s.
+    #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
     pub(super) pr_details_every: Mutex<Option<Duration>>,
     /// Tests only: loads of pull request details started.
     #[cfg(any(test, feature = "testutil"))]
@@ -766,7 +766,7 @@ impl RepoManager {
             tool_path: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
             prs_every: Mutex::new(None),
-            #[cfg(any(test, feature = "testutil"))]
+            #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
             pr_details_every: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
             details_loads: AtomicU64::new(0),

@@ -165,16 +165,16 @@ impl RepoManager {
     /// Least time between two loads of a pull request's details (see
     /// [`RepoManager::set_pr_details_every`]).
     fn pr_details_every(&self) -> Duration {
-        #[cfg(any(test, feature = "testutil"))]
+        #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
         if let Some(every) = *lock(&self.pr_details_every) {
             return every;
         }
         LOAD_EVERY
     }
 
-    /// Sets the least time between two loads of a pull request's details (tests only;
-    /// normally 10 s).
-    #[cfg(any(test, feature = "testutil"))]
+    /// Sets the least time between two loads of a pull request's details (tests and the
+    /// devserver only; normally 10 s).
+    #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
     pub fn set_pr_details_every(&self, every: Duration) {
         *lock(&self.pr_details_every) = Some(every);
     }

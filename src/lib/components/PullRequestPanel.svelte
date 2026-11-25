@@ -185,6 +185,17 @@
 
   const stale = $derived(staleSince(snap.prs, clock.now, app.settings.dateFormat));
 
+  // The pull request shown, and its branch: the tab's dot follows its checks while another tab
+  // shows.
+  $effect(() => {
+    if (shown.kind !== "pr" || branch === null) return;
+    const now = { branch, number: shown.pr.number };
+    untrack(() => {
+      const was = panel.prShown;
+      if (was?.branch !== now.branch || was.number !== now.number) panel.prShown = now;
+    });
+  });
+
   const REASONS = {
     no_remote: "This repository has no remote. Add one on GitHub to open pull requests from here.",
     not_github: `${PR_REASONS.not_github}: pull requests are made on GitHub only.`,
@@ -234,7 +245,7 @@
   {/if}
 
   {#if shown.kind === "pr"}
-    <PullRequestView repoId={view.repoId} pr={shown.pr} {stale} />
+    <PullRequestView {view} pr={shown.pr} {stale} />
   {:else if shown.kind === "form"}
     {#key shown.branch}
       <PullRequestForm

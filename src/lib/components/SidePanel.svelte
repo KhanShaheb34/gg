@@ -24,8 +24,11 @@
     label: string;
     /** Its tooltip ("Commit · 6 changed files (⌘K)"). */
     title: string;
-    /** Something waiting there (files to commit): a dot at the icon's corner. */
-    dot?: boolean;
+    /**
+     * A dot at the icon's corner, in a tone: something waiting there (`accent`: files to
+     * commit), or how a pull request's checks stand (`danger`, `warning`, `success`).
+     */
+    dot?: false | "accent" | "success" | "warning" | "danger";
   };
 
   type Props = {
@@ -157,7 +160,7 @@
               />
             {/if}
           </svg>
-          {#if t.dot}<span class="dot" aria-hidden="true" data-testid="side-tab-dot"></span>{/if}
+          {#if t.dot}<span class="dot {t.dot}" aria-hidden="true" data-testid="side-tab-dot" data-tone={t.dot}></span>{/if}
         </button>
       {/each}
     </div>
@@ -288,6 +291,18 @@
     background: var(--accent);
     box-shadow: 0 0 0 1.5px var(--bg);
     pointer-events: none;
+  }
+
+  .dot.success {
+    background: var(--success);
+  }
+
+  .dot.warning {
+    background: var(--warning);
+  }
+
+  .dot.danger {
+    background: var(--danger);
   }
 
   .spacer {

@@ -677,7 +677,9 @@ export function cliFolders(home: string, extra = 0): string[] {
  * devserver finds and runs them in (`--tool-path`): the real ones are never run, nothing
  * reaches GitHub. Each `gh` call's arguments are recorded; it answers with what the test set
  * for that kind of call (`pr-list`, `pr-list-head` with `--head`, `repo-view`, `pr-create`,
- * `auth-token`), else prints nothing. `ssh -G` says the host it is asked about is itself.
+ * `auth-token`, `pr-view`, `api-graphql`; a pull request's own `pr-view-<n>` and
+ * `api-graphql-<n>` first, when set), else prints nothing. `ssh -G` says the host it is asked
+ * about is itself.
  */
 const FAKE_GH = `#!/bin/sh
 PATH=/usr/bin:/bin
@@ -689,6 +691,10 @@ for a in "$@"; do printf '%s\\0' "$a"; done > "$d/calls/$i/argv"
 cat > "$d/calls/$i/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
+n=""
+if [ "$key" = pr-view ]; then n="$3"; fi
+if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in n=*) n="\${a#n=}";; esac; done; fi
+if [ -n "$n" ] && { [ -f "$d/replies/$key-$n.out" ] || [ -f "$d/replies/$key-$n.code" ]; }; then key="$key-$n"; fi
 r="$d/replies/$key"
 if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi
 if [ -f "$r.err" ]; then cat "$r.err" >&2; fi
@@ -845,6 +851,7 @@ export function startDevserver(
   shellSetup = "",
   extraCliFolders = 0,
   shellName = "fake-shell",
+  extraArgs: readonly string[] = [],
 ): Promise<Devserver> {
   const cliPath = cliFolders(home, extraCliFolders).join(path.delimiter);
   const shell = fakeShell(home, shellSetup, shellName);
@@ -872,6 +879,7 @@ export function startDevserver(
       fakeTools(home),
       // Updating gg: the stand-in only, answering from files (see FakeUpdates); nothing is downloaded.
       ...(binary === DEVSERVER ? ["--fake-updates", updatesDir(home)] : []),
+      ...extraArgs,
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
     // open while this process lives: if the runner dies (Ctrl-C), the pipe closes and the
@@ -1031,19 +1039,21 @@ export async function buildDevserver(): Promise<void> {
   }
 }
 
-export const test = base.extend<{ gg: GG; ggShellSetup: string; ggShellName: string; ggCliFolders: number }>({
+export const test = base.extend<{ gg: GG; ggShellSetup: string; ggShellName: string; ggCliFolders: number; ggDevserverArgs: string[] }>({
   /** What the stand-in login shell defines before it is asked what `gg` is (`alias gg=…`). */
   ggShellSetup: ["", { option: true }],
   /** The stand-in login shell's name: `zsh` or `bash` to be taken for that shell. */
   ggShellName: ["fake-shell", { option: true }],
   /** Folders the `gg` command may go in besides `~/.local/bin` and `~/bin`. */
   ggCliFolders: [0, { option: true }],
-  gg: async ({ page, ggShellSetup, ggShellName, ggCliFolders }, use) => {
+  /** More of the devserver's flags (`--pr-details-every-ms`, say). */
+  ggDevserverArgs: [[], { option: true }],
+  gg: async ({ page, ggShellSetup, ggShellName, ggCliFolders, ggDevserverArgs }, use) => {
     // realpath: macOS's temp folder is behind a symlink, and the core reports real paths.
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "gg-e2e-")));
     let server: Devserver | null = null;
     try {
-      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders, ggShellName);
+      server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders, ggShellName, ggDevserverArgs);
       await page.addInitScript((url) => {
         (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;
       }, server.url);
@@ -1090,7 +1100,7 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggShellName: str
       const relaunch = async () => {
         if (server) await stopDevserver(server);
         server = null;
-        server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders, ggShellName);
+        server = await startDevserver(path.join(root, "config"), root, DEVSERVER, ggShellSetup, ggCliFolders, ggShellName, ggDevserverArgs);
         // Run after the first one, so this address wins.
         await page.addInitScript((url) => {
           (window as unknown as { __GG_DEV_URL__: string }).__GG_DEV_URL__ = url;

@@ -577,6 +577,9 @@ test("a pull request's view: state, number, the title in full, base ← head, Op
   await page.clock.install();
   gg.git("prs", "switch", "-q", "fix/typo");
   const long = "Fix the typo in the README's first line, which said teh where it meant the, and the one in the parser's error message";
+  // Its checks and comments (pr-details.spec.ts): none.
+  gg.gh.reply("pr-view", 0, JSON.stringify({ number: 31, state: "OPEN", mergeStateStatus: "CLEAN", statusCheckRollup: [], comments: [], reviews: [] }));
+  gg.gh.reply("api-graphql", 0, JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }));
   await openListed(gg, [pr(31, "fix/typo", long), pr(32, "docs/readme", "Explain the parser", true)]);
 
   // ⌘⇧P (Ctrl+Shift+P): the tab for the current branch, the focus on Open.
@@ -619,8 +622,9 @@ test("a pull request's view: state, number, the title in full, base ← head, Op
   // Older than 10 minutes: as of when.
   await page.clock.fastForward("11:00");
   await expect(view.getByTestId("pr-stale")).toHaveText(/^as of /);
-  // The checks and comments' room is left empty for now.
-  await expect(view.locator(".rest")).toBeEmpty();
+  // Below it, where it stands, its checks and its comments (pr-details.spec.ts).
+  await expect(view.getByTestId("pr-merge-status")).toHaveText("Ready to merge");
+  await expect(view.getByTestId("pr-checks-summary")).toHaveText("No checks");
 });
 
 test("a remote not on GitHub, HEAD detached, no remote: the tab says so plainly, no form", async ({ gg }) => {

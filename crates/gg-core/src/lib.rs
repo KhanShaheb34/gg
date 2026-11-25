@@ -212,6 +212,15 @@ impl Core {
         }
     }
 
+    /// Sets the least time between two loads of a pull request's details instead of 10 s:
+    /// for the devserver's end-to-end runs only (the `tool-path` feature, never in the app).
+    #[cfg(feature = "tool-path")]
+    pub fn set_pr_details_every(&self, every: std::time::Duration) {
+        if let Ok(repos) = self.repos() {
+            repos.set_pr_details_every(every);
+        }
+    }
+
     /// Every perf mark so far, oldest first.
     pub fn perf_marks(&self) -> Vec<(String, f64)> {
         self.perf().marks.clone()

@@ -67,6 +67,10 @@ export class PanelState {
   prRefresh = $state(0);
   /** Asks to move the focus into the Pull request tab (bumped; the tab follows it). */
   prFocus = $state(0);
+  /** The pull request the tab last showed, and the branch it is of (for the tab's dot). */
+  prShown: { branch: string; number: number } | null = $state(null);
+  /** The tab's branch was pushed (bumped): its pull request's checks are asked for again. */
+  prPushed = $state(0);
   /** The `prFocus` request the tab last followed (see `commitFocusDone`). */
   prFocusDone = 0;
   /** Asks to move the focus to the commit message (bumped; the commit panel follows it). */

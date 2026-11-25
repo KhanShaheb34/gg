@@ -109,7 +109,7 @@ const BIDI = /[‪-‮⁦-⁩]/g;
 export function decodeEntities(text: string): string {
   if (!text.includes("&")) return text;
   return text.replace(/&(#[xX][0-9a-fA-F]{1,6}|#[0-9]{1,7}|[A-Za-z][A-Za-z0-9]{1,31});/g, (whole, ref: string) => {
-    if (ref[0] !== "#") return NAMED[ref] ?? whole;
+    if (ref[0] !== "#") return Object.hasOwn(NAMED, ref) ? NAMED[ref] : whole;
     const code = ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
     if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return "�";
     return String.fromCodePoint(code);

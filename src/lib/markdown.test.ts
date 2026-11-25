@@ -247,3 +247,9 @@ describe("the captured CodeRabbit comment", () => {
     expect(html).not.toContain("storage.googleapis.com");
   });
 });
+
+describe("names that are an object's own members", () => {
+  it("are not entities: they stay as written", () => {
+    expect(decodeEntities("&constructor; &toString; &__proto__; &amp;")).toBe("&constructor; &toString; &__proto__; &");
+  });
+});

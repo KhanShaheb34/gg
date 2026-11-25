@@ -8,6 +8,7 @@
   import SidePanel from "./lib/components/SidePanel.svelte";
   import WorktreePanel from "./lib/components/WorktreePanel.svelte";
   import CommitPanel from "./lib/components/CommitPanel.svelte";
+  import PullRequestPanel from "./lib/components/PullRequestPanel.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
@@ -37,6 +38,8 @@
   import { initUpdates } from "./lib/state/updates.svelte";
   import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
   import { fromAppMenu, overlays } from "./lib/state/overlays.svelte";
+  import { onUserPush } from "./lib/state/ops.svelte";
+  import { afterPush, forgetSuggestions, openPullRequestTab, prTabTitle, subjectOf } from "./lib/state/pullRequest.svelte";
   import { repoView } from "./lib/state/repo.svelte";
   import {
     activateWorktree,
@@ -61,6 +64,8 @@
   const PANEL_KEYS = mac ? "⌘B" : "Ctrl+B";
   const PICKER_KEYS = mac ? "⌘P" : "Ctrl+P";
   const COMMIT_KEYS = mac ? "⌘K" : "Ctrl+K";
+  const PR_KEYS = mac ? "⌘⇧P" : "Ctrl+Shift+P";
+  const REFRESH_KEYS = mac ? "⌘R" : "Ctrl+R";
 
   // A commit panel whose worktree is no longer listed is closed for good (back to the worktree
   // list): a worktree made again at that path later is another one, and does not bring the
@@ -73,6 +78,17 @@
       panel.commitFor = null;
       panel.tab = "worktrees";
     }
+  });
+
+  // The Pull request tab lets go of a branch it was asked for once that is the current one
+  // again, or is no longer a local branch: it follows the active worktree's branch.
+  $effect(() => {
+    if (!active) return;
+    const panel = panelState(active.repoId);
+    const snap = repoView(active.repoId).snapshot;
+    const pinned = panel.prFor;
+    if (pinned === null || snap.generation < 0) return;
+    if (pinned === snap.head.branch || !snap.branches.includes(pinned)) panel.prFor = null;
   });
 
   // The Commit tab, shown, holds the worktree it shows (see holdCommit).
@@ -107,7 +123,7 @@
     const notices = document.querySelectorAll<HTMLElement>("[data-notices] .toast");
     const notice = notices[notices.length - 1]?.querySelector<HTMLElement>("button") ?? null;
     const panel = document.querySelector<HTMLElement>(
-      '[data-region="side-panel"] [data-testid="worktree-list"], [data-region="side-panel"] [data-testid="commit-message"]',
+      '[data-region="side-panel"] [data-testid="worktree-list"], [data-region="side-panel"] [data-testid="commit-message"], [data-region="side-panel"] [data-pr-focus]',
     );
     const regions = [graph, notice, panel];
     const focused = document.activeElement;
@@ -188,6 +204,8 @@
     const stopCliMenu = onEvent("menu-install-cli", () => fromAppMenu(() => void openCliDialog()));
     const stopSettingsMenu = onEvent("menu-settings", () => fromAppMenu(openSettings));
     const stopShortcutsMenu = onEvent("menu-shortcuts", () => fromAppMenu(openShortcuts));
+    // A push the user asked for may show the side panel's Pull request tab (pullRequest.svelte.ts).
+    onUserPush(afterPush);
     // The webview's own context menu (Reload, Inspect…) is not the app's; text fields keep
     // theirs. The graph opens the app's own menus on its rows (GraphView), before this.
     const onContextMenu = (e: MouseEvent) => {
@@ -202,6 +220,7 @@
       stopCliMenu();
       stopSettingsMenu();
       stopShortcutsMenu();
+      onUserPush(null);
       document.removeEventListener("contextmenu", onContextMenu);
     };
   });
@@ -268,6 +287,9 @@
         break;
       case "commit":
         if (view) openCommit(view);
+        break;
+      case "pullRequest":
+        if (view) openPullRequestTab(view, null, true);
         break;
       case "branches":
         if (view) openBranchPicker(view.repoId);
@@ -408,6 +430,7 @@
                     title: `Commit${changes > 0 ? ` · ${changes} changed file${changes === 1 ? "" : "s"}` : ""} (${COMMIT_KEYS})`,
                     dot: changes > 0,
                   },
+                  { id: "pr", label: "Pull request", title: prTabTitle(view.snapshot, subjectOf(view), PR_KEYS) },
                   { id: "worktrees", label: "Worktrees", title: `Worktrees${worktrees > 1 ? ` · ${worktrees}` : ""}` },
                 ]}
                 tab={panel.tab}
@@ -420,6 +443,33 @@
                 }}
               >
                 {#snippet actions()}
+                  {#if panel.tab === "pr"}
+                    {@const busy = view.refreshing || view.snapshot.prs.status === "loading"}
+                    <button
+                      class="icon-btn small"
+                      aria-label="Refresh the pull requests"
+                      title="Refresh the pull requests ({REFRESH_KEYS})"
+                      aria-busy={busy}
+                      data-testid="pr-refresh"
+                      onclick={() => {
+                        forgetSuggestions(view.snapshot.rootPath);
+                        panel.prRefresh++;
+                        void view.refresh();
+                      }}
+                    >
+                      <!-- The toolbar's Refresh, turning while the list loads. -->
+                      <svg class:spinning={busy} width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M13 8a5 5 0 1 1-1.46-3.54M13 2.8v2.9h-2.9"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.6"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  {/if}
                   {#if panel.tab === "worktrees"}
                   <button
                     class="icon-btn small"
@@ -456,6 +506,8 @@
                       <CommitPanel {view} {path} />
                     {/key}
                   {/if}
+                {:else if panel.tab === "pr"}
+                  <PullRequestPanel {view} branch={subjectOf(view)} />
                 {:else}
                   <WorktreePanel {view} />
                 {/if}
@@ -700,6 +752,10 @@
   .graph-area {
     flex: 1 1 0;
     min-height: 0;
+  }
+
+  .spinning {
+    animation: spin 0.8s linear infinite;
   }
 
   .drop {

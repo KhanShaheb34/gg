@@ -1,6 +1,8 @@
 //! Types that cross the boundary to the UI. Their JSON shapes are fixed, and mirrored by hand
 //! in `src/lib/types.ts`.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub use crate::graph::Edge;
@@ -367,6 +369,12 @@ pub struct RepoSnapshot {
     pub op: Option<RunningOp>,
     /// The open pull requests: whether they are known (see [`PrState`]).
     pub prs: PrState,
+    /// The open pull request of each local branch that has one (by its short name), from the
+    /// list last loaded: whatever the graph shows of the branch.
+    pub branch_prs: BTreeMap<String, PullRequest>,
+    /// Each remote's default branch, as its `HEAD` names it (`origin` → `main`; a clone sets
+    /// it, as `git remote set-head` does): none for a remote without one.
+    pub remote_heads: BTreeMap<String, String>,
     /// A merge, rebase, cherry-pick or revert git stopped in, if any.
     pub in_progress: Option<InProgress>,
     /// Grows by one, per repository, with each snapshot that changes anything (every
@@ -605,6 +613,10 @@ pub struct Settings {
     /// Whether gg looks for a new version of itself shortly after it starts and about once a
     /// day while it runs (see [`crate::update`]).
     pub check_for_updates: bool,
+    /// Whether a push the user asks for shows the side panel's Pull request tab for the
+    /// branch pushed, when the branch has no open pull request (and is not the default
+    /// branch, and pull requests can be made there). The UI decides; the core keeps it.
+    pub open_pr_tab_after_push: bool,
 }
 
 /// The default [`Settings::worktree_pattern`].
@@ -620,6 +632,7 @@ impl Default for Settings {
             worktree_pattern: DEFAULT_WORKTREE_PATTERN.to_owned(),
             date_format: DateFormat::Standard,
             check_for_updates: true,
+            open_pr_tab_after_push: true,
         }
     }
 }
@@ -936,8 +949,8 @@ pub enum OpRequest {
     /// base repository; `None`: the one `pr_suggest` names), through `gh`, with `title` (one
     /// line) and `body` (any text), as a draft with `draft`. The branch is pushed first
     /// when its namesake on its remote is missing or behind. Uses no working directory (runs
-    /// from the main worktree). With `compare_page` (the dialog said gh cannot make it, and
-    /// showed no form), the branch is only pushed and the outcome is GitHub's compare page:
+    /// from the main worktree). With `compare_page` (the Pull request tab said gh cannot make
+    /// it, and showed no form), the branch is only pushed and the outcome is GitHub's compare page:
     /// gh is never run, even if it can be by now.
     PrCreate {
         branch: String,
@@ -1508,7 +1521,8 @@ mod tests {
                 "session": {"tabs": ["/r"], "active": null},
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                              "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
-                             "dateFormat": "standard", "checkForUpdates": true},
+                             "dateFormat": "standard", "checkForUpdates": true,
+                             "openPrTabAfterPush": true},
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,
@@ -1745,6 +1759,8 @@ mod tests {
                 fetch: FetchState::default(),
                 op: None,
                 prs: PrState::default(),
+                branch_prs: BTreeMap::new(),
+                remote_heads: BTreeMap::new(),
                 in_progress: None,
                 seq: 0,
             },
@@ -2050,6 +2066,18 @@ mod tests {
                 loaded_at_ms: Some(5),
                 partial: true,
             },
+            branch_prs: BTreeMap::from([(
+                "fix/x".to_owned(),
+                PullRequest {
+                    number: 12,
+                    title: "Fix".into(),
+                    url: "https://github.com/o/r/pull/12".into(),
+                    state: PullRequestState::Open,
+                    head: "fix/x".into(),
+                    base: "main".into(),
+                },
+            )]),
+            remote_heads: BTreeMap::from([("origin".to_owned(), "main".to_owned())]),
             in_progress: Some(InProgress {
                 kind: InProgressKind::CherryPick,
                 files: vec![ConflictFile {
@@ -2088,6 +2116,10 @@ mod tests {
                 "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},
                 "op": {"id": 4, "title": "Create branch x", "startedAtMs": 9, "queued": 1},
                 "prs": {"status": "ready", "reason": "failed", "loadedAtMs": 5, "partial": true},
+                "branchPrs": {"fix/x": {"number": 12, "title": "Fix",
+                                        "url": "https://github.com/o/r/pull/12", "state": "open",
+                                        "head": "fix/x", "base": "main"}},
+                "remoteHeads": {"origin": "main"},
                 "inProgress": {"kind": "cherry-pick",
                                "files": [{"path": "a b.txt", "state": "resolved"}],
                                "fileCount": 1, "step": null, "total": null, "subject": "fix",

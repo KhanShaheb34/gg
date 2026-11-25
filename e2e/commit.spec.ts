@@ -4,7 +4,7 @@
 // uncommitted row), another worktree made active in one click, the keyboard, what stops a
 // commit said under the buttons, the worktree menu's launchers (recorded, never started), and
 // the side panel around it: its one toolbar button (with the count of files to commit), its
-// Commit and Worktrees icon tabs (the last one used remembered per repository; a dot for files to commit), another worktree's
+// Commit, Pull request and Worktrees icon tabs (the last one used remembered per repository; a dot for files to commit), another worktree's
 // commit panel on the Commit tab, and the tab strip at the panel's least width.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -33,7 +33,7 @@ const worktreeRow = (page: Page, folder: string) =>
   page.getByRole("grid", { name: "Worktrees" }).locator(`[role="row"][data-path$="${path.sep}${folder}"]`);
 const item = (page: Page, name: string | RegExp) => page.getByRole("menuitem", { name, exact: typeof name === "string" });
 /** The side panel's tab `id`. */
-const tab = (page: Page, id: "commit" | "worktrees") => page.getByTestId(`side-tab-${id}`);
+const tab = (page: Page, id: "commit" | "pr" | "worktrees") => page.getByTestId(`side-tab-${id}`);
 const list = (page: Page) => page.getByRole("grid", { name: "Worktrees" });
 
 const DEEP = "packages/payments-service/src/components/checkout/summary/LineItemPriceBreakdown.tsx";
@@ -678,19 +678,21 @@ test("one toolbar button shows and hides the side panel, on the tab last used in
   await expect(list(page)).toBeFocused();
 });
 
-test("the side panel's tabs: Commit and Worktrees, icons named and with tooltips, switched by click and by the arrow keys", async ({ gg }) => {
+test("the side panel's tabs: Commit, Pull request and Worktrees, icons named and with tooltips, switched by click and by the arrow keys", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("commit"));
   const strip = page.getByRole("tablist", { name: "Side panel" });
-  await expect(strip.getByRole("tab")).toHaveCount(2);
+  await expect(strip.getByRole("tab")).toHaveCount(3);
   // Icons, no text: named for assistive technology, and by their tooltips (with the counts).
   await expect(strip.getByRole("tab", { name: "Commit", exact: true })).toHaveAttribute("data-tab", "commit");
+  await expect(strip.getByRole("tab", { name: "Pull request", exact: true })).toHaveAttribute("data-tab", "pr");
   await expect(strip.getByRole("tab", { name: "Worktrees", exact: true })).toHaveAttribute("data-tab", "worktrees");
   await expect(strip).toHaveText("");
   await expect(tab(page, "commit")).toHaveAttribute("title", /^Commit · 6 changed files \((⌘|Ctrl\+)K\)$/);
+  await expect(tab(page, "pr")).toHaveAttribute("title", /^Pull request \((⌘⇧|Ctrl\+Shift\+)P\)$/);
   await expect(tab(page, "worktrees")).toHaveAttribute("title", "Worktrees · 2");
-  for (const t of ["commit", "worktrees"] as const) {
+  for (const t of ["commit", "pr", "worktrees"] as const) {
     const b = (await tab(page, t).boundingBox())!;
     expect(b.width).toBeGreaterThanOrEqual(28);
     expect(b.width).toBeLessThanOrEqual(32);
@@ -702,6 +704,7 @@ test("the side panel's tabs: Commit and Worktrees, icons named and with tooltips
   await expect(tab(page, "commit")).toHaveAttribute("aria-controls", (await body.getAttribute("id"))!);
   // Only the selected tab is in the Tab order; the add button belongs to the Worktrees tab.
   await expect(tab(page, "commit")).toHaveAttribute("tabindex", "0");
+  await expect(tab(page, "pr")).toHaveAttribute("tabindex", "-1");
   await expect(tab(page, "worktrees")).toHaveAttribute("tabindex", "-1");
   await expect(page.getByRole("button", { name: "Add worktree" })).toHaveCount(0);
 
@@ -722,6 +725,9 @@ test("the side panel's tabs: Commit and Worktrees, icons named and with tooltips
   // drawn as a ring.
   await tab(page, "commit").focus();
   await page.keyboard.press("ArrowRight");
+  await expect(tab(page, "pr")).toBeFocused();
+  await expect(page.getByTestId("pr-panel")).toBeVisible();
+  await page.keyboard.press("ArrowRight");
   await expect(tab(page, "worktrees")).toBeFocused();
   await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
   await expect(list(page)).toBeVisible();
@@ -732,12 +738,14 @@ test("the side panel's tabs: Commit and Worktrees, icons named and with tooltips
   await page.keyboard.press("ArrowLeft");
   await expect(tab(page, "worktrees")).toBeFocused();
   await expect(list(page)).toBeVisible();
+  await page.keyboard.press("ArrowLeft");
+  await expect(tab(page, "pr")).toBeFocused();
   await page.keyboard.press("Home");
   await expect(tab(page, "commit")).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("End");
   await expect(tab(page, "worktrees")).toHaveAttribute("aria-selected", "true");
   await expect(tab(page, "worktrees")).toBeFocused();
-  // Tab goes on from the selected tab, past the other.
+  // Tab goes on from the selected tab, past the others.
   await page.keyboard.press("Shift+Tab");
   await expect(tab(page, "commit")).not.toBeFocused();
 });
@@ -826,7 +834,7 @@ test("another worktree's commit panel shows on the Commit tab, named, with a way
   await expect(files(page).getByRole("option")).toHaveCount(6);
 });
 
-test("at the panel's least width the tab strip and the buttons fit on one line, with room for two more tabs", async ({ gg }) => {
+test("at the panel's least width the tab strip and the buttons fit on one line, with room for one more tab", async ({ gg }) => {
   const { page } = gg;
   await page.setViewportSize({ width: 900, height: 700 });
   await page.goto("/");
@@ -844,7 +852,7 @@ test("at the panel's least width the tab strip and the buttons fit on one line, 
     // Nothing overflows the header.
     expect(await head.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
     const boxes = [];
-    for (const t of ["commit", "worktrees"] as const) {
+    for (const t of ["commit", "pr", "worktrees"] as const) {
       const b = (await tab(page, t).boundingBox())!;
       expect(b.x).toBeGreaterThanOrEqual(s.x);
       expect(b.y).toBeGreaterThanOrEqual(h.y);
@@ -852,6 +860,7 @@ test("at the panel's least width the tab strip and the buttons fit on one line, 
       boxes.push(b);
     }
     expect(boxes[1].x).toBeGreaterThanOrEqual(boxes[0].x + boxes[0].width);
+    expect(boxes[2].x).toBeGreaterThanOrEqual(boxes[1].x + boxes[1].width);
     // The buttons on the right, Hide last, inside the panel and on the same line.
     const buttons = side.locator("header .actions button");
     const first = (await buttons.first().boundingBox())!;
@@ -859,13 +868,18 @@ test("at the panel's least width the tab strip and the buttons fit on one line, 
     expect(hide.x + hide.width).toBeLessThanOrEqual(s.x + s.width);
     expect(hide.y).toBeGreaterThanOrEqual(h.y);
     expect(hide.y + hide.height).toBeLessThanOrEqual(h.y + h.height);
-    // Between the tabs and the buttons: room for two more tabs (Pull request, Files), and a gap
-    // that keeps the two groups apart.
-    const last = boxes[1];
-    expect(first.x - (last.x + last.width)).toBeGreaterThanOrEqual(2 * (last.width + 2) + 12);
+    // Between the tabs and the buttons: room for one more tab (Files), and a gap that keeps the
+    // two groups apart.
+    const last = boxes[2];
+    expect(first.x - (last.x + last.width)).toBeGreaterThanOrEqual(last.width + 2 + 12);
   };
-  // The Commit tab (Hide alone), then the Worktrees tab with its own two buttons.
+  // The Commit tab (Hide alone), the Pull request tab with Refresh, then the Worktrees tab with
+  // its own two buttons.
   await fits();
+  await tab(page, "pr").click();
+  await expect(page.getByTestId("pr-panel")).toBeVisible();
+  await fits();
+  await expect(side.locator("header .actions button")).toHaveCount(2);
   await tab(page, "worktrees").click();
   await expect(list(page)).toBeVisible();
   await fits();

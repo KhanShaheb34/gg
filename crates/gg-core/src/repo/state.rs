@@ -37,6 +37,8 @@ pub struct RepoInfo {
     /// The open pull request of each branch label that has one, by kind and short name (the
     /// repository's own to fill in from what `gh` listed; not read from git).
     pub pr_marks: BTreeMap<(RefKind, String), PullRequest>,
+    /// Each remote's default branch, as its `HEAD` symref names it (`origin` → `main`).
+    pub remote_heads: BTreeMap<String, String>,
 }
 
 /// What [`RepoState::update`] changed.
@@ -448,6 +450,14 @@ impl RepoState {
             fetch: fetch.clone(),
             op: None,
             prs: PrState::default(),
+            branch_prs: self
+                .info
+                .pr_marks
+                .iter()
+                .filter(|((kind, _), _)| *kind == RefKind::Branch)
+                .map(|((_, name), pr)| (name.clone(), pr.clone()))
+                .collect(),
+            remote_heads: self.info.remote_heads.clone(),
             in_progress: self.info.in_progress.clone(),
             seq: 0,
         }
@@ -923,6 +933,7 @@ mod tests {
             in_progress: None,
             stashes: Vec::new(),
             pr_marks: BTreeMap::new(),
+            remote_heads: BTreeMap::new(),
         }
     }
 

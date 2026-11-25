@@ -22,7 +22,9 @@ import { api } from "../ipc";
 import { toast } from "../state/app.svelte";
 import { runOp } from "../state/ops.svelte";
 import { showDialog as show } from "../state/overlays.svelte";
-import { openCreatePullRequest, openPullRequest } from "../state/prs.svelte";
+import { openPullRequest } from "../state/prs.svelte";
+import { openPullRequestTab } from "../state/pullRequest.svelte";
+import { findRepoView } from "../state/repo.svelte";
 import { openCreateWorktree } from "../state/worktrees.svelte";
 import type { CommitRow, OpRequest, PullRequest, RefLabel, RepoSnapshot } from "../types";
 import { branchMenu } from "./branchMenu";
@@ -272,9 +274,13 @@ async function copyMessage(repoId: number, hash: string): Promise<void> {
 
 /**
  * A pull-request item (`pr.open`, `pr.create`) of local `branch`, whose open pull request was
- * `pr` when the menu opened (the side panel's worktree menu too).
+ * `pr` when the menu opened (the side panel's worktree menu too): Create pull request… shows
+ * the side panel's Pull request tab for that branch, the focus in its form.
  */
 export function pickPullRequest(id: string, branch: string, pr: PullRequest | null, snap: RepoSnapshot): void {
   if (id === "pr.open" && pr) openPullRequest(snap.repoId, pr);
-  else if (id === "pr.create") openCreatePullRequest(snap, branch);
+  else if (id === "pr.create") {
+    const view = findRepoView(snap.repoId);
+    if (view) openPullRequestTab(view, branch, true);
+  }
 }

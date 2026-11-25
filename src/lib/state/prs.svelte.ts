@@ -1,16 +1,13 @@
-// Pull requests in the UI: how a marker reads (its tooltip, whether the list it
-// comes from is stale), opening a pull request (only through `open_external`, only at
-// addresses the core gave), and the Create pull request dialog (which also opens GitHub's
-// compare page, after pushing, when gh cannot make one).
+// Pull requests in the UI: how a marker reads (its tooltip, whether the list it comes from is
+// stale), and opening a pull request (only through `open_external`, only at addresses the
+// core gave). The side panel's Pull request tab is pullRequest.svelte.ts's.
 // The core loads the open pull requests with fetches and the user's refreshes; nothing here
-// asks gh for anything but `pr_suggest`.
+// asks gh for anything.
 
-import CreatePullRequestDialog from "../components/dialogs/CreatePullRequestDialog.svelte";
 import { clockTime, formatClock, relativeTime, type DateFormat } from "../format";
-import type { PrState, PullRequest, RepoSnapshot } from "../types";
+import type { PrState, PullRequest } from "../types";
 import { toast } from "./app.svelte";
 import { openExternal } from "./editor";
-import { showDialog } from "./overlays.svelte";
 
 /** A list of pull requests older than this is shown as of when it was loaded. */
 export const STALE_AFTER_MS = 10 * 60_000;
@@ -56,9 +53,4 @@ export async function copyLink(url: string): Promise<void> {
     return;
   }
   toast("info", "Copied the link.");
-}
-
-/** Opens the Create pull request dialog for local branch `branch` of `snap`'s repository. */
-export function openCreatePullRequest(snap: RepoSnapshot, branch: string): void {
-  showDialog(CreatePullRequestDialog, { repoId: snap.repoId, branch });
 }

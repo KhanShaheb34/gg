@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { snap } from "../menus/menuTestData";
+import { snap, worktree } from "../menus/menuTestData";
 import type { Danger, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 
 vi.mock("../ipc", async (importOriginal) => {
@@ -525,5 +525,60 @@ describe("ops.busy", () => {
     view.snapshot = snap({ op });
     expect(ops.ops.busy(1)).toEqual(op);
     expect(ops.ops.busy(2)).toBeNull();
+  });
+});
+
+describe("the pushes the user asks for", () => {
+  const HEADX = { branch: "feature/x", hash: "c".repeat(40) };
+  const commit = (push: boolean, at = "/r"): OpRequest => ({
+    op: "commit",
+    paths: ["a.txt"],
+    message: "Add a",
+    push,
+    empty: false,
+    expectHead: HEADX,
+    expectWorktree: at,
+  });
+  const PUSH: OpRequest = { op: "push", branch: "fix/y", remote: "origin", to: null, force: false };
+  const onRepo = snap({
+    activeWorktree: "/r",
+    head: HEADX,
+    worktrees: [
+      worktree({ path: "/r", branch: "feature/x", active: true, isMain: true }),
+      worktree({ path: "/r.worktrees/y", branch: "fix/y" }),
+    ],
+  });
+
+  it("name the branch pushed: a push, a commit with its push (in the worktree it ran in)", () => {
+    expect(ops.pushedBranch(PUSH, outcome())).toBe("fix/y");
+    expect(ops.pushedBranch({ ...PUSH, force: true }, outcome())).toBe("fix/y");
+    expect(ops.pushedBranch(commit(true), outcome({ snapshot: onRepo }))).toBe("feature/x");
+    expect(ops.pushedBranch(commit(true, "/r.worktrees/y"), outcome({ snapshot: onRepo }))).toBe("fix/y");
+  });
+
+  it("not when it did not go through, nor for what pushes nothing", () => {
+    expect(ops.pushedBranch(PUSH, outcome({ status: "failed" }))).toBeNull();
+    expect(ops.pushedBranch(PUSH, outcome({ status: "needs_confirmation" }))).toBeNull();
+    expect(ops.pushedBranch(commit(false), outcome({ snapshot: onRepo }))).toBeNull();
+    // Committed, the push did not run: it is offered again.
+    const offered = outcome({ snapshot: onRepo, hints: [{ kind: "push", branch: "feature/x", remote: "origin" }] });
+    expect(ops.pushedBranch(commit(true), offered)).toBeNull();
+    expect(ops.pushedBranch(commit(true), outcome({ snapshot: onRepo, status: "failed" }))).toBeNull();
+    expect(ops.pushedBranch(RESET, outcome())).toBeNull();
+    expect(ops.pushedBranch({ op: "push_tag", name: "v1", remote: "origin" }, outcome())).toBeNull();
+  });
+
+  it("runOp tells the listener of each that went through, after the outcome is shown", async () => {
+    const heard: [number, string][] = [];
+    ops.onUserPush((repoId, branch) => heard.push([repoId, branch]));
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ message: "Pushed fix/y to origin/fix/y." }));
+    await ops.runOp(1, PUSH);
+    expect(heard).toEqual([[1, "fix/y"]]);
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ status: "failed", message: "Rejected" }));
+    await ops.runOp(1, PUSH);
+    vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome());
+    await ops.runOp(1, RESET);
+    expect(heard).toEqual([[1, "fix/y"]]);
+    ops.onUserPush(null);
   });
 });

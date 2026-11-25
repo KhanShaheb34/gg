@@ -1,5 +1,6 @@
 //! Reads branches, remote-tracking branches, tags, remotes and HEAD.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
@@ -50,6 +51,15 @@ pub struct RefInfo {
 /// Local branches, remote-tracking branches and tags, sorted by full ref name. Remote
 /// `HEAD` symrefs and refs that do not point at a commit are left out.
 pub async fn read_refs(r: &GitRunner, cwd: &Path) -> Result<Vec<RefInfo>> {
+    Ok(read_refs_and_heads(r, cwd).await?.0)
+}
+
+/// [`read_refs`], and from the same `for-each-ref`, each remote's default branch as its
+/// `HEAD` symref names it (`origin` → `main`; set by a clone or `git remote set-head`).
+pub async fn read_refs_and_heads(
+    r: &GitRunner,
+    cwd: &Path,
+) -> Result<(Vec<RefInfo>, BTreeMap<String, String>)> {
     let out = r
         .run(
             cwd,
@@ -63,7 +73,7 @@ pub async fn read_refs(r: &GitRunner, cwd: &Path) -> Result<Vec<RefInfo>> {
             CmdKind::Read,
         )
         .await?;
-    Ok(parse_refs(&out.stdout))
+    Ok((parse_refs(&out.stdout), parse_remote_heads(&out.stdout)))
 }
 
 /// Names of the configured remotes.
@@ -97,6 +107,25 @@ pub async fn read_head(r: &GitRunner, cwd: &Path) -> Result<HeadInfo> {
 
 fn parse_refs(out: &[u8]) -> Vec<RefInfo> {
     records(out).filter_map(parse_ref_line).collect()
+}
+
+/// Each remote's `HEAD` symref (`refs/remotes/origin/HEAD` → `refs/remotes/origin/main`) as
+/// remote → branch (`origin` → `main`); one naming a branch of another remote, or none, is
+/// left out.
+fn parse_remote_heads(out: &[u8]) -> BTreeMap<String, String> {
+    records(out)
+        .filter_map(|record| {
+            let mut fields = record.split(|&b| b == 0);
+            let refname = String::from_utf8_lossy(fields.next()?);
+            let symref = String::from_utf8_lossy(fields.nth(6)?);
+            let remote = refname
+                .strip_prefix("refs/remotes/")?
+                .strip_suffix("/HEAD")?;
+            let branch = symref.strip_prefix(&format!("refs/remotes/{remote}/"))?;
+            (!remote.is_empty() && !branch.is_empty() && branch != "HEAD")
+                .then(|| (remote.to_owned(), branch.to_owned()))
+        })
+        .collect()
 }
 
 /// The records of `out`, each without its [`RECORD_END`].
@@ -252,6 +281,58 @@ mod tests {
             author: "Ada".into(),
             subject: "Tip".into(),
         }
+    }
+
+    #[test]
+    fn remote_heads_name_each_remotes_default_branch() {
+        let out = [
+            line("refs/heads/main", "commit", C, "", "", "", ""),
+            line(
+                "refs/remotes/origin/HEAD",
+                "commit",
+                C,
+                "",
+                "",
+                "",
+                "refs/remotes/origin/main",
+            ),
+            line("refs/remotes/origin/main", "commit", C, "", "", "", ""),
+            line(
+                "refs/remotes/my/fork/HEAD",
+                "commit",
+                C,
+                "",
+                "",
+                "",
+                "refs/remotes/my/fork/trunk",
+            ),
+            // Pointing at another remote's branch, or at nothing: left out.
+            line(
+                "refs/remotes/odd/HEAD",
+                "commit",
+                C,
+                "",
+                "",
+                "",
+                "refs/remotes/origin/main",
+            ),
+            line("refs/remotes/bare/HEAD", "commit", C, "", "", "", ""),
+        ]
+        .concat();
+        assert_eq!(
+            parse_remote_heads(out.as_bytes()),
+            BTreeMap::from([
+                ("my/fork".to_owned(), "trunk".to_owned()),
+                ("origin".to_owned(), "main".to_owned()),
+            ])
+        );
+        // The refs themselves are as before: no HEAD among them.
+        assert!(
+            parse_refs(out.as_bytes())
+                .iter()
+                .all(|r| !r.name.ends_with("HEAD"))
+        );
+        assert!(parse_remote_heads(b"").is_empty());
     }
 
     #[test]

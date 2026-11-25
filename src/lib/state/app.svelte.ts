@@ -54,6 +54,7 @@ export const app = $state({
     worktreePattern: "../{repo}.worktrees/{branch}",
     dateFormat: "standard",
     checkForUpdates: true,
+    openPrTabAfterPush: true,
   } as Settings,
   /** The file settings are kept in, as the core says. */
   settingsFile: "",

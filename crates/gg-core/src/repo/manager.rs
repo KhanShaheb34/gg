@@ -34,7 +34,7 @@ use crate::dto::{
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::details::read_details;
 use crate::git::progress::{read_in_progress_with, read_kind};
-use crate::git::refs::{read_head, read_refs, read_remotes};
+use crate::git::refs::{read_head, read_refs_and_heads, read_remotes};
 use crate::git::runner::{CmdKind, GitRunner};
 use crate::git::stash::read_stashes;
 use crate::git::status::{STATUS_ARGS, read_status, read_status_and_conflicts};
@@ -2738,12 +2738,13 @@ async fn read_info(
 ) -> Result<(RepoInfo, Option<CoreError>)> {
     let (head, refs, remotes, worktrees, stashes) = tokio::join!(
         read_head(runner, worktree),
-        read_refs(runner, worktree),
+        read_refs_and_heads(runner, worktree),
         read_remotes(runner, worktree),
         read_worktrees(runner, worktree),
         read_stashes(runner, worktree),
     );
     let worktrees = canonical_paths(worktrees?);
+    let (refs, remote_heads) = refs?;
     let (stashes, stash_error) = match stashes {
         Ok(stashes) => (stashes, None),
         Err(e) => (Vec::new(), Some(e)),
@@ -2751,13 +2752,14 @@ async fn read_info(
     Ok((
         RepoInfo {
             head: head?,
-            refs: refs?,
+            refs,
             remotes: remotes?,
             worktrees,
             status: tree.status,
             in_progress: tree.in_progress,
             stashes,
             pr_marks: Default::default(),
+            remote_heads,
         },
         stash_error,
     ))

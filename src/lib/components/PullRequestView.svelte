@@ -1,0 +1,227 @@
+<!--
+  A branch's open pull request, in the side panel's Pull request tab: its state (Draft or
+  Open, in the markers' colours), its number, its title in full, base ← head (cut in the
+  middle), Open in browser and Copy link, and "as of 14:05" when the list it comes from may be
+  out of date. Below it, the room its checks and comments will take.
+-->
+<script lang="ts">
+  import { visibleText } from "../format";
+  import { copyLink, openPullRequest } from "../state/prs.svelte";
+  import type { PullRequest } from "../types";
+  import MiddleText from "./MiddleText.svelte";
+
+  type Props = {
+    repoId: number;
+    pr: PullRequest;
+    /** "as of 14:05" when the list it comes from may be out of date. */
+    stale: string | null;
+  };
+
+  let { repoId, pr, stale }: Props = $props();
+  const draft = $derived(pr.state === "draft");
+</script>
+
+<div class="pr-view" data-testid="pr-view">
+  <section class="head" aria-label="Pull request #{pr.number}">
+    <div class="meta">
+      <span class="state" class:draft data-testid="pr-state">
+        <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden="true">
+          <circle cx="2.4" cy="2" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
+          <circle cx="2.4" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
+          <circle cx="7.6" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
+          <path d="M2.4 3.25v3.5M7.6 6.75V4.1c0-.9-.6-1.5-1.5-1.5H4.6" fill="none" stroke="currentColor" stroke-width="1.05" />
+          <path d="M5.7 1.4 4.5 2.6l1.2 1.2" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        {draft ? "Draft" : "Open"}
+      </span>
+      <span class="number" data-testid="pr-number">#{pr.number}</span>
+      {#if stale}
+        <span class="stale" data-testid="pr-stale" title="The pull requests were last loaded then: refresh to load them again">{stale}</span>
+      {/if}
+    </div>
+    <h2 class="title selectable" data-testid="pr-view-title">{visibleText(pr.title)}</h2>
+    <p class="flow" data-testid="pr-flow" aria-label="Into {pr.base} from {pr.head}">
+      <MiddleText class="ref base" text={pr.base} keep={10} />
+      <span class="arrow" aria-hidden="true">←</span>
+      <MiddleText class="ref" text={pr.head} keep={14} />
+    </p>
+    <div class="actions">
+      <button class="button" type="button" data-pr-focus data-testid="pr-open" onclick={() => openPullRequest(repoId, pr)}>Open in browser</button>
+      <button class="button" type="button" data-testid="pr-copy" onclick={() => void copyLink(pr.url)}>Copy link</button>
+    </div>
+  </section>
+  <!-- Checks and comments go here. -->
+  <div class="rest"></div>
+</div>
+
+<style>
+  .pr-view {
+    /* Its width decides how the buttons sit (below). */
+    container: pr-view / inline-size;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .head {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    gap: 6px;
+    padding: 12px 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    height: 20px;
+  }
+
+  /* The marker's colours (PrChip): open in the success tint, a draft hollow and quiet. */
+  .state {
+    --pr: var(--success);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    height: 20px;
+    padding: 0 7px 0 6px;
+    border: 1px solid color-mix(in srgb, var(--pr) 32%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--pr) 9%, var(--bg));
+    color: var(--text);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    line-height: 18px;
+  }
+
+  .state svg {
+    display: block;
+    flex: none;
+    color: color-mix(in srgb, var(--pr) 85%, var(--text));
+  }
+
+  .state.draft {
+    border-style: dashed;
+    border-color: var(--border-strong);
+    background: transparent;
+    color: var(--text-muted);
+  }
+
+  .state.draft svg {
+    color: var(--text-faint);
+  }
+
+  .number {
+    flex: none;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
+  .stale {
+    min-width: 0;
+    margin-left: auto;
+    overflow: hidden;
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .title {
+    margin: 2px 0 0;
+    color: var(--text);
+    font-size: var(--fs);
+    font-weight: 600;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    margin: 0;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+  }
+
+  .flow :global(.ref) {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .flow :global(.base) {
+    flex-shrink: 2;
+  }
+
+  .arrow {
+    flex: none;
+    color: var(--text-faint);
+    font-family: var(--font-ui);
+  }
+
+  /* Side by side, each as wide as its label; in a panel narrower than 280 px (its least width
+     is 240), stacked, each the row's width: by rule, whatever the font's widths. */
+  .actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 28px;
+    padding: 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    font-size: var(--fs-sm);
+    font-weight: 550;
+    white-space: nowrap;
+    transition:
+      background-color 80ms linear,
+      border-color 80ms linear;
+  }
+
+  @container pr-view (width < 280px) {
+    .actions {
+      flex-direction: column;
+    }
+
+    .button {
+      flex: none;
+    }
+  }
+
+  .button:hover {
+    background: var(--bg-hover);
+  }
+
+  .button:active {
+    background: var(--bg-pressed);
+  }
+
+  .button:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  .rest {
+    flex: 1 1 auto;
+  }
+</style>

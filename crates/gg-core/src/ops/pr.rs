@@ -27,7 +27,7 @@ pub(crate) struct Request<'a> {
     pub title: &'a str,
     pub body: &'a str,
     pub draft: bool,
-    /// The dialog promised GitHub's compare page: gh is never run.
+    /// The Pull request tab promised GitHub's compare page: gh is never run.
     pub compare_page: bool,
 }
 
@@ -143,7 +143,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         None => branch.to_owned(),
     };
     // The compare page, with what the form had in it: nothing
-    // typed is lost when it ends there after all. Not when the dialog showed no form.
+    // typed is lost when it ends there after all. Not when the tab showed no form.
     let page = compare_url(&on, base, branch, fork.as_deref());
     let page = if compare_page {
         page
@@ -157,7 +157,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
 
     // gh looked for before anything is pushed: without it, or signed out (as the list last
     // said), the branch is still pushed and the pull request is finished on GitHub's compare
-    // page. Never when the dialog promised that page: gh found
+    // page. Never when the tab promised that page: gh found
     // since would make a pull request the user never saw the form of.
     let signed_out = ctx.repo.prs_unavailable().await == Some(PrUnavailable::SignedOut);
     let gh = if signed_out || compare_page {

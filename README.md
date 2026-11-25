@@ -129,8 +129,8 @@ afterwards and says which it is.
   <img alt="The worktree panel beside the graph: eight worktrees, each with its branch, its uncommitted changes and how it stands with its upstream, and markers for a merge in progress, a missing folder and a locked worktree" src="docs/screens/worktrees-light.png" width="640">
 </picture>
 
-- The side panel (⌘B, or its button at the right of the toolbar) has two icon tabs, Commit
-  and Worktrees, and opens on the one you used last. Worktrees lists every worktree of the
+- The side panel (⌘B, or its button at the right of the toolbar) has three icon tabs, Commit,
+  Pull request and Worktrees, and opens on the one you used last. Worktrees lists every worktree of the
   repository, including ones made in a terminal or by other tools, each with its branch, its
   uncommitted changes (kept up to date as files change) and how it stands with its upstream,
   and says what is unusual: locked, folder missing, a merge stopped there.
@@ -165,11 +165,14 @@ its message is filled in for you.
   <img alt="Pull request markers such as #1284 and #1295 beside branch labels in the graph and beside a worktree in the side panel" src="docs/screens/pull-requests-light.png" width="640">
 </picture>
 
-Through the GitHub CLI [`gh`](https://cli.github.com), signed in: **Create pull request…** on
-a branch or worktree suggests a title and description from its commits and pushes the branch
-first when it needs to. Open pull requests show as markers beside their branches and
-worktrees. Without `gh`, gg pushes the branch and opens GitHub's compare page instead. gg
-never reads or stores a GitHub token.
+Through the GitHub CLI [`gh`](https://cli.github.com), signed in. The side panel's **Pull
+request** tab (⌘⇧P) is about the current branch: it shows the branch's open pull request, or
+the form to make one, with a title and description suggested from its commits, the branch it
+goes into, and Create as draft; it pushes the branch first when it needs to, and says so.
+**Create pull request…** on a branch or worktree shows the tab for that branch. After you push
+a branch that has no pull request, the tab opens by itself (a setting). Open pull requests
+show as markers beside their branches and worktrees. Without `gh`, gg pushes the branch and
+opens GitHub's compare page instead. gg never reads or stores a GitHub token.
 
 **Right-click actions**
 
@@ -245,7 +248,8 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 | ⌘R | Refresh |
 | ⌘P | Switch branch, or create one (the branch picker) |
 | ⌘K | Commit (the side panel's Commit tab, its message focused); ⌘Enter commits |
-| ⌘B | Show or hide the side panel, on the tab last used (Commit or Worktrees) |
+| ⌘⇧P | The side panel's Pull request tab, for the current branch |
+| ⌘B | Show or hide the side panel, on the tab last used (Commit, Pull request or Worktrees) |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active |
 | ⌘⇧L | Show or hide the command log |
 | ⌘1…⌘9, Ctrl+Tab | Switch tabs |

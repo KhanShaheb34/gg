@@ -18,6 +18,7 @@ const DEFAULTS: Settings = {
   worktreePattern: "../{repo}.worktrees/{branch}",
   dateFormat: "standard",
   checkForUpdates: true,
+  openPrTabAfterPush: true,
 };
 
 describe("saving a setting", () => {

@@ -7,7 +7,7 @@ a web UI that only renders what the core gives it.
 ┌──────────── UI (Svelte 5, src/) ─────────────┐
 │ tabs · toolbar · graph · details · dialogs   │
 │ menus · conflict banner · command log        │
-│ side panel: worktrees, commit panel          │
+│ side panel: commit, pull request, worktrees  │
 │ settings · keyboard shortcuts                │
 └──────┬───────────────────────────▲───────────┘
        │ typed commands (JSON)     │ events: repo-changed, op-progress, …

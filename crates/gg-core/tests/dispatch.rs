@@ -782,7 +782,7 @@ async fn launch_path_is_reported() {
             "recents": [],
             "session": {"tabs": [], "active": null},
             "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null, "terminalCommand": null,
-                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true},
+                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true},
             "launchPath": null,
             "homeDir": home,
             "settingsProblem": null,
@@ -807,13 +807,13 @@ async fn session_and_settings_persist() {
     let settings = h
         .call(
             "update_settings",
-            json!({"patch": {"theme": "dark", "fetchIntervalSecs": 0}}),
+            json!({"patch": {"theme": "dark", "fetchIntervalSecs": 0, "openPrTabAfterPush": false}}),
         )
         .await;
     assert_eq!(
         settings,
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false})
     );
     let err = h
         .fail(
@@ -839,7 +839,7 @@ async fn session_and_settings_persist() {
     assert_eq!(
         state["settings"],
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false})
     );
 }
 
@@ -854,13 +854,13 @@ async fn settings_go_back_to_their_defaults() {
         "update_settings",
         json!({"patch": {"theme": "dark", "fetchIntervalSecs": 60, "dateFormat": "iso",
                          "editorCommand": "code", "worktreePattern": "../w/{branch}",
-                         "checkForUpdates": false}}),
+                         "checkForUpdates": false, "openPrTabAfterPush": false}}),
     )
     .await;
     let settings = h.call("restore_default_settings", json!({})).await;
     let defaults = json!({"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                           "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
-                          "dateFormat": "standard", "checkForUpdates": true});
+                          "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true});
     assert_eq!(settings, defaults);
     let err = h
         .fail("restore_default_settings", json!({"keep": "theme"}))

@@ -1,13 +1,14 @@
 // One repository's side panel: whether it shows (RepoPrefs.sidePanel, kept by the core), the
-// tab it shows (the commit panel, or the worktree list), the worktree selected in the list, the
-// switch underway, and which worktree's commit panel the Commit tab holds. Made with the
+// tab it shows (the commit panel, the pull request, or the worktree list), the worktree
+// selected in the list, the switch underway, which worktree's commit panel the Commit tab
+// holds, and which branch the Pull request tab is about. Made with the
 // repository's view (outside any reactive context, so everything reading it follows its
 // changes); see worktrees.svelte.ts.
 
 import { api } from "../ipc";
 
 /** The side panel's tabs, in the order its tab strip shows them. */
-export const SIDE_TABS = ["commit", "worktrees"] as const;
+export const SIDE_TABS = ["commit", "pr", "worktrees"] as const;
 export type SideTab = (typeof SIDE_TABS)[number];
 
 /**
@@ -56,6 +57,18 @@ export class PanelState {
    * path), or null: the active worktree's.
    */
   commitFor: string | null = $state(null);
+  /**
+   * The local branch the Pull request tab is about when it is not the active worktree's
+   * branch (a branch's menu asked for it), or null: the active worktree's branch, as it
+   * changes.
+   */
+  prFor: string | null = $state(null);
+  /** The user asked to refresh the pull requests (bumped): the tab asks gh about its branch again. */
+  prRefresh = $state(0);
+  /** Asks to move the focus into the Pull request tab (bumped; the tab follows it). */
+  prFocus = $state(0);
+  /** The `prFocus` request the tab last followed (see `commitFocusDone`). */
+  prFocusDone = 0;
   /** Asks to move the focus to the commit message (bumped; the commit panel follows it). */
   commitFocus = $state(0);
   /**

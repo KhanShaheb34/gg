@@ -128,7 +128,7 @@ impl RepoManager {
 
     async fn load_prs(self: &Arc<Self>, repo: &Arc<Repo>, trigger: PrTrigger) {
         // After "no gh" or "signed out", the user's own refresh asks again at once (the
-        // pull-request dialog does it when it opens): they may have installed gh or signed
+        // Pull request tab does it when it shows): they may have installed gh or signed
         // in a moment ago.
         let asked_again = trigger == PrTrigger::User && repo.prs_unavailable().await.is_some();
         {
@@ -691,7 +691,7 @@ impl RepoManager {
 /// Where `pr_create` pushes local `branch` before opening its pull request, and whether it
 /// must: the branch's push remote ([`RemoteFacts::push_remote`]) and whether its namesake
 /// there is missing or behind it (as last fetched). `None` when the remote is not clear.
-/// The suggestion and `pr_create` both ask this, so what the dialog says is what is done.
+/// The suggestion and `pr_create` both ask this, so what the Pull request tab says is what is done.
 pub(crate) async fn push_plan(
     runner: &GitRunner,
     cwd: &std::path::Path,

@@ -104,6 +104,10 @@ export type RepoSnapshot = {
   /** The operation running on this repository; `queued`: requests waiting behind it. */
   op: { id: number; title: string; startedAtMs: number; queued: number } | null;
   prs: PrState;
+  /** The open pull request of each local branch that has one, from the list last loaded (whatever the graph shows). */
+  branchPrs: Record<string, PullRequest>;
+  /** Each remote's default branch, as its HEAD names it ("origin" → "main"); none for a remote without one. */
+  remoteHeads: Record<string, string>;
   inProgress: InProgress | null;
   /** Grows by one per repository with each snapshot that changes anything and each operation outcome; drop older ones. */
   seq: number;
@@ -200,7 +204,7 @@ export type CommitDetails = {
 };
 
 /**
- * Defaults: system, 300 (0 = off), null (the system's default opener), null (the platform's terminal), "../{repo}.worktrees/{branch}".
+ * Defaults: system, 300 (0 = off), null (the system's default opener), null (the platform's terminal), "../{repo}.worktrees/{branch}", …, true, true.
  * `worktreePattern`: where new worktrees go, relative to the main worktree; {repo} {branch} filled in, must contain {branch}
  * and lead outside the main worktree (a suggestion that would land inside a worktree or the git dir uses the default).
  */
@@ -216,6 +220,8 @@ export type Settings = {
   dateFormat: "standard" | "relative" | "iso" | "locale";
   /** gg looks for a new version of itself shortly after it starts and about once a day. */
   checkForUpdates: boolean;
+  /** A push the user asks for shows the side panel's Pull request tab when the branch has no pull request. */
+  openPrTabAfterPush: boolean;
 };
 
 /**
@@ -391,7 +397,7 @@ export type OpRequest =
       title: string;
       body: string;
       draft: boolean;
-      /** The dialog promised GitHub's compare page (no form): the core only pushes, and never runs gh. */
+      /** The Pull request tab promised GitHub's compare page (no form): the core only pushes, and never runs gh. */
       comparePage: boolean;
     };
 

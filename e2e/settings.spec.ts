@@ -103,6 +103,7 @@ test("settings open from the keys and the gear, save each field as it changes, a
     worktreePattern: "../{repo}.worktrees/{branch}",
     dateFormat: "standard",
     checkForUpdates: true,
+    openPrTabAfterPush: true,
   });
   await expect(page.getByRole("tab", { name: "small" })).toBeVisible();
 });

@@ -39,9 +39,12 @@
   const draft = $derived(pr.state === "draft");
   const root = $derived(view.snapshot.rootPath);
   const panel = $derived(panelState(view.repoId));
-  const entry = $derived(detailsOf(root, pr.number));
+  /** As values: a new snapshot (or the same pull request in it, anew) changes neither. */
+  const number = $derived(pr.number);
+  const listAt = $derived(view.snapshot.prs.loadedAtMs);
+  /** This pull request's details: an answer for another is never shown here. */
+  const entry = $derived(detailsOf(root, number));
   const details = $derived(entry?.data ?? null);
-  /** The details shown are this pull request's (a stale entry is never another's). */
   const status = $derived(details ? mergeWording(details, pr.base) : null);
   const review = $derived(details ? reviewWording(details.review) : null);
 
@@ -52,16 +55,16 @@
   }
 
   function load(background = false) {
-    void loadDetails(repoId, root, pr.number, background);
+    void loadDetails(repoId, root, number, background);
   }
 
   // Asked for when it shows (or its pull request changes), when the user refreshes, and after
-  // the list reloads.
+  // the list reloads; not for any other change of the repository.
   $effect(() => {
-    void pr.number;
+    void number;
     void root;
     void panel.prRefresh;
-    void view.snapshot.prs.loadedAtMs;
+    void listAt;
     untrack(() => load());
   });
 
@@ -140,7 +143,7 @@
         <span class="chip {status.tone}" data-testid="pr-merge-status"><span class="chip-dot" aria-hidden="true"></span>{status.text}</span>
         {#if review}<span class="chip {review.tone}" data-testid="pr-review">{review.text}</span>{/if}
       </div>
-      <PrChecks id="{root}#{pr.number}" checks={details.checks} summary={details.checksSummary} now={Math.max(clock.now, details.loadedAtMs)} onlink={openLink} />
+      <PrChecks id="{root}#{number}" checks={details.checks} summary={details.checksSummary} now={Math.max(clock.now, details.loadedAtMs)} onlink={openLink} />
       <div class="divider" aria-hidden="true"></div>
       <PrComments {details} dateFormat={app.settings.dateFormat} now={clock.now} onpage={openPage} onlink={openLink} />
     {:else if !entry?.error}

@@ -3,6 +3,8 @@
 // never started: opens are recorded). The `prs` fixture is on fix/typo, whose pull request is
 // #31 (docs/readme's #32). The core's floor between two loads of one pull request is made
 // 0 ms here (--pr-details-every-ms) and the tab's poll 400 ms, so loads can be counted.
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test, type GG } from "./fixtures";
 import { answer, comment, coderabbit, review, run, status, THREADS_22, threads, view, viewCalls } from "./prDetailsData";
@@ -185,6 +187,11 @@ test("while a check runs the tab asks again, and stops when all finish, when it 
   await expect(page.getByTestId("pr-merge-status")).toHaveText("Ready to merge");
   const settled = viewCalls(gg, 31);
   await page.waitForTimeout(POLL_MS * 4);
+  expect(viewCalls(gg, 31)).toBe(settled);
+  // Nor for any other change of the repository (a file written: the status, a new snapshot).
+  writeFileSync(path.join(gg.repoPath("prs"), "touched.txt"), "x\n");
+  await expect(page.getByTestId("side-tab-commit").getByTestId("side-tab-dot")).toBeVisible();
+  await page.waitForTimeout(POLL_MS * 2);
   expect(viewCalls(gg, 31)).toBe(settled);
 
   // Running again: another tab shown, no more.

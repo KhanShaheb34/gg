@@ -12,6 +12,9 @@
   list takes the keys: arrows move, Space ticks, Cmd+A ticks every file. While a merge is
   concluded, every tracked file is ticked and stays so; new files are up to the user.
 
+  Under the message, "Committed on branch" (CommittedFiles) lists what the branch's commits
+  change from where it left its base, read-only.
+
   The list follows the worktree as it changes, keeping ticks and the message; the message is
   kept per worktree while the app runs, closed or not. Cmd+Enter in the message commits.
   With no file ticked (and no merge to conclude), "Commit with no changes" under the buttons
@@ -33,6 +36,7 @@
   import type { RepoView } from "../state/repo.svelte";
   import { closeCommit, commitDrafts, commitPath, makeActive, openCommit, panelState } from "../state/worktrees.svelte";
   import type { FileEntry, HeadInfo, OpRequest } from "../types";
+  import CommittedFiles from "./CommittedFiles.svelte";
   import MiddleText from "./MiddleText.svelte";
 
   let { view, path }: { view: RepoView; path: string } = $props();
@@ -92,6 +96,16 @@
   /** The commit asked for is an empty one. */
   const emptyCommit = $derived(emptyOffered && allowEmpty);
   const mergeBlocked = $derived(merging ? (files ?? []).filter((f) => f.status !== "?" && blocked(f) !== null) : []);
+
+  /**
+   * The worktree has uncommitted changes: the files listed (until they are read, its status's
+   * counts). "Committed on branch" starts closed then.
+   */
+  const dirty = $derived.by(() => {
+    if (files !== null) return files.length > 0;
+    const status = active ? snap.status : wt?.status;
+    return status ? status.changed + status.untracked > 0 : false;
+  });
 
   // ---- Reading the files ----
 
@@ -633,6 +647,10 @@
       {/if}
     {/if}
   </div>
+
+  <!-- What the branch's commits change, from where it left its base (none for the default
+       branch, a detached HEAD, no base known). -->
+  <CommittedFiles {view} {path} {dirty} />
 </div>
 
 <style>

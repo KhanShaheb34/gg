@@ -427,6 +427,52 @@ const REPOS: Record<string, RepoScript> = {
     write(deep, "export const total = 0;\n");
   },
   /**
+   * The Commit tab's "Committed on branch": on `feature/report` (pushed, tracking
+   * origin/feature/report), clean, two commits after it left `main`: `src/report.ts` modified
+   * (+2 −1), `docs/old-guide.md` renamed to `docs/guide.md` (one line added), `legacy.txt`
+   * deleted, `assets/logo.bin` (binary) and `src/new.ts` added. `main` moved on after it left
+   * (`main-only.txt`), and origin's HEAD names `main` (`branchfiles-origin.git`). `bulk` (no
+   * upstream) adds 520 files to `main`. An identity for the commits the app makes.
+   */
+  branchfiles(git, write, dir) {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Ada Lovelace");
+    git("config", "user.email", "ada@example.com");
+    write("src/report.ts", "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n");
+    write("docs/old-guide.md", "# Guide\n\nOne.\nTwo.\nThree.\nFour.\n");
+    write("legacy.txt", "legacy\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Start the report");
+    const origin = path.join(path.dirname(dir), "branchfiles-origin.git");
+    git("init", "-q", "--bare", "-b", "main", origin);
+    git("remote", "add", "origin", origin);
+    git("push", "-q", "-u", "origin", "main");
+    git("switch", "-q", "-c", "bulk");
+    for (let i = 0; i < 520; i++) write(`bulk/f${String(i).padStart(3, "0")}.txt`, `${i}\n`);
+    git("add", "-A");
+    git("commit", "-q", "-m", "Add 520 files");
+    git("switch", "-q", "-c", "feature/report", "main");
+    write("src/report.ts", "export const a = 1;\nexport const b = 20;\nexport const c = 3;\nexport const d = 4;\n");
+    git("mv", "docs/old-guide.md", "docs/guide.md");
+    write("docs/guide.md", "# Guide\n\nOne.\nTwo.\nThree.\nFour.\nFive.\n");
+    git("rm", "-q", "legacy.txt");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Rework the report");
+    mkdirSync(path.join(dir, "assets"), { recursive: true });
+    writeFileSync(path.join(dir, "assets", "logo.bin"), Buffer.from([0, 159, 146, 150, 0, 1, 2, 3]));
+    write("src/new.ts", "export {};\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Add a logo and a module");
+    git("push", "-q", "-u", "origin", "feature/report");
+    git("switch", "-q", "main");
+    write("main-only.txt", "main\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Main moves on");
+    git("push", "-q", "origin", "main");
+    git("switch", "-q", "feature/report");
+    git("remote", "set-head", "origin", "main");
+  },
+  /**
    * Worktrees in every state, beside a bare `origin` (`worktrees-origin.git`); the linked ones
    * in `worktrees.worktrees/` (the default location pattern). `main` (the main worktree): clean,
    * level with origin/main, a `.gitignore` for `build/`. `feature/login`: 2 ahead and 1 behind

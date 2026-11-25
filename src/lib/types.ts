@@ -227,6 +227,22 @@ export type FileChange = {
   additions: number | null;
   deletions: number | null;
 };
+/**
+ * What `branch_files` gives: the files a worktree's branch changes in its own commits, from
+ * where it left `base` (merge-base(base, HEAD)..HEAD; renames one row, binary files without
+ * counts), in path order, the first 500 (`total`: how many in all). Null from the core when
+ * there is no such list (detached, the default branch itself, no base known, nothing changed).
+ */
+export type BranchFiles = {
+  branch: string;
+  /** "origin/main", or a local branch when a pull request's base is only that. */
+  base: string;
+  baseCommit: string;
+  mergeBase: string;
+  head: string;
+  files: FileChange[];
+  total: number;
+};
 /** Rows of `generation` whose commit message (subject and body) matches a search. */
 export type BodyHits = { generation: number; rows: number[] };
 

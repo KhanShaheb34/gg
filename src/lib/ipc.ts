@@ -5,6 +5,7 @@ import { isTauri } from "./platform";
 import type {
   AppState,
   BodyHits,
+  BranchFiles,
   CliState,
   CommandRecord,
   CommitDetails,
@@ -375,6 +376,12 @@ export const api = {
   setActiveWorktree: (repoId: number, path: string) => call<RepoSnapshot>("set_active_worktree", { repoId, path }),
   /** The changed files of the worktree at `path` (any of the repository's, not only the active one). */
   worktreeFiles: (repoId: number, path: string) => call<WorktreeFiles>("worktree_files", { repoId, path }),
+  /**
+   * The files the branch checked out in the worktree at `path` changes in its own commits
+   * (null: no such list). Read-only; the core reads git again only when HEAD, the base or the
+   * base's commit moved.
+   */
+  branchFiles: (repoId: number, path: string) => call<BranchFiles | null>("branch_files", { repoId, path }),
   /** Where a new worktree for `branch` goes by default (the `worktreePattern` setting). */
   worktreeDefaultPath: (repoId: number, branch: string) =>
     call<WorktreePath>("worktree_default_path", { repoId, branch }),

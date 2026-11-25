@@ -43,8 +43,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 ## Worktrees, committing and pull requests
 
 - The side panel (⌘B, or the button at the right of the toolbar, which counts the files to
-  commit) has two icon tabs, **Commit** (with a dot when there are files to commit) and
-  **Worktrees**, and opens on the one last used in the repository (←/→ move between them).
+  commit) has three icon tabs, **Commit** (with a dot when there are files to commit),
+  **Pull request** and **Worktrees**, and opens on the one last used in the repository (←/→
+  move between them).
   Worktrees lists the repository's worktrees as git does, including ones made in a terminal or
   by another tool: each with its branch, its uncommitted
   changes (kept up to date as files change), how it stands with its upstream, and what is
@@ -78,19 +79,32 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   `post-commit` hook, say), the staging area still holds the committed files as they were
   before the commit, so `git status` shows staged changes that would undo it; `git reset`
   puts the staging area back as HEAD has it (your files are not touched).
-- **Create pull request…** (a branch's or worktree's menu) needs `gh`, signed in: it suggests a
-  title and description from the commits, pushes the branch first when it needs to, and
-  says so on its button. Without `gh`, it pushes and opens GitHub's compare page. Open pull
-  requests show as markers beside their branches and worktrees, loaded with each fetch (at
-  most once a minute). The app never reads or stores a GitHub token. Note that `gh`, by its
+- The **Pull request** tab (⌘⇧P) needs `gh`, signed in. It is about one local branch: the
+  active worktree's, as it changes, or the one whose menu's **Create pull request…** (a
+  branch's or a worktree's) showed it; then a line at the top names that branch, with a
+  button back to the current one. With an open pull request, it shows its number, state
+  (open or draft), title, base ← head, **Open in browser** and **Copy link** (and "as of …"
+  when the list may be out of date; the tab's Refresh loads it again). Without one, it shows
+  the form: a title and description suggested from the branch's commits, the branch it goes
+  into (the one last used, else the repository's default), and **Create as draft**; the
+  button pushes the branch first when it needs to, and the line above it says where. What
+  you type is kept per branch while gg runs, whatever else you look at, until the pull
+  request is made. A failure stays in the tab, with Show log. It says plainly when none can
+  be made: HEAD detached, no remote, a remote not on GitHub, the default branch. Without
+  `gh`, or signed out, it says how to fix that, and meanwhile pushes the branch and opens
+  GitHub's compare page. After a push you ask for (Push, Commit & Push, a notice's Push) of a
+  branch with no pull request, other than the default branch, the tab shows by itself,
+  without taking the focus (turn this off in Settings › Pull requests). Open pull requests
+  show as markers beside their branches and worktrees, loaded with each fetch (at most once
+  a minute). The app never reads or stores a GitHub token. Note that `gh`, by its
   own design, sends a token it finds in your environment (`GH_TOKEN`, `GITHUB_TOKEN`) to
   github.com and to any `*.ghe.com` host (GitHub's own enterprise cloud): a repository whose
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
   token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
   than github.com, but leaves these two to gh.
 - **Settings** (⌘,): theme (system, light or dark), date format, background fetch, the
-  editor and terminal the worktree menu opens, the worktree location pattern, and the `gg`
-  command. **?** lists the keyboard shortcuts.
+  editor and terminal the worktree menu opens, the worktree location pattern, whether a push
+  shows the Pull request tab, and the `gg` command. **?** lists the keyboard shortcuts.
 
 ## Switching branches
 
@@ -219,9 +233,10 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘R | Refresh (and the pull requests) |
 | ⌘P | The branch picker: switch branch, or create one |
 | ⌘K | The side panel's Commit tab, its message focused |
+| ⌘⇧P | The side panel's Pull request tab, for the current branch |
 | ⌘Enter | Commit what is ticked (in the commit message) |
 | Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |
-| ⌘B | Show or hide the side panel, on the tab last used (Commit or Worktrees) |
+| ⌘B | Show or hide the side panel, on the tab last used (Commit, Pull request or Worktrees) |
 | ⌘⇧L | Show or hide the command log |
 | F6, Shift+F6 | Next region (graph, newest notice, side panel), the region before |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the side panel |

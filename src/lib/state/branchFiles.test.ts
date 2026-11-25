@@ -10,7 +10,7 @@ vi.mock("../ipc", () => ({
   },
 }));
 
-import { BranchFold, branchFilesKey, branchFilesOf, forgetBranchFiles, loadBranchFiles } from "./branchFiles.svelte";
+import { BranchFold, branchFilesKey, branchFilesOf, forgetBranchFiles, loadBranchFiles, remoteTipsSignature } from "./branchFiles.svelte";
 
 const WT = "/r.worktrees/feature-x";
 const tip = (hash: string) => ({ hash, time: 0, author: "Ada", subject: "s" });
@@ -47,13 +47,19 @@ describe("what the list depends on (the key it is asked for again by)", () => {
     expect(branchFilesKey(shot({ branchPrs: { "feature/x": pullRequest({ base: "develop" }) } }), WT)).not.toBe(k);
     expect(branchFilesKey(shot({ remoteHeads: { origin: "develop" } }), WT)).not.toBe(k);
     expect(branchFilesKey(shot({ remotes: ["origin", "upstream"] }), WT)).not.toBe(k);
-    // The default branch's commit moved (a fetch); a branch that could not be the base did not matter.
+    // The default branch's commit moved (a fetch); any other remote branch too (the base may be
+    // the nearest by history), one coming or going too.
     const moved = shot();
     moved.remoteBranchTips = [tip("9".repeat(40)), tip("2".repeat(40)), tip("a".repeat(40))];
     expect(branchFilesKey(moved, WT)).not.toBe(k);
     const other = shot();
-    other.remoteBranchTips = [tip("1".repeat(40)), tip("2".repeat(40)), tip("8".repeat(40))];
-    expect(branchFilesKey(other, WT)).toBe(k);
+    other.remoteBranchTips = [tip("1".repeat(40)), tip("8".repeat(40)), tip("a".repeat(40))];
+    expect(branchFilesKey(other, WT)).not.toBe(k);
+    const added = shot({
+      remoteBranches: ["origin/main", "origin/develop", "origin/feature/x", "origin/staging"],
+      remoteBranchTips: [tip("1".repeat(40)), tip("2".repeat(40)), tip("a".repeat(40)), tip("3".repeat(40))],
+    });
+    expect(branchFilesKey(added, WT)).not.toBe(k);
   });
 
   it("moves when a better base comes into reach: the pull request's base fetched where only the local branch was (review)", () => {
@@ -94,6 +100,19 @@ describe("what the list depends on (the key it is asked for again by)", () => {
     // A remote named like an object's members has no default branch it does not have.
     expect(() => branchFilesKey(shot({ remotes: ["constructor"], remoteHeads: {} }), WT)).not.toThrow();
     expect(JSON.parse(branchFilesKey(shot({ remotes: ["constructor"], remoteHeads: {} }), WT))[7]).toEqual([]);
+  });
+});
+
+describe("the remote branches' signature", () => {
+  it("is the same for the same branches and commits, and moves with any of them", () => {
+    const a = shot();
+    expect(remoteTipsSignature(a)).toBe(remoteTipsSignature(shot()));
+    const renamed = shot({ remoteBranches: ["origin/main", "origin/devel", "origin/feature/x"] });
+    expect(remoteTipsSignature(renamed)).not.toBe(remoteTipsSignature(a));
+    // A name and a commit cannot trade places.
+    const swapped = shot({ remoteBranches: ["origin/main", "origin/develop", "origin/feature/x"], remoteBranchTips: [tip("1".repeat(40)), tip("a".repeat(40)), tip("2".repeat(40))] });
+    expect(remoteTipsSignature(swapped)).not.toBe(remoteTipsSignature(a));
+    expect(remoteTipsSignature(shot({ remoteBranches: [], remoteBranchTips: [] }))).toBe("0:811c9dc5");
   });
 });
 

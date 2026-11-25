@@ -312,7 +312,8 @@ export type ExternalRequest = { target: "editor" | "terminal" | "reveal"; path?:
  * remembered as active (null = the main one); set by the core. `sidePanel`: the side panel
  * shows while the window is wide enough to dock it.
  */
-export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null; sidePanel: boolean; prBase: string | null };
+/** `prBases`: the base each branch's last pull request went into, offered for its next one. */
+export type RepoPrefs = { mergeNoFf: boolean; activeWorktree: string | null; sidePanel: boolean; prBases: Record<string, string> };
 export type Recent = { path: string; name: string; lastOpenedMs: number };
 export type AppState = {
   recents: Recent[];

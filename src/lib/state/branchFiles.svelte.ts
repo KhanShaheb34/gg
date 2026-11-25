@@ -64,11 +64,35 @@ function candidates(snap: RepoSnapshot, prBase: string | null): string[] {
 }
 
 /**
+ * The remote-tracking branches and their commits in `snap`, as one short value: a branch's
+ * base may be the nearest of them by history (the core's repo/base.rs), so any of them coming,
+ * going or moving may change it. FNV-1a over the names and commits: no long string per
+ * snapshot, however many branches.
+ */
+export function remoteTipsSignature(snap: RepoSnapshot): string {
+  let h = 0x811c9dc5;
+  const mix = (text: string) => {
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    h ^= 0x2f;
+    h = Math.imul(h, 0x01000193);
+  };
+  snap.remoteBranches.forEach((name, i) => {
+    mix(name);
+    mix(snap.remoteBranchTips[i]?.hash ?? "");
+  });
+  return `${snap.remoteBranches.length}:${(h >>> 0).toString(16)}`;
+}
+
+/**
  * What the list of worktree `path` depends on, as `snap` shows it: its HEAD and branch, what
  * its base is chosen from (the branch's pull request's base, its upstream, the remotes and
  * their default branches) and the commit of every ref that could be the base ("" while one is
- * missing): a better base coming into reach, or the base moving, changes it, whatever the
- * last answer was (none too). "" for a worktree `snap` does not list. Two equal keys: nothing
+ * missing), and of every remote branch (the nearest by history may be the base): a better
+ * base coming into reach, or the base moving, changes it, whatever the last answer was (none
+ * too). "" for a worktree `snap` does not list. Two equal keys: nothing
  * to ask again.
  */
 export function branchFilesKey(snap: RepoSnapshot, path: string): string {
@@ -86,6 +110,8 @@ export function branchFilesKey(snap: RepoSnapshot, path: string): string {
     snap.remoteHeads,
     // Detached, nothing to compare: no base to follow.
     branch === null ? [] : candidates(snap, prBase).map((ref) => [ref, tipOf(snap, ref)]),
+    // Without a pull request the base may be the nearest remote branch by history.
+    branch === null ? "" : remoteTipsSignature(snap),
   ]);
 }
 

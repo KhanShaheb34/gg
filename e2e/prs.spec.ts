@@ -1009,3 +1009,29 @@ test("what is typed in the form is not lost while the tab looks for a pull reque
   await expect(panel(page).getByTestId("pr-title")).toHaveValue("My own title", { timeout: 10_000 });
   await expect(page.getByTestId("pr-looking")).toHaveCount(0);
 });
+
+test("a branch cut from staging is offered staging as its base, and Committed on branch compares with origin/staging", async ({ gg }) => {
+  const { page } = gg;
+  // staging, on the remote, a commit past main; a branch made there with `switch -c`.
+  gg.git("prs", "switch", "-q", "-c", "staging", "main");
+  writeFileSync(path.join(gg.repoPath("prs"), "staging.txt"), "staging\n");
+  gg.git("prs", "add", "staging.txt");
+  gg.git("prs", "commit", "-q", "-m", "Stage it");
+  gg.git("prs", "push", "-q", "origin", "staging");
+  gg.git("prs", "switch", "-q", "-c", "fix/staging-only");
+  writeFileSync(path.join(gg.repoPath("prs"), "fix.txt"), "fix\n");
+  gg.git("prs", "add", "fix.txt");
+  gg.git("prs", "commit", "-q", "-m", "Fix it on staging");
+  // gh says the repository's default branch is main: the branch's own base comes first.
+  await openListed(gg, []);
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+P");
+  await expect(panel(page).getByTestId("pr-form")).toBeVisible();
+  await expect(panel(page).getByTestId("pr-base")).toHaveValue("staging");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix it on staging");
+  // Committed on branch agrees: the one commit of its own, against origin/staging.
+  await tab(page, "commit").click();
+  await expect(page.getByTestId("branch-files-base")).toHaveText("vs origin/staging");
+  await expect(page.getByTestId("branch-files-count")).toHaveText("1");
+  await expect(page.getByTestId("branch-file")).toHaveAttribute("data-path", "fix.txt");
+});

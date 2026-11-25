@@ -1190,8 +1190,8 @@ for (const [prefix, width, height] of SIZES)
 const LONG = "feature/rework-the-parser-error-recovery-for-unterminated-strings";
 
 // Pull requests: markers beside labels with ahead/behind counts and long names, on
-// worktree rows, stale ones; the branch menu; the Create pull request dialog loading, filled,
-// waiting on the push, failed, and for a branch that has one already.
+// worktree rows, stale ones; the branch menu; the side panel's Pull request tab loading,
+// filled, waiting on the push, failed, for a branch that has one already, and for a long one.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
     test(`pull requests, ${width}x${height}, ${theme}`, async ({ gg }) => {
@@ -1260,48 +1260,43 @@ for (const [prefix, width, height] of SIZES)
       await page.getByRole("menuitem", { name: "Create pull request…" }).hover();
       await shot("prs-menu");
 
-      // The dialog: waiting on gh, then filled in.
+      // The Pull request tab: waiting on gh, then filled in.
       gg.gh.slow("pr-list-head", 3);
       await page.getByRole("menuitem", { name: "Create pull request…" }).click();
-      const dialog = page.getByRole("dialog");
-      await expect(dialog.getByTestId("pr-waiting")).toBeVisible();
-      await shot("prs-dialog-loading");
+      const tab = page.getByTestId("pr-panel");
+      await expect(tab.getByTestId("pr-waiting")).toBeVisible();
+      await shot("prs-tab-loading");
       await page.clock.runFor(3500);
-      await expect(dialog.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
-      await shot("prs-dialog");
+      await expect(tab.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+      await shot("prs-tab");
 
       // Waiting on the push and gh.
       gg.gh.reply("pr-create", 1, "", "HTTP 502: Bad Gateway (https://api.github.com/graphql)\n");
       gg.gh.slow("pr-create", 4);
-      await dialog.getByRole("button", { name: /and create pull request$/ }).click();
-      await expect(dialog.getByTestId("pr-step")).toContainText("Creating the pull request…");
-      await shot("prs-dialog-pending");
+      await tab.getByRole("button", { name: "Push and create PR" }).click();
+      await expect(tab.getByTestId("pr-step")).toContainText("Creating the pull request…");
+      await shot("prs-tab-pending");
       await page.clock.runFor(4500);
-      await expect(dialog.getByTestId("pr-error")).toBeVisible();
-      // The failure, in sight (the dialog scrolls in a small window).
+      await expect(tab.getByTestId("pr-error")).toBeVisible();
       // The push was made before gh failed: once the repository is read again, the button
       // only creates.
       await page.clock.runFor(1000);
-      await expect(dialog.getByRole("button", { name: "Create pull request", exact: true })).toBeVisible();
-      await dialog.getByTestId("pr-error").scrollIntoViewIfNeeded();
-      await shot("prs-dialog-failed");
-      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await expect(tab.getByRole("button", { name: "Create PR", exact: true })).toBeVisible();
+      await shot("prs-tab-failed");
 
       // A branch that has one already.
       gg.gh.slow("pr-list-head", 0);
       gg.gh.reply("pr-list-head", 0, JSON.stringify([pr(1302, "fix/typo", "Fix the typo in how the parser reads a file")]));
-      await grid.locator('[data-ref="fix/typo"] .name').first().click({ button: "right" });
-      await page.getByRole("menuitem", { name: "Create pull request…" }).click();
-      await expect(dialog.getByTestId("pr-existing")).toBeVisible();
-      await shot("prs-dialog-existing");
-      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await page.getByTestId("pr-refresh").click();
+      await expect(tab.getByTestId("pr-view")).toBeVisible();
+      await shot("prs-tab-existing");
 
-      // A long branch name in the push the button names.
+      // A long branch name, the tab about it.
       gg.gh.reply("pr-list-head", 0, "[]");
       await grid.locator(`[data-ref="${LONG}"] .name`).first().click({ button: "right" });
       await page.getByRole("menuitem", { name: "Create pull request…" }).click();
-      await expect(dialog.getByTestId("pr-title")).not.toHaveValue("");
-      await shot("prs-dialog-long");
+      await expect(tab.getByTestId("pr-title")).not.toHaveValue("");
+      await shot("prs-tab-long");
     });
   }
 

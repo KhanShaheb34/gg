@@ -131,7 +131,8 @@
       // A commit just made left nothing: back to the worktree list.
       if (backWhenEmpty) {
         backWhenEmpty = false;
-        if (got.files.length === 0 && commitPath(view) === path) closeCommit(view);
+        // Not when another tab shows by then (a push showed the Pull request tab).
+        if (got.files.length === 0 && commitPath(view) === path && panel.tab === "commit") closeCommit(view);
       }
     } catch (e) {
       if (n !== asked) return;

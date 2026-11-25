@@ -397,7 +397,7 @@ export type OpRequest =
       title: string;
       body: string;
       draft: boolean;
-      /** The dialog promised GitHub's compare page (no form): the core only pushes, and never runs gh. */
+      /** The Pull request tab promised GitHub's compare page (no form): the core only pushes, and never runs gh. */
       comparePage: boolean;
     };
 

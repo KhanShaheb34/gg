@@ -1,7 +1,7 @@
 <!--
   The side panel on the right of a repository: a header (a strip of icon tabs on the left, the
   selected one underlined; the shown tab's own buttons and Hide on the right) over a body the
-  shown tab fills (the commit panel, the worktree list; pull requests and files later). A tab
+  shown tab fills (the commit panel, the branch's pull request, the worktree list). A tab
   says what it is in its tooltip and accessible name; one with something waiting (files to
   commit) has a dot at its corner. The tabs take the arrow keys, Home and End, as the ARIA tabs
   pattern has it; only the selected one is in the Tab order. Its left edge
@@ -131,6 +131,20 @@
               <!-- A commit: a circle on a line. -->
               <circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5" />
               <path d="M1.3 8h3.5M11.2 8h3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            {:else if t.id === "pr"}
+              <!-- A pull request: two commits on a line, and a third whose line comes back to
+                   the first with an arrow (the markers' mark). -->
+              <circle cx="4.2" cy="3.6" r="1.9" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="4.2" cy="12.4" r="1.9" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="11.8" cy="12.4" r="1.9" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <path
+                d="M4.2 5.5v5M11.8 10.5V6.4c0-1.2-.8-2-2-2H7.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+              <path d="M8.9 2.6 7.1 4.4l1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
             {:else}
               <!-- Two folders, one behind the other: the repository's worktrees. -->
               <path

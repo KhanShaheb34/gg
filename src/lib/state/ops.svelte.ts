@@ -64,6 +64,8 @@ export async function runOp(
     if (outcome.status !== "needs_confirmation") {
       if (ownOutcome) settle(repoId, outcome);
       else if (!(ownRefusals && isRefusal(outcome))) report(repoId, outcome, request);
+      const branch = pushedBranch(request, outcome);
+      if (branch !== null) pushListener?.(repoId, branch);
       return outcome;
     }
     const again = confirmed.length > 0;
@@ -71,6 +73,34 @@ export async function runOp(
     if (!(await asked)) return outcome;
     confirmed = outcome.dangers.map((d) => ({ kind: d.kind, token: d.token }));
   }
+}
+
+/** Told of each push the user asked for that went through: the repository, the local branch. */
+type PushListener = (repoId: number, branch: string) => void;
+let pushListener: PushListener | null = null;
+
+/**
+ * Has `listener` told of every push the user asks for that goes through: Push, Commit &
+ * Push, a notice's Push or Force push (every push runs through `runOp`; a fetch never
+ * pushes, and Create pull request's own push is not one of these).
+ */
+export function onUserPush(listener: PushListener | null): void {
+  pushListener = listener;
+}
+
+/**
+ * The local branch `request` pushed, when it pushed one and the push went through: a push
+ * that is done; a commit with its push that is done and offers no push again (the push did
+ * not run when it does). Null otherwise.
+ */
+export function pushedBranch(request: OpRequest, outcome: OpOutcome): string | null {
+  if (outcome.status !== "done") return null;
+  if (request.op === "push") return request.branch;
+  if (request.op !== "commit" || !request.push) return null;
+  if (outcome.hints.some((h) => h.kind === "push" || h.kind === "force_push")) return null;
+  const snap = outcome.snapshot;
+  const wt = snap.worktrees.find((w) => w.path === request.expectWorktree);
+  return wt ? wt.branch : request.expectWorktree === snap.activeWorktree ? snap.head.branch : null;
 }
 
 /** Whether `outcome` is a refusal in the request's turn: failed before any command was written. */

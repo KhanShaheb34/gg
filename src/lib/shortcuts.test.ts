@@ -114,9 +114,21 @@ describe("region and panel shortcuts", () => {
     expect(shortcutFor(key("p", { ctrlKey: true }), false, true)).toEqual({ kind: "branches" });
     expect(shortcutFor(key("p", { ctrlKey: true }), true)).toBeNull();
     expect(shortcutFor(key("p", { metaKey: true }), false)).toBeNull();
-    expect(shortcutFor(key("p", { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("p", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "pullRequest" });
     expect(shortcutFor(key("p"), true)).toBeNull();
     expect(repeatable({ kind: "branches" })).toBe(false);
+  });
+
+  it("Cmd+Shift+P shows the Pull request tab (Ctrl+Shift+P elsewhere), also while typing; Cmd+P stays the branch picker", () => {
+    expect(shortcutFor(key("P", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "pullRequest" });
+    expect(shortcutFor(key("p", { metaKey: true, shiftKey: true }), true)).toEqual({ kind: "pullRequest" });
+    expect(shortcutFor(key("P", { ctrlKey: true, shiftKey: true }), false)).toEqual({ kind: "pullRequest" });
+    expect(shortcutFor(key("P", { metaKey: true, shiftKey: true }), true, true)).toEqual({ kind: "pullRequest" });
+    expect(shortcutFor(key("p", { metaKey: true }), true)).toEqual({ kind: "branches" });
+    expect(shortcutFor(key("P", { ctrlKey: true, shiftKey: true }), true)).toBeNull();
+    expect(shortcutFor(key("P", { metaKey: true, shiftKey: true }), false)).toBeNull();
+    expect(shortcutFor(key("P", { metaKey: true, shiftKey: true, altKey: true }), true)).toBeNull();
+    expect(repeatable({ kind: "pullRequest" })).toBe(false);
   });
 
   it("Cmd+Shift+L shows or hides the command log (Ctrl+Shift+L elsewhere)", () => {

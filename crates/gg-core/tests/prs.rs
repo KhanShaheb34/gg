@@ -721,7 +721,7 @@ fn create(branch: &str, base: &str, title: &str, body: &str, draft: bool) -> OpR
     }
 }
 
-/// `create`, as the dialog sends it when it promised the compare page.
+/// `create`, as the Pull request tab sends it when it promised the compare page.
 fn create_on_compare_page(branch: &str) -> OpRequest {
     OpRequest::PrCreate {
         branch: branch.into(),
@@ -734,7 +734,7 @@ fn create_on_compare_page(branch: &str) -> OpRequest {
     }
 }
 
-/// The dialog said the compare page (gh was not there when the
+/// The Pull request tab said the compare page (gh was not there when the
 /// list was loaded); gh installed since must not make a pull request the user never saw.
 /// The request carries the mode, and the core never runs gh in that mode.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

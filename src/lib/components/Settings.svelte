@@ -61,6 +61,7 @@
     terminal: new SettingField("terminalCommand", TEXT_DELAY_MS),
     pattern: new SettingField("worktreePattern", TEXT_DELAY_MS),
     updates: new SettingField("checkForUpdates"),
+    prTab: new SettingField("openPrTabAfterPush"),
   };
   /** A command field, as the snippet that draws it uses it. */
   type CommandField = { status: SaveStatus; error: string | null; set: (v: string | null) => void; flush: () => Promise<boolean> };
@@ -210,6 +211,7 @@
     ["fetching", "Fetching"],
     ["tools", "Tools"],
     ["worktrees", "Worktrees"],
+    ["prs", "Pull requests"],
     ["command", "Command line"],
     ["about", "About"],
   ] as const;
@@ -486,6 +488,36 @@
               </p>
             {/if}
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="settings-prs" aria-labelledby="h-prs">
+      <h3 class="section" id="h-prs">Pull requests</h3>
+      <div class="setting">
+        <div class="name"><span>After a push</span>{@render status(fields.prTab)}</div>
+        <div class="control">
+          <label class="check-row update-auto">
+            <input
+              class="checkbox"
+              type="checkbox"
+              checked={app.settings.openPrTabAfterPush}
+              data-testid="settings-pr-tab"
+              onchange={(e) => {
+                const on = e.currentTarget.checked;
+                app.settings.openPrTabAfterPush = on;
+                fields.prTab.set(on);
+              }}
+            />
+            <span>
+              Open the Pull request tab after a push when the branch has no pull request
+              <span class="check-note"
+                >After Push or Commit & Push, the side panel shows the branch’s pull request form, without taking the focus. Not for
+                the default branch, nor where pull requests cannot be made (gh missing or signed out, a remote not on GitHub).</span
+              >
+            </span>
+          </label>
+          {#if fields.prTab.error}<p class="problem" role="alert">{fields.prTab.error}</p>{/if}
         </div>
       </div>
     </section>

@@ -113,7 +113,7 @@ export function defaultRemote(remotes: string[], preferred: string | null = null
 /** Said under a remote list while nothing is chosen in it. */
 export const CHOOSE_REMOTE = "Choose the remote.";
 
-/** Why pull requests cannot be made through gh, as items and dialogs say it. */
+/** Why pull requests cannot be made through gh, as items and the Pull request tab say it. */
 export const PR_REASONS: Record<Exclude<PrUnavailable, "failed">, string> = {
   no_gh: "GitHub CLI (gh) is not installed",
   signed_out: "gh is not signed in — run `gh auth login` in a terminal",
@@ -122,8 +122,8 @@ export const PR_REASONS: Record<Exclude<PrUnavailable, "failed">, string> = {
 
 /**
  * The pull-request item of local `branch` (null: a detached HEAD) whose open pull request is
- * `pr`: "Open pull request #N" when there is one; else "Create pull request…", whose dialog
- * decides what it can do and says so (when the pull requests are not known yet, or gh is
+ * `pr`: "Open pull request #N" when there is one; else "Create pull request…", which shows the
+ * side panel's Pull request tab for the branch; the tab decides what it can do and says so (when the pull requests are not known yet, or gh is
  * missing or signed out: it pushes first when needed, then opens GitHub's compare page). The
  * menu promises no more than that; disabled, with the reason,
  * without a branch, a remote, or a remote on GitHub.

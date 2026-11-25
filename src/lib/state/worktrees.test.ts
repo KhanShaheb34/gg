@@ -67,10 +67,14 @@ beforeEach(() => {
 
 describe("tabForKey", () => {
   it("moves with the arrows, round the ends, and to the ends with Home and End", () => {
-    expect(tabForKey(SIDE_TABS, "commit", "ArrowRight")).toBe("worktrees");
+    // Commit · Pull request · Worktrees.
+    expect(SIDE_TABS).toEqual(["commit", "pr", "worktrees"]);
+    expect(tabForKey(SIDE_TABS, "commit", "ArrowRight")).toBe("pr");
+    expect(tabForKey(SIDE_TABS, "pr", "ArrowRight")).toBe("worktrees");
     expect(tabForKey(SIDE_TABS, "worktrees", "ArrowRight")).toBe("commit");
     expect(tabForKey(SIDE_TABS, "commit", "ArrowLeft")).toBe("worktrees");
-    expect(tabForKey(SIDE_TABS, "worktrees", "ArrowLeft")).toBe("commit");
+    expect(tabForKey(SIDE_TABS, "worktrees", "ArrowLeft")).toBe("pr");
+    expect(tabForKey(SIDE_TABS, "pr", "End")).toBe("worktrees");
     expect(tabForKey(["a", "b", "c"], "b", "Home")).toBe("a");
     expect(tabForKey(["a", "b", "c"], "b", "End")).toBe("c");
   });

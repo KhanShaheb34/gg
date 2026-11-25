@@ -17,6 +17,7 @@ export type Shortcut =
   | { kind: "log" }
   | { kind: "sidePanel" }
   | { kind: "commit" }
+  | { kind: "pullRequest" }
   | { kind: "branches" }
   | { kind: "settings" }
   | { kind: "help" }
@@ -35,6 +36,7 @@ export const SHORTCUT_KINDS = [
   "log",
   "sidePanel",
   "commit",
+  "pullRequest",
   "branches",
   "settings",
   "help",
@@ -191,6 +193,14 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
     match: (e, c) => (c.command && !e.shiftKey && key(e) === "k" ? { kind: "commit" } : null),
   },
   { group: "Actions", does: "Commit what is ticked", keys: [["Mod", "Enter"]], where: "in the commit message" },
+  {
+    group: "Actions",
+    does: "Pull request: the side panel's Pull request tab, for the current branch",
+    keys: [["Mod", "Shift", "P"]],
+    kind: "pullRequest",
+    // Free on every platform: the branch picker is ⌘P without Shift.
+    match: (e, c) => (c.command && e.shiftKey && key(e) === "p" ? { kind: "pullRequest" } : null),
+  },
   { group: "Actions", does: "Tick or untick a file; tick all", keys: [["Space"], ["Mod", "A"]], where: "in the commit panel's list" },
   { group: "Actions", does: "Confirm a dialog; cancel it", keys: [["Enter"], ["Esc"]], where: "in a dialog" },
 

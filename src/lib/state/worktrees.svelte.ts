@@ -1,9 +1,9 @@
 // The side panel and its worktree list: whether the panel shows (per repository, kept by the
-// core in RepoPrefs.sidePanel), its width (one for the app, in localStorage), which worktree is
-// selected in it, the switch underway, and what its rows and menus do. It is docked beside the
-// graph down to DOCK_MIN_W (at its least width below NARROW_W); in a window narrower than that
-// it lies over the graph instead of taking room from it, and shows only when asked for in this
-// session.
+// core in RepoPrefs.sidePanel), its width (one for the app, in localStorage), its tab (Commit or
+// Worktrees, the last one used), which worktree is selected in the list, the switch underway,
+// and what its rows and menus do. It is docked beside the graph down to DOCK_MIN_W (at its
+// least width below NARROW_W); in a window narrower than that it lies over the graph instead of
+// taking room from it, and shows only when asked for in this session.
 
 import CreateWorktreeDialog, { type CreateFrom } from "../components/dialogs/CreateWorktreeDialog.svelte";
 import DeleteWorktreeDialog from "../components/dialogs/DeleteWorktreeDialog.svelte";
@@ -18,7 +18,7 @@ import type { RepoSnapshot, WorktreeInfo } from "../types";
 import { app, reportError, toast } from "./app.svelte";
 import { runOp } from "./ops.svelte";
 import { openMenu, showDialog } from "./overlays.svelte";
-import { PanelState } from "./panelState.svelte";
+import { PanelState, type SideTab } from "./panelState.svelte";
 import { findRepoView, type RepoView } from "./repo.svelte";
 
 /** Least, greatest and first width of the panel, px. */
@@ -88,73 +88,82 @@ export const commitDrafts = new Map<string, string>();
 
 /**
  * Shows the commit panel of worktree `path` of `view`'s repository (the active one when
- * omitted) in the side panel, which shows, with the focus in its message.
+ * omitted) on the side panel's Commit tab, which shows, with the focus in its message.
  */
 export function openCommit(view: RepoView, path?: string): void {
   const state = panelState(view.repoId);
   state.commitFor = path ?? view.snapshot.activeWorktree;
+  state.tab = "commit";
   state.commitFocus++;
   setPanelShown(view.repoId, true);
 }
 
-/** Back from the commit panel to the worktree list, with the focus in it. */
-export function closeCommit(repoId: number): void {
-  const state = panelState(repoId);
-  state.selected = state.commitFor ?? state.selected;
-  state.commitFor = null;
+/**
+ * From the commit panel to the worktree list (Escape there, or a commit that left nothing),
+ * with its worktree selected and the focus in the list.
+ */
+export function closeCommit(view: RepoView): void {
+  const state = panelState(view.repoId);
+  leaveCommit(view);
+  state.tab = "worktrees";
   state.focusRequest++;
 }
 
 /**
- * The worktree whose commit panel `view`'s side panel holds in place of the worktree list
- * (one still listed), or null: the list. Whether the panel shows at all is `panelShown`'s.
+ * The Commit tab lets go of its worktree, which is selected in the list: shown again, the tab
+ * holds the active worktree's commit panel.
+ */
+function leaveCommit(view: RepoView): void {
+  const state = panelState(view.repoId);
+  const path = state.commitFor;
+  if (path !== null && view.snapshot.worktrees.some((w) => w.path === path)) state.selected = path;
+  state.commitFor = null;
+}
+
+/**
+ * The Commit tab of `view`'s side panel, shown, holds the worktree it shows (the active one,
+ * when none was asked for): a worktree made active under it does not change what it commits;
+ * it offers to make its own active again. (The app calls this whenever the tab shows.)
+ */
+export function holdCommit(view: RepoView): void {
+  const state = panelState(view.repoId);
+  if (sideShows(view) === "commit" && state.commitFor === null && view.snapshot.activeWorktree) {
+    state.commitFor = view.snapshot.activeWorktree;
+  }
+}
+
+/**
+ * The path of the worktree whose commit panel the Commit tab of `view`'s side panel holds:
+ * the one it holds, else the active one ("" before the repository is read).
+ */
+export function commitPath(view: RepoView): string {
+  return panelState(view.repoId).commitFor ?? view.snapshot.activeWorktree;
+}
+
+/**
+ * The worktree whose commit panel the Commit tab of `view`'s side panel holds, or null while
+ * it is not listed (yet). Whether the panel shows it is `sideShows`'s.
  */
 export function committingIn(view: RepoView): WorktreeInfo | null {
-  const path = panelState(view.repoId).commitFor;
-  return path === null ? null : (view.snapshot.worktrees.find((w) => w.path === path) ?? null);
+  const path = commitPath(view);
+  return view.snapshot.worktrees.find((w) => w.path === path) ?? null;
 }
 
-/** What `view`'s side panel shows now: nothing, the worktree list or a commit panel. */
-export function sideShows(view: RepoView): "hidden" | "worktrees" | "commit" {
-  if (!panelShown(view.repoId)) return "hidden";
-  return committingIn(view) === null ? "worktrees" : "commit";
+/** What `view`'s side panel shows now: nothing, or one of its tabs. */
+export function sideShows(view: RepoView): "hidden" | SideTab {
+  return panelShown(view.repoId) ? panelState(view.repoId).tab : "hidden";
 }
 
 /**
- * Shows `view`'s side panel with the worktree list, not the commit panel it last held.
- * `focus`: the focus goes into the list.
+ * Shows tab `tab` of `view`'s side panel (and the panel). The Worktrees tab is the way back
+ * from a commit panel, as its Back button was: its worktree is selected in the list, and the
+ * Commit tab holds the active worktree's again. `focus`: the focus goes into the list.
  */
-export function showWorktreeList(view: RepoView, focus = false): void {
+export function showSideTab(view: RepoView, tab: SideTab, focus = false): void {
   const state = panelState(view.repoId);
-  if (state.commitFor !== null) {
-    state.selected = state.commitFor;
-    state.commitFor = null;
-  }
-  setPanelShown(view.repoId, true, focus);
-}
-
-/**
- * The toolbar's Commit button: the active worktree's commit panel, as ⌘K opens it (from
- * another worktree's commit panel too); the side panel hidden when it shows that one already.
- */
-export function toggleCommit(view: RepoView): void {
-  if (commitShownForActive(view)) setPanelShown(view.repoId, false);
-  else openCommit(view);
-}
-
-/** `view`'s side panel shows the active worktree's commit panel. */
-export function commitShownForActive(view: RepoView): boolean {
-  return sideShows(view) === "commit" && committingIn(view)?.path === view.snapshot.activeWorktree;
-}
-
-/**
- * The toolbar's Worktrees button: the worktree list, from the commit panel too (the focus
- * going into it then, as Back does); the side panel hidden when it shows the list already.
- */
-export function toggleWorktrees(view: RepoView): void {
-  const shows = sideShows(view);
-  if (shows === "worktrees") setPanelShown(view.repoId, false);
-  else showWorktreeList(view, shows === "commit");
+  if (tab === "worktrees") leaveCommit(view);
+  state.tab = tab;
+  setPanelShown(view.repoId, true, focus && tab === "worktrees");
 }
 
 /** A panel state for a repository with no view (never shown). */

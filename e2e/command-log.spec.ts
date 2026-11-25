@@ -9,7 +9,7 @@ import { expect, type GG, runOp, test } from "./fixtures";
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }
 

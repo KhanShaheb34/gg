@@ -17,7 +17,7 @@ const CHECKED = { timeout: 15_000 };
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
   await page.getByRole("button", { name: "Open repository" }).first().click();
-  await expect(page.getByRole("tab", { name: path.basename(dir) })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("grid", { name: "Commits" }).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }
 

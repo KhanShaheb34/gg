@@ -47,7 +47,11 @@ export async function runWorktreesProbe(view: RepoView, count = 10): Promise<[st
   const switched: number[] = [];
   let missed = 0;
 
-  // Rows read first (the worktree list comes after the graph).
+  // The Worktrees tab, which ⌘B then shows again (the tab last used); its rows read first (the
+  // worktree list comes after the graph).
+  if (!document.querySelector('[data-testid="side-tabs"]')) toggleKey();
+  await paintedWhen(() => document.querySelector('[data-testid="side-tab-worktrees"]') !== null);
+  document.querySelector<HTMLElement>('[data-testid="side-tab-worktrees"]')?.click();
   await paintedWhen(() => view.snapshot.worktrees.length > 1 && rows().length > 1, 1200);
   for (let i = 0; i < count; i++) {
     if (list()) {

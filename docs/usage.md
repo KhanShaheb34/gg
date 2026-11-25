@@ -42,11 +42,14 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 
 ## Worktrees, committing and pull requests
 
-- The side panel (⌘B, or the button at the right of the toolbar) lists the repository's
-  worktrees as git does, including ones made in a terminal or by another tool: each with its
-  branch, its uncommitted changes (kept up to date as files change), how it stands with its
-  upstream, and what is unusual (locked, folder missing, a merge stopped there). In a window
-  narrower than 840 px it lies over the graph. The **active** worktree, where every action
+- The side panel (⌘B, or the button at the right of the toolbar, which counts the files to
+  commit) has two icon tabs, **Commit** (with a dot when there are files to commit) and
+  **Worktrees**, and opens on the one last used in the repository (←/→ move between them).
+  Worktrees lists the repository's worktrees as git does, including ones made in a terminal or
+  by another tool: each with its branch, its uncommitted
+  changes (kept up to date as files change), how it stands with its upstream, and what is
+  unusual (locked, folder missing, a merge stopped there). In a window narrower than 840 px
+  the panel lies over the graph. The **active** worktree, where every action
   runs, is marked there and named, with its branch, at the top of the window (the branch
   opens the branch picker; while the panel is hidden, the worktree count beside it shows the
   panel); double-click another (or "Make active")
@@ -64,8 +67,11 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   Its branch is deleted only if you tick that. **Prune** forgets worktrees whose folder is
   gone, after a confirmation naming them; if you moved a worktree's folder, run
   `git worktree repair <new path>` instead.
-- The **commit panel** (⌘K, the Commit button in the toolbar, or a worktree's change count)
-  commits the files you tick, with **Commit & Push** to the branch's upstream; when a merge
+- The **commit panel** (the Commit tab; ⌘K, or a worktree's change count) commits the files
+  you tick in the active worktree. Opened from another worktree's change count or menu, it
+  lists that worktree's files under a line naming it, with a button back to the active
+  worktree's, and offers to make it active. **Commit & Push** sends the commit to the
+  branch's upstream; when a merge
   is being concluded, its message is filled in. With nothing ticked, **Commit with no changes** makes an empty commit
   (`git commit --allow-empty`), with or without the push. The notice after a commit offers the push. Known limit: if the app quits or
   crashes between making a commit and updating the staging area (during a slow
@@ -212,10 +218,10 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘⇧F | Fetch from all remotes |
 | ⌘R | Refresh (and the pull requests) |
 | ⌘P | The branch picker: switch branch, or create one |
-| ⌘K | The commit panel, its message focused |
+| ⌘K | The side panel's Commit tab, its message focused |
 | ⌘Enter | Commit what is ticked (in the commit message) |
 | Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |
-| ⌘B | Show or hide the side panel (the worktrees, or the commit panel) |
+| ⌘B | Show or hide the side panel, on the tab last used (Commit or Worktrees) |
 | ⌘⇧L | Show or hide the command log |
 | F6, Shift+F6 | Next region (graph, newest notice, side panel), the region before |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the side panel |

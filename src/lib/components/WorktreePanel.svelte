@@ -53,7 +53,7 @@
   /** The row's first cell: the grid's active descendant, named for the worktree. */
   const cellId = (i: number) => `wt-${uid}-${i}-cell`;
 
-  // "Show the worktrees" asks for the focus here.
+  // The header's worktree count (the Worktrees tab, the focus in its list) asks for the focus here.
   $effect(() => {
     const request = panel.focusRequest;
     if (request === panel.focusDone) return;

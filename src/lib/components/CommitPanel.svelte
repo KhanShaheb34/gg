@@ -1,8 +1,9 @@
 <!--
-  The commit panel, the side panel's second view: the changed files of one
-  worktree, each with a box, all ticked to begin with, and a message; Commit, and Commit &
-  Push naming where the push goes. Commits run in the active worktree: shown another,
-  the panel lists its files and offers to make it active, one click.
+  The commit panel, the side panel's Commit tab: the changed files of one worktree (the
+  active one, unless another was asked for), each with a box, all ticked to begin with, and a
+  message; Commit, and Commit & Push naming where the push goes. Commits run in the active
+  worktree: shown another, a line at the top names it, with a button back to the active
+  worktree's panel, and the panel lists its files and offers to make it active, one click.
 
   The list (sorted by path, as the core gives it) draws only the rows in view, so 5,000 files
   cost what thirty do. Each row: its box, its status letter in the app's file colours, its
@@ -23,13 +24,14 @@
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { visibleText } from "../format";
+  import { shortenPath, shortHash, visibleText } from "../format";
   import { api } from "../ipc";
   import { makeActiveReason } from "../menus/worktreeMenu";
   import { isMac } from "../platform";
+  import { app } from "../state/app.svelte";
   import { runOp } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
-  import { closeCommit, commitDrafts, makeActive, panelState } from "../state/worktrees.svelte";
+  import { closeCommit, commitDrafts, commitPath, makeActive, openCommit, panelState } from "../state/worktrees.svelte";
   import type { FileEntry, HeadInfo, OpRequest } from "../types";
   import MiddleText from "./MiddleText.svelte";
 
@@ -129,7 +131,7 @@
       // A commit just made left nothing: back to the worktree list.
       if (backWhenEmpty) {
         backWhenEmpty = false;
-        if (got.files.length === 0 && panel.commitFor === path) closeCommit(view.repoId);
+        if (got.files.length === 0 && commitPath(view) === path) closeCommit(view);
       }
     } catch (e) {
       if (n !== asked) return;
@@ -414,11 +416,49 @@
   onkeydown={(e) => {
     if (e.key === "Escape" && !e.defaultPrevented && pending === null) {
       e.preventDefault();
-      closeCommit(view.repoId);
+      closeCommit(view);
     }
   }}
 >
   {#if !active}
+    <!-- Which worktree this is (the active one is named at the top of the window), and the
+         way back to the active one's commit panel. -->
+    <div class="for" data-testid="commit-worktree">
+      <svg class="folder" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <path
+          d="M1.8 3.6c0-.6.5-1.1 1.1-1.1h2.8l1.2 1.3h4.2c.6 0 1.1.5 1.1 1.1v5.3c0 .6-.5 1.1-1.1 1.1H2.9c-.6 0-1.1-.5-1.1-1.1z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.15"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <MiddleText
+        class="for-name"
+        text={wt?.branch ?? (wt?.head ? `${shortHash(wt.head)} (detached)` : shortenPath(path, app.homeDir))}
+        keep={12}
+        title={shortenPath(path, app.homeDir)}
+      />
+      <button
+        class="icon-btn small"
+        aria-label="Back to the active worktree's commit panel"
+        title="Back to the active worktree's commit panel{snap.head.branch ? ` (${snap.head.branch})` : ''}"
+        data-testid="commit-worktree-return"
+        onclick={() => openCommit(view)}
+      >
+        <!-- An arrow turning back. -->
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <path
+            d="M5.2 3.4 2.6 6l2.6 2.6M2.9 6h5.4a2.9 2.9 0 0 1 0 5.8H6.6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.35"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
     <!-- Why it cannot be made active now, as the worktree row says. -->
     {@const why = wt ? makeActiveReason(wt, snap) : undefined}
     <div class="elsewhere" data-testid="commit-elsewhere">
@@ -600,6 +640,37 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
+  }
+
+  /* The worktree shown, when it is not the active one: a line under the panel's tabs. */
+  .for {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    height: 30px;
+    padding: 0 4px 0 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+  }
+
+  .for .folder {
+    flex: none;
+    color: var(--text-faint);
+  }
+
+  .for :global(.for-name) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .for .icon-btn {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
   }
 
   .banner .blocked {

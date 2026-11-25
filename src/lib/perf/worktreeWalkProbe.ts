@@ -67,7 +67,10 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
     return at;
   }
   async function showPanel(): Promise<void> {
-    if (!list()) key("b", { command: true });
+    if (!list()) {
+      if (!byTestId("side-tabs")) key("b", { command: true });
+      (await until("the Worktrees tab", () => byTestId("side-tab-worktrees"))).click();
+    }
     await until("the worktree list", list);
   }
 
@@ -180,8 +183,8 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
   });
   await step("create a pull request (the fake gh)", async () => {
     await dismissAll();
-    // Back to the list, then the worktree's menu.
-    byTestId("side-back")?.click();
+    // Back to the list (its tab), then the worktree's menu.
+    byTestId("side-tab-worktrees")?.click();
     await until("the worktree list", list);
     rightClick(await until("the worktree's row", () => row("walk-wt")));
     await pick(/^Create pull request…$/);
@@ -325,12 +328,13 @@ export async function runWorktreeWalk(view: RepoView, scroller: HTMLElement, the
 
   // --- `gg` from a terminal into the running app -----------------------------------------------
   await step("gg in a terminal opens another repository in the running app", async () => {
-    const before = document.querySelectorAll('[role="tab"]').length;
+    const repoTabs = () => document.querySelectorAll<HTMLElement>('[aria-label="Open repositories"] [role="tab"]');
+    const before = repoTabs().length;
     await needOnly("gg other");
-    const tab = await until("its tab", () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => text(t) === "other"), 15000);
+    const tab = await until("its tab", () => [...repoTabs()].find((t) => text(t) === "other"), 15000);
     await until("selected", () => tab.getAttribute("aria-selected") === "true");
     await shot("gg-opened");
-    return `${before} tab(s) before, ${document.querySelectorAll('[role="tab"]').length} after`;
+    return `${before} tab(s) before, ${repoTabs().length} after`;
   });
 
   await k.finish();

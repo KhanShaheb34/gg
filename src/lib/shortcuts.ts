@@ -185,7 +185,7 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   },
   {
     group: "Actions",
-    does: "Commit: the commit panel, its message focused",
+    does: "Commit: the side panel's Commit tab, its message focused",
     keys: [["Mod", "K"]],
     kind: "commit",
     match: (e, c) => (c.command && !e.shiftKey && key(e) === "k" ? { kind: "commit" } : null),
@@ -197,7 +197,7 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   // --- Panels ---------------------------------------------------------------------------
   {
     group: "Panels",
-    does: "Show or hide the side panel (the worktrees, or the commit panel)",
+    does: "Show or hide the side panel, on the tab last used",
     keys: [["Mod", "B"]],
     kind: "sidePanel",
     match: (e, c) => (c.command && !e.shiftKey && key(e) === "b" ? { kind: "sidePanel" } : null),
@@ -217,7 +217,8 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
     kind: "regions",
     match: (e) => (e.key === "F6" && !e.metaKey && !e.ctrlKey && !e.altKey ? { kind: "regions", delta: e.shiftKey ? -1 : 1 } : null),
   },
-  { group: "Panels", does: "Close the details, the log, the commit panel", keys: [["Esc"]], where: "in that panel" },
+  { group: "Panels", does: "The side panel's next or previous tab", keys: [["→"], ["←"]], where: "in the side panel's tabs" },
+  { group: "Panels", does: "Close the details, the log; from the commit panel, the worktrees", keys: [["Esc"]], where: "in that panel" },
 
   // --- Worktrees ------------------------------------------------------------------------
   {

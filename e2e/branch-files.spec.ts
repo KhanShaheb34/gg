@@ -1,6 +1,6 @@
 // The Commit tab's "Committed on branch" against the real core (branch_files): the files the
 // branch's commits change from where it left its base, under the commit message; when there is
-// none (the default branch, a detached HEAD, no base known); the 500 shown and the rest
+// none (the default branch, a detached HEAD); the 500 shown and the rest
 // counted; open or closed by whether the worktree has changes, the user's click holding until
 // that changes; asked for again only when HEAD or the base moves. The `branchfiles` fixture is
 // on feature/report, clean, origin's HEAD naming main.
@@ -155,7 +155,7 @@ test("closed by default with uncommitted changes, open without; the user's click
   await expect(toggle(page)).toHaveAttribute("aria-expanded", "true");
 });
 
-test("none for the default branch, a detached HEAD or no base known; 500 rows and how many more", async ({ gg }) => {
+test("none for the default branch or a detached HEAD; 500 rows and how many more; the branch it was made from without the remote's HEAD", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   const repo = gg.repoPath("branchfiles");
@@ -184,13 +184,14 @@ test("none for the default branch, a detached HEAD or no base known; 500 rows an
   expect(list.y + list.height).toBeLessThanOrEqual(panel.y + panel.height + 1);
   await expect(message(page)).toBeInViewport();
 
-  // No base known: origin's HEAD forgotten.
+  // origin's HEAD forgotten: the branch it was created from (main, by git's records) still
+  // says what to compare with.
   gg.git("branchfiles", "remote", "set-head", "origin", "-d");
   gg.git("branchfiles", "switch", "-q", "feature/report");
   await on(/^Switch branch: feature\/report,/);
   await page.keyboard.press("ControlOrMeta+r");
-  await page.waitForTimeout(400);
-  await expect(section(page)).toHaveCount(0);
+  await expect(page.getByTestId("branch-files-base")).toHaveText("vs origin/main");
+  await expect(page.getByTestId("branch-files-count")).toHaveText("5");
 });
 
 test("asked for again when HEAD or the base moves, not for a file written or a refresh", async ({ gg }) => {

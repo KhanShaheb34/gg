@@ -169,10 +169,15 @@ Through the GitHub CLI [`gh`](https://cli.github.com), signed in. The side panel
 request** tab (⌘⇧P) is about the current branch: it shows the branch's open pull request, or
 the form to make one, with a title and description suggested from its commits, the branch it
 goes into, and Create as draft; it pushes the branch first when it needs to, and says so.
-**Create pull request…** on a branch or worktree shows the tab for that branch. After you push
-a branch that has no pull request, the tab opens by itself (a setting). Open pull requests
-show as markers beside their branches and worktrees. Without `gh`, gg pushes the branch and
-opens GitHub's compare page instead. gg never reads or stores a GitHub token.
+**Create pull request…** on a branch or worktree shows the tab for that branch. Under an open
+pull request the tab shows, read-only, where it stands (Ready to merge, Checks failing,
+Conflicts with main, Approved…), its checks as they run (asked again every 15 s while one
+runs and the window is in front), and its comments, review summaries and code comments, with
+people's and bots' apart. Comments are drawn without their HTML and never load images or
+anything else from the web; a link opens in your browser. After you push a branch that has no
+pull request, the tab opens by itself (a setting). Open pull requests show as markers beside
+their branches and worktrees. Without `gh`, gg pushes the branch and opens GitHub's compare
+page instead. gg never reads or stores a GitHub token.
 
 **Right-click actions**
 

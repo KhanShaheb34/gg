@@ -287,7 +287,7 @@ function pieceInline(piece: HtmlPiece, run: Run, state: InlineState): void {
   }
   if (piece.t === "text") {
     run.add({ k: "text", text: shown(decodeEntities(piece.text).replace(/\s+/g, " ")) });
-  } else if (piece.t === "open" && RAW.has(piece.name) && !/\/\s*$/.test(piece.attrs)) {
+  } else if (piece.t === "open" && RAW.has(piece.name) && !selfClosing(piece.attrs)) {
     state.skip = piece.name;
   } else if (piece.t === "open" && piece.name === "img") {
     run.add({ k: "image", alt: shown(attribute(piece.attrs, "alt")?.trim() ?? "") });
@@ -295,7 +295,7 @@ function pieceInline(piece: HtmlPiece, run: Run, state: InlineState): void {
     run.add({ k: "br" });
   } else if (piece.t !== "comment" && piece.name === "a") {
     run.open = null;
-    if (piece.t === "open" && !/\/\s*$/.test(piece.attrs)) {
+    if (piece.t === "open" && !selfClosing(piece.attrs)) {
       const href = attribute(piece.attrs, "href");
       const link: Link = { k: "link", url: href === null ? null : safeUrl(href), children: [] };
       run.add(link);
@@ -383,21 +383,41 @@ function compact(s: string): string {
 
 /** `s` without the punctuation at its ends ("(Ready)." reads "Ready"). */
 function bare(s: string): string {
-  return s.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  // Scanned inward from each end, a code point at a time: linear whatever the text (a regex
+  // anchored at the end would backtrack over every run of punctuation).
+  let start = 0;
+  while (start < s.length) {
+    const c = String.fromCodePoint(s.codePointAt(start)!);
+    if (WORDLIKE.test(c)) break;
+    start += c.length;
+  }
+  let end = s.length;
+  while (end > start) {
+    const low = s.charCodeAt(end - 1);
+    const pair = low >= 0xdc00 && low <= 0xdfff && end - 2 >= start && s.charCodeAt(end - 2) >= 0xd800 && s.charCodeAt(end - 2) <= 0xdbff;
+    const c = s.slice(pair ? end - 2 : end - 1, end);
+    if (WORDLIKE.test(c)) break;
+    end -= c.length;
+  }
+  return s.slice(start, end);
 }
 
-/** What `node` shows as text (an image: nothing, it is not text beside another). */
-function visible(node: Inline): string {
-  switch (node.k) {
-    case "text":
-    case "code":
-      return node.text;
-    case "br":
-    case "image":
-      return "";
-    default:
-      return node.children.map(visible).join("");
-  }
+/** One code point that is a letter or a digit. */
+const WORDLIKE = /^[\p{L}\p{N}]$/u;
+
+/**
+ * What `node` shows as text (an image: nothing, it is not text beside another), read no
+ * further than one character past `limit`: longer than `limit` means "too long to compare".
+ */
+function visible(node: Inline, limit: number): string {
+  let out = "";
+  const walk = (n: Inline): void => {
+    if (out.length > limit) return;
+    if (n.k === "text" || n.k === "code") out += n.text.slice(0, limit + 1 - out.length);
+    else if (n.k !== "br" && n.k !== "image") for (const c of n.children) walk(c);
+  };
+  walk(node);
+  return out;
 }
 
 /** Whether `node` is only space: no neighbour, the one beyond it is. */
@@ -414,20 +434,36 @@ function repeatsNeighbour(nodes: Inline[], i: number, alt: string): boolean {
   const want = compact(bare(alt));
   if (want === "") return false;
   const words = alt.trim().split(/\s+/).length;
+  // How much of a neighbour is read: a few times the alt text, so a long neighbour (a comment
+  // can be 20,000 characters of one run) costs no more than a short one.
+  const cap = alt.length * 4 + 16;
   for (const step of [1, -1]) {
     let j = i + step;
     while (nodes[j] && blank(nodes[j])) j += step;
     const n = nodes[j];
     if (!n || n.k === "br" || n.k === "image") continue;
-    const text = visible(n).trim();
-    if (compact(bare(text)) === want) return true;
     if (n.k === "text") {
-      const all = text.split(/\s+/);
+      // Plain text: its words on the image's side, from at most `cap` characters of it.
+      const text = n.text.trim();
+      const cut = text.length > cap;
+      const part = step === 1 ? text.slice(0, cap) : text.slice(text.length - cap);
+      const all = part.split(/\s+/);
+      // A part with no more words than wanted may end inside a longer one: not a repeat.
+      if (cut && all.length <= words) continue;
       const side = step === 1 ? all.slice(0, words) : all.slice(-words);
       if (compact(bare(side.join(" "))) === want) return true;
+    } else {
+      // A link or emphasis: all of its text, if it is not far longer than the alt text.
+      const text = visible(n, cap);
+      if (text.length <= cap && compact(bare(text.trim())) === want) return true;
     }
   }
   return false;
+}
+
+/** Whether an HTML tag's `attrs` end it as self-closing (`<a … />`). */
+function selfClosing(attrs: string): boolean {
+  return attrs.trimEnd().endsWith("/");
 }
 
 /**

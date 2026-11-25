@@ -217,6 +217,27 @@ describe("images, never loaded, drawn by what they are next to", () => {
     expect(text(nodes("![Ready](https://x/r.svg)\nReady"))).toBe("‹img:Ready›\nReady");
   });
 
+  it("a 20,000-character run of punctuation beside an image is compared quickly, and is no repeat", () => {
+    // Not "!": marked's own lexer is slow on a long run of those, whatever is drawn after it.
+    const run = ",;?".repeat((MAX_BODY - 100) / 3);
+    const t0 = performance.now();
+    for (const body of [
+      `![Ready](https://x/r.svg) ${run}a`,
+      `a${run} ![Ready](https://x/r.svg)`,
+      `![Ready](https://x/r.svg) [${run}a](https://x/l)`,
+      `![${run}a](https://x/r.svg) ${run}b`,
+      // A run in the middle: what a regex anchored at the end backtracks over.
+      `![a${run}b](https://x/r.svg) [a${run}c](https://x/l) a${run}c`,
+      `![Ready](https://x/r.svg) ${", ".repeat(9_000)}Ready`,
+    ]) {
+      expect(JSON.stringify(renderMarkdown(body).blocks)).toContain('"k":"image"');
+    }
+    expect(performance.now() - t0).toBeLessThan(500);
+    // Punctuation at the ends of the words beside it is still looked past.
+    expect(text(nodes("![Ready](https://x/r.svg) (Ready).."))).toBe(" (Ready)..");
+    expect(text(nodes("“Ready” ![Ready](https://x/r.svg)"))).toBe("“Ready” ");
+  });
+
   it("an image that is a link's only content is that link, its alt text as its words (the bot's button)", () => {
     const blocks = renderMarkdown(bot).blocks;
     const button = { k: "link", url: "https://bot.example/review", children: [{ k: "text", text: "Request Review" }] };

@@ -155,7 +155,9 @@ Press ⌘K (or open the side panel's Commit tab, or click a worktree's change co
 you tick, with **Commit & Push** to send the branch upstream in the same step. Files you
 staged but did not tick stay staged and out of the commit. With nothing ticked, **Commit with
 no changes** makes an empty commit (to run CI again, say). When a merge is being concluded,
-its message is filled in for you.
+its message is filled in for you. Under the message, **Committed on branch** lists what the
+branch's own commits change since it left its base (the pull request's base, else the
+remote's default branch): each file with its folder, lines added and removed, and its status.
 
 **Pull requests**
 

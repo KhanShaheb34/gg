@@ -74,7 +74,21 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   worktree's, and offers to make it active. **Commit & Push** sends the commit to the
   branch's upstream; when a merge
   is being concluded, its message is filled in. With nothing ticked, **Commit with no changes** makes an empty commit
-  (`git commit --allow-empty`), with or without the push. The notice after a commit offers the push. Known limit: if the app quits or
+  (`git commit --allow-empty`), with or without the push. The notice after a commit offers the push.
+  Under the message, **Committed on branch** (with how many files) lists, read-only, what the
+  branch checked out there changes in its own commits: from where it left its base
+  (`git merge-base`) to its last commit, the working tree's changes left out. The base, named
+  in the header ("vs origin/main"), is the base branch of the branch's open pull request, else
+  the default branch of the remote the branch tracks (as that remote's `HEAD` names it), else
+  the first remote's. Each file shows its name, its folder, the lines added and removed (none
+  for a binary file) and its status (M, A, D, R; a rename is one row, its old path beside it);
+  the first 500, then how many more. A file opens nothing (gg has no view of one file's
+  changes yet). There is no such section when HEAD is detached, on the default branch itself,
+  when no base is known, or when the branch changes nothing. It starts closed while the
+  worktree has changes to commit and open while it has none; a click on its header holds only
+  until that changes (changes appear, or are all committed), then the default applies again;
+  it is not remembered when gg restarts. It is read again only when the branch's commit, the
+  base or the base's commit moves, never for a file written. Known limit: if the app quits or
   crashes between making a commit and updating the staging area (during a slow
   `post-commit` hook, say), the staging area still holds the committed files as they were
   before the commit, so `git status` shows staged changes that would undo it; `git reset`

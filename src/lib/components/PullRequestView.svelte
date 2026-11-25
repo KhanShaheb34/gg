@@ -56,6 +56,8 @@
 
 <style>
   .pr-view {
+    /* Its width decides how the buttons sit (below). */
+    container: pr-view / inline-size;
     display: flex;
     flex-direction: column;
     flex: 1;
@@ -168,9 +170,10 @@
     font-family: var(--font-ui);
   }
 
+  /* Side by side, each as wide as its label; in a panel narrower than 280 px (its least width
+     is 240), stacked, each the row's width: by rule, whatever the font's widths. */
   .actions {
     display: flex;
-    flex-wrap: wrap;
     gap: 6px;
     margin-top: 6px;
   }
@@ -193,6 +196,16 @@
     transition:
       background-color 80ms linear,
       border-color 80ms linear;
+  }
+
+  @container pr-view (width < 280px) {
+    .actions {
+      flex-direction: column;
+    }
+
+    .button {
+      flex: none;
+    }
   }
 
   .button:hover {

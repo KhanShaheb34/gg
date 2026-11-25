@@ -21,6 +21,7 @@
   import {
     defaultBranch,
     keepSuggestion,
+    suggestionTicket,
     keptSuggestion,
     knownPr,
     lastSuggestion,
@@ -111,10 +112,11 @@
       suggestionFor = b;
     }
     suggestFailed = null;
+    const ticket = suggestionTicket();
     try {
       const s = await api.prSuggest(view.repoId, b);
       // Kept for its branch whenever it comes; shown only if still asked for, for this branch.
-      keepSuggestion(root, b, at, s);
+      keepSuggestion(root, b, at, s, ticket);
       if (n !== asked || b !== branch) return;
       suggestion = s;
     } catch (e) {
@@ -126,6 +128,8 @@
   // Asked again when what it depends on changes, and when the user refreshes.
   let seenRefresh = untrack(() => panelState(view.repoId).prRefresh);
   $effect(() => {
+    // The branch itself too: two branches at the same commit, neither pushed, share a stamp.
+    void branch;
     void stamp;
     const refreshed = panel.prRefresh;
     if (!wanted) {

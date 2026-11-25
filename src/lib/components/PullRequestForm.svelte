@@ -76,7 +76,10 @@
   $effect(() => {
     if (d.base !== "" || d.baseTouched || suggestion !== null) return;
     const guess = defaultBranch(snap, guessRemote);
-    if (guess !== null) d.base = guess;
+    if (guess !== null) {
+      d.base = guess;
+      d.baseRemote = guessRemote;
+    }
   });
 
   // The suggestion fills what the user has not changed, whenever one comes.
@@ -86,8 +89,7 @@
     if (s === null || s === applied) return;
     applied = s;
     const draft = d;
-    const remote = guessRemote;
-    untrack(() => applySuggestion(draft, s, remote));
+    untrack(() => applySuggestion(draft, s));
   });
 
   const loading = $derived(suggestion === null && suggestFailed === null);
@@ -99,14 +101,18 @@
   const pushTo = $derived(suggestion?.pushTo ?? null);
   const tipOf = (list: string[], tips: { hash: string }[], name: string) => tips[list.indexOf(name)]?.hash ?? null;
   /**
-   * It is pushed first: its namesake there is missing or behind it, as the core said; unless
-   * the repository now shows it level with it there (pushed since: by a try that then failed).
+   * It is pushed first: its namesake there is missing or on another commit, as the repository
+   * shows them now, whatever the core said when it suggested (a commit made since, or a push
+   * made since: by a try that then failed).
    */
   const needsPush = $derived.by(() => {
-    if (!(suggestion?.needsPush ?? false) || pushTo === null) return false;
+    if (pushTo === null) return false;
     const here = tipOf(snap.branches, snap.branchTips, branch);
-    const there = tipOf(snap.remoteBranches, snap.remoteBranchTips, pushTo);
-    return here === null || here !== there;
+    // Not known here: as the core said.
+    if (here === null) return suggestion?.needsPush ?? false;
+    // Its namesake there missing, or on another commit (a commit made since the core said it
+    // was level, say): pushed first. Level: nothing to push (pushed since the core said).
+    return here !== tipOf(snap.remoteBranches, snap.remoteBranchTips, pushTo);
   });
   /** Why it is pushed: not there at all, or there but behind. */
   const pushWhy = $derived(
@@ -344,7 +350,11 @@
             id="pr-base-{uid}"
             class="select"
             bind:value={d.base}
-            onchange={() => (d.baseTouched = true)}
+            onchange={() => {
+              // Picked among the branches of the repository shown: kept while it is the one.
+              d.baseTouched = true;
+              d.baseRemote = baseRemote;
+            }}
             disabled={d.pending}
             data-testid="pr-base"
           >
@@ -571,6 +581,18 @@
     border-color: var(--border);
     background: transparent;
     color: var(--text-faint);
+  }
+
+  /* The form's own button: its label may need two lines in a narrow panel (with wide fonts):
+     it wraps, balanced, rather than lose words. */
+  .button.primary {
+    height: auto;
+    min-height: 28px;
+    padding: 5px 12px;
+    line-height: 16px;
+    text-align: center;
+    text-wrap: balance;
+    white-space: normal;
   }
 
   .primary {

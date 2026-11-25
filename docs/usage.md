@@ -80,8 +80,7 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   (`git merge-base`) to its last commit, the working tree's changes left out. The base, named
   in the header ("vs origin/main"), is the base branch of the branch's open pull request, on
   the repository the pull request goes to (in a fork, `upstream/main` rather than the fork's
-  copy), else the default branch of the remote the branch tracks (as that remote's `HEAD` names it), else
-  the first remote's. Each file shows its name, its folder, the lines added and removed (none
+  copy); without one, the base the pull request form offers the branch (below). Each file shows its name, its folder, the lines added and removed (none
   for a binary file) and its status (M, A, D, R; a rename is one row, its old path beside it);
   the first 500, then how many more. A file opens nothing (gg has no view of one file's
   changes yet). There is no such section when HEAD is detached, on the default branch itself,
@@ -90,7 +89,8 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   until that changes (changes appear, or are all committed), then the default applies again;
   it is not remembered when gg restarts. It is read again only when the branch's commit, the
   base or the base's commit moves (or a better base comes into reach, such as the pull
-  request's base once fetched), never for a file written. A read that fails keeps what was
+  request's base once fetched, or a branch on the remote moves, which may make another the
+  nearest), never for a file written. A read that fails keeps what was
   shown and says why in one line, with Retry. Known limit: if the app quits or
   crashes between making a commit and updating the staging area (during a slow
   `post-commit` hook, say), the staging area still holds the committed files as they were
@@ -128,11 +128,17 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   than offering to make one; a pull request found then shows at once, its checks and comments
   following. What you typed in the form is kept meanwhile. Without one, it shows
   the form: a title and description suggested from the branch's commits, the branch it goes
-  into (the one last used, else the repository's default), and **Create as draft**; the
-  button pushes the branch first when it needs to, and the line above it says where. What
-  you type is kept per branch while gg runs, whatever else you look at, until the pull
-  request is made. A failure stays in the tab, with Show log. It says plainly when none can
-  be made: HEAD detached, no remote, a remote not on GitHub, the default branch. Without
+  into, and **Create as draft**. The branch it goes into is, by default, the branch's own
+  base on the repository pull requests go to: the one its last pull request went into (kept
+  per branch), else the branch it was created from (git's own records of it, read only: the
+  branch's reflog, or HEAD's when it was made with `switch -c` or in gg), else the nearest
+  branch on that remote by history (fewest commits between them, the default branch on a
+  tie), and only one the remote has; else the repository's default branch (gh's), the
+  remote's `HEAD`, `main`. You can pick any other. The button pushes the branch first when
+  it needs to, and the line above it says where. What you type is kept per branch while gg
+  runs, whatever else you look at, until the pull request is made. A failure stays in the
+  tab, with Show log. It says plainly when none can be made: HEAD detached, no remote, a
+  remote not on GitHub, the default branch. Without
   `gh`, or signed out, it says how to fix that, and meanwhile pushes the branch and opens
   GitHub's compare page. After a push you ask for (Push, Commit & Push, a notice's Push) of a
   branch with no pull request, other than the default branch, the tab shows by itself,

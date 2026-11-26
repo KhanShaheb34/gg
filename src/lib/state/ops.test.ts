@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { snap, worktree } from "../menus/menuTestData";
+import { plainText } from "../notice";
 import type { Danger, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
 
 vi.mock("../ipc", async (importOriginal) => {
@@ -49,12 +50,15 @@ let ops: typeof import("./ops.svelte");
 let app: typeof import("./app.svelte");
 let overlays: typeof import("./overlays.svelte");
 
+/** An outcome; its notice is its message as one headline unless given. */
 function outcome(overrides: Partial<OpOutcome> = {}): OpOutcome {
+  const message = overrides.message ?? "Merged feature/x into main";
   return {
+    notice: { title: [{ text: message }], note: [] },
     opId: 9,
     status: "done",
     title: "Merge feature/x into main",
-    message: "Merged feature/x into main.",
+    message,
     detail: null,
     logFrom: 0,
     logTo: 0,
@@ -113,7 +117,7 @@ describe("runOp", () => {
     expect(view.applySnapshot).toHaveBeenCalledWith(done.snapshot);
     expect(overlays.openDialog).not.toHaveBeenCalled();
     expect(app.app.toasts).toEqual([
-      expect.objectContaining({ kind: "info", message: "Merged feature/x into main.", actions: [] }),
+      expect.objectContaining({ kind: "success", message: [{ text: "Merged feature/x into main" }], note: [], actions: [] }),
     ]);
   });
 
@@ -136,7 +140,7 @@ describe("runOp", () => {
       [1, RESET, []],
       [1, RESET, [{ kind: "hard_reset", token: null }]],
     ]);
-    expect(app.app.toasts.map((t) => t.message)).toEqual(["Reset main to aaaaaaaa."]);
+    expect(app.app.toasts.map((t) => plainText(t.message))).toEqual(["Reset main to aaaaaaaa."]);
   });
 
   it("counts only the first answer, and closes only its own confirmation", async () => {
@@ -232,14 +236,16 @@ describe("runOp", () => {
     const message = "Nothing was done: it was asked for on main, but feature is checked out now. Look at it again, and ask again if it still applies.";
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ status: "failed", message }));
     await ops.runOp(1, RESET);
-    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message })]);
+    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: [{ text: message }] })]);
   });
 
-  it("shows a failure with git's text folded below and a link to its log entries", async () => {
+  it("shows a failure's headline and the line under it, with a link to its log entries (git's text is there)", async () => {
+    const title = [{ text: "Your uncommitted changes are in the way" }];
+    const note = [{ text: "The merge would overwrite " }, { path: "a.txt" }, { text: ". Commit or stash them first." }];
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
       outcome({
         status: "failed",
-        message: "Your local changes would be overwritten.",
+        notice: { title, note },
         detail: "error: Your local changes to the following files would be overwritten by merge:\n\ta.txt",
         logFrom: 41,
         logTo: 43,
@@ -247,13 +253,8 @@ describe("runOp", () => {
     );
     await ops.runOp(1, RESET);
     const [notice] = app.app.toasts;
-    expect(notice).toMatchObject({
-      kind: "error",
-      message: "Your local changes would be overwritten.",
-      detail: "error: Your local changes to the following files would be overwritten by merge:\n\ta.txt",
-      foldDetail: true,
-      persistent: true,
-    });
+    expect(notice).toMatchObject({ kind: "error", message: title, note, persistent: true });
+    expect(notice.detail).toBeUndefined();
     expect(notice.link?.label).toBe("Show log");
     expect(notice.link?.keepOpen).toBe(true);
     await notice.link!.run();
@@ -313,7 +314,7 @@ describe("runOp", () => {
     const failed = outcome({ status: "failed", message: "git could not create it.", detail: "hook said no", logFrom: 4, logTo: 4 });
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(failed);
     await ops.runOp(1, add, { ownRefusals: true });
-    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: "git could not create it." })]);
+    expect(app.app.toasts).toEqual([expect.objectContaining({ kind: "error", message: [{ text: "git could not create it." }] })]);
 
     // Without asking, a refusal is reported.
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(refused);
@@ -345,15 +346,15 @@ describe("hint buttons", () => {
     // Its snapshot never showed the later one running (it ended at once).
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(outcome({ opId: 11, message: "Reset main." }));
     await ops.runOp(1, RESET);
-    expect(app.app.toasts.map((t) => t.message)).toEqual(["Reset main."]);
+    expect(app.app.toasts.map((t) => plainText(t.message))).toEqual(["Reset main."]);
   });
 
-  it("names the branch on its buttons", async () => {
+  it("names on its buttons only where they go, the notice naming the branch", async () => {
     vi.mocked(ipc.api.runOp).mockResolvedValueOnce(
-      outcome({ hints: [{ kind: "push", branch: "feature/\u202ex", remote: "origin" }] }),
+      outcome({ hints: [{ kind: "push", branch: "feature/x", remote: "up\u202estream" }] }),
     );
     await ops.runOp(1, RESET);
-    expect(app.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Push feature/‹U+202E›x to origin/feature/‹U+202E›x"]);
+    expect(app.app.toasts[0].actions?.map((a) => a.label)).toEqual(["Push to up‹U+202E›stream"]);
   });
 
   async function buttonsFor(hints: OpHint[], status: OpOutcome["status"] = "done") {
@@ -380,7 +381,7 @@ describe("hint buttons", () => {
     const after = snap({ seq: 9, activeWorktree: "/r/feature" });
     vi.mocked(ipc.api.setActiveWorktree).mockResolvedValueOnce(after);
     const [make] = await buttonsFor([{ kind: "make_active", worktree: "/r/feature" }], "failed");
-    expect(make.label).toBe("Make /r/feature active");
+    expect(make.label).toBe("Make that worktree active");
     await make.run();
     await Promise.resolve();
     expect(ipc.api.setActiveWorktree).toHaveBeenCalledWith(1, "/r/feature");
@@ -407,7 +408,7 @@ describe("hint buttons", () => {
 
   it("push: pushes the branch the core named", async () => {
     const [push] = await buttonsFor([{ kind: "push", branch: "main", remote: "origin" }]);
-    expect(push.label).toBe("Push main to origin/main");
+    expect(push.label).toBe("Push to origin");
     await push.run();
     expect(ipc.api.runOp).toHaveBeenCalledWith(
       1,
@@ -423,8 +424,8 @@ describe("hint buttons", () => {
     );
     expect(buttons.map((b) => [b.label, !!b.danger])).toEqual([
       ["Fetch", false],
-      ["Pull main", false],
-      ["Force push main to origin/main…", true],
+      ["Pull", false],
+      ["Force push…", true],
     ]);
     await buttons[0].run();
     expect(view.fetch).toHaveBeenCalled();
@@ -444,7 +445,7 @@ describe("hint buttons", () => {
 
   it("a rejected push to the upstream of another name offers the force push there, named", async () => {
     const [force] = await buttonsFor([{ kind: "force_push", branch: "feature", remote: "origin", to: "main" }], "failed");
-    expect(force.label).toBe("Force push feature to origin/main…");
+    expect(force.label).toBe("Force push to origin/main…");
     await force.run();
     expect(ipc.api.runOp).toHaveBeenLastCalledWith(
       1,

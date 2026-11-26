@@ -168,8 +168,9 @@
             { label: "Copy link", keepOpen: true, run: () => copyLink(url) },
           ];
     notify({
-      kind: "info",
-      message: outcome.message,
+      kind: "success",
+      message: outcome.notice.title,
+      note: outcome.notice.note,
       actions,
       persistent: actions.length > 0,
       until: actions.length > 0 ? { repoId, opId: outcome.opId } : undefined,

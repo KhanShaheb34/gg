@@ -111,7 +111,7 @@ export class RepoView {
   private fetchStarting = $state(false);
 
   /** Shows an error to the user (set by the app shell). */
-  onNotice: ((message: string, detail?: string) => void) | null = null;
+  onNotice: ((message: string, note?: string, detail?: string) => void) | null = null;
 
   /** Widest the Graph column has sized itself, px; it never narrows while the view lives. */
   graphAutoWidth = 0;
@@ -428,7 +428,7 @@ export class RepoView {
     if (state.lastAtMs === null || state.lastAtMs < this.fetchAskedAt) return;
     this.fetchStarting = false;
     this.fetchWatched = false;
-    if (state.lastError) this.onNotice?.(`Fetch failed: ${state.lastError}`, state.lastErrorDetail ?? undefined);
+    if (state.lastError) this.onNotice?.("Fetch failed", state.lastError, state.lastErrorDetail ?? undefined);
   }
 
   /** The repository may have changed on disk since this view was last refreshed (the window was away). */
@@ -494,13 +494,13 @@ export class RepoView {
   }
 
   /**
-   * Reports `e` as "<message>" with the error's own message below (as a failed fetch is), and
-   * under that the core's detail (git's own words), if it has one.
+   * Reports `e` as "<message>" with the error's own message under it (as a failed fetch is),
+   * and the core's detail (git's own words), if it has one, folded below.
    */
   notice(e: unknown, message: string): void {
     const text = e instanceof Error ? e.message : String(e);
-    const detail = e instanceof CoreError ? e.detail : null;
-    this.onNotice?.(message, detail ? `${text}\n${detail}` : text);
+    const detail = e instanceof CoreError ? (e.detail ?? undefined) : undefined;
+    this.onNotice?.(message, text, detail);
   }
 
   /** The first page of rows was asked for (performance runs mark it). */

@@ -550,11 +550,20 @@ export type OpHint =
   | { kind: "remove_index_lock"; path: string; worktree: string }; // a stale staging-area lock of that worktree
 
 /** How `run_op` went. `stopped`: git stopped on conflicts (not a failure); `needs_confirmation`: nothing ran. */
+/**
+ * A piece of a notice's line: text, a name set off (a branch, a remote branch, a tag, a commit,
+ * a stash), or a path (shown from the home folder).
+ */
+export type Part = { text: string } | { ref: string } | { path: string };
+/** What an outcome's notice says: a short headline, and a quieter line under it (empty: none). */
+export type Notice = { title: Part[]; note: Part[] };
+
 export type OpOutcome = {
   opId: number;
   status: "done" | "stopped" | "failed" | "needs_confirmation";
   title: string; // "Merge feature/x into staging"
-  message: string; // one plain line for the notice
+  message: string; // the notice as one plain sentence, for a dialog or panel that shows it in place
+  notice: Notice; // the notice: a headline and the line under it, names set off
   detail: string | null; // git's own output on failure
   logFrom: number; // command-log ids of the operation's writes (0, 0 if none ran)
   logTo: number;

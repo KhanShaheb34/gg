@@ -4,11 +4,10 @@
 
 import ConfirmDialog from "../components/dialogs/ConfirmDialog.svelte";
 import PullDialog from "../components/dialogs/PullDialog.svelte";
-import { shortenPath } from "../format";
 import { api, CoreError } from "../ipc";
 import { shown } from "../menus/common";
 import type { Confirmed, CoreErrorDto, OpHint, OpOutcome, OpRequest, RepoSnapshot } from "../types";
-import { app, dismissToast, notify, reportError, showLog, type ToastAction } from "./app.svelte";
+import { app, dismissToast, notify, reportError, showLog as showLog_, type ToastAction } from "./app.svelte";
 import { markStopped } from "./commandLog.svelte";
 import { openExternal } from "./editor";
 import { closeDialog, openDialog, showDialog } from "./overlays.svelte";
@@ -20,9 +19,9 @@ import { findRepoView } from "./repo.svelte";
  * on confirming, the request is sent again with them confirmed, each with the token of the
  * state it was shown, as often as the core asks (it asks again, with the state as it
  * is then, if anything it was about changed meanwhile); cancelling ends it there. The
- * outcome's snapshot is applied to the repository's view. The notice: `done`, its message
- * with a button per hint; `failed`, its message with git's text folded below, the hints, and
- * a link to its command-log entries; `stopped` (git stopped on conflicts), none: the
+ * outcome's snapshot is applied to the repository's view. The notice (the outcome's headline and
+ * the line under it): `done`, with a button per hint; `failed`, with the hints and a link to its
+ * command-log entries, where git's own text is; `stopped` (git stopped on conflicts), none: the
  * conflict banner shows it. A pull that needs to be told whether to merge or rebase (hint
  * `choose_pull_mode`) shows that choice instead of a notice, and is sent again as chosen. An error from the core is reported, and the promise rejects
  * with it; errors with a code in `ownErrors` are not reported: the caller shows them (a
@@ -176,29 +175,33 @@ function report(repoId: number, outcome: OpOutcome, request: OpRequest): void {
   }
   // What a notice offers runs where the operation ran: switched away since, it is refused.
   const actions = outcome.hints.flatMap((hint) => hintActions(repoId, hint, ranIn));
-  const detail = outcome.detail ?? undefined;
+  // A failure's git text is in the command log, which the notice links to; folded in the
+  // notice only when the log has nothing of it. What a success has to add (git's note on
+  // changes it could not put back, a command to run) is folded in the notice.
+  const logged = outcome.logFrom > 0;
+  const detail = logged && outcome.status === "failed" ? undefined : (outcome.detail ?? undefined);
+  // The notice stays: the log is read against it.
+  const showLog = (): ToastAction => ({ label: "Show log", keepOpen: true, run: () => showLog_(repoId, outcome.logFrom) });
+  const { title: message, note } = outcome.notice;
   // A notice that offers what to do next waits for the user, until the next operation there.
   const until = actions.length > 0 ? { repoId, opId: outcome.opId } : undefined;
   // A Skip applies while git is stopped on the commit it is for.
   const skip = outcome.hints.find((h) => h.kind === "skip");
   const holds = skip ? () => findRepoView(repoId)?.snapshot.inProgress?.commit === skip.commit : undefined;
   if (outcome.status === "done") {
-    notify({ kind: "info", message: outcome.message, detail, foldDetail: true, actions, persistent: !!until, until, holds });
+    notify({ kind: "success", message, note, detail, foldDetail: true, actions, persistent: !!until, until, holds });
   } else if (outcome.status === "failed") {
     notify({
       kind: "error",
-      message: outcome.message,
+      message,
+      note,
       detail,
       foldDetail: true,
       persistent: true,
       until,
       holds,
       actions,
-      // The notice stays: the log is read against it.
-      link:
-        outcome.logFrom > 0
-          ? { label: "Show log", keepOpen: true, run: () => showLog(repoId, outcome.logFrom) }
-          : undefined,
+      link: logged ? showLog() : undefined,
     });
   }
 }
@@ -218,7 +221,8 @@ function hintActions(repoId: number, hint: OpHint, worktree: string): ToastActio
     case "push": {
       const { branch, remote } = hint;
       const push: OpRequest = { op: "push", branch, remote, to: null, force: false };
-      return [{ label: `Push ${shown(branch)} to ${shown(`${remote}/${branch}`)}`, run: () => followUp(repoId, push) }];
+      // The notice names the branch; the button says where it goes.
+      return [{ label: `Push to ${shown(remote)}`, run: () => followUp(repoId, push) }];
     }
     case "fetch":
       return [{ label: "Fetch", run: () => findRepoView(repoId)?.fetch() }];
@@ -232,13 +236,15 @@ function hintActions(repoId: number, hint: OpHint, worktree: string): ToastActio
         expectHead: headOf(repoId),
         expectWorktree: worktree,
       });
-      return [{ label: `Pull ${shown(branch)}`, run: () => followUp(repoId, pull()) }];
+      return [{ label: "Pull", run: () => followUp(repoId, pull()) }];
     }
     case "force_push": {
       const { branch, remote, to } = hint;
       const push: OpRequest = { op: "push", branch, remote, to, force: true };
-      const there = shown(`${remote}/${to ?? branch}`);
-      return [{ label: `Force push ${shown(branch)} to ${there}…`, danger: true, run: () => followUp(repoId, push) }];
+      // Asks first, naming the branch and where it goes; named here too when that is not its
+      // namesake.
+      const label = to === null || to === branch ? "Force push…" : `Force push to ${shown(`${remote}/${to}`)}…`;
+      return [{ label, danger: true, run: () => followUp(repoId, push) }];
     }
     case "choose_pull_mode":
       return []; // a dialog asks instead (see report)
@@ -254,7 +260,7 @@ function hintActions(repoId: number, hint: OpHint, worktree: string): ToastActio
       const target = hint.worktree;
       return [
         {
-          label: `Make ${shown(shortenPath(target, app.homeDir))} active`,
+          label: "Make that worktree active",
           run: () => {
             api
               .setActiveWorktree(repoId, target)

@@ -44,6 +44,15 @@
     return () => document.removeEventListener("visibilitychange", onVisible);
   });
 
+  // Notices stand above the bar (Toast reads --status-h), never over it.
+  let bar: HTMLElement | undefined = $state();
+  $effect(() => {
+    if (!bar) return;
+    const root = document.documentElement;
+    root.style.setProperty("--status-h", `${bar.offsetHeight}px`);
+    return () => root.style.removeProperty("--status-h");
+  });
+
   const fetched = $derived(fetchedText(fetchedAt, now));
   const fetchedTitle = $derived.by(() => {
     if (fetchedAt === null) return "";
@@ -77,7 +86,7 @@
   }
 </script>
 
-<footer class="status-bar" data-testid="status-bar" aria-label="Status">
+<footer class="status-bar" data-testid="status-bar" aria-label="Status" bind:this={bar}>
   <button
     class="path"
     data-testid="status-path"

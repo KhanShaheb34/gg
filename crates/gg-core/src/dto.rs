@@ -182,6 +182,11 @@ pub struct PrDetails {
     pub threads_error: Option<String>,
     /// More review threads than were read (the first 50 are).
     pub threads_partial: bool,
+    /// The user can add a comment to the conversation (`pr_comment`), as far as GitHub's answer
+    /// tells: not when the repository is archived, nor when the conversation is locked and the
+    /// user cannot write to the repository. True when the review threads' query failed (a
+    /// comment that cannot be made then fails, and says why).
+    pub can_comment: bool,
     /// When this was read from `gh`, unix milliseconds.
     pub loaded_at_ms: i64,
 }
@@ -322,6 +327,9 @@ pub struct PrComment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrThread {
+    /// GitHub's node id of the thread (`PRRT_…`), which `pr_reply` and `pr_resolve` name;
+    /// empty when GitHub did not give it (nothing can then be done to the thread here).
+    pub id: String,
     pub path: String,
     /// Its line in the file (its original line once outdated), if it is on one.
     pub line: Option<u32>,
@@ -330,6 +338,11 @@ pub struct PrThread {
     pub outdated: bool,
     /// The comments after the first, oldest first.
     pub replies: Vec<PrReply>,
+    /// What the user may do to it, as GitHub says (`viewerCanReply`, `viewerCanResolve`,
+    /// `viewerCanUnresolve`); false when it did not say.
+    pub can_reply: bool,
+    pub can_resolve: bool,
+    pub can_unresolve: bool,
 }
 
 /// A reply in a review thread.
@@ -924,7 +937,7 @@ pub enum PullMode {
 /// abort and skip also when the commit moved.
 ///
 /// Every request that runs in a working directory (all but push, push_tag, delete_tag,
-/// delete_remote_branch, fetch_into_local, the worktree operations and pr_create) carries `expect_worktree`: the active worktree
+/// delete_remote_branch, fetch_into_local, the worktree operations and the pull request ones) carries `expect_worktree`: the active worktree
 /// the UI showed. The core refuses it, running nothing, when another worktree is active by
 /// its turn, so switching worktrees never redirects a request already asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1178,6 +1191,25 @@ pub enum OpRequest {
         draft: bool,
         compare_page: bool,
     },
+    /// Replies `body` (any text but blank) in review thread `thread_id` (its GraphQL node id,
+    /// `PrThread.id`) of pull request `number`, through `gh api graphql`
+    /// (`addPullRequestReviewThreadReply`), the query and its variables on gh's stdin.
+    /// Runs from the main worktree, on the repository `pr_details` reads.
+    PrReply {
+        number: u32,
+        thread_id: String,
+        body: String,
+    },
+    /// Resolves (`resolved`) or unresolves review thread `thread_id` of pull request `number`
+    /// through `gh api graphql` (`resolveReviewThread`, `unresolveReviewThread`).
+    PrResolve {
+        number: u32,
+        thread_id: String,
+        resolved: bool,
+    },
+    /// Adds `body` (any text but blank) to pull request `number`'s conversation: `gh pr comment
+    /// <number> --repo <repo> --body-file -`, the body on gh's stdin.
+    PrComment { number: u32, body: String },
 }
 
 /// What a new worktree checks out: an existing local branch, a new branch made at a commit
@@ -1203,7 +1235,8 @@ pub struct WorktreePath {
 
 impl OpRequest {
     /// Whether the request runs from the main worktree whichever is active: the worktree
-    /// operations, which name the worktree they are about, and `pr_create`, which needs none.
+    /// operations, which name the worktree they are about, and the pull request ones
+    /// (`pr_create`, `pr_reply`, `pr_resolve`, `pr_comment`), which need none.
     pub fn runs_in_main(&self) -> bool {
         matches!(
             self,
@@ -1211,6 +1244,9 @@ impl OpRequest {
                 | Self::WorktreeRemove { .. }
                 | Self::WorktreePrune {}
                 | Self::PrCreate { .. }
+                | Self::PrReply { .. }
+                | Self::PrResolve { .. }
+                | Self::PrComment { .. }
         )
     }
 
@@ -1292,7 +1328,10 @@ impl OpRequest {
             | Self::WorktreeAdd { .. }
             | Self::WorktreeRemove { .. }
             | Self::WorktreePrune {}
-            | Self::PrCreate { .. } => None,
+            | Self::PrCreate { .. }
+            | Self::PrReply { .. }
+            | Self::PrResolve { .. }
+            | Self::PrComment { .. } => None,
         }
     }
 
@@ -1374,7 +1413,10 @@ impl OpRequest {
             | Self::WorktreeAdd { .. }
             | Self::WorktreeRemove { .. }
             | Self::WorktreePrune {}
-            | Self::PrCreate { .. } => None,
+            | Self::PrCreate { .. }
+            | Self::PrReply { .. }
+            | Self::PrResolve { .. }
+            | Self::PrComment { .. } => None,
         }
     }
 }

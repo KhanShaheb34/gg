@@ -23,14 +23,17 @@ pub(crate) const VIEW_FIELDS: &str = "number,state,isDraft,mergeable,mergeStateS
                                       reviewDecision,statusCheckRollup,comments,reviews,url,\
                                       updatedAt";
 
-/// The review threads (their first 50, the first 30 comments of each), and the authors of
-/// the reviews and conversation comments with their kind (`__typename`: `Bot` for a bot,
-/// which `gh pr view` does not say) and each review's page. `$o`, `$r`: the repository's
-/// owner and name; `$n`: the pull request's number.
+/// The review threads (their first 50, the first 30 comments of each) with what the user may
+/// do to each (`viewerCan…`), and the authors of the reviews and conversation comments with
+/// their kind (`__typename`: `Bot` for a bot, which `gh pr view` does not say) and each
+/// review's page; whether the conversation is locked, the repository archived, and the user's
+/// permission on it (whether a comment can be added). `$o`, `$r`: the repository's owner and
+/// name; `$n`: the pull request's number.
 pub(crate) const THREADS_QUERY: &str = "query($o:String!,$r:String!,$n:Int!){\
-repository(owner:$o,name:$r){pullRequest(number:$n){\
+repository(owner:$o,name:$r){isArchived viewerPermission pullRequest(number:$n){locked \
 reviewThreads(first:50){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path \
-line originalLine comments(first:30){nodes{id databaseId url body createdAt \
+line originalLine viewerCanReply viewerCanResolve viewerCanUnresolve \
+comments(first:30){nodes{id databaseId url body createdAt \
 author{login __typename}}}}} \
 reviews(last:100){nodes{id url author{login __typename}}} \
 comments(last:100){nodes{author{login __typename}}}}}}";
@@ -76,10 +79,16 @@ pub(crate) struct Threads {
     bots: HashSet<String>,
     /// Each review's page, by its id.
     review_urls: HashMap<String, String>,
+    /// A comment can be added to the conversation (see [`PrDetails::can_comment`]).
+    can_comment: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RawThread {
+    id: String,
+    can_reply: bool,
+    can_resolve: bool,
+    can_unresolve: bool,
     path: String,
     line: Option<u32>,
     resolved: bool,
@@ -391,7 +400,10 @@ pub(crate) fn parse_threads(json: &[u8]) -> std::result::Result<Threads, String>
             str::to_owned,
         ));
     };
-    let mut out = Threads::default();
+    let mut out = Threads {
+        can_comment: can_comment(&v),
+        ..Threads::default()
+    };
     let mut note_author = |node: &Value| {
         if let Some(author) = node.get("author")
             && text(author, "__typename") == Some("Bot")
@@ -425,6 +437,13 @@ pub(crate) fn parse_threads(json: &[u8]) -> std::result::Result<Threads, String>
                     .and_then(|n| u32::try_from(n).ok())
             });
             RawThread {
+                id: text(t, "id")
+                    .filter(|id| is_node_id(id))
+                    .unwrap_or_default()
+                    .to_owned(),
+                can_reply: flag(t, "viewerCanReply"),
+                can_resolve: flag(t, "viewerCanResolve"),
+                can_unresolve: flag(t, "viewerCanUnresolve"),
                 path: text(t, "path").unwrap_or_default().to_owned(),
                 line,
                 resolved: flag(t, "isResolved"),
@@ -441,6 +460,38 @@ pub(crate) fn parse_threads(json: &[u8]) -> std::result::Result<Threads, String>
         .filter_map(|r| Some((text(r, "id")?.to_owned(), https_url(text(r, "url"))?)))
         .collect();
     Ok(out)
+}
+
+/// Whether a comment can be added to the conversation, from the threads' answer `v`: not in an
+/// archived repository; in a locked conversation only with write access (as GitHub has it).
+/// What it does not say counts as yes: a comment that cannot be made fails and says why.
+fn can_comment(v: &Value) -> bool {
+    let Some(repository) = v.get("data").and_then(|d| d.get("repository")) else {
+        return true;
+    };
+    if flag(repository, "isArchived") {
+        return false;
+    }
+    let locked = repository
+        .get("pullRequest")
+        .is_some_and(|p| flag(p, "locked"));
+    let writes = matches!(
+        upper(text(repository, "viewerPermission")).as_str(),
+        "ADMIN" | "MAINTAIN" | "WRITE"
+    );
+    !locked || writes
+}
+
+/// Whether `id` can be a GraphQL node id as GitHub writes them (`PRRT_kwDO…`): letters,
+/// digits, `_`, `-` and `=`, not starting with `-`, at most 200 bytes. Anything else is never
+/// handed back to `gh`.
+pub fn is_node_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 200
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'='))
 }
 
 /// `login` without a bot's `[bot]`.
@@ -465,7 +516,13 @@ pub(crate) fn assemble(
 ) -> PrDetails {
     let (threads, threads_error) = match threads {
         Ok(t) => (t, None),
-        Err(why) => (Threads::default(), Some(why)),
+        Err(why) => (
+            Threads {
+                can_comment: true,
+                ..Threads::default()
+            },
+            Some(why),
+        ),
     };
     let pr_url = view.url.clone();
     let who = |login: &Option<String>| {
@@ -544,6 +601,12 @@ pub(crate) fn assemble(
             url: first.url.unwrap_or_else(|| pr_url.clone()),
             review_state: None,
             thread: Some(PrThread {
+                // Nothing is offered for a thread GitHub did not name, nor what its state
+                // makes moot.
+                can_reply: t.can_reply && !t.id.is_empty(),
+                can_resolve: t.can_resolve && !t.id.is_empty() && !t.resolved,
+                can_unresolve: t.can_unresolve && !t.id.is_empty() && t.resolved,
+                id: t.id,
                 path: t.path,
                 line: t.line,
                 resolved: t.resolved,
@@ -569,6 +632,7 @@ pub(crate) fn assemble(
         comments_omitted: u32::try_from(omitted).unwrap_or(u32::MAX),
         threads_error,
         threads_partial: threads.partial,
+        can_comment: threads.can_comment,
         loaded_at_ms,
     }
 }

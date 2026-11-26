@@ -55,6 +55,11 @@ export const app = $state({
     dateFormat: "standard",
     checkForUpdates: true,
     openPrTabAfterPush: true,
+    aiTool: "auto",
+    aiModels: {},
+    aiCommitPrompt: null,
+    aiPrPrompt: null,
+    aiNoticeSeen: [],
   } as Settings,
   /** The file settings are kept in, as the core says. */
   settingsFile: "",

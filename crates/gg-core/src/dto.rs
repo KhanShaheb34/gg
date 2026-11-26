@@ -906,6 +906,11 @@ pub struct AiToolInfo {
 pub struct AiTools {
     pub tools: Vec<AiToolInfo>,
     pub chosen: Option<AiTool>,
+    /// gg's default prompt templates, and the variables each takes, for the settings.
+    pub commit_prompt: String,
+    pub commit_variables: Vec<String>,
+    pub pr_prompt: String,
+    pub pr_variables: Vec<String>,
 }
 
 /// What "Generate with AI" is asked to write (`ai_generate`).

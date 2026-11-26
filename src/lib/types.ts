@@ -280,7 +280,81 @@ export type Settings = {
   checkForUpdates: boolean;
   /** A push the user asks for shows the side panel's Pull request tab when the branch has no pull request. */
   openPrTabAfterPush: boolean;
+  /** The command-line AI tool "Generate with AI" runs: the first installed, or the one named. */
+  aiTool: "auto" | AiTool;
+  /** Each tool's model ("" runs the tool's own default); a tool not listed takes gg's default for it. */
+  aiModels: Record<string, string>;
+  /** The commit message prompt template; null is gg's default. */
+  aiCommitPrompt: string | null;
+  /** The pull request prompt template; null is gg's default. */
+  aiPrPrompt: string | null;
+  /** The tools whose first-use notice the user went on from. */
+  aiNoticeSeen: AiTool[];
 };
+
+/** A command-line AI tool gg can run (the core's `AiTool`). */
+export type AiTool = "claude" | "codex";
+
+/** One AI tool as gg finds it on this computer. */
+export type AiToolInfo = {
+  tool: AiTool;
+  /** "Claude Code". */
+  name: string;
+  /** Who it sends prompts to: "Anthropic". */
+  provider: string;
+  installed: boolean;
+  /** Its version, once the settings asked. */
+  version: string | null;
+  path: string | null;
+  installUrl: string;
+  /** What to run in a terminal to sign in ("claude", "codex login"). */
+  signIn: string;
+  /** gg's default model for it ("" for the tool's own). */
+  defaultModel: string;
+  /** Models offered; any other can be typed. */
+  models: string[];
+};
+
+/** What `ai_tools` returns: each tool, and the one that runs with the settings as they are. */
+export type AiTools = {
+  tools: AiToolInfo[];
+  chosen: AiTool | null;
+  /** gg's default prompt templates, and the variables each takes. */
+  commitPrompt: string;
+  commitVariables: string[];
+  prPrompt: string;
+  prVariables: string[];
+};
+
+/** What "Generate with AI" is asked to write. */
+export type AiTask =
+  | { kind: "commit"; path: string; paths: string[] }
+  | { kind: "pr"; branch: string; base: string; baseRemote: string | null; title: string; body: string; draft: boolean };
+
+export type AiFailureKind =
+  | "no_tool"
+  | "signed_out"
+  | "limited"
+  | "timed_out"
+  | "cancelled"
+  | "empty"
+  | "nothing"
+  | "bad_model"
+  | "failed";
+
+/** What `ai_generate` returns. */
+export type AiOutcome =
+  | {
+      status: "done";
+      tool: AiTool;
+      model: string;
+      message: string | null;
+      title: string | null;
+      body: string | null;
+      draft: boolean | null;
+      logFrom: number;
+    }
+  | { status: "failed"; tool: AiTool | null; kind: AiFailureKind; message: string; detail: string; logFrom: number };
 
 /**
  * Where gg updating itself stands (the core's `UpdateStatus`, sent as `update-changed`):

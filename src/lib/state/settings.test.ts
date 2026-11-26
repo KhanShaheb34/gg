@@ -19,6 +19,11 @@ const DEFAULTS: Settings = {
   dateFormat: "standard",
   checkForUpdates: true,
   openPrTabAfterPush: true,
+  aiTool: "auto",
+  aiModels: {},
+  aiCommitPrompt: null,
+  aiPrPrompt: null,
+  aiNoticeSeen: [],
 };
 
 describe("saving a setting", () => {

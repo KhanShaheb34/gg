@@ -13,10 +13,11 @@
 //! program file changes), never at start.
 //!
 //! A generation is an operation of its own in the command log ("Write a commit message with
-//! Claude Code (haiku)"): git's reads, then the tool, whose prompt (on stdin) is never logged,
-//! nor its answer (a read keeps no stdout); of Codex's stderr, which repeats the prompt, only
-//! its settings and error lines are kept. Cancel ends git or the tool with everything it
-//! started, as Stop does for an operation.
+//! Claude Code (haiku)"): git's reads (their output, the diff, is not kept), then the tool,
+//! logged as an operation's command is, with its answer (stdout, cut to 16 KiB) and its
+//! stderr; its prompt (on stdin) is never logged, and of Codex's stderr, which repeats the
+//! prompt, only its settings and error lines are kept. Cancel ends git or the tool with
+//! everything it started, as Stop does for an operation.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -163,7 +164,15 @@ impl RepoManager {
         let chosen = chosen_tool(settings.ai_tool, |t| {
             tools.iter().any(|i| i.tool == t && i.installed)
         });
-        AiTools { tools, chosen }
+        let names = |v: &[&str]| v.iter().map(|n| (*n).to_owned()).collect();
+        AiTools {
+            tools,
+            chosen,
+            commit_prompt: prompt::DEFAULT_COMMIT_PROMPT.to_owned(),
+            commit_variables: names(&prompt::COMMIT_VARIABLES),
+            pr_prompt: prompt::DEFAULT_PR_PROMPT.to_owned(),
+            pr_variables: names(&prompt::PR_VARIABLES),
+        }
     }
 
     /// `a`'s version (`<program> --version`), asked again only when its program changed.
@@ -437,7 +446,8 @@ impl RepoManager {
                 .run(
                     scratch.path(),
                     &args,
-                    CmdKind::Read,
+                    // Listed with the operations (it changes nothing in the repository).
+                    CmdKind::Write,
                     StdinPolicy::Bytes(run.stdin.clone()),
                     TimeLimit::total(limit),
                 )

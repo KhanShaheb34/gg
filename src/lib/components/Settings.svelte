@@ -16,6 +16,8 @@
   import { openCliDialog, refreshCli, removeCli, removeShellLine, turnOffShellGg } from "../state/cli.svelte";
   import { showDialog } from "../state/overlays.svelte";
   import { findRepoView } from "../state/repo.svelte";
+  import { ai, modelFor, refreshAi, VARIABLE_HINTS } from "../state/ai.svelte";
+  import type { AiTool, AiToolInfo } from "../types";
   import { brewHint, checkNow, openDownloadPage, restartToUpdate, statusLine, updates } from "../state/updates.svelte";
   import {
     commandWords,
@@ -62,7 +64,64 @@
     pattern: new SettingField("worktreePattern", TEXT_DELAY_MS),
     updates: new SettingField("checkForUpdates"),
     prTab: new SettingField("openPrTabAfterPush"),
+    aiTool: new SettingField("aiTool"),
+    claudeModel: new SettingField("aiModels", TEXT_DELAY_MS),
+    codexModel: new SettingField("aiModels", TEXT_DELAY_MS),
+    commitPrompt: new SettingField("aiCommitPrompt", TEXT_DELAY_MS),
+    prPrompt: new SettingField("aiPrPrompt", TEXT_DELAY_MS),
   };
+
+  // --- AI -----------------------------------------------------------------------------
+
+  // Where the tools are, and their versions: looked for each time the settings open.
+  onMount(() => void refreshAi({ versions: true }));
+  const modelField = (tool: AiTool) => (tool === "claude" ? fields.claudeModel : fields.codexModel);
+  /** What is typed in each tool's model field. */
+  let models = $state<Record<string, string | null>>({});
+  function modelValue(info: AiToolInfo): string {
+    return models[info.tool] ?? modelFor(info, app.settings);
+  }
+  function setModel(info: AiToolInfo, value: string | null) {
+    models = { ...models, [info.tool]: value };
+    // null: back to gg's default for it; "" runs the tool's own default.
+    modelField(info.tool).set({ [info.tool]: value === null ? null : value.trim() } as unknown as Record<string, string>);
+  }
+  let commitPrompt = $state(untrack(() => app.settings.aiCommitPrompt));
+  let prPrompt = $state(untrack(() => app.settings.aiPrPrompt));
+  /** The template a field shows: the one set, else gg's default. */
+  const shownPrompt = (set: string | null, fallback: string | undefined) => set ?? fallback ?? "";
+  function setPrompt(kind: "commit" | "pr", value: string) {
+    const fallback = kind === "commit" ? ai.tools?.commitPrompt : ai.tools?.prPrompt;
+    // The default as it is, or nothing: gg's default (it follows gg's own changes).
+    const saved = value.trim() === "" || value === fallback ? null : value;
+    if (kind === "commit") {
+      commitPrompt = saved;
+      fields.commitPrompt.set(saved);
+    } else {
+      prPrompt = saved;
+      fields.prPrompt.set(saved);
+    }
+  }
+  /** A template without the changes: the tool would see nothing to describe. */
+  function promptWarning(kind: "commit" | "pr", value: string | null): string | null {
+    if (value === null) return null;
+    const needs = kind === "commit" ? ["{stagedPatch}", "{basePrompt}"] : ["{patch}", "{basePrompt}"];
+    return needs.some((n) => value.includes(n))
+      ? null
+      : `Without ${needs[0]} (or {basePrompt}) the tool does not see the changes.`;
+  }
+  let checking = $state(false);
+  async function checkTools() {
+    checking = true;
+    try {
+      await refreshAi({ versions: true, recheck: true });
+    } finally {
+      checking = false;
+    }
+  }
+  async function installPage(tool: AiTool) {
+    await openLink(tool === "claude" ? "installClaude" : "installCodex");
+  }
   /** A command field, as the snippet that draws it uses it. */
   type CommandField = { status: SaveStatus; error: string | null; set: (v: string | null) => void; flush: () => Promise<boolean> };
   // What is typed, kept whatever the core says of it.
@@ -156,7 +215,7 @@
 
   // --- About --------------------------------------------------------------------------
 
-  async function openLink(link: "home" | "source" | "settingsFile") {
+  async function openLink(link: "home" | "source" | "settingsFile" | "installClaude" | "installCodex") {
     try {
       const { note } = await api.openAppLink(link);
       if (note) notify({ kind: "info", message: note });
@@ -172,6 +231,9 @@
         editor = app.settings.editorCommand ?? "";
         terminal = app.settings.terminalCommand ?? "";
         pattern = app.settings.worktreePattern;
+        models = {};
+        commitPrompt = app.settings.aiCommitPrompt;
+        prPrompt = app.settings.aiPrPrompt;
         tested = null;
         notify({ kind: "info", message: "Settings are back to their defaults." });
       },
@@ -212,6 +274,7 @@
     ["tools", "Tools"],
     ["worktrees", "Worktrees"],
     ["prs", "Pull requests"],
+    ["ai", "AI"],
     ["command", "Command line"],
     ["about", "About"],
   ] as const;
@@ -247,7 +310,16 @@
   onMount(() => {
     // Whatever is typed is saved when the sheet closes.
     return () => {
-      for (const field of [fields.editor, fields.terminal, fields.pattern]) void field.flush();
+      for (const field of [
+        fields.editor,
+        fields.terminal,
+        fields.pattern,
+        fields.claudeModel,
+        fields.codexModel,
+        fields.commitPrompt,
+        fields.prPrompt,
+      ])
+        void field.flush();
     };
   });
 
@@ -520,6 +592,145 @@
           {#if fields.prTab.error}<p class="problem" role="alert">{fields.prTab.error}</p>{/if}
         </div>
       </div>
+    </section>
+
+    <section id="settings-ai" aria-labelledby="h-ai" data-testid="settings-ai">
+      <h3 class="section" id="h-ai">AI</h3>
+      <div class="setting">
+        <div class="name"><span>Generate with AI</span>{@render status(fields.aiTool)}</div>
+        <div class="control">
+          <p class="explain">
+            Writes a commit message, or a pull request’s title and description, with an AI command-line tool installed on this computer,
+            under your own account with it. Only when you click it: the tool sends the changes to its provider; gg itself sends nothing
+            anywhere. It runs with no tools (Claude Code) or with its commands off, read-only (Codex), in a temporary folder, never in the
+            repository.
+          </p>
+          <Segmented
+            label="AI tool"
+            testid="settings-ai-tool"
+            options={[
+              { value: "auto", label: "Automatic" },
+              { value: "claude", label: "Claude Code" },
+              { value: "codex", label: "Codex" },
+            ] as { value: "auto" | AiTool; label: string }[]}
+            value={app.settings.aiTool}
+            onchange={(t) => {
+              app.settings.aiTool = t;
+              fields.aiTool.set(t);
+            }}
+          />
+          <p class="hint">Automatic: Claude Code if it is installed, else Codex.</p>
+          <ul class="tools" data-testid="settings-ai-tools">
+            {#each ai.tools?.tools ?? [] as info (info.tool)}
+              <li class="state tool-row" data-tool={info.tool} data-installed={info.installed}>
+                <span class="dot" class:on={info.installed} aria-hidden="true"></span>
+                <span class="tool-name">{info.name}</span>
+                {#if info.installed}
+                  <span class="tool-meta" title={info.path ?? undefined}>{info.version ?? "Installed"}{info.path ? ` · ${shortenPath(info.path, app.homeDir)}` : ""}</span>
+                {:else}
+                  <span class="tool-meta">Not installed</span>
+                  <button type="button" class="link-btn small-link" onclick={() => void installPage(info.tool)}>Get {info.name} ↗</button>
+                {/if}
+              </li>
+            {:else}
+              <li class="state tool-row"><span class="dot busy" aria-hidden="true"></span><span class="tool-meta">Looking for the tools…</span></li>
+            {/each}
+          </ul>
+          <div class="buttons">
+            <button type="button" class="button" disabled={checking} data-testid="settings-ai-check" onclick={() => void checkTools()}
+              >{checking ? "Checking…" : "Check again"}</button
+            >
+          </div>
+          {#if fields.aiTool.error}<p class="problem" role="alert">{fields.aiTool.error}</p>{/if}
+        </div>
+      </div>
+      {#each ai.tools?.tools ?? [] as info (info.tool)}
+        {@const field = modelField(info.tool)}
+        {@const value = modelValue(info)}
+        <div class="setting">
+          <div class="name">
+            <label for="settings-ai-model-{info.tool}">{info.name} model</label>
+            {@render status(field)}
+          </div>
+          <div class="control">
+            <div class="input-row">
+              <input
+                id="settings-ai-model-{info.tool}"
+                class="text-input mono-input"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                list="settings-ai-models-{info.tool}"
+                placeholder="{info.name}’s own default"
+                {value}
+                aria-invalid={field.status === "error" && field.error !== null}
+                data-testid="settings-ai-model-{info.tool}"
+                oninput={(e) => setModel(info, e.currentTarget.value)}
+                onblur={() => void field.flush()}
+              />
+              <datalist id="settings-ai-models-{info.tool}">
+                {#each info.models as m (m)}<option value={m}></option>{/each}
+              </datalist>
+            </div>
+            <div class="note">
+              {#if field.status === "error" && field.error}
+                <p class="problem" role="alert">{field.error}</p>
+              {:else}
+                <p class="hint">
+                  {#if value.trim() === ""}Empty: {info.name}’s own default model.{:else}Runs it with <code>--model {value.trim()}</code>.{/if}
+                  {#if info.defaultModel !== ""}
+                    gg’s default is <code>{info.defaultModel}</code>, fast and cheap.
+                    {#if value.trim() !== info.defaultModel}
+                      <button type="button" class="link-btn small-link" data-testid="settings-ai-model-{info.tool}-default" onclick={() => setModel(info, null)}
+                        >Use it</button
+                      >
+                    {/if}
+                  {/if}
+                </p>
+              {/if}
+            </div>
+          </div>
+        </div>
+      {/each}
+      {#if ai.tools}
+        {#each [{ kind: "commit", label: "Commit message prompt", set: commitPrompt, fallback: ai.tools.commitPrompt, vars: ai.tools.commitVariables, field: fields.commitPrompt }, { kind: "pr", label: "Pull request prompt", set: prPrompt, fallback: ai.tools.prPrompt, vars: ai.tools.prVariables, field: fields.prPrompt }] as p (p.kind)}
+          {@const kind = p.kind as "commit" | "pr"}
+          <div class="setting">
+            <div class="name"><span>{p.label}</span>{@render status(p.field)}</div>
+            <div class="control">
+              <details class="prompt" data-testid="settings-ai-prompt-{kind}">
+                <summary>{p.set === null ? "gg’s default (from Orca)" : "Your own"} · edit</summary>
+                <textarea
+                  class="text-input mono-input prompt-text"
+                  rows="12"
+                  spellcheck="false"
+                  aria-label={p.label}
+                  value={shownPrompt(p.set, p.fallback)}
+                  data-testid="settings-ai-prompt-{kind}-text"
+                  oninput={(e) => setPrompt(kind, e.currentTarget.value)}
+                  onblur={() => void p.field.flush()}
+                ></textarea>
+                <div class="vars">
+                  {#each p.vars as v (v)}
+                    <span class="var" title={VARIABLE_HINTS[v] ?? ""}><code class="ph">{`{${v}}`}</code> {VARIABLE_HINTS[v] ?? ""}</span>
+                  {/each}
+                </div>
+                {#if promptWarning(kind, p.set) !== null}<p class="warn">{promptWarning(kind, p.set)}</p>{/if}
+                {#if p.field.error}<p class="problem" role="alert">{p.field.error}</p>{/if}
+                <div class="buttons">
+                  <button
+                    type="button"
+                    class="button"
+                    disabled={p.set === null}
+                    data-testid="settings-ai-prompt-{kind}-reset"
+                    onclick={() => setPrompt(kind, "")}>Reset to default</button
+                  >
+                </div>
+              </details>
+            </div>
+          </div>
+        {/each}
+      {/if}
     </section>
 
     <section id="settings-command" aria-labelledby="h-command">
@@ -933,6 +1144,74 @@
     .dot.busy {
       animation: none;
     }
+  }
+
+  .tools {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .tool-row {
+    flex-wrap: wrap;
+    gap: 4px 7px;
+  }
+
+  .tool-name {
+    font-weight: 550;
+  }
+
+  .tool-meta {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .small-link {
+    font-size: var(--fs-sm);
+  }
+
+  .prompt {
+    align-self: stretch;
+  }
+
+  .prompt summary {
+    width: fit-content;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    cursor: default;
+    user-select: none;
+  }
+
+  .prompt summary:hover {
+    color: var(--text);
+  }
+
+  .prompt[open] summary {
+    margin-bottom: 8px;
+  }
+
+  .prompt-text {
+    display: block;
+    width: 100%;
+    min-height: 180px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+
+  .vars {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 8px 0 4px;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    line-height: 1.5;
   }
 
   .update-auto {

@@ -10,12 +10,13 @@
   import WorktreePanel from "./lib/components/WorktreePanel.svelte";
   import CommitPanel from "./lib/components/CommitPanel.svelte";
   import PullRequestPanel from "./lib/components/PullRequestPanel.svelte";
+  import StatusBar from "./lib/components/StatusBar.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
   import { detailsRoom, panelRoom } from "./lib/detailsLayout";
-  import { colorIndex, shortHash, shortenPath } from "./lib/format";
+  import { shortHash, shortenPath } from "./lib/format";
   import MiddleText from "./lib/components/MiddleText.svelte";
   import GraphView from "./lib/graph/GraphView.svelte";
   import { api, onEvent, onFolderDrop } from "./lib/ipc";
@@ -44,6 +45,7 @@
   import { afterPush, forgetSuggestions, openPullRequestTab, prTabTitle, subjectOf } from "./lib/state/pullRequest.svelte";
   import { detailsBusy, prChecksOf } from "./lib/state/prDetails.svelte";
   import { repoView } from "./lib/state/repo.svelte";
+  import { statusBar } from "./lib/state/statusBar.svelte";
   import {
     activateWorktree,
     addWorktree,
@@ -103,15 +105,13 @@
   const activeWorktree = $derived.by(() => {
     if (!active) return null;
     const snap = repoView(active.repoId).snapshot;
-    const path = shortenPath(snap.activeWorktree || active.path, app.homeDir);
-    const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/";
-    const cut = path.lastIndexOf(sep) + 1;
+    const fullPath = snap.activeWorktree || active.path;
     const name = snap.head.branch ?? (snap.head.hash ? `${shortHash(snap.head.hash)} (detached)` : "no commits");
     return {
-      path,
-      /** The path's folders before its own name ("~/repos/"), which give way first. */
-      folders: path.slice(0, cut),
-      folder: path.slice(cut),
+      /** Its folder in full, for the status bar. */
+      fullPath,
+      /** Its folder, the home folder as ~. */
+      path: shortenPath(fullPath, app.homeDir),
       name,
       count: snap.worktrees.length,
     };
@@ -347,15 +347,13 @@
     {:else if active}
       <div class="repo" id="repo-panel" role="tabpanel" aria-labelledby="tab-{active.repoId}" data-testid="repo-view">
         {#key active.repoId}
+          <!-- Actions only: the repository's name is its tab's, its folder is in the status bar. -->
           <header class="repo-head">
-            <div class="identity">
-              <span class="dot" style:background="var(--lane-{colorIndex(active.path)})" aria-hidden="true"></span>
-              <h1 class="repo-name">{active.name}</h1>
+            <div class="where">
               {#if activeWorktree}
                 {@const hidden = !panelShown(active.repoId) && activeWorktree.count > 1}
                 <!-- Where every action runs: the active worktree's branch, always in sight; it
-                     opens the branch picker. Its branch keeps its room; its folder, after it,
-                     gives way first, down to its own name, then the repository's name. -->
+                     opens the branch picker. -->
                 <button
                   class="worktree"
                   data-testid="active-worktree"
@@ -389,10 +387,6 @@
                     onclick={showWorktrees}><span>· {activeWorktree.count}</span><span>&nbsp;worktrees</span></button
                   >
                 {/if}
-                <!-- Right to left, wrapping: the folders show only whole, else wrap out of sight. -->
-                <span class="repo-path" title={activeWorktree.path}
-                  ><bdi class="wt-folder">{activeWorktree.folder}</bdi><bdi class="wt-folders">{activeWorktree.folders}</bdi></span
-                >
               {/if}
             </div>
             <Toolbar view={repoView(active.repoId)} />
@@ -542,6 +536,9 @@
       <Welcome />
     {/if}
   </main>
+  {#if active && activeWorktree && statusBar.shown && !app.gitMissing}
+    <StatusBar view={repoView(active.repoId)} path={activeWorktree.fullPath} />
+  {/if}
   </div>
 
   {#if dragging}
@@ -609,13 +606,14 @@
     align-items: center;
     gap: 14px;
     height: 40px;
-    padding: 0 8px 0 14px;
+    padding: 0 8px;
     border-bottom: 1px solid var(--border);
     flex: none;
   }
 
-  /* Gives way before the toolbar does (the toolbar is never cut off). */
-  .identity {
+  /* The branch (and how many worktrees): gives way before the toolbar does (the toolbar is
+     never cut off). */
+  .where {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -624,36 +622,17 @@
     overflow: hidden;
   }
 
-  .dot {
-    align-self: center;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex: none;
-  }
-
-  .repo-name {
-    flex: 0 1 auto;
-    min-width: 48px;
-    overflow: hidden;
-    font-size: var(--fs);
-    font-weight: 600;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  /* The active worktree: its branch with the HEAD ring (and how many there are while the
-     panel is hidden); opens the panel. It keeps its width: the branch up to 180 px, cut in the
-     middle beyond. */
+  /* The active worktree: its branch with the HEAD ring; opens the branch picker. It keeps its
+     width: the branch up to 180 px, cut in the middle beyond. As tall as the toolbar's pop-up
+     buttons beside it. */
   .worktree {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     flex: 0 1000 auto;
     min-width: min-content;
-    height: 24px;
-    margin-left: 2px;
-    padding: 0 8px 0 7px;
+    height: 28px;
+    padding: 0 8px 0 8px;
     border: 0;
     border-radius: var(--radius);
     background: transparent;
@@ -708,35 +687,6 @@
 
   .wt-count:hover {
     background: var(--bg-hover);
-  }
-
-  /* The folders before the worktree's own name show only when they fit whole: laid out right
-     to left, they wrap onto a second line, out of sight, when there is no room. */
-  .repo-path {
-    display: flex;
-    flex-flow: row-reverse wrap;
-    justify-content: flex-end;
-    align-content: flex-start;
-    flex: 0 100000 auto;
-    min-width: 0;
-    margin-left: -6px;
-    height: 18px;
-    overflow: hidden;
-    color: var(--text-muted);
-    font-size: var(--fs-sm);
-    line-height: 18px;
-    white-space: nowrap;
-  }
-
-  .wt-folder {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .wt-folders {
-    flex: none;
   }
 
   /* The graph and the panels docked below it on the left, the side panel on the right (or

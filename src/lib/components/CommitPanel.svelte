@@ -35,8 +35,8 @@
   import { runOp } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { closeCommit, commitDrafts, commitPath, makeActive, openCommit, panelState } from "../state/worktrees.svelte";
-  import { cancelGeneration, generate, newRequestId } from "../state/ai.svelte";
-  import type { AiOutcome, FileEntry, HeadInfo, OpRequest } from "../types";
+  import { cancelGeneration, commitJob, generate, newRequestId } from "../state/ai.svelte";
+  import type { FileEntry, HeadInfo, OpRequest } from "../types";
   import AiGenerate from "./AiGenerate.svelte";
   import AiProblem from "./AiProblem.svelte";
   import CommittedFiles from "./CommittedFiles.svelte";
@@ -366,11 +366,13 @@
 
   // ---- Generate with AI ----
 
+  /** The worktree's generation, kept outside the panel (see `CommitJob`). */
+  const job = $derived(commitJob(path));
   /** The generation under way (its request), or null. */
-  let writing = $state<string | null>(null);
-  let aiFailure = $state<Extract<AiOutcome, { status: "failed" }> | null>(null);
+  const writing = $derived(job.request);
+  const aiFailure = $derived(job.failure);
   /** The message the last generation replaced, while the field still holds what it wrote. */
-  let undo = $state<{ previous: string; generated: string } | null>(null);
+  const undo = $derived(job.undo);
   let aiControl: AiGenerate | undefined = $state();
 
   /** Why there is nothing to write a message from now, or null. */
@@ -386,40 +388,60 @@
   async function writeMessage() {
     if (writing !== null || aiBlocked !== null) return;
     const id = newRequestId();
-    writing = id;
-    aiFailure = null;
+    // The worktree's, not this panel's: shown again meanwhile, the panel there sees it, and
+    // the answer lands once.
+    const j = job;
+    const folder = path;
+    j.request = id;
+    j.failure = null;
     const before = message;
-    const outcome = await generate(view.repoId, id, { kind: "commit", path, paths: chosen.map((f) => f.path) });
-    if (writing !== id) return;
-    writing = null;
+    const outcome = await generate(view.repoId, id, { kind: "commit", path: folder, paths: chosen.map((f) => f.path) });
+    // Cancelled, or another took its place: nothing of it lands.
+    if (j.request !== id) return;
+    j.request = null;
     if (outcome.status === "done" && outcome.message !== null) {
-      undo = before.trim() !== "" && before !== outcome.message ? { previous: before, generated: outcome.message } : null;
-      message = outcome.message;
-      // The subject in sight, the caret before it.
+      j.undo = before.trim() !== "" && before !== outcome.message ? { previous: before, generated: outcome.message } : null;
+      // Kept for the worktree at once, and put in the field by the panel showing it.
+      commitDrafts.set(folder, outcome.message);
+      j.delivered = outcome.message;
+    } else if (outcome.status === "failed" && outcome.kind !== "cancelled") {
+      j.failure = outcome;
+    }
+  }
+
+  // An answer for this worktree: in the field, the subject in sight, the caret before it.
+  $effect(() => {
+    const got = job.delivered;
+    if (got === null) return;
+    untrack(() => {
+      message = got;
+      job.delivered = null;
       void tick().then(() => {
         field?.focus();
         field?.setSelectionRange(0, 0);
         if (field) field.scrollTop = 0;
       });
-    } else if (outcome.status === "failed" && outcome.kind !== "cancelled") {
-      aiFailure = outcome;
-    }
-  }
+    });
+  });
 
   function stopWriting() {
-    if (writing !== null) void cancelGeneration(writing);
+    const id = job.request;
+    if (id === null) return;
+    // Back to the field as it was at once; the tool is ended.
+    job.request = null;
+    void cancelGeneration(id);
   }
 
   function undoGenerated() {
     if (undo === null) return;
     message = undo.previous;
-    undo = null;
+    job.undo = null;
     field?.focus();
   }
 
   // Edited since: the generated text is the user's now, and there is no undo.
   $effect(() => {
-    if (undo !== null && message !== undo.generated) undo = null;
+    if (undo !== null && message !== undo.generated) job.undo = null;
   });
 
   function onMessageKeydown(e: KeyboardEvent) {
@@ -696,7 +718,7 @@
       bind:this={field}
       readonly={pending !== null || writing !== null}
       aria-busy={writing !== null}
-      oninput={() => (aiFailure = null)}
+      oninput={() => (job.failure = null)}
       onkeydown={onMessageKeydown}
       data-testid="commit-message"
     ></textarea>

@@ -6,7 +6,7 @@
 // GitHub for anything.
 
 import { SvelteMap } from "svelte/reactivity";
-import type { OpOutcome, PrState, PrSuggestion, PullRequest, RepoSnapshot } from "../types";
+import type { AiOutcome, OpOutcome, PrState, PrSuggestion, PullRequest, RepoSnapshot } from "../types";
 import { app } from "./app.svelte";
 import { remoteTipsSignature } from "./branchFiles.svelte";
 import { overlays } from "./overlays.svelte";
@@ -119,7 +119,20 @@ export type PrDraft = {
   failure: OpOutcome | null;
   /** A request the core refused outright (a bad title, say). */
   refused: string | null;
+  /**
+   * Generate with AI, kept with the form (not in it), so that the form shown again (another
+   * tab, the panel hidden) sees a generation still out and can cancel it, and its answer lands
+   * here once: the request out (its id), what the last answer replaced, how it failed.
+   */
+  ai: {
+    request: string | null;
+    undo: { previous: PrFields; generated: PrFields } | null;
+    failure: Extract<AiOutcome, { status: "failed" }> | null;
+  };
 };
+
+/** The form's fields Generate with AI writes. */
+export type PrFields = { title: string; body: string; draft: boolean };
 
 const drafts = new Map<string, PrDraft>();
 
@@ -145,6 +158,7 @@ export function prDraft(root: string, branch: string): PrDraft {
     progress: null,
     failure: null,
     refused: null,
+    ai: { request: null, undo: null, failure: null },
   });
   drafts.set(key(root, branch), d);
   return d;

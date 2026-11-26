@@ -26,10 +26,10 @@
   import { runOp } from "../state/ops.svelte";
   import { copyLink } from "../state/prs.svelte";
   import { untrack } from "svelte";
-  import { applySuggestion, defaultBranch, dropPrDraft, prDraft, prNumberOf, rememberMade } from "../state/pullRequest.svelte";
+  import { applySuggestion, defaultBranch, dropPrDraft, prDraft, prNumberOf, rememberMade, type PrFields } from "../state/pullRequest.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { cancelGeneration, generate, newRequestId } from "../state/ai.svelte";
-  import type { AiOutcome, OpOutcome, OpProgress, PrSuggestion } from "../types";
+  import type { OpOutcome, OpProgress, PrSuggestion } from "../types";
   import AiGenerate from "./AiGenerate.svelte";
   import AiProblem from "./AiProblem.svelte";
   import MiddleText from "./MiddleText.svelte";
@@ -151,8 +151,8 @@
     if (d.base === "") return "Choose the branch it goes into.";
     return null;
   });
-  /** A "Generate with AI" under way (its request), or null: the form waits for it. */
-  let writing = $state<string | null>(null);
+  /** A "Generate with AI" under way (its request, kept with the draft), or null: the form waits for it. */
+  const writing = $derived(d.ai.request);
   const valid = $derived(!d.pending && !loading && suggestFailed === null && reason === null && writing === null);
 
   function openUrl(url: string) {
@@ -264,10 +264,9 @@
 
   // --- Generate with AI -------------------------------------------------------------------
 
-  let aiFailure = $state<Extract<AiOutcome, { status: "failed" }> | null>(null);
-  type Fields = { title: string; body: string; draft: boolean };
-  /** What the last generation replaced, while the form still holds what it wrote. */
-  let undo = $state<{ previous: Fields; generated: Fields } | null>(null);
+  // How it failed and what it replaced are the draft's too (see `PrDraft.ai`).
+  const aiFailure = $derived(d.ai.failure);
+  const undo = $derived(d.ai.undo);
   let aiControl: AiGenerate | undefined = $state();
 
   /** Why there is nothing to write from now, or null. */
@@ -284,10 +283,12 @@
   async function writeDetails() {
     if (writing !== null || aiBlocked !== null) return;
     const id = newRequestId();
+    // The draft, not this form: shown again meanwhile, the form there sees it, and the
+    // answer lands in it.
     const draft = d;
-    writing = id;
-    aiFailure = null;
-    const before: Fields = { title: draft.title, body: draft.body, draft: draft.draft };
+    draft.ai.request = id;
+    draft.ai.failure = null;
+    const before: PrFields = { title: draft.title, body: draft.body, draft: draft.draft };
     const outcome = await generate(repoId, id, {
       kind: "pr",
       branch,
@@ -297,24 +298,29 @@
       body: before.body,
       draft: before.draft,
     });
-    if (writing !== id) return;
-    writing = null;
+    // Cancelled, or another took its place: nothing of it lands.
+    if (draft.ai.request !== id) return;
+    draft.ai.request = null;
     if (outcome.status === "done" && outcome.title !== null) {
-      const got: Fields = { title: outcome.title, body: outcome.body ?? before.body, draft: outcome.draft ?? before.draft };
+      const got: PrFields = { title: outcome.title, body: outcome.body ?? before.body, draft: outcome.draft ?? before.draft };
       const had = before.title.trim() !== "" || before.body.trim() !== "";
-      undo = had ? { previous: before, generated: got } : null;
+      draft.ai.undo = had ? { previous: before, generated: got } : null;
       draft.title = got.title;
       draft.body = got.body;
       draft.draft = got.draft;
       draft.titleTouched = true;
       draft.bodyTouched = true;
     } else if (outcome.status === "failed" && outcome.kind !== "cancelled") {
-      aiFailure = outcome;
+      draft.ai.failure = outcome;
     }
   }
 
   function stopWriting() {
-    if (writing !== null) void cancelGeneration(writing);
+    const id = d.ai.request;
+    if (id === null) return;
+    // Back to the form as it was at once; the tool is ended.
+    d.ai.request = null;
+    void cancelGeneration(id);
   }
 
   function undoGenerated() {
@@ -322,12 +328,12 @@
     d.title = undo.previous.title;
     d.body = undo.previous.body;
     d.draft = undo.previous.draft;
-    undo = null;
+    d.ai.undo = null;
   }
 
   // Edited since: what was generated is the user's now, and there is no undo.
   $effect(() => {
-    if (undo !== null && (d.title !== undo.generated.title || d.body !== undo.generated.body)) undo = null;
+    if (undo !== null && (d.title !== undo.generated.title || d.body !== undo.generated.body)) d.ai.undo = null;
   });
 
   function onKeydown(e: KeyboardEvent) {
@@ -424,7 +430,7 @@
           bind:value={d.title}
           oninput={() => {
             d.titleTouched = true;
-            aiFailure = null;
+            d.ai.failure = null;
           }}
           readonly={d.pending || writing !== null}
           aria-busy={writing !== null}
@@ -445,7 +451,7 @@
           bind:value={d.body}
           oninput={() => {
             d.bodyTouched = true;
-            aiFailure = null;
+            d.ai.failure = null;
           }}
           readonly={d.pending || writing !== null}
           aria-busy={writing !== null}

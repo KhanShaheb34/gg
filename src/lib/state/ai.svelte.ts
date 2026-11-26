@@ -137,6 +137,30 @@ export const VARIABLE_HINTS: Record<string, string> = {
   patch: "their patch, in a code fence, cut to 200 KB",
 };
 
+/**
+ * Generate with AI at a worktree's commit message, kept here (by the worktree's folder), not in
+ * the panel: a panel shown again (another tab, the side panel hidden) sees a generation still
+ * out and can cancel it, and its answer lands once. `delivered`: an answer the panel has not
+ * put in its field yet (it is in the worktree's kept message already).
+ */
+export type CommitJob = {
+  request: string | null;
+  undo: { previous: string; generated: string } | null;
+  failure: Extract<AiOutcome, { status: "failed" }> | null;
+  delivered: string | null;
+};
+
+const commitJobs = new Map<string, CommitJob>();
+
+/** The commit message generation state of the worktree at `path`. */
+export function commitJob(path: string): CommitJob {
+  const found = commitJobs.get(path);
+  if (found) return found;
+  const job = $state<CommitJob>({ request: null, undo: null, failure: null, delivered: null });
+  commitJobs.set(path, job);
+  return job;
+}
+
 let seq = 0;
 /** A name for one generation, to cancel it by. */
 export function newRequestId(): string {

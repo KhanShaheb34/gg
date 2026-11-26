@@ -678,6 +678,7 @@
               {:else}
                 <p class="hint">
                   {#if value.trim() === ""}Empty: {info.name}’s own default model.{:else}Runs it with <code>--model {value.trim()}</code>.{/if}
+                  {#if info.tool === "codex"}gg runs Codex without your <code>config.toml</code> (its MCP servers stay off), so a model set there does not apply.{/if}
                   {#if info.defaultModel !== ""}
                     gg’s default is <code>{info.defaultModel}</code>, fast and cheap.
                     {#if value.trim() !== info.defaultModel}

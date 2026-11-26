@@ -119,6 +119,23 @@ for (const theme of ["light", "dark"] as const) {
     await resolved.getByTestId("pr-comment-more").click();
     await shoot(resolved, "resolved-open", theme);
     await resolved.getByTestId("pr-comment-more").click();
+
+    // A thread to reply in: its quiet box and Resolve, then the box in use, then a failure.
+    const open = card(page, "parser.ts", "thread");
+    await open.scrollIntoViewIfNeeded();
+    await shoot(open, "thread", theme);
+    await open.getByTestId("pr-reply-box-field").fill("It says the line and column now: `parse error at 3:14`.\nThe test covers it too.");
+    await shoot(open, "thread-reply", theme);
+    gg.gh.reply("gql-reply", 1, "", "gh: Resource not accessible by personal access token\n");
+    await open.getByTestId("pr-reply-box-send").click();
+    await expect(open.getByTestId("pr-reply-box-error")).toBeVisible();
+    await open.getByTestId("pr-reply-box-field").blur();
+    await shoot(open, "thread-reply-failed", theme);
+    await open.getByTestId("pr-reply-box-field").fill("");
+    await open.getByTestId("pr-reply-box-field").blur();
+    // The conversation's box, at its end.
+    await page.getByTestId("pr-comment-box").scrollIntoViewIfNeeded();
+    await shoot(side(page), "comments-end", theme);
     await page.getByTestId("pr-details").evaluate((el) => el.closest(".pr-view")!.scrollTo(0, 0));
 
     // Running.
@@ -201,5 +218,10 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByTestId("pr-review")).toHaveText("Changes requested");
     expect(Math.round((await side(page).boundingBox())!.width)).toBe(240);
     await shoot(side(page), "narrow", theme);
+    // A reply being written there, beside Resolve.
+    const open = card(page, "parser.ts", "thread");
+    await open.getByTestId("pr-reply-box-field").fill("It says the line and column now.");
+    await open.scrollIntoViewIfNeeded();
+    await shoot(open, "narrow-thread", theme);
   });
 }

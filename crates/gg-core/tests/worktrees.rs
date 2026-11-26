@@ -182,6 +182,8 @@ async fn the_snapshot_says_how_each_worktree_stands() {
         main.upstream,
         Some(WorktreeUpstream {
             name: "origin/main".into(),
+            remote: Some("origin".into()),
+            branch: Some("main".into()),
             ahead: 0,
             behind: 0
         })
@@ -210,6 +212,8 @@ async fn the_snapshot_says_how_each_worktree_stands() {
         w.upstream,
         Some(WorktreeUpstream {
             name: "origin/ahead".into(),
+            remote: Some("origin".into()),
+            branch: Some("ahead".into()),
             ahead: 2,
             behind: 1
         })

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import BranchSync from "./lib/components/BranchSync.svelte";
   import CommandLog from "./lib/components/CommandLog.svelte";
   import CommitDetails from "./lib/components/CommitDetails.svelte";
   import ConflictBanner from "./lib/components/ConflictBanner.svelte";
@@ -374,8 +373,6 @@
                     <path d="M2.5 3.8 5 6.3l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
                   </svg>
                 </button>
-                <!-- How the branch stands with its upstream, when it is not level: pull or push in one click. -->
-                <BranchSync view={repoView(active.repoId)} />
                 {#if hidden}
                   <!-- How many worktrees there are while the panel is hidden: shows them. "worktrees"
                        wraps out of sight when there is no room for it. -->

@@ -1536,7 +1536,7 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-// The sync control beside the branch picker: behind (as the user's main was), diverged, the
+// The sync control in the toolbar, just before Fetch: behind (as the user's main was), diverged, the
 // counts hovered and waiting while an action runs; at the default size and the narrowest
 // window the app allows, with a long branch name.
 for (const theme of ["light", "dark"] as const) {

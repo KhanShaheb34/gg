@@ -1604,7 +1604,7 @@ for (const theme of ["light", "dark"] as const) {
     gg.git("small", "fetch", "-q", "origin");
     // A clone deep in the home folder, as an agent's worktree folder is.
     const origin = path.join(path.dirname(repo), "small-origin.git");
-    const deep = path.join(gg.home, "Dev", "experiments", "git-graph", ".claude", "worktrees");
+    const deep = path.join(gg.home, "Code", "experiments", "payments-service", ".agents", "worktrees");
     const long = makeRepo("agent-a883f2c1e9b7d4a6-the-status-bar-and-a-header-for-actions-only-at-the-narrowest-width", (git) => {
       git("clone", "-q", origin, ".");
       git("fetch", "-q", "origin");

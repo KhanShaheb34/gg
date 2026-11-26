@@ -1776,6 +1776,8 @@ pub(crate) fn shell_output(shell: &Path, args: &[&str], timeout: Duration) -> Op
     // A file that something still has open for writing cannot be run yet ("text file
     // busy": a script just written, while another thread's child still holds its
     // descriptor); it can a moment later, so that is waited out, within the time given.
+    // Forked (for `setsid`): see `before_fork`.
+    crate::platform::before_fork();
     let mut child = loop {
         match cmd.spawn() {
             Ok(child) => break child,

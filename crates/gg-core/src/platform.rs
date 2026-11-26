@@ -272,12 +272,46 @@ pub(crate) fn spawn(
     }
     #[cfg(not(windows))]
     {
+        before_fork();
         let child = cmd.spawn()?;
         let tree = ProcessTree {
             #[cfg(unix)]
             group: child.id().and_then(|pid| i32::try_from(pid).ok()),
         };
         Ok((child, tree))
+    }
+}
+
+/// Called before every child the app forks (on Unix every child, as [`child_flags`] runs
+/// `setsid` between `fork` and `exec`, which only a fork can). On macOS it makes sure first,
+/// once, that libSystem's libnotify has set itself up in this process. Its first use (by
+/// FSEvents, the time zone, …) sets up state that libSystem's own fork handler reads in every
+/// forked child; a child forked while another thread is still setting it up inherits it half
+/// done, and that handler aborts on it ("os_once_t is corrupt", "crashed on child side of
+/// fork pre-exec"): the child dies by SIGKILL before it runs git, which then seems to have
+/// been killed (exit code -1). Set up here, before the first fork, and waited for by any
+/// fork that comes while it runs, it is never seen half done.
+#[cfg(not(windows))]
+pub(crate) fn before_fork() {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::{c_char, c_int};
+        // In libSystem (libsystem_notify), which every macOS program links.
+        unsafe extern "C" {
+            fn notify_register_check(name: *const c_char, out_token: *mut c_int) -> u32;
+            fn notify_cancel(token: c_int) -> u32;
+        }
+        static READY: std::sync::Once = std::sync::Once::new();
+        READY.call_once(|| {
+            let mut token: c_int = 0;
+            // SAFETY: a NUL-terminated name and a valid out pointer; the token, registered
+            // only to set libnotify up, is let go at once. 0 is NOTIFY_STATUS_OK.
+            unsafe {
+                if notify_register_check(c"gg.before-fork".as_ptr(), &mut token) == 0 {
+                    notify_cancel(token);
+                }
+            }
+        });
     }
 }
 
@@ -1084,6 +1118,94 @@ mod tests {
         } else {
             assert_eq!(scan, GitScan::Unknown);
         }
+    }
+
+    /// Set in this test binary run again by
+    /// [`children_forked_while_libnotify_is_first_used_all_run`]: run the race once, here.
+    #[cfg(target_os = "macos")]
+    const FORK_RACE: &str = "GG_TEST_FORK_RACE";
+
+    /// No child dies before it runs when the app forks it while another of its threads
+    /// first uses libnotify (see [`before_fork`]). Only a process's first use can race, so
+    /// each try runs in a process of its own (this test binary again): 16 threads fork 3
+    /// children each at once while the main thread uses libnotify. Without `before_fork`
+    /// nearly every such process loses some children (killed in libSystem's fork handler,
+    /// "os_once_t is corrupt"), so ten clean processes are no luck.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn children_forked_while_libnotify_is_first_used_all_run() {
+        if std::env::var_os(FORK_RACE).is_some() {
+            fork_race();
+            return;
+        }
+        for _ in 0..10 {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "platform::tests::children_forked_while_libnotify_is_first_used_all_run",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(FORK_RACE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    /// One try of the race (see above), in a fresh process.
+    #[cfg(target_os = "macos")]
+    fn fork_race() {
+        use std::ffi::{c_char, c_int};
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::sync::{Arc, Barrier};
+        unsafe extern "C" {
+            fn notify_register_check(name: *const c_char, out_token: *mut c_int) -> u32;
+            fn notify_cancel(token: c_int) -> u32;
+        }
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(17));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let (barrier, rt) = (barrier.clone(), rt.handle().clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..3)
+                        .filter(|_| {
+                            let status = rt.block_on(async {
+                                let mut cmd = tokio::process::Command::new("/usr/bin/true");
+                                cmd.stdin(std::process::Stdio::null());
+                                child_flags(&mut cmd);
+                                let (mut child, tree) = spawn(&mut cmd).unwrap();
+                                let status = child.wait().await.unwrap();
+                                tree.release();
+                                status
+                            });
+                            status.signal().is_some()
+                        })
+                        .count()
+                })
+            })
+            .collect();
+        barrier.wait();
+        // Another thread's first use of libnotify (as FSEvents' or the time zone's).
+        let mut token: c_int = 0;
+        // SAFETY: a NUL-terminated name and a valid out pointer.
+        unsafe {
+            if notify_register_check(c"gg.test.first-use".as_ptr(), &mut token) == 0 {
+                notify_cancel(token);
+            }
+        }
+        let killed: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+        assert_eq!(killed, 0, "children killed before they ran");
     }
 
     /// Killing the tree ends what the child started too: `ping`, started by `cmd`, holds the

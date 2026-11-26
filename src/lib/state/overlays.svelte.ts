@@ -11,6 +11,8 @@ export type OpenMenu = {
   id: number;
   x: number;
   y: number;
+  /** It opens upward from `y` (its bottom there), as from a bar at the window's foot. */
+  above: boolean;
   items: MenuItem[];
   onPick: (id: string) => void;
   /** Where focus goes back to when the menu closes (the row's grid). */
@@ -57,7 +59,8 @@ let nextId = 1;
  * keyboard (the menu key), so its first item is made active. `repoId`: the repository its
  * items act on; the menu closes when an operation starts or ends there, or when its rows
  * change and `alive` then says its target is gone. A background refresh alone (a scheduled
- * fetch, the working tree's status) leaves it open.
+ * fetch, the working tree's status) leaves it open. `above`: it opens upward, its bottom at
+ * `at.y` (from the status bar at the window's foot).
  */
 export function openMenu(
   at: { x: number; y: number },
@@ -67,13 +70,15 @@ export function openMenu(
     keyboard = false,
     repoId = null,
     alive = null,
-  }: { keyboard?: boolean; repoId?: number | null; alive?: (() => Promise<boolean>) | null } = {},
+    above = false,
+  }: { keyboard?: boolean; repoId?: number | null; alive?: (() => Promise<boolean>) | null; above?: boolean } = {},
 ): void {
   const focused = document.activeElement;
   overlays.menu = {
     id: nextId++,
     x: at.x,
     y: at.y,
+    above,
     items,
     onPick,
     returnFocus: focused instanceof HTMLElement && focused !== document.body ? focused : null,

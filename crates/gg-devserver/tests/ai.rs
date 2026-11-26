@@ -351,7 +351,11 @@ async fn a_commit_message_is_written_from_the_ticked_changes() {
 #[tokio::test]
 async fn codex_answers_in_its_file_and_its_stderr_is_not_logged() {
     let s = setup(&["codex"]).await;
-    s.repo.write("README.md", "# demo\nsecret-ish line\n");
+    // A line of the diff that looks like Codex's own warnings: it is still never logged.
+    s.repo.write(
+        "README.md",
+        "# demo\nWarning: secret-ish line\nERROR: secret-ish too\n",
+    );
     s.tools.reply("codex", 0, "progress noise\n", "");
     s.tools.set("codex", "reply.last", "Describe the demo\n");
     s.tools.set("codex", "reply.echo", "");
@@ -369,8 +373,14 @@ async fn codex_answers_in_its_file_and_its_stderr_is_not_logged() {
     assert_eq!(message.as_deref(), Some("Describe the demo"));
     let call = &s.tools.calls("codex")[0];
     assert_eq!(
-        &call.argv[..3],
-        ["exec", "--ephemeral", "--skip-git-repo-check"]
+        &call.argv[..5],
+        [
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--json"
+        ]
     );
     assert!(
         call.argv
@@ -642,4 +652,140 @@ async fn a_program_inside_the_repository_is_never_run() {
         .generate(s.commit_task(&["README.md"]), &settings(AiToolChoice::Auto))
         .await;
     assert_eq!(failure(&out).0, AiFailureKind::NoTool);
+}
+
+/// A binary file is named, never sent, even when the repository's attributes make git print
+/// it as text (`diff` set): for a commit and for a pull request.
+#[tokio::test]
+async fn binary_contents_are_never_sent_whatever_the_attributes_say() {
+    let s = setup(&["claude"]).await;
+    s.repo.write(".gitattributes", "*.bin diff\n");
+    s.repo
+        .write("key.bin", b"SECRET-OLD\0\x01\x02\n".as_slice());
+    s.repo.commit_all("Add the key");
+    s.repo
+        .write("key.bin", b"SECRET-NEW\0\x01\x02\n".as_slice());
+    s.tools.reply("claude", 0, "Rotate the key\n", "");
+    let out = s
+        .generate(s.commit_task(&["key.bin"]), &settings(AiToolChoice::Auto))
+        .await;
+    assert!(matches!(out, AiOutcome::Done { .. }), "{out:?}");
+    let stdin = &s.tools.calls("claude")[0].stdin;
+    assert!(!stdin.contains("SECRET"), "{stdin}");
+    assert!(!stdin.contains('\0'));
+    assert!(
+        stdin.contains("diff --git a/key.bin b/key.bin\nBinary file: its contents are not sent.")
+    );
+
+    // A branch whose commit changes it.
+    s.repo.git(&["checkout", "-q", "-b", "rotate"]);
+    s.repo.commit_all("Rotate the key");
+    let heads = s
+        .repo
+        .git(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
+    let main = heads.lines().find(|b| *b != "rotate").unwrap().to_owned();
+    s.tools.reply(
+        "claude",
+        0,
+        "{\"title\":\"Rotate the key\",\"body\":\"x\"}",
+        "",
+    );
+    let pr = AiTask::Pr {
+        branch: "rotate".into(),
+        base: main,
+        base_remote: None,
+        title: String::new(),
+        body: String::new(),
+        draft: false,
+    };
+    let out = s.generate(pr, &settings(AiToolChoice::Auto)).await;
+    assert!(matches!(out, AiOutcome::Done { .. }), "{out:?}");
+    let stdin = &s.tools.calls("claude")[1].stdin;
+    assert!(!stdin.contains("SECRET"), "{stdin}");
+    assert!(stdin.contains("Binary file: its contents are not sent."));
+}
+
+/// No clean (or smudge) filter of the repository's runs while gg reads what a commit would
+/// record: every filter driver configured is turned off for those reads, and the diff is
+/// still the file's own.
+#[cfg(unix)]
+#[tokio::test]
+async fn no_filter_runs_while_gathering() {
+    let s = setup(&["claude"]).await;
+    // Each run of the filter notes the command line of the git that ran it.
+    let marks = s.repo.path().join("..").join("filter-ran");
+    s.repo.write(".gitattributes", "*.txt filter=mark\n");
+    s.repo.write("a.txt", "one\n");
+    s.repo.commit_all("Add a");
+    let command = format!("sh -c 'ps -o args= -p $PPID >> {}; cat'", marks.display());
+    s.repo.git(&["config", "filter.mark.clean", &command]);
+    s.repo.git(&["config", "filter.mark.smudge", &command]);
+    s.repo.git(&["config", "filter.mark.required", "true"]);
+    s.repo.write("a.txt", "two\n");
+    s.tools.reply("claude", 0, "Change a\n", "");
+    let out = s
+        .generate(s.commit_task(&["a.txt"]), &settings(AiToolChoice::Auto))
+        .await;
+    assert!(matches!(out, AiOutcome::Done { .. }), "{out:?}");
+    // gg's own status reads (its panel's) may run it, as git status in a terminal does; the
+    // generation's reads never: each of those turns the filters off on its command line, and
+    // its diff is the only `--literal-pathspecs` one.
+    let ran = fs::read_to_string(&marks).unwrap_or_default();
+    for line in ran.lines() {
+        assert!(
+            !line.contains("--literal-pathspecs") && !line.contains("filter.mark"),
+            "a filter ran for the generation's read: {line}"
+        );
+    }
+    let generation: Vec<_> = s
+        .log
+        .since(0)
+        .into_iter()
+        .filter(|r| r.op_title.is_some() && r.program == "git")
+        .filter(|r| r.args.iter().any(|a| a == "status" || a == "diff"))
+        .collect();
+    assert_eq!(generation.len(), 2, "{generation:?}");
+    for r in &generation {
+        assert!(
+            r.args.iter().any(|a| a == "filter.mark.clean="),
+            "{:?}",
+            r.args
+        );
+    }
+    let stdin = &s.tools.calls("claude")[0].stdin;
+    assert!(stdin.contains("-one\n+two"), "{stdin}");
+}
+
+/// A tool found inside an open repository (its main folder or a linked worktree outside it)
+/// is never run: not for its version, not to generate.
+#[tokio::test]
+async fn a_tool_inside_any_open_repository_is_never_run_even_for_its_version() {
+    let log = CommandLog::new();
+    let runner = GitRunner::detect(log.clone()).await.expect("git");
+    let m = RepoManager::new(runner, Arc::new(RecordingSink::default()));
+    let repo = TestRepo::new_in_subdir("main");
+    repo.write("README.md", "# demo\n");
+    repo.commit_all("Start");
+    let linked = repo.add_worktree("side");
+    assert!(
+        !linked.starts_with(repo.path()),
+        "the worktree is outside the main folder"
+    );
+    m.open(repo.path()).await.expect("open");
+    for folder in [repo.path().to_owned(), linked.clone()] {
+        let bin = folder.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join(format!("claude{}", std::env::consts::EXE_SUFFIX));
+        fs::copy(FAKE, &exe).unwrap();
+        fs::create_dir_all(bin.join("claude.fake")).unwrap();
+        fs::write(bin.join("claude.fake").join("version"), "9.9.9 (planted)\n").unwrap();
+        m.set_tool_path(Some(bin.as_os_str().to_owned()));
+        let tools = m.ai_tools(&settings(AiToolChoice::Auto), true, false).await;
+        assert!(!tools.tools[0].installed, "{}", folder.display());
+        assert_eq!(tools.chosen, None);
+        assert!(
+            !log.since(0).iter().any(|r| r.program == "claude"),
+            "never run, not even --version"
+        );
+    }
 }

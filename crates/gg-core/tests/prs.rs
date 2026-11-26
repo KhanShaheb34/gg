@@ -1640,6 +1640,64 @@ async fn loading_is_shown_only_when_gh_will_be_asked() {
     assert_eq!(loading(&s), 1, "gh asked");
 }
 
+/// Without the remote's HEAD, the default branch is main (the remote has it) until gh says
+/// otherwise: on main nothing is compared by history (the suggestion asks gh, which names
+/// trunk, the base); what gh said is then kept, never asked again for it: trunk is the default
+/// branch, with no Committed on branch, and main is compared with trunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh_s_default_branch_as_last_said_tells_the_default_branch() {
+    let s = setup().await;
+    s.repo.git(&["switch", "-q", "-c", "trunk"]);
+    s.repo.commit("trunk's own");
+    s.repo.git(&["push", "-q", "-u", "origin", "trunk"]);
+    s.repo.git(&["switch", "-q", "main"]);
+    s.repo.commit("main's own");
+    s.repo.git(&["push", "-q", "origin", "main"]);
+    s.repo.git(&["switch", "-q", "trunk"]);
+    // As a repository pushed, never cloned, has it (the setup's fetch made one).
+    s.repo.git(&["remote", "set-head", "origin", "-d"]);
+    s.h.m.refresh(s.id).await.unwrap();
+    tokio::time::timeout(TIMEOUT, s.h.m.wait_loaded(s.id))
+        .await
+        .unwrap();
+    assert!(
+        s.repo
+            .git(&["for-each-ref", "refs/remotes/origin/HEAD"])
+            .is_empty()
+    );
+    let wt = s.repo.path();
+    // trunk, made from main: compared with it.
+    assert_eq!(
+        s.h.m.branch_files(s.id, wt).await.unwrap().map(|f| f.base),
+        Some("origin/main".into())
+    );
+    assert!(s.gh.calls_of(&["repo", "view"]).is_empty());
+    // main: the default branch, so gh is asked (step 5), and names trunk.
+    s.gh.reply(
+        "repo-view",
+        0,
+        r#"{"defaultBranchRef":{"name":"trunk"}}"#,
+        "",
+    );
+    assert_eq!(s.h.m.pr_suggest(s.id, "main").await.unwrap().base, "trunk");
+    assert_eq!(s.gh.calls_of(&["repo", "view"]).len(), 1);
+    // Kept: trunk is the default branch now, nothing to compare it with.
+    assert_eq!(s.h.m.branch_files(s.id, wt).await.unwrap(), None);
+    // And main goes into trunk, by history.
+    assert_eq!(
+        s.h.m
+            .branch_base_for_tests(s.id, "main", "origin")
+            .await
+            .unwrap(),
+        ("trunk".into(), Some("nearest"))
+    );
+    assert_eq!(
+        s.gh.calls_of(&["repo", "view"]).len(),
+        1,
+        "never asked for this"
+    );
+}
+
 /// `pr_suggest` asks gh for the default branch and for the branch's pull request at once,
 /// under one time limit: two slow answers take the time of one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -5,6 +5,13 @@
 //! 1. (`branch_files` only, before this module) its open pull request's base.
 //! 2. The base the user made its last pull request into ([`WorktreeMemory::pr_base`], per
 //!    repository and branch), while that branch is still on the remote.
+//!
+//!    The default branch itself goes no further than this: on to 5 (where it finds itself,
+//!    unless gh names another: "Committed on branch" has nothing to compare it with). The
+//!    default branch, known without asking anyone: the remote's HEAD; else gh's default branch
+//!    as gh last said it (the suggestion's `gh repo view`, never asked for this); else `main`,
+//!    else `master`, when the remote has it (a repository pushed with `git push -u origin
+//!    main`, never cloned, has no `refs/remotes/origin/HEAD`).
 //! 3. The branch it was created from, as git's own reflogs say, nothing written: the branch's
 //!    first reflog entry, `branch: Created from <ref>`, when `<ref>` names a branch (`x` or
 //!    `<remote>/x`: branch `x`). When it says `HEAD`, or a commit (how gg itself makes a
@@ -13,15 +20,15 @@
 //!    commit then (it was made where HEAD stood).
 //! 4. The nearest branch on the remote by history: of its branches other than this one (the
 //!    default one and the 30 most recently committed), the one with the fewest commits from it
-//!    to the branch (`rev-list --count <it>..<branch>`), ties to the default branch, then to
-//!    the newest; within one time limit, else on to 5.
-//! 5. gh's default branch (the suggestion only: `branch_files` never asks gh), the remote's
-//!    HEAD, `main` ([`default_base`]).
+//!    to the branch (`rev-list --count <it>..<branch>`), ties to the default branch (as known
+//!    for 2), then to the newest; within one time limit, else on to 5.
+//! 5. gh's default branch (the suggestion only: `branch_files` never asks gh), else the
+//!    default branch as known for 2, else `main` ([`default_base`]).
 //!
 //! A candidate of 2 to 4 counts only when the remote has a branch of that name and it is not
 //! the branch itself. Steps 2 to 4 are worked out when asked (never with a snapshot), and kept
-//! per branch for its commit, the remote, the remembered base and the remote's branches'
-//! commits: asked again with those the same, no git runs.
+//! per branch for its commit, the remote, the remembered base, the default branch and the
+//! remote's branches' commits: asked again with those the same, no git runs.
 //!
 //! [`WorktreeMemory::pr_base`]: crate::repo::WorktreeMemory::pr_base
 
@@ -52,13 +59,14 @@ pub(crate) enum Found {
     Nearest,
 }
 
-/// What a kept answer is for: the branch's commit, the remote, the base remembered, and the
-/// remote's branches with their commits.
+/// What a kept answer is for: the branch's commit, the remote, the base remembered, the
+/// default branch, and the remote's branches with their commits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BaseKey {
     head: String,
     remote: String,
     remembered: Option<String>,
+    default: Option<String>,
     tips: Vec<(String, String)>,
 }
 
@@ -70,14 +78,16 @@ pub(crate) struct BaseLoad {
 }
 
 /// The snapshot's view of remote `remote`: its branches (short names, not `HEAD`), their
-/// commits and committer times, and its default branch.
+/// commits and committer times, and its default branch as known without asking anyone (see
+/// the module comment, step 2).
 struct OnRemote<'a> {
     branches: Vec<(String, &'a str, i64)>,
-    default: Option<&'a str>,
+    default: Option<String>,
 }
 
 impl<'a> OnRemote<'a> {
-    fn of(snap: &'a RepoSnapshot, remote: &'a str) -> Self {
+    /// `gh_said`: gh's default branch as gh last said it, if it did.
+    fn of(snap: &'a RepoSnapshot, remote: &str, gh_said: Option<&str>) -> Self {
         let prefix = format!("{remote}/");
         let branches = snap
             .remote_branches
@@ -95,10 +105,22 @@ impl<'a> OnRemote<'a> {
                     .then(|| (short.to_owned(), tip.hash.as_str(), tip.time))
             })
             .collect();
-        Self {
+        let mut on = Self {
             branches,
-            default: snap.remote_heads.get(remote).map(String::as_str),
-        }
+            default: None,
+        };
+        on.default = snap
+            .remote_heads
+            .get(remote)
+            .cloned()
+            .or_else(|| gh_said.map(str::to_owned))
+            .or_else(|| {
+                ["main", "master"]
+                    .into_iter()
+                    .find(|b| on.has(b))
+                    .map(str::to_owned)
+            });
+        on
     }
 
     fn has(&self, branch: &str) -> bool {
@@ -185,18 +207,51 @@ fn moved_from(head: &[Entry], branch: &str, at: i64, commit: &str) -> Option<Str
 }
 
 /// The base when steps 2 to 4 found none: `gh_default` (gh's default branch, when asked),
-/// else the remote's HEAD, else `main`.
+/// else the default branch of `remote` as known without asking (its HEAD; gh's default
+/// branch as gh last said it, `gh_said`; `main` or `master` on it), else `main`.
 pub(crate) fn default_base(
     snap: &RepoSnapshot,
     remote: Option<&str>,
     gh_default: Option<String>,
+    gh_said: Option<&str>,
 ) -> String {
     gh_default
-        .or_else(|| remote.and_then(|r| snap.remote_heads.get(r).cloned()))
+        .or_else(|| remote.and_then(|r| OnRemote::of(snap, r, gh_said).default))
         .unwrap_or_else(|| "main".to_owned())
 }
 
 impl RepoManager {
+    /// gh's default branch for `remote` as gh last said it (the suggestion's `gh repo view`);
+    /// never asks.
+    pub(crate) fn gh_said(&self, repo: &Repo, remote: &str) -> Option<String> {
+        lock(&repo.gh_defaults).get(remote).cloned()
+    }
+
+    /// Keeps what gh said `remote`'s default branch is (`None`: it did not say).
+    pub(crate) fn gh_says(&self, repo: &Repo, remote: &str, default: Option<String>) {
+        let mut said = lock(&repo.gh_defaults);
+        match default {
+            Some(d) => said.insert(remote.to_owned(), d),
+            None => said.remove(remote),
+        };
+    }
+
+    /// Whether local branch `branch` is `remote`'s default branch, as known without asking
+    /// anyone (see the module comment, step 2).
+    pub(crate) fn is_default_branch(
+        &self,
+        repo: &Repo,
+        snap: &RepoSnapshot,
+        branch: &str,
+        remote: &str,
+    ) -> bool {
+        let said = self.gh_said(repo, remote);
+        OnRemote::of(snap, remote, said.as_deref())
+            .default
+            .as_deref()
+            == Some(branch)
+    }
+
     /// The base of local branch `branch` on `remote` by steps 2 to 4 (see the module
     /// comment), with how it was found; `None`: on to step 5. `snap` is the repository's
     /// snapshot now.
@@ -209,7 +264,8 @@ impl RepoManager {
     ) -> Option<(String, Found)> {
         let i = snap.branches.iter().position(|b| b == branch)?;
         let head = snap.branch_tips.get(i)?.hash.clone();
-        let on = OnRemote::of(snap, remote);
+        let said = self.gh_said(repo, remote);
+        let on = OnRemote::of(snap, remote, said.as_deref());
         let remembered = self
             .memory()
             .and_then(|m| m.pr_base(&repo.root, branch))
@@ -218,6 +274,7 @@ impl RepoManager {
             head,
             remote: remote.to_owned(),
             remembered: remembered.clone(),
+            default: on.default.clone(),
             tips: on
                 .branches
                 .iter()
@@ -261,6 +318,10 @@ impl RepoManager {
         let usable = |b: &str| b != branch && on.has(b);
         if let Some(b) = remembered.filter(|b| usable(b)) {
             return Some((b, Found::Remembered));
+        }
+        // The default branch: not by where it came from, nor by history (on to step 5).
+        if on.default.as_deref() == Some(branch) {
+            return None;
         }
         if let Some(b) = self
             .created_from(repo, snap, branch)
@@ -352,7 +413,7 @@ impl RepoManager {
             .branches
             .iter()
             .filter(|(b, tip, _)| {
-                b != branch && Some(b.as_str()) != on.default && is_object_name(tip)
+                b != branch && Some(b.as_str()) != on.default.as_deref() && is_object_name(tip)
             })
             .collect();
         others.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
@@ -360,7 +421,7 @@ impl RepoManager {
             .branches
             .iter()
             .filter(|(b, tip, _)| {
-                b != branch && Some(b.as_str()) == on.default && is_object_name(tip)
+                b != branch && Some(b.as_str()) == on.default.as_deref() && is_object_name(tip)
             })
             .collect();
         candidates.extend(others.into_iter().take(NEAREST_CANDIDATES));
@@ -382,7 +443,12 @@ impl RepoManager {
                     continue;
                 }
                 if let Ok(n) = out.text().trim().parse::<u64>() {
-                    counts.push((n, Some(name.as_str()) != on.default, -time, name.clone()));
+                    counts.push((
+                        n,
+                        Some(name.as_str()) != on.default.as_deref(),
+                        -time,
+                        name.clone(),
+                    ));
                 }
             }
             counts
@@ -430,7 +496,13 @@ impl RepoManager {
                         Found::Nearest => "nearest",
                     }),
                 ),
-                None => (default_base(&snap, Some(remote), None), None),
+                None => {
+                    let said = self.gh_said(&repo, remote);
+                    (
+                        default_base(&snap, Some(remote), None, said.as_deref()),
+                        None,
+                    )
+                }
             },
         )
     }
@@ -501,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn the_last_resort_is_gh_then_the_remotes_head_then_main() {
+    fn the_last_resort_is_gh_then_the_remotes_head_then_main_or_master() {
         let mut snap: RepoSnapshot = serde_json::from_value(serde_json::json!({
             "repoId": 1, "name": "r", "rootPath": "/r", "activeWorktree": "/r", "generation": 1,
             "totalRows": 0, "loading": false, "maxLane": 0, "head": {"branch": null, "hash": null},
@@ -514,13 +586,36 @@ mod tests {
             "branchPrs": {}, "remoteHeads": {}, "inProgress": null, "seq": 0
         }))
         .unwrap();
-        assert_eq!(default_base(&snap, Some("origin"), None), "main");
-        snap.remote_heads.insert("origin".into(), "trunk".into());
-        assert_eq!(default_base(&snap, Some("origin"), None), "trunk");
+        assert_eq!(default_base(&snap, Some("origin"), None, None), "main");
+        // No HEAD: master when the remote has it and not main; main before master.
+        for (name, at) in [("origin/develop", 3), ("origin/master", 2)] {
+            snap.remote_branches.push(name.into());
+            snap.remote_branch_tips.push(crate::dto::BranchTip {
+                hash: A.into(),
+                time: at,
+                author: String::new(),
+                subject: String::new(),
+            });
+        }
+        assert_eq!(default_base(&snap, Some("origin"), None, None), "master");
+        snap.remote_branches.push("origin/main".into());
+        snap.remote_branch_tips
+            .push(snap.remote_branch_tips[0].clone());
+        assert_eq!(default_base(&snap, Some("origin"), None, None), "main");
+        // What gh last said comes before main and master, after the remote's HEAD.
         assert_eq!(
-            default_base(&snap, Some("origin"), Some("develop".into())),
+            default_base(&snap, Some("origin"), None, Some("develop")),
             "develop"
         );
-        assert_eq!(default_base(&snap, None, None), "main");
+        snap.remote_heads.insert("origin".into(), "trunk".into());
+        assert_eq!(
+            default_base(&snap, Some("origin"), None, Some("develop")),
+            "trunk"
+        );
+        assert_eq!(
+            default_base(&snap, Some("origin"), Some("develop".into()), None),
+            "develop"
+        );
+        assert_eq!(default_base(&snap, None, None, None), "main");
     }
 }

@@ -7,12 +7,12 @@
 //! on the remote the branch tracks, else on any remote, else that local branch; without one,
 //! the branch's base on the base remote as the pull request form has it (`repo/base.rs`: the
 //! base remembered for it, the branch it was created from, the nearest by history, the
-//! remote's HEAD, `main`).
+//! default branch: the remote's HEAD, gh's as gh last said it, `main` or `master` there).
 //! The files are those of `merge-base(base, HEAD)..HEAD` (`git diff-tree -M --raw
 //! --numstat`, read as a commit's are): what the branch's commits change, not the working
-//! tree. None at all (`null`) when HEAD is detached there, the branch is the base's own
-//! (the default branch itself), no base is known, the two share no history, or the branch
-//! changes nothing.
+//! tree. None at all (`null`) when HEAD is detached there, the branch is the default branch
+//! itself (as `repo/base.rs` tells it, without asking gh) with no base remembered for it, no
+//! base is known, the two share no history, or the branch changes nothing.
 //!
 //! Everything but the two git reads comes from the snapshot in memory. One answer is kept
 //! per worktree, for its HEAD, base and the base's commit: asked again with those the same,
@@ -179,18 +179,22 @@ impl RepoManager {
                         .and_then(|f| f.base_remote().map(str::to_owned)),
                 };
                 match remote {
-                    // The default branch itself: nothing to compare.
-                    Some(r) if snap.remote_heads.get(&r) != Some(branch) => {
+                    Some(r) => {
                         let name = match self.recorded_base(&repo, &snap, branch, &r).await {
-                            Some((b, _)) => b,
-                            None => default_base(&snap, Some(&r), None),
+                            Some((b, _)) => Some(b),
+                            // The default branch itself: nothing to compare.
+                            None if self.is_default_branch(&repo, &snap, branch, &r) => None,
+                            None => {
+                                let said = self.gh_said(&repo, &r);
+                                Some(default_base(&snap, Some(&r), None, said.as_deref()))
+                            }
                         };
-                        let full = format!("{r}/{name}");
-                        (name != *branch)
-                            .then(|| known.remote_tip(&full).map(|tip| (full, tip.to_owned())))
-                            .flatten()
+                        name.filter(|n| n != branch).and_then(|name| {
+                            let full = format!("{r}/{name}");
+                            known.remote_tip(&full).map(|tip| (full, tip.to_owned()))
+                        })
                     }
-                    _ => None,
+                    None => None,
                 }
             }
         };

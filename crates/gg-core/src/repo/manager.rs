@@ -293,6 +293,9 @@ pub(crate) struct Repo {
     pub(super) branch_files: Mutex<HashMap<String, super::branch_files::BranchFilesLoad>>,
     /// Each branch's last (or running) answer for its base (steps 2 to 4 of `repo/base.rs`).
     pub(super) branch_bases: Mutex<HashMap<String, super::base::BaseLoad>>,
+    /// gh's default branch as it last answered (`gh repo view`, asked by the pull request
+    /// form's suggestion), by base remote; none after an answer that did not say.
+    pub(super) gh_defaults: Mutex<HashMap<String, String>>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -988,6 +991,7 @@ impl RepoManager {
             pr_details: Mutex::new(HashMap::new()),
             branch_files: Mutex::new(HashMap::new()),
             branch_bases: Mutex::new(HashMap::new()),
+            gh_defaults: Mutex::new(HashMap::new()),
         });
         repo.stashes_read(self.sink.as_ref(), stash_error);
 

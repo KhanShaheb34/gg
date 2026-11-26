@@ -3,9 +3,9 @@
 //   node site/scripts/shots.mjs
 //
 // It runs the app's own screenshot spec (e2e/screens.spec.ts), copied into site/.shots/spec
-// with three changes: the device scale factor comes from GG_SHOTS_SCALE, the shots go to
-// site/.shots/<scale>x, and the fixtures are imported from e2e/. Only the tests that take the
-// shots the page uses run. Nothing outside site/ is written except cargo's target/ folder in
+// with four changes: the device scale factor comes from GG_SHOTS_SCALE, the shots go to
+// site/.shots/<scale>x, and the fixtures and the pull request answers are imported from e2e/.
+// Only the tests that take the shots the page uses run. Nothing outside site/ is written except cargo's target/ folder in
 // this checkout (git-ignored), which gg-devserver is built into.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -25,8 +25,8 @@ const grep = [
   "command log, 900x560", // small-log-open
   "remaining menus, confirmations and notices, 1280x800", // dialog-force-push
   "worktrees, 1280x800", // worktrees
-  "commit panel, 900x560", // small-commit
-  "pull requests, 1280x800", // prs-dialog
+  "pull request tab, create and details, 900x560", // small-pr-tab-create, small-pr-tab-details
+  "committed on branch, 900x560", // small-committed-on-branch
   "settings and shortcuts, 1280x800", // settings, shortcuts
 ].join("|");
 
@@ -38,6 +38,7 @@ const edits = [
   ],
   ["deviceScaleFactor: 1 }", "deviceScaleFactor: Number(process.env.GG_SHOTS_SCALE) }"],
   ['from "./fixtures"', `from ${JSON.stringify(path.join(root, "e2e", "fixtures.ts"))}`],
+  ['from "./prDetailsData"', `from ${JSON.stringify(path.join(root, "e2e", "prDetailsData.ts"))}`],
 ];
 let spec = source;
 for (const [from, to] of edits) {

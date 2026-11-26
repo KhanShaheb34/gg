@@ -5,7 +5,9 @@ import { defineConfig, devices } from "@playwright/test";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
-const baseURL = "http://127.0.0.1:1420";
+// GG_E2E_PORT: another port for the Vite dev server when 1420 is taken, as for the e2e tests.
+const port = Number(process.env.GG_E2E_PORT ?? 1420);
+const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: path.join(root, "site", ".shots", "spec"),
@@ -17,7 +19,7 @@ export default defineConfig({
   use: { baseURL },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "pnpm dev",
+    command: port === 1420 ? "pnpm dev" : `pnpm dev --port ${port}`,
     cwd: root,
     url: baseURL,
     // Never another checkout's server: it could be serving other code.

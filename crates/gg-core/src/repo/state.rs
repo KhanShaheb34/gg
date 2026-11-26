@@ -899,6 +899,8 @@ mod tests {
             name: name.into(),
             hash: h(hash),
             upstream: None,
+            upstream_remote: None,
+            upstream_branch: None,
             ahead: 0,
             behind: 0,
             time: 0,

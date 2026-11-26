@@ -18,7 +18,7 @@ const tip = (hash: string) => ({ hash, time: 0, author: "Ada", subject: "s" });
 /** A snapshot with the feature/x worktree at `head`, tracking origin/feature/x, origin's HEAD main. */
 function shot(o: Partial<RepoSnapshot> = {}, head = "a".repeat(40)): RepoSnapshot {
   return snap({
-    worktrees: [worktree({ path: WT, head, upstream: { name: "origin/feature/x", ahead: 1, behind: 0 } })],
+    worktrees: [worktree({ path: WT, head, upstream: { name: "origin/feature/x", remote: "origin", branch: "feature/x", ahead: 1, behind: 0 } })],
     remoteBranches: ["origin/main", "origin/develop", "origin/feature/x"],
     remoteBranchTips: [tip("1".repeat(40)), tip("2".repeat(40)), tip(head)],
     remoteHeads: { origin: "main" },

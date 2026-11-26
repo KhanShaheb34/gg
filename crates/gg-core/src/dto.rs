@@ -67,6 +67,12 @@ pub struct WorktreeInfo {
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeUpstream {
     pub name: String,
+    /// Its remote as configured (`origin`; `.` for a local branch), `None` if not read: the
+    /// short name cannot say where the remote's name ends (`up` with `stream/main`, or
+    /// `up/stream` with `main`, both `up/stream/main`).
+    pub remote: Option<String>,
+    /// Its branch on that remote, as configured (`main`).
+    pub branch: Option<String>,
     pub ahead: u32,
     pub behind: u32,
 }
@@ -2097,8 +2103,12 @@ mod tests {
         let full = WorktreeInfo {
             active: true,
             status: Some(WorktreeStatus::default()),
+            // Branch stream/main on remote up, whose short name a remote up/stream would
+            // give too: the remote and the branch are sent as configured.
             upstream: Some(WorktreeUpstream {
-                name: "origin/main".into(),
+                name: "up/stream/main".into(),
+                remote: Some("up".into()),
+                branch: Some("stream/main".into()),
                 ahead: 2,
                 behind: 1,
             }),
@@ -2118,7 +2128,8 @@ mod tests {
         let v = serde_json::to_value(&full).unwrap();
         assert_eq!(
             v["upstream"],
-            json!({"name": "origin/main", "ahead": 2, "behind": 1})
+            json!({"name": "up/stream/main", "remote": "up", "branch": "stream/main",
+                   "ahead": 2, "behind": 1})
         );
         assert_eq!(v["inProgress"], "cherry-pick");
         assert_eq!(v["lockReason"], "on a usb disk");

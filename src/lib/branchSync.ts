@@ -7,7 +7,7 @@
 // else the Push dialog, which names where a push goes.
 
 import { visibleText } from "./format";
-import { commits, inProgressReason, remoteOf, shown } from "./menus/common";
+import { commits, inProgressReason, shown } from "./menus/common";
 import type { OpRequest, RepoSnapshot } from "./types";
 
 export type SyncPull = {
@@ -64,11 +64,14 @@ export function branchSync(snap: RepoSnapshot): BranchSync | null {
           disabledReason: running ?? inProgressReason(snap),
         };
 
-  // Pushing goes to a remote: an upstream that is a local branch has nothing to push to.
-  const remote = remoteOf(upstream, snap.remotes);
+  // Pushing goes to a remote: an upstream that is a local branch (remote ".") has nothing to
+  // push to. The remote and its branch as configured, never split out of the short name: with
+  // remotes "up" and "up/stream", "up/stream/main" can be either's.
+  const configured = wt.upstream;
+  const remote = configured.remote !== null && snap.remotes.includes(configured.remote) ? configured.remote : null;
   let push: SyncPush | null = null;
   if (ahead > 0 && remote !== null) {
-    const sameNamed = upstream.slice(remote.length + 1) === branch;
+    const sameNamed = configured.branch === branch;
     const refused =
       behind > 0
         ? `${shown(upstream)} has ${commits(behind)} that ${shown(branch)} does not: git refuses the push until you pull them, or force push.`

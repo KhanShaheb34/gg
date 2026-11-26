@@ -144,3 +144,28 @@ test("an upstream of another name: ↑ opens the Push dialog, which names where 
   // Nothing was pushed.
   expect(rev(gg, "origin/main")).not.toBe(rev(gg, "topic"));
 });
+
+test("remotes up and up/stream: stream/main on up is another name, not main on up/stream", async ({ gg }) => {
+  const { page } = gg;
+  const origin = path.join(path.dirname(gg.repoPath("routine")), "routine-origin.git");
+  gg.git("routine", "remote", "add", "up", origin);
+  // git remote add refuses a name under another remote's; its config does not.
+  gg.git("routine", "config", "remote.up/stream.url", origin);
+  gg.git("routine", "config", "remote.up/stream.fetch", "+refs/heads/*:refs/remotes/up/stream/*");
+  gg.git("routine", "push", "-q", "up", "main:refs/heads/stream/main");
+  gg.git("routine", "fetch", "-q", "up");
+  // Both read up/stream/main; this one is stream/main on up.
+  gg.git("routine", "config", "branch.main.remote", "up");
+  gg.git("routine", "config", "branch.main.merge", "refs/heads/stream/main");
+  commitHere(gg, "Local work");
+  const before = gg.git("routine", "ls-remote", origin, "refs/heads/main");
+  await page.goto("/");
+  await open(page, gg.repoPath("routine"));
+  await expect(push(page)).toHaveAccessibleName("Push 1 commit…");
+  await push(page).click();
+  const d = page.getByRole("dialog", { name: "Push main" });
+  await expect(d).toBeVisible();
+  await d.getByRole("button", { name: "Cancel" }).click();
+  // Nothing was pushed to main.
+  expect(gg.git("routine", "ls-remote", origin, "refs/heads/main")).toBe(before);
+});

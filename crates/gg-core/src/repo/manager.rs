@@ -505,6 +505,8 @@ impl Slot {
                     .find(|r| r.kind == RefKind::Branch && r.name == branch)?;
                 Some(WorktreeUpstream {
                     name: r.upstream.clone()?,
+                    remote: r.upstream_remote.clone(),
+                    branch: r.upstream_branch.clone(),
                     ahead: r.ahead,
                     behind: r.behind,
                 })

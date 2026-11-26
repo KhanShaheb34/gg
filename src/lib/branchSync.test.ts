@@ -1,14 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { branchSync } from "./branchSync";
 import { DETACHED, HEAD_HASH, inProgress, RUNNING, snap, UNBORN, worktree } from "./menus/menuTestData";
-import type { RepoSnapshot } from "./types";
+import type { RepoSnapshot, WorktreeInfo } from "./types";
+
+type Upstream = NonNullable<WorktreeInfo["upstream"]>;
+
+/**
+ * An upstream as the core sends it: its remote and branch as configured are, unless given,
+ * what comes before and after the first "/" of its name ("develop", without one: a local
+ * branch, remote ".").
+ */
+function up(u: Omit<Upstream, "remote" | "branch"> & Partial<Upstream>): Upstream {
+  const at = u.name.indexOf("/");
+  return { remote: at < 0 ? "." : u.name.slice(0, at), branch: at < 0 ? u.name : u.name.slice(at + 1), ...u };
+}
 
 /** A snapshot whose active worktree (/r) has `main` checked out with `upstream`. */
-function on(upstream: { name: string; ahead: number; behind: number } | null, overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
+function on(upstream: Parameters<typeof up>[0] | null, overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
   return snap({
     worktrees: [
-      worktree({ path: "/r", branch: "main", head: HEAD_HASH, isMain: true, active: true, upstream }),
-      worktree({ upstream: { name: "origin/feature/x", ahead: 3, behind: 4 } }),
+      worktree({ path: "/r", branch: "main", head: HEAD_HASH, isMain: true, active: true, upstream: upstream && up(upstream) }),
+      worktree({ upstream: up({ name: "origin/feature/x", ahead: 3, behind: 4 }) }),
     ],
     ...overrides,
   });
@@ -56,9 +68,21 @@ describe("branchSync", () => {
     expect(s.push!.note).toBe("Its upstream, origin/trunk, has another name: choose where the push goes.");
   });
 
-  it("the remote is the longest remote name the upstream starts with", () => {
-    const s = branchSync(on({ name: "up/stream/main", ahead: 1, behind: 0 }, { remotes: ["up", "up/stream"] }))!;
-    expect(s.push!.request).toEqual({ op: "push", branch: "main", remote: "up/stream", to: null, force: false });
+  it("the remote and branch as configured, never split out of the short name", () => {
+    const remotes = { remotes: ["up", "up/stream"] };
+    // stream/main on remote up reads up/stream/main, as main on up/stream would: another
+    // name, so the Push dialog, and no push to main on up/stream.
+    const other = branchSync(on({ name: "up/stream/main", remote: "up", branch: "stream/main", ahead: 1, behind: 0 }, remotes))!;
+    expect(other.push!.request).toBeNull();
+    expect(other.push!.title).toBe("Push 1 commit…");
+    // main on remote up/stream: pushed there in one click.
+    const same = branchSync(on({ name: "up/stream/main", remote: "up/stream", branch: "main", ahead: 1, behind: 0 }, remotes))!;
+    expect(same.push!.request).toEqual({ op: "push", branch: "main", remote: "up/stream", to: null, force: false });
+  });
+
+  it("a remote it does not know (removed since), or not read: nothing to push to", () => {
+    expect(branchSync(on({ name: "gone/main", ahead: 1, behind: 0 }))).toBeNull();
+    expect(branchSync(on({ name: "origin/main", remote: null, branch: null, ahead: 1, behind: 0 }))).toBeNull();
   });
 
   it("an upstream that is a local branch: a pull, but nothing to push to", () => {
@@ -81,8 +105,8 @@ describe("branchSync", () => {
       activeWorktree: "/r.worktrees/feature-x",
       head: { branch: "feature/x", hash: HEAD_HASH },
       worktrees: [
-        worktree({ path: "/r", branch: "main", upstream: { name: "origin/main", ahead: 0, behind: 5 } }),
-        worktree({ active: true, upstream: { name: "origin/feature/x", ahead: 3, behind: 4 } }),
+        worktree({ path: "/r", branch: "main", upstream: up({ name: "origin/main", ahead: 0, behind: 5 }) }),
+        worktree({ active: true, upstream: up({ name: "origin/feature/x", ahead: 3, behind: 4 }) }),
       ],
     });
     const sync = branchSync(s)!;

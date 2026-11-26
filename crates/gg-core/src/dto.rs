@@ -422,6 +422,31 @@ pub struct WorktreeFiles {
 /// Most files `worktree_files` lists.
 pub const MAX_LISTED_FILES: usize = 5000;
 
+/// What `branch_files` returns: the files a worktree's branch changes in its own commits,
+/// compared from where it left its base (`merge-base(base, HEAD)..HEAD`, renames found), in
+/// git's order (by path), the first [`MAX_BRANCH_FILES`] of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchFiles {
+    /// The branch checked out there.
+    pub branch: String,
+    /// What it is compared with: a remote-tracking branch (`origin/main`), or a local branch
+    /// when a pull request's base is only that.
+    pub base: String,
+    /// The commit `base` points at, as the snapshot had it.
+    pub base_commit: String,
+    /// Where the branch left the base (`git merge-base`).
+    pub merge_base: String,
+    /// The branch's commit (HEAD there).
+    pub head: String,
+    pub files: Vec<FileChange>,
+    /// How many files it changes in all (more than `files` holds when cut).
+    pub total: u32,
+}
+
+/// Most files `branch_files` lists.
+pub const MAX_BRANCH_FILES: usize = 500;
+
 /// How a file changed in a commit. Serialized as its single letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileStatus {
@@ -835,9 +860,13 @@ pub struct RepoPrefs {
     pub active_worktree: Option<String>,
     /// The side panel (worktrees) is shown while the window is wide enough to dock it.
     pub side_panel: bool,
-    /// The base branch of the last pull request made, offered for the next one.
-    pub pr_base: Option<String>,
+    /// The base each branch's last pull request was made into (branch → base), offered for
+    /// that branch's next one. (An older `prBase`, one base for every branch, is ignored.)
+    pub pr_bases: BTreeMap<String, String>,
 }
+
+/// Most branches whose pull request base [`RepoPrefs::pr_bases`] keeps per repository.
+pub const MAX_PR_BASES: usize = 200;
 
 impl Default for RepoPrefs {
     fn default() -> Self {
@@ -845,7 +874,7 @@ impl Default for RepoPrefs {
             merge_no_ff: true,
             active_worktree: None,
             side_panel: true,
-            pr_base: None,
+            pr_bases: BTreeMap::new(),
         }
     }
 }
@@ -2004,7 +2033,7 @@ mod tests {
         assert_eq!(serde_json::to_value(RowKind::Stash).unwrap(), "stash");
         assert_eq!(
             serde_json::to_value(RepoPrefs::default()).unwrap(),
-            json!({"mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBase": null})
+            json!({"mergeNoFf": true, "activeWorktree": null, "sidePanel": true, "prBases": {}})
         );
         let suggestion = PrSuggestion {
             title: "t".into(),

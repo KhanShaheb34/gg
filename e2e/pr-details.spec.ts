@@ -216,7 +216,7 @@ test("while a check runs the tab asks again, and stops when all finish, when it 
   await expect.poll(() => viewCalls(gg, 31), { timeout: 10_000 }).toBeGreaterThan(blurred);
 
   // The side panel hidden: none either.
-  await page.getByRole("button", { name: "Hide the side panel" }).click();
+  await page.getByTestId("side-toggle").click();
   await expect(side(page)).toHaveCount(0);
   await page.waitForTimeout(POLL_MS);
   const gone = viewCalls(gg, 31);
@@ -386,7 +386,7 @@ test("at the panel's least width everything fits: the status, the checks, the fi
   for (const row of await page.getByTestId("pr-check").all()) expect((await row.boundingBox())!.height).toBeLessThanOrEqual(27);
 
   // In a narrow window, over the graph: the same.
-  await page.getByRole("button", { name: "Hide the side panel" }).click();
+  await page.getByTestId("side-toggle").click();
   await page.setViewportSize({ width: 760, height: 700 });
   await page.getByRole("button", { name: "Side panel" }).click();
   await expect(side(page)).toHaveClass(/overlay/);
@@ -417,6 +417,40 @@ test("from the keyboard: the checks' toggle, the filter, Show more and the links
   await checksToggle(page).click();
   await reload(gg, PASSING(), talk().threads);
   await expect(checksToggle(page)).toHaveAttribute("aria-expanded", "true");
+});
+
+test("a deployment bot's comment: no badge repeating its word, its button an ordinary link, nothing loaded", async ({ gg }) => {
+  const { page } = gg;
+  const body = [
+    "| Project | Deployment | Updated (UTC) |",
+    "| :--- | :----- | :------ |",
+    "| [web](https://bot.example/web) | ![Ready](https://bot.example/ready.svg) [Ready](https://bot.example/web/inspect) | Nov 25, 2026 |",
+    "",
+    '<a href="https://bot.example/review"><img src="https://bot.example/review.svg" alt="Request Review"></a>',
+    "",
+    "Built with ![a cat](https://bot.example/cat.png) and ![](https://bot.example/x.png).",
+    "",
+    "Logs: [![](https://bot.example/logs.svg)](https://bot.example/logs)",
+  ].join("\n");
+  await showPr(gg, view(31, { comments: [comment("7", "deploybot", body, 5)], reviews: [] }), threads([], ["deploybot"]), 60_000);
+  const card = cards(page).first();
+  await expect(card).toContainText("Ready");
+  await expect(card).not.toContainText("[image");
+  await expect(card.locator("td", { hasText: "Ready" })).toHaveText("Ready");
+  // Images that are not dropped: their alt text, muted, named as not loaded.
+  await expect(card.getByRole("img", { name: "Image, not loaded: a cat" })).toHaveText("a cat");
+  // One with no alt text standing alone: nothing ("Built with a cat and ."); one that is all a
+  // link holds: the link, its word a muted "image".
+  await expect(card.getByText(/Built with a cat and \.$/)).toBeVisible();
+  const logs = card.getByRole("link", { name: "Image, not loaded" });
+  await expect(logs).toHaveAttribute("title", "https://bot.example/logs");
+  await expect(logs.getByRole("img", { name: "Image, not loaded", exact: true })).toHaveText("image");
+  await expect(card.getByRole("img", { name: "Image, not loaded", exact: true })).toHaveCount(1);
+  const button = card.getByRole("link", { name: "Request Review" });
+  await expect(button).toHaveAttribute("title", "https://bot.example/review");
+  await button.click();
+  await expect.poll(() => gg.launches().some((l) => l.includes("https://bot.example/review"))).toBe(true);
+  expect(await card.locator("img, a[href]").count()).toBe(0);
 });
 
 test("the captured threads answer reads too (a resolved thread with the owner's reply)", async ({ gg }) => {

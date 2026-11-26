@@ -27,7 +27,7 @@ function inspect(html: string) {
 const ALLOWED = new Set(["div", "p", "span", "strong", "em", "del", "code", "pre", "br", "ul", "ol", "li", "input", "blockquote", "hr", "table", "thead", "tbody", "tr", "th", "td", "details", "summary"]);
 
 function text(nodes: Inline[]): string {
-  return nodes.map((n) => (n.k === "text" ? n.text : n.k === "br" ? "\n" : n.k === "code" ? n.text : n.k === "image" ? `[image: ${n.alt}]` : "children" in n ? text(n.children) : "")).join("");
+  return nodes.map((n) => (n.k === "text" ? n.text : n.k === "br" ? "\n" : n.k === "code" ? n.text : n.k === "image" ? `‹img:${n.alt}›` : "children" in n ? text(n.children) : "")).join("");
 }
 
 function first(body: string): Block {
@@ -87,11 +87,12 @@ describe("comment bodies never bring HTML, scripts or remote content into the pa
     expect(b).toEqual({ k: "p", children: [{ k: "link", url: null, children: [{ k: "text", text: "bad" }] }] });
   });
 
-  it("images are never loaded: their alt text, quietly, or nothing", () => {
-    expect(text((first("![a cat](https://x/cat.png)") as { children: Inline[] }).children)).toBe("[image: a cat]");
-    expect(renderMarkdown('<img src="https://x/y.png" alt="">').blocks).toEqual([]);
-    expect(renderMarkdown("![](https://x/y.png)").blocks).toEqual([]);
-    expect(drawn('<img src="https://x/y.png" alt="Passed">')).toContain("[image: Passed]");
+  it("images are never loaded: their alt text, muted, without brackets, named as not loaded", () => {
+    expect(first("![a cat](https://x/cat.png)")).toEqual({ k: "p", children: [{ k: "image", alt: "a cat" }] });
+    const html = drawn('<img src="https://x/y.png" alt="Passed">');
+    expect(html).toMatch(/<span class="md-image[^"]*" role="img" title="An image, not loaded" aria-label="Image, not loaded: Passed">Passed<\/span>/);
+    expect(html).not.toContain("[image");
+    expect(html).not.toContain("https://x/y.png");
   });
 });
 
@@ -168,6 +169,146 @@ describe("what a comment's Markdown draws", () => {
       { t: "comment" },
       { t: "text", text: " " },
     ]);
+  });
+});
+
+/** The inline nodes of a body's first block (a paragraph or a plain item). */
+function nodes(body: string): Inline[] {
+  return (first(body) as { children: Inline[] }).children;
+}
+
+describe("images, never loaded, drawn by what they are next to", () => {
+  // Written by hand in the shape of a deployment bot's comment: a status badge before a link
+  // with the same word in a table cell, and a button that is an image in a link.
+  const bot = [
+    "[vc]: #abc",
+    "**The latest updates on your projects**. Learn more about [the bot](https://bot.example/learn).",
+    "",
+    "| Project | Deployment | Actions | Updated (UTC) |",
+    "| :--- | :----- | :------ | :------ |",
+    "| [web](https://bot.example/web) | ![Ready](https://bot.example/status/ready.svg) [Ready](https://bot.example/web/inspect) | [Preview](https://preview.example), [Comment](https://bot.example/c) | Nov 25, 2026 1:00am |",
+    "",
+    "[![Request Review](https://bot.example/button/review.svg)](https://bot.example/review)",
+    "",
+    '<a href="https://bot.example/review"><img src="https://bot.example/button/review.svg" alt="Request Review"></a>',
+  ].join("\n");
+
+  it("an image whose alt text repeats the link beside it is nothing (the bot's status cell)", () => {
+    const blocks = renderMarkdown(bot).blocks;
+    const table = blocks.find((b) => b.k === "table") as Extract<Block, { k: "table" }>;
+    const cell = table.rows[0][1];
+    expect(cell).toEqual([
+      { k: "text", text: " " },
+      { k: "link", url: "https://bot.example/web/inspect", children: [{ k: "text", text: "Ready" }] },
+    ]);
+    expect(text(cell).trim()).toBe("Ready");
+    expect(drawn(bot)).not.toContain("md-image");
+  });
+
+  it("…or the text beside it, before or after, ignoring case and whitespace", () => {
+    expect(nodes("![Ready](https://x/r.svg) Ready (Inspect)")).toEqual([{ k: "text", text: " Ready (Inspect)" }]);
+    expect(text(nodes("Status: ready ![READY](https://x/r.svg)"))).toBe("Status: ready ");
+    expect(text(nodes("![Request  Review](https://x/r.svg) **request review**"))).toBe(" request review");
+    expect(text(nodes("![Passed](https://x/p.svg) [ passed ](https://x/p)"))).toBe("  passed ");
+    // Not a repeat: another word, a longer word, text further away, or none beside it.
+    expect(text(nodes("![Ready](https://x/r.svg) Failed"))).toBe("‹img:Ready› Failed");
+    expect(text(nodes("![Ready](https://x/r.svg) Readying"))).toBe("‹img:Ready› Readying");
+    expect(text(nodes("Ready, then ![Ready](https://x/r.svg) done"))).toBe("Ready, then ‹img:Ready› done");
+    expect(text(nodes("![Ready](https://x/r.svg)\nReady"))).toBe("‹img:Ready›\nReady");
+  });
+
+  it("a 20,000-character run of punctuation beside an image is compared quickly, and is no repeat", () => {
+    // Not "!": marked's own lexer is slow on a long run of those, whatever is drawn after it.
+    const run = ",;?".repeat((MAX_BODY - 100) / 3);
+    const t0 = performance.now();
+    for (const body of [
+      `![Ready](https://x/r.svg) ${run}a`,
+      `a${run} ![Ready](https://x/r.svg)`,
+      `![Ready](https://x/r.svg) [${run}a](https://x/l)`,
+      `![${run}a](https://x/r.svg) ${run}b`,
+      // A run in the middle: what a regex anchored at the end backtracks over.
+      `![a${run}b](https://x/r.svg) [a${run}c](https://x/l) a${run}c`,
+      `![Ready](https://x/r.svg) ${", ".repeat(9_000)}Ready`,
+    ]) {
+      expect(JSON.stringify(renderMarkdown(body).blocks)).toContain('"k":"image"');
+    }
+    expect(performance.now() - t0).toBeLessThan(500);
+    // Punctuation at the ends of the words beside it is still looked past.
+    expect(text(nodes("![Ready](https://x/r.svg) (Ready).."))).toBe(" (Ready)..");
+    expect(text(nodes("“Ready” ![Ready](https://x/r.svg)"))).toBe("“Ready” ");
+  });
+
+  it("an image that is a link's only content is that link, its alt text as its words (the bot's button)", () => {
+    const blocks = renderMarkdown(bot).blocks;
+    const button = { k: "link", url: "https://bot.example/review", children: [{ k: "text", text: "Request Review" }] };
+    expect(blocks.slice(-2)).toEqual([
+      { k: "p", children: [button] },
+      { k: "p", children: [button] },
+    ]);
+    const html = drawn("[![Request Review](https://bot.example/b.svg)](https://bot.example/review)").replace(/<!--[^>]*-->/g, "");
+    expect(html).toMatch(/role="link"[^>]*data-url="https:\/\/bot.example\/review"[^>]*>Request Review<\/span>/);
+    expect(html).not.toContain("md-image");
+    // Not https: its words, as text.
+    expect(nodes("[![Docs](https://x/d.svg)](http://x/docs)")).toEqual([{ k: "link", url: null, children: [{ k: "text", text: "Docs" }] }]);
+    // Around a <picture>, as CodeRabbit writes its buttons.
+    expect(nodes('<a href="https://x/explain"><picture><source srcset="https://x/e.svg"><img src="https://x/e.svg" alt="Explain Change →"></picture></a>')).toEqual([
+      { k: "link", url: "https://x/explain", children: [{ k: "text", text: "Explain Change →" }] },
+    ]);
+  });
+
+  it("any other image is its alt text alone, muted", () => {
+    expect(nodes("See ![a cat](https://x/cat.png) here")).toEqual([
+      { k: "text", text: "See " },
+      { k: "image", alt: "a cat" },
+      { k: "text", text: " here" },
+    ]);
+    expect(nodes('Checks <img src="https://x/p.svg" alt="Passed"> 4')).toEqual([
+      { k: "text", text: "Checks " },
+      { k: "image", alt: "Passed" },
+      { k: "text", text: " 4" },
+    ]);
+    // In a link with other content too.
+    expect(nodes("[![logo](https://x/l.svg) Home](https://x/home)")).toEqual([
+      { k: "link", url: "https://x/home", children: [{ k: "image", alt: "logo" }, { k: "text", text: " Home" }] },
+    ]);
+  });
+
+  it("an image without alt text is nothing, unless it is all a link holds: then a muted “image”", () => {
+    expect(nodes("[![](https://x/i.svg) Home](https://x/home)")).toEqual([{ k: "link", url: "https://x/home", children: [{ k: "text", text: " Home" }] }]);
+    expect(nodes('<a href="https://x/home"><img src="https://x/i.svg" alt=""> Home</a>')).toEqual([{ k: "link", url: "https://x/home", children: [{ k: "text", text: " Home" }] }]);
+    expect(nodes("![](https://x/y.png) after")).toEqual([{ k: "text", text: " after" }]);
+    expect(nodes('<img src="https://x/y.png"> after')).toEqual([{ k: "text", text: " after" }]);
+    expect(nodes('**![](https://x/cog.svg) Run configuration**')).toEqual([
+      { k: "strong", children: [{ k: "text", text: " Run configuration" }] },
+    ]);
+    // A link whose only content is one: the link, drawn as “image”.
+    expect(nodes("[![](https://x/y.png)](https://x/go)")).toEqual([{ k: "link", url: "https://x/go", children: [{ k: "image", alt: "" }] }]);
+    const html = drawn("[![](https://x/y.png)](https://x/go)").replace(/<!--[^>]*-->/g, "");
+    expect(html).toMatch(/<span class="md-image[^"]*" role="img" title="An image, not loaded" aria-label="Image, not loaded">image<\/span>/);
+  });
+
+  it("<a href> is a link by the same rules as Markdown's; links never nest", () => {
+    expect(nodes('go <a href="https://x/a">there</a> now')).toEqual([
+      { k: "text", text: "go " },
+      { k: "link", url: "https://x/a", children: [{ k: "text", text: "there" }] },
+      { k: "text", text: " now" },
+    ]);
+    expect(nodes('<a href="javascript:alert(1)">x</a> <a name="top">y</a>')).toEqual([
+      { k: "link", url: null, children: [{ k: "text", text: "x" }] },
+      { k: "text", text: " " },
+      { k: "link", url: null, children: [{ k: "text", text: "y" }] },
+    ]);
+    // Never closed: it runs to the end of its run; another <a> closes it; a stray </a> does nothing.
+    expect(nodes('<a href="https://x/a">one <a href="https://x/b">two</a> three</a>')).toEqual([
+      { k: "link", url: "https://x/a", children: [{ k: "text", text: "one " }] },
+      { k: "link", url: "https://x/b", children: [{ k: "text", text: "two" }] },
+      { k: "text", text: " three" },
+    ]);
+    expect(nodes('<a href="https://x/a">[inner](https://x/b) text')).toEqual([{ k: "link", url: "https://x/a", children: [{ k: "text", text: "inner text" }] }]);
+    expect(renderMarkdown('<a href="https://x/a"></a>').blocks).toEqual([]);
+    const html = drawn('<a href="https://x/a" onclick="alert(1)">t</a>');
+    expect(inspect(html).tags).not.toContain("a");
+    expect(inspect(html).attrs).not.toContain("onclick");
   });
 });
 

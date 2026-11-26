@@ -8,6 +8,7 @@
 import { SvelteMap } from "svelte/reactivity";
 import type { OpOutcome, PrState, PrSuggestion, PullRequest, RepoSnapshot } from "../types";
 import { app } from "./app.svelte";
+import { remoteTipsSignature } from "./branchFiles.svelte";
 import { overlays } from "./overlays.svelte";
 import { findRepoView, type RepoView } from "./repo.svelte";
 import { panelState, setPanelShown } from "./worktrees.svelte";
@@ -186,7 +187,8 @@ export const SUGGESTION_FRESH_MS = 5 * 60_000;
 
 /**
  * What the suggestion for `branch` depends on in `snap`: the branch's commit, where it was
- * pushed, and the pull requests' list. Any of these changed, it is asked for again.
+ * pushed, the pull requests' list, and the remote branches (its base may be the nearest of
+ * them by history). Any of these changed, it is asked for again.
  */
 export function suggestionStamp(snap: RepoSnapshot, branch: string): string {
   const tip = snap.branchTips[snap.branches.indexOf(branch)]?.hash ?? "";
@@ -194,7 +196,8 @@ export function suggestionStamp(snap: RepoSnapshot, branch: string): string {
     .map((name, i) => (name.endsWith(`/${branch}`) ? `${name}@${snap.remoteBranchTips[i]?.hash ?? ""}` : ""))
     .filter((s) => s !== "")
     .join(",");
-  return [tip, remote, snap.prs.loadedAtMs ?? "", snap.remotes.join(",")].join("|");
+  // The base may be the nearest remote branch by history: any of them moving counts.
+  return [tip, remote, snap.prs.loadedAtMs ?? "", snap.remotes.join(","), remoteTipsSignature(snap)].join("|");
 }
 
 /** The suggestion kept for `branch` while `stamp` holds and it is fresh; null to ask again. */
@@ -265,6 +268,17 @@ export function unavailableHere(prs: PrState, remotes: readonly string[]): PrUna
   if (remotes.length === 0) return "no_remote";
   if (prs.status !== "unavailable" || prs.reason === null || prs.reason === "failed") return null;
   return prs.reason;
+}
+
+/**
+ * Whether the app knows, from `prs`, whether a branch has an open pull request: the list has
+ * loaded (an older one kept after a reload failed counts, as the markers take it), or it
+ * cannot be had and says why (gh missing, signed out, not GitHub, the load failed). Not while
+ * the first list is still unknown or loading: the branch may well have one, and the tab must
+ * not offer to make it.
+ */
+export function prsKnown(prs: PrState): boolean {
+  return prs.status === "ready" || prs.status === "unavailable";
 }
 
 /**

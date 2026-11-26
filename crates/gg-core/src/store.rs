@@ -59,9 +59,9 @@ pub struct SettingsPatch {
 pub struct RepoPrefsPatch {
     pub merge_no_ff: Option<bool>,
     pub side_panel: Option<bool>,
-    /// `Some(None)` (JSON `null`) forgets it.
-    #[serde(default, deserialize_with = "present")]
-    pub pr_base: Option<Option<String>>,
+    /// Each branch's pull request base to remember (branch → base); `null` forgets that
+    /// branch's.
+    pub pr_bases: Option<BTreeMap<String, Option<String>>>,
 }
 
 /// Reads a field that is present, `null` included, as `Some`; a missing one stays `None`
@@ -301,8 +301,24 @@ impl Store {
             if let Some(shown) = patch.side_panel {
                 prefs.side_panel = shown;
             }
-            if let Some(base) = patch.pr_base {
-                prefs.pr_base = base.filter(|b| !b.trim().is_empty());
+            for (branch, base) in patch.pr_bases.unwrap_or_default() {
+                match base.filter(|b| !b.trim().is_empty()) {
+                    Some(base) if !branch.trim().is_empty() => {
+                        prefs.pr_bases.insert(branch.clone(), base);
+                        // Bounded: past the most kept, another branch's goes.
+                        while prefs.pr_bases.len() > crate::dto::MAX_PR_BASES {
+                            let Some(other) =
+                                prefs.pr_bases.keys().find(|b| **b != branch).cloned()
+                            else {
+                                break;
+                            };
+                            prefs.pr_bases.remove(&other);
+                        }
+                    }
+                    _ => {
+                        prefs.pr_bases.remove(&branch);
+                    }
+                }
             }
             Ok(prefs.clone())
         })
@@ -507,14 +523,24 @@ impl StoreData {
                 let active_worktree = field(prefs, "activeWorktree").unwrap_or_default();
                 let side_panel =
                     field(prefs, "sidePanel").unwrap_or(RepoPrefs::default().side_panel);
-                let pr_base = field(prefs, "prBase").unwrap_or_default();
+                // Per branch; an older per-repository `prBase` is not read (it would apply to
+                // every branch), and stays in the file as an unknown key.
+                let pr_bases: BTreeMap<String, String> = match prefs.get("prBases") {
+                    Some(Value::Object(m)) => m
+                        .iter()
+                        .filter_map(|(b, v)| v.as_str().map(|v| (b.clone(), v.to_owned())))
+                        .filter(|(b, v)| !b.trim().is_empty() && !v.trim().is_empty())
+                        .take(crate::dto::MAX_PR_BASES)
+                        .collect(),
+                    _ => BTreeMap::new(),
+                };
                 Some((
                     root.clone(),
                     RepoPrefs {
                         merge_no_ff,
                         active_worktree,
                         side_panel,
-                        pr_base,
+                        pr_bases,
                     },
                 ))
             })
@@ -1705,11 +1731,18 @@ mod tests {
         let path = dir.path().join("state.json");
         fs::write(
             &path,
-            r#"{"repoPrefs": {"/no-repo-a": {"mergeNoFf": false, "future": 1}, "/no-repo-b": "junk"}}"#,
+            r#"{"repoPrefs": {"/no-repo-a": {"mergeNoFf": false, "future": 1, "prBase": "develop"}, "/no-repo-b": "junk"}}"#,
         )
         .unwrap();
         let store = Store::load(dir.path());
         assert!(!store.repo_prefs(Path::new("/no-repo-a")).merge_no_ff);
+        // An older per-repository base is not taken for every branch.
+        assert!(
+            store
+                .repo_prefs(Path::new("/no-repo-a"))
+                .pr_bases
+                .is_empty()
+        );
         assert!(store.repo_prefs(Path::new("/no-repo-b")).merge_no_ff);
         assert!(store.repo_prefs(Path::new("/no-repo-c")).merge_no_ff);
         store
@@ -1718,7 +1751,7 @@ mod tests {
                 RepoPrefsPatch {
                     merge_no_ff: Some(false),
                     side_panel: Some(false),
-                    pr_base: Some(Some("develop".into())),
+                    pr_bases: Some(BTreeMap::from([("topic".into(), Some("develop".into()))])),
                 },
             )
             .unwrap();
@@ -1726,26 +1759,50 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             saved["repoPrefs"]["/no-repo-a"],
-            serde_json::json!({"mergeNoFf": false, "future": 1, "activeWorktree": null, "sidePanel": true, "prBase": null})
+            serde_json::json!({"mergeNoFf": false, "future": 1, "prBase": "develop", "activeWorktree": null, "sidePanel": true, "prBases": {}})
         );
         assert_eq!(
             saved["repoPrefs"]["/no-repo-c"],
-            serde_json::json!({"mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBase": "develop"})
+            serde_json::json!({"mergeNoFf": false, "activeWorktree": null, "sidePanel": false, "prBases": {"topic": "develop"}})
         );
         // Read back, and forgotten with null.
         assert_eq!(
             Store::load(dir.path())
                 .repo_prefs(Path::new("/no-repo-c"))
-                .pr_base
-                .as_deref(),
+                .pr_bases
+                .get("topic")
+                .map(String::as_str),
             Some("develop")
         );
+        // Another branch's is its own; null forgets one branch's only.
         let patch: RepoPrefsPatch =
-            serde_json::from_value(serde_json::json!({"prBase": null})).unwrap();
+            serde_json::from_value(serde_json::json!({"prBases": {"other": "release"}})).unwrap();
+        store
+            .set_repo_prefs(Path::new("/no-repo-c"), patch)
+            .unwrap();
+        let patch: RepoPrefsPatch =
+            serde_json::from_value(serde_json::json!({"prBases": {"topic": null}})).unwrap();
         let prefs = store
             .set_repo_prefs(Path::new("/no-repo-c"), patch)
             .unwrap();
-        assert_eq!(prefs.pr_base, None);
+        assert_eq!(
+            prefs.pr_bases,
+            BTreeMap::from([("other".to_owned(), "release".to_owned())])
+        );
+        // Bounded.
+        let many: BTreeMap<String, Option<String>> = (0..crate::dto::MAX_PR_BASES + 10)
+            .map(|i| (format!("b{i:04}"), Some("main".to_owned())))
+            .collect();
+        let prefs = store
+            .set_repo_prefs(
+                Path::new("/no-repo-c"),
+                RepoPrefsPatch {
+                    pr_bases: Some(many),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(prefs.pr_bases.len(), crate::dto::MAX_PR_BASES);
         let aside = fs::read_dir(dir.path())
             .unwrap()
             .filter(|e| {

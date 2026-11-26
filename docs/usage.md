@@ -74,7 +74,24 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   worktree's, and offers to make it active. **Commit & Push** sends the commit to the
   branch's upstream; when a merge
   is being concluded, its message is filled in. With nothing ticked, **Commit with no changes** makes an empty commit
-  (`git commit --allow-empty`), with or without the push. The notice after a commit offers the push. Known limit: if the app quits or
+  (`git commit --allow-empty`), with or without the push. The notice after a commit offers the push.
+  Under the message, **Committed on branch** (with how many files) lists, read-only, what the
+  branch checked out there changes in its own commits: from where it left its base
+  (`git merge-base`) to its last commit, the working tree's changes left out. The base, named
+  in the header ("vs origin/main"), is the base branch of the branch's open pull request, on
+  the repository the pull request goes to (in a fork, `upstream/main` rather than the fork's
+  copy); without one, the base the pull request form offers the branch (below). Each file shows its name, its folder, the lines added and removed (none
+  for a binary file) and its status (M, A, D, R; a rename is one row, its old path beside it);
+  the first 500, then how many more. A file opens nothing (gg has no view of one file's
+  changes yet). There is no such section when HEAD is detached, on the default branch itself,
+  when no base is known, or when the branch changes nothing. It starts closed while the
+  worktree has changes to commit and open while it has none; a click on its header holds only
+  until that changes (changes appear, or are all committed), then the default applies again;
+  it is not remembered when gg restarts. It is read again only when the branch's commit, the
+  base or the base's commit moves (or a better base comes into reach, such as the pull
+  request's base once fetched, or a branch on the remote moves, which may make another the
+  nearest), never for a file written. A read that fails keeps what was
+  shown and says why in one line, with Retry. Known limit: if the app quits or
   crashes between making a commit and updating the staging area (during a slow
   `post-commit` hook, say), the staging area still holds the committed files as they were
   before the commit, so `git status` shows staged changes that would undo it; `git reset`
@@ -93,22 +110,35 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   threads on the code (path:line, Resolved, Outdated, with their replies), oldest first, with
   an All / Humans / Bots filter. A resolved thread, and any comment longer than about a dozen
   lines, starts shortened (**Show more**). A comment is drawn from its Markdown without its
-  HTML: HTML comments are dropped, `<details>` stays a closed disclosure, other tags keep only
-  their text, and no image or anything else is loaded from the web (an image shows as
-  "[image: …]"); a link to an `https://` address opens in your browser (its address in its
-  tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
+  HTML: HTML comments are dropped, `<details>` stays a closed disclosure, `<a href>` is a link
+  like Markdown's, other tags keep only their text, and no image or anything else is loaded
+  from the web. An image shows as its alt text, small and muted (its tooltip says it is not
+  loaded); one whose alt text only repeats the text or link beside it (a bot's "Ready" badge
+  before "Ready") shows as nothing; one that is all of a link (a bot's button) shows as that
+  link, its alt text as its words; one with no alt text (a decorative icon) shows as nothing, or
+  as "image" when it is all of a link. A link to an `https://` address opens in your browser (its address
+  in its tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
   are asked of `gh` when the tab shows the pull request, on Refresh, after the list reloads
   and after a push of the branch, and every 15 s only while a check runs, the tab shows and
   the window is in front (never more than once every 10 s per pull request). A failure keeps
   what was shown and says so in one line, with Retry. The tab's icon has a dot while its
   pull request's checks are known: red when one fails, amber while one runs, green when all
-  passed (its tooltip says which). Without one, it shows
+  passed (its tooltip says which). Until the first list of pull requests has loaded, the tab
+  says it is looking for one ("Looking for a pull request…", under the branch's name) rather
+  than offering to make one; a pull request found then shows at once, its checks and comments
+  following. What you typed in the form is kept meanwhile. Without one, it shows
   the form: a title and description suggested from the branch's commits, the branch it goes
-  into (the one last used, else the repository's default), and **Create as draft**; the
-  button pushes the branch first when it needs to, and the line above it says where. What
-  you type is kept per branch while gg runs, whatever else you look at, until the pull
-  request is made. A failure stays in the tab, with Show log. It says plainly when none can
-  be made: HEAD detached, no remote, a remote not on GitHub, the default branch. Without
+  into, and **Create as draft**. The branch it goes into is, by default, the branch's own
+  base on the repository pull requests go to: the one its last pull request went into (kept
+  per branch), else the branch it was created from (git's own records of it, read only: the
+  branch's reflog, or HEAD's when it was made with `switch -c` or in gg), else the nearest
+  branch on that remote by history (fewest commits between them, the default branch on a
+  tie), and only one the remote has; else the repository's default branch (gh's), the
+  remote's `HEAD`, `main`. You can pick any other. The button pushes the branch first when
+  it needs to, and the line above it says where. What you type is kept per branch while gg
+  runs, whatever else you look at, until the pull request is made. A failure stays in the
+  tab, with Show log. It says plainly when none can be made: HEAD detached, no remote, a
+  remote not on GitHub, the default branch. Without
   `gh`, or signed out, it says how to fix that, and meanwhile pushes the branch and opens
   GitHub's compare page. After a push you ask for (Push, Commit & Push, a notice's Push) of a
   branch with no pull request, other than the default branch, the tab shows by itself,

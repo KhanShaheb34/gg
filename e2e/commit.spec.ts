@@ -662,6 +662,15 @@ test("one toolbar button shows and hides the side panel, on the tab last used in
   // Shown again, the list does not take the focus.
   await page.waitForTimeout(200);
   await expect(list(page)).not.toBeFocused();
+  // The panel has no Hide button of its own; Cmd+B from inside it hides it and the focus goes
+  // to the graph, not the page.
+  await expect(side.getByRole("button", { name: /hide/i })).toHaveCount(0);
+  await tab(page, "worktrees").focus();
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(side).toHaveCount(0);
+  await expect(grid(page)).toBeFocused();
+  await page.keyboard.press("ControlOrMeta+b");
+  await expect(list(page)).toBeVisible();
 
   // Per repository: another one opens on the Commit tab, and this one keeps Worktrees.
   await open(page, gg.repoPath("worktrees"));
@@ -861,29 +870,34 @@ test("at the panel's least width the tab strip and the buttons fit on one line, 
     }
     expect(boxes[1].x).toBeGreaterThanOrEqual(boxes[0].x + boxes[0].width);
     expect(boxes[2].x).toBeGreaterThanOrEqual(boxes[1].x + boxes[1].width);
-    // The buttons on the right, Hide last, inside the panel and on the same line.
-    const buttons = side.locator("header .actions button");
-    const first = (await buttons.first().boundingBox())!;
-    const hide = (await side.getByRole("button", { name: "Hide the side panel" }).boundingBox())!;
-    expect(hide.x + hide.width).toBeLessThanOrEqual(s.x + s.width);
-    expect(hide.y).toBeGreaterThanOrEqual(h.y);
-    expect(hide.y + hide.height).toBeLessThanOrEqual(h.y + h.height);
+    // The shown tab's own buttons on the right, inside the panel and on the same line; no
+    // button of the panel's own hides it (the toolbar's does).
+    await expect(side.getByRole("button", { name: /hide/i })).toHaveCount(0);
+    const buttons = await side.locator("header .actions button").all();
+    for (const button of buttons) {
+      const b = (await button.boundingBox())!;
+      expect(b.x + b.width).toBeLessThanOrEqual(s.x + s.width);
+      expect(b.y).toBeGreaterThanOrEqual(h.y);
+      expect(b.y + b.height).toBeLessThanOrEqual(h.y + h.height);
+    }
     // Between the tabs and the buttons: room for one more tab (Files), and a gap that keeps the
     // two groups apart.
     const last = boxes[2];
-    expect(first.x - (last.x + last.width)).toBeGreaterThanOrEqual(last.width + 2 + 12);
+    const right = buttons.length > 0 ? (await buttons[0].boundingBox())!.x : s.x + s.width;
+    expect(right - (last.x + last.width)).toBeGreaterThanOrEqual(last.width + 2 + 12);
   };
-  // The Commit tab (Hide alone), the Pull request tab with Refresh, then the Worktrees tab with
+  // The Commit tab (no buttons), the Pull request tab with Refresh, then the Worktrees tab with
   // its own two buttons.
   await fits();
+  await expect(side.locator("header .actions button")).toHaveCount(0);
   await tab(page, "pr").click();
   await expect(page.getByTestId("pr-panel")).toBeVisible();
   await fits();
-  await expect(side.locator("header .actions button")).toHaveCount(2);
+  await expect(side.locator("header .actions button")).toHaveCount(1);
   await tab(page, "worktrees").click();
   await expect(list(page)).toBeVisible();
   await fits();
-  await expect(side.locator("header .actions button")).toHaveCount(3);
+  await expect(side.locator("header .actions button")).toHaveCount(2);
 
   // The same strip at the default width.
   await page.setViewportSize({ width: 1280, height: 700 });

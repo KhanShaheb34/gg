@@ -302,7 +302,13 @@
         if (view) openBranchPicker(view.repoId);
         break;
       case "sidePanel":
-        if (active) setPanelShown(active.repoId);
+        if (active) {
+          // Hidden from inside it (its header has no Hide button): the focus goes to the graph,
+          // not to the page.
+          const inside = document.activeElement?.closest('[data-region="side-panel"]') != null;
+          setPanelShown(active.repoId);
+          if (inside && !panelShown(active.repoId)) document.querySelector<HTMLElement>('#repo-panel [role="grid"]')?.focus();
+        }
         break;
       case "log":
         if (active) setLogOpen(!logPrefs.open, true);

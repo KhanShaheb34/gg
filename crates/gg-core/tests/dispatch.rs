@@ -2105,6 +2105,55 @@ async fn worktree_default_path_and_worktree_ops_via_dispatch() {
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
+/// `branch_files` answers a worktree's branch's committed files, camelCase, or null when
+/// there is no list (here: the default branch itself); unknown fields are refused.
+#[tokio::test]
+async fn branch_files_via_dispatch() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let _origin = repo.clone_as_remote();
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    let h = harness().await;
+    let first = h.call("open_repo", json!({ "path": repo.path() })).await;
+    let id = first["repoId"].clone();
+    let wt = first["activeWorktree"].clone();
+    let none = h
+        .call("branch_files", json!({ "repoId": id, "path": wt }))
+        .await;
+    assert_eq!(none, Value::Null);
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("b.txt", "b\n");
+    repo.commit_all("two");
+    h.call("refresh", json!({ "repoId": id })).await;
+    let mut got = Value::Null;
+    for _ in 0..100 {
+        got = h
+            .call("branch_files", json!({ "repoId": id, "path": wt }))
+            .await;
+        if !got.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(got["branch"], "feature");
+    assert_eq!(got["base"], "origin/main");
+    assert_eq!(got["total"], 1);
+    assert_eq!(
+        got["files"],
+        json!([{"path": "b.txt", "oldPath": null, "status": "A", "additions": 1, "deletions": 0}])
+    );
+    for key in ["baseCommit", "mergeBase", "head"] {
+        assert_eq!(got[key].as_str().map(str::len), Some(40), "{key}");
+    }
+    let err = h
+        .fail(
+            "branch_files",
+            json!({ "repoId": id, "path": wt, "base": "origin/main" }),
+        )
+        .await;
+    assert_eq!(err.code, ErrorCode::BadRequest);
+}
+
 /// `worktree_files` lists a worktree's changed files by path; a commit runs through
 /// `run_op` with its paths, message and push flag, and the bindings of `expectHead` and
 /// `expectWorktree`.
@@ -2169,9 +2218,9 @@ async fn worktree_files_and_commit_via_dispatch() {
 }
 
 /// Pull requests through dispatch (a fake `gh`): `refresh` with `prs` loads them (a plain
-/// one does not); `pr_suggest` offers the base remembered in the repository's preferences;
-/// `pr_create` runs as an operation, its outcome carrying an `open_url` hint, and remembers
-/// the base in the preferences.
+/// one does not); `pr_suggest` offers the base remembered for the branch in the repository's
+/// preferences; `pr_create` runs as an operation, its outcome carrying an `open_url` hint,
+/// and remembers the base for its branch in the preferences.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pull_requests_via_dispatch() {
@@ -2208,7 +2257,7 @@ async fn pull_requests_via_dispatch() {
 
     h.call(
         "set_repo_prefs",
-        json!({ "repoId": id, "patch": { "prBase": "develop" } }),
+        json!({ "repoId": id, "patch": { "prBases": { "topic": "develop" } } }),
     )
     .await;
     let suggested = h
@@ -2242,10 +2291,48 @@ async fn pull_requests_via_dispatch() {
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
         let prefs = h.call("get_repo_prefs", json!({ "repoId": id })).await;
-        if prefs["prBase"] == "main" {
+        if prefs["prBases"]["topic"] == "main" {
             break;
         }
         assert!(std::time::Instant::now() < deadline, "{prefs}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// A state file from before bases were kept per branch: its one `prBase` for the repository
+/// is not offered to every branch (a branch made from main is offered main), and the
+/// preferences say no branch has one.
+#[tokio::test]
+async fn an_older_per_repository_base_is_not_every_branchs() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    repo.git(&["branch", "staging"]);
+    let _origin = repo.clone_as_remote();
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    repo.git(&["switch", "-q", "-c", "topic"]);
+    repo.commit("topic");
+    let config = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(repo.path()).unwrap();
+    std::fs::write(
+        config.path().join("state.json"),
+        serde_json::to_string(&json!({
+            "repoPrefs": { root.to_string_lossy(): { "mergeNoFf": true, "prBase": "staging" } }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let sink = Arc::new(RecordingSink::default());
+    let core = Core::new(config.path().to_path_buf(), None, sink.clone())
+        .await
+        .expect("core starts");
+    let h = Harness { core, sink, config };
+    let first = h.open_loaded(repo.path()).await;
+    let id = first["repoId"].clone();
+    let suggested = h
+        .call("pr_suggest", json!({ "repoId": id, "branch": "topic" }))
+        .await;
+    assert_eq!(suggested["base"], "main");
+    let prefs = h.call("get_repo_prefs", json!({ "repoId": id })).await;
+    assert_eq!(prefs["prBases"], json!({}));
+    assert!(prefs.get("prBase").is_none(), "{prefs}");
 }

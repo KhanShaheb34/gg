@@ -40,6 +40,7 @@ import {
   prNumberOf,
   prSubject,
   prTabTitle,
+  prsKnown,
   rememberMade,
   subjectOf,
   suggestionStamp,
@@ -204,6 +205,19 @@ describe("why none can be made", () => {
   });
 });
 
+describe("whether a branch's having no pull request is known", () => {
+  const at = (status: PrState["status"], reason: PrState["reason"] = null): PrState => ({ status, reason, loadedAtMs: null, partial: false });
+  it("not before the first list: unknown, loading (the tab looks, it offers no form)", () => {
+    expect(prsKnown(at("unknown"))).toBe(false);
+    expect(prsKnown(at("loading"))).toBe(false);
+  });
+  it("once the list is loaded, an older one kept after a failed reload too, or gh says why there is none", () => {
+    expect(prsKnown(ready())).toBe(true);
+    expect(prsKnown({ ...ready(), reason: "failed" })).toBe(true);
+    for (const reason of ["no_gh", "signed_out", "not_github", "failed"] as const) expect(prsKnown(at("unavailable", reason))).toBe(true);
+  });
+});
+
 describe("the forms being filled in", () => {
   it("are kept per repository and branch, the same one whenever the tab shows it, until dropped", () => {
     const d = prDraft("/r1", "feature/x");
@@ -343,6 +357,10 @@ describe("the branch's pull request", () => {
     expect(prTabTitle(s, "fix/y", "⌘⇧P")).toBe("Pull request · #13 draft (⌘⇧P)");
     expect(prTabTitle(s, "main", "Ctrl+Shift+P")).toBe("Pull request · none yet (Ctrl+Shift+P)");
     expect(prTabTitle({ ...s, prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false } }, "main", "⌘⇧P")).toBe(
+      "Pull request (⌘⇧P)",
+    );
+    // Nor while the first list loads: "none yet" only once it is known.
+    expect(prTabTitle({ ...s, prs: { status: "loading", reason: null, loadedAtMs: null, partial: false } }, "main", "⌘⇧P")).toBe(
       "Pull request (⌘⇧P)",
     );
     expect(prTabTitle(s, null, "⌘⇧P")).toBe("Pull request (⌘⇧P)");

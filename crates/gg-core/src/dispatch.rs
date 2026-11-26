@@ -485,6 +485,10 @@ impl Core {
                 let a: WorktreeFilesArgs = parse(cmd, args)?;
                 to_json(self.repos()?.worktree_files(a.repo_id, &a.path).await?)
             }
+            "branch_files" => {
+                let a: WorktreeFilesArgs = parse(cmd, args)?;
+                to_json(self.repos()?.branch_files(a.repo_id, &a.path).await?)
+            }
             "worktree_default_path" => {
                 let a: DefaultPathArgs = parse(cmd, args)?;
                 let pattern = self.store.settings().worktree_pattern;

@@ -231,7 +231,7 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
     };
     match ran {
         Ok(out) => {
-            remember_base(ctx, base);
+            remember_base(ctx, branch, base);
             ctx.manager.spawn_load_prs(ctx.repo, PrTrigger::Created);
             let Some(url) = created_url(&out.text(), &on.host) else {
                 return Ok(Step::Done(format!(
@@ -306,13 +306,13 @@ fn query_encode(text: &str) -> String {
     out
 }
 
-/// Remembers `base` as the next pull request's suggested base, in the background.
-fn remember_base(ctx: &OpCtx<'_>, base: &str) {
+/// Remembers `base` as `branch`'s next pull request's suggested base, in the background.
+fn remember_base(ctx: &OpCtx<'_>, branch: &str, base: &str) {
     let Some(memory) = ctx.manager.memory() else {
         return;
     };
-    let (root, base) = (ctx.repo.root.clone(), base.to_owned());
+    let (root, branch, base) = (ctx.repo.root.clone(), branch.to_owned(), base.to_owned());
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        runtime.spawn_blocking(move || memory.remember_pr_base(&root, &base));
+        runtime.spawn_blocking(move || memory.remember_pr_base(&root, &branch, &base));
     }
 }

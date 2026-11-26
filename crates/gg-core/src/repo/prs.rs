@@ -438,8 +438,9 @@ impl RepoManager {
 
     /// What to offer for a new pull request of local branch `branch` (see [`PrSuggestion`]):
     /// the title is the commit's subject when the branch has one commit not on the base, else
-    /// the branch's name as words; the description lists the subjects; the base is the one
-    /// last used here (when it is still a branch on the remote), else the repository's
+    /// the branch's name as words; the description lists the subjects; the base is the
+    /// branch's own (`repo/base.rs`: the one its last pull request went into, the branch it was
+    /// created from, the nearest by history, while still on the remote), else the repository's
     /// default branch (`gh repo view`), else the remote's HEAD, else `main`. `existing` is asked
     /// of `gh` for this branch (`gh pr list --head <branch>`), never taken from the list shown,
     /// which may not hold it.
@@ -488,24 +489,22 @@ impl RepoManager {
         };
         let gh = on.as_ref().and_then(|on| self.gh(&repo, &repo.runner, on));
 
-        // The base: the one remembered, if still on the remote; gh's default branch; the
-        // remote's HEAD; main.
+        // The base (repo/base.rs): the one remembered for this branch, the branch it was
+        // created from, the nearest by history, while on the remote; else gh's default
+        // branch, the remote's HEAD, main.
         let on_remote = |name: &str| {
             base_remote
                 .as_ref()
                 .map(|r| format!("refs/remotes/{r}/{name}"))
         };
-        let remembered = self
-            .memory()
-            .and_then(|m| m.pr_base(root))
-            .filter(|b| crate::git::names::check_branch_name(b).is_ok());
-        let mut base = None;
-        if let Some(b) = remembered
-            && let Some(full) = on_remote(&b)
-            && exists(full).await
-        {
-            base = Some(b);
-        }
+        let snap = self.snapshot(repo_id).await?;
+        let base = match base_remote.as_deref() {
+            Some(r) => self
+                .recorded_base(&repo, &snap, branch, r)
+                .await
+                .map(|(b, _)| b),
+            None => None,
+        };
         // gh is asked two things at once, under one time limit: the default branch (when no
         // base is remembered) and the branch's open pull request (`gh pr list --head`, never
         // the list shown, which may not hold it).
@@ -556,24 +555,9 @@ impl RepoManager {
             }
             None => (None, None),
         };
-        if base.is_none() {
-            base = default_branch;
-        }
-        if base.is_none()
-            && let Some(r) = &base_remote
-        {
-            let head = format!("refs/remotes/{r}/HEAD");
-            if let Ok(out) = run(vec!["symbolic-ref".into(), "--quiet".into(), head]).await
-                && out.code == 0
-            {
-                base = out
-                    .text()
-                    .trim()
-                    .strip_prefix(&format!("refs/remotes/{r}/"))
-                    .map(str::to_owned);
-            }
-        }
-        let base = base.unwrap_or_else(|| "main".to_owned());
+        let base = base.unwrap_or_else(|| {
+            super::base::default_base(&snap, base_remote.as_deref(), default_branch)
+        });
 
         // The branch's commits not on the base (on the remote, else here).
         let mut since = None;

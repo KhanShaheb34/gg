@@ -918,3 +918,120 @@ test("two branches at one commit, neither pushed: going from one to the other as
   await expect(button(page, "Push and create PR")).toBeEnabled();
   expect(gg.gh.calls().filter((c) => c.includes("--head") && c.includes("fix/again"))).toHaveLength(1);
 });
+
+/** Records, from the page's start, whether the create form ever showed (window.__ggSawForm). */
+async function watchForForm(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __ggSawForm?: boolean };
+    w.__ggSawForm = false;
+    new MutationObserver(() => {
+      if (document.querySelector('[data-testid="pr-form"]')) w.__ggSawForm = true;
+    }).observe(document, { childList: true, subtree: true });
+  });
+}
+const sawForm = (page: Page) => page.evaluate(() => (window as unknown as { __ggSawForm?: boolean }).__ggSawForm === true);
+
+test("while the first list of pull requests loads the tab looks for one, no form; then the form, the list having none", async ({ gg }) => {
+  const { page } = gg;
+  listing(gg, []);
+  gg.gh.slow("pr-list", 2);
+  gg.gh.slow("pr-list-head", 2);
+  gg.git("prs", "switch", "-q", "fix/typo");
+  await watchForForm(page);
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+P");
+  const looking = page.getByTestId("pr-looking");
+  await expect(looking).toBeVisible();
+  await expect(looking).toContainText("Looking for a pull request…");
+  await expect(looking).toContainText("fix/typo");
+  await expect(panel(page).getByTestId("pr-form")).toHaveCount(0);
+  // Nor "none yet" in the tab's tooltip before the list is known.
+  await expect(tab(page, "pr")).toHaveAttribute("title", /^Pull request \((⌘⇧P|Ctrl\+Shift\+P)\)$/);
+  await page.waitForTimeout(800);
+  await expect(looking).toBeVisible();
+  expect(await sawForm(page)).toBe(false);
+  // The list: none for fix/typo. The form, and "none yet".
+  await expect(panel(page).getByTestId("pr-form")).toBeVisible({ timeout: 10_000 });
+  await expect(looking).toHaveCount(0);
+  await expect(tab(page, "pr")).toHaveAttribute("title", /^Pull request · none yet /);
+});
+
+test("a branch with an open pull request: the tab looks for it, then shows it at once from the list, never the form", async ({ gg }) => {
+  const { page } = gg;
+  listing(gg, [pr(32, "docs/readme", "Explain the parser")]);
+  gg.gh.slow("pr-list", 2);
+  gg.gh.slow("pr-list-head", 2);
+  // Its checks and comments take longer still: the header does not wait for them.
+  gg.gh.slow("pr-view", 4);
+  gg.git("prs", "switch", "-q", "docs/readme");
+  await watchForForm(page);
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+P");
+  await expect(page.getByTestId("pr-looking")).toBeVisible();
+  const view = page.getByTestId("pr-view");
+  await expect(view).toBeVisible({ timeout: 10_000 });
+  await expect(view).toContainText("#32");
+  await expect(view).toContainText("Explain the parser");
+  // Before its details came: the status line has not loaded yet.
+  await expect(page.getByTestId("pr-status")).toHaveCount(0);
+  await expect(page.getByTestId("pr-looking")).toHaveCount(0);
+  expect(await sawForm(page)).toBe(false);
+});
+
+test("what is typed in the form is not lost while the tab looks for a pull request", async ({ gg }) => {
+  const { page } = gg;
+  // The first list fails: the app knows it cannot say, and the form shows (with its fields).
+  gg.gh.reply("pr-list", 1, "", "HTTP 502: Bad Gateway");
+  gg.gh.reply("pr-list-head", 0, "[]");
+  gg.gh.reply("repo-view", 0, JSON.stringify({ defaultBranchRef: { name: "main" } }));
+  gg.git("prs", "switch", "-q", "fix/typo");
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+P");
+  await expect.poll(() => prsStatus(page)).toBe("unavailable");
+  await expect(panel(page).getByTestId("pr-title")).toBeVisible();
+  await panel(page).getByTestId("pr-title").fill("My own title");
+  // Asked again; the list comes slowly. The tab shown again meanwhile looks for a pull request…
+  listing(gg, []);
+  gg.gh.slow("pr-list", 2);
+  await refresh(page);
+  await expect.poll(() => prsStatus(page)).toBe("loading");
+  await tab(page, "commit").click();
+  await tab(page, "pr").click();
+  await expect(page.getByTestId("pr-looking")).toBeVisible();
+  await expect(panel(page).getByTestId("pr-form")).toHaveCount(0);
+  // …and the form comes back with what was typed.
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("My own title", { timeout: 10_000 });
+  await expect(page.getByTestId("pr-looking")).toHaveCount(0);
+});
+
+test("a branch cut from staging is offered staging as its base, and Committed on branch compares with origin/staging", async ({ gg }) => {
+  const { page } = gg;
+  // staging, on the remote, a commit past main; a branch made there with `switch -c`.
+  gg.git("prs", "switch", "-q", "-c", "staging", "main");
+  writeFileSync(path.join(gg.repoPath("prs"), "staging.txt"), "staging\n");
+  gg.git("prs", "add", "staging.txt");
+  gg.git("prs", "commit", "-q", "-m", "Stage it");
+  gg.git("prs", "push", "-q", "origin", "staging");
+  gg.git("prs", "switch", "-q", "-c", "fix/staging-only");
+  writeFileSync(path.join(gg.repoPath("prs"), "fix.txt"), "fix\n");
+  gg.git("prs", "add", "fix.txt");
+  gg.git("prs", "commit", "-q", "-m", "Fix it on staging");
+  // gh says the repository's default branch is main: the branch's own base comes first.
+  await openListed(gg, []);
+  await grid(page).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+P");
+  await expect(panel(page).getByTestId("pr-form")).toBeVisible();
+  await expect(panel(page).getByTestId("pr-base")).toHaveValue("staging");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix it on staging");
+  // Committed on branch agrees: the one commit of its own, against origin/staging.
+  await tab(page, "commit").click();
+  await expect(page.getByTestId("branch-files-base")).toHaveText("vs origin/staging");
+  await expect(page.getByTestId("branch-files-count")).toHaveText("1");
+  await expect(page.getByTestId("branch-file")).toHaveAttribute("data-path", "fix.txt");
+});

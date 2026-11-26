@@ -155,7 +155,10 @@ Press ⌘K (or open the side panel's Commit tab, or click a worktree's change co
 you tick, with **Commit & Push** to send the branch upstream in the same step. Files you
 staged but did not tick stay staged and out of the commit. With nothing ticked, **Commit with
 no changes** makes an empty commit (to run CI again, say). When a merge is being concluded,
-its message is filled in for you.
+its message is filled in for you. Under the message, **Committed on branch** lists what the
+branch's own commits change since it left its base (the pull request's base, else the
+branch it was created from, as the pull request form offers it): each file with its folder,
+lines added and removed, and its status.
 
 **Pull requests**
 
@@ -168,7 +171,8 @@ its message is filled in for you.
 Through the GitHub CLI [`gh`](https://cli.github.com), signed in. The side panel's **Pull
 request** tab (⌘⇧P) is about the current branch: it shows the branch's open pull request, or
 the form to make one, with a title and description suggested from its commits, the branch it
-goes into, and Create as draft; it pushes the branch first when it needs to, and says so.
+goes into (by default the one it was created from: a branch cut from `staging` goes into
+`staging`), and Create as draft; it pushes the branch first when it needs to, and says so.
 **Create pull request…** on a branch or worktree shows the tab for that branch. Under an open
 pull request the tab shows, read-only, where it stands (Ready to merge, Checks failing,
 Conflicts with main, Approved…), its checks as they run (asked again every 15 s while one

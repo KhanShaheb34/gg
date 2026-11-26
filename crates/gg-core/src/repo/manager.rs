@@ -61,15 +61,16 @@ pub trait WorktreeMemory: Send + Sync + 'static {
     /// Remembers `worktree` (`None`: the main one) as active for the repository at `root`.
     /// Called on Tokio's blocking pool.
     fn remember(&self, root: &Path, worktree: Option<&Path>);
-    /// The base branch of the last pull request made in the repository at `root`, if any.
-    fn pr_base(&self, root: &Path) -> Option<String> {
-        let _ = root;
+    /// The base branch of the last pull request made from `branch` in the repository at
+    /// `root`, if any.
+    fn pr_base(&self, root: &Path, branch: &str) -> Option<String> {
+        let _ = (root, branch);
         None
     }
-    /// Remembers `base` as the base branch of the last pull request made there. Called on
-    /// Tokio's blocking pool.
-    fn remember_pr_base(&self, root: &Path, base: &str) {
-        let _ = (root, base);
+    /// Remembers `base` as the base branch of the last pull request made from `branch`
+    /// there. Called on Tokio's blocking pool.
+    fn remember_pr_base(&self, root: &Path, branch: &str, base: &str) {
+        let _ = (root, branch, base);
     }
 }
 
@@ -178,6 +179,9 @@ pub struct RepoManager {
     /// Tests only: loads of pull request details started.
     #[cfg(any(test, feature = "testutil"))]
     pub(super) details_loads: AtomicU64,
+    /// Tests only: how long comparing a branch with the remote's branches may take.
+    #[cfg(any(test, feature = "testutil"))]
+    pub(super) nearest_limit: Mutex<Option<Duration>>,
 }
 
 /// Tests only: a point in the core where the next task to pass stops. `reached` is
@@ -285,6 +289,10 @@ pub(crate) struct Repo {
     pub(super) prs_loads: watch::Sender<u64>,
     /// Each pull request's last (or running) load of its details, by number.
     pub(super) pr_details: Mutex<HashMap<u32, super::pr_details::DetailsLoad>>,
+    /// Each worktree's last (or running) read of its branch's committed files, by path.
+    pub(super) branch_files: Mutex<HashMap<String, super::branch_files::BranchFilesLoad>>,
+    /// Each branch's last (or running) answer for its base (steps 2 to 4 of `repo/base.rs`).
+    pub(super) branch_bases: Mutex<HashMap<String, super::base::BaseLoad>>,
 }
 
 /// Whether a status read is running and whether another was asked for meanwhile.
@@ -769,6 +777,8 @@ impl RepoManager {
             #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
             pr_details_every: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
+            nearest_limit: Mutex::new(None),
+            #[cfg(any(test, feature = "testutil"))]
             details_loads: AtomicU64::new(0),
         })
     }
@@ -976,6 +986,8 @@ impl RepoManager {
             prs_gate: Mutex::new(super::prs::PrGate::default()),
             prs_loads: watch::channel(0).0,
             pr_details: Mutex::new(HashMap::new()),
+            branch_files: Mutex::new(HashMap::new()),
+            branch_bases: Mutex::new(HashMap::new()),
         });
         repo.stashes_read(self.sink.as_ref(), stash_error);
 

@@ -6,6 +6,7 @@
 // changes); see worktrees.svelte.ts.
 
 import { api } from "../ipc";
+import { BranchFold } from "./branchFiles.svelte";
 
 /** The side panel's tabs, in the order its tab strip shows them. */
 export const SIDE_TABS = ["commit", "pr", "worktrees"] as const;
@@ -80,6 +81,8 @@ export class PanelState {
    * so a panel shown again (back to its tab) does not take the focus once more.
    */
   commitFocusDone = 0;
+  /** Whether the Commit tab's "Committed on branch" is open (never saved; see BranchFold). */
+  branchFold = new BranchFold();
   /** The user chose since the view opened: the remembered choice no longer applies. */
   chosen = false;
 

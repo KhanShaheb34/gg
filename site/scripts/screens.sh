@@ -39,7 +39,7 @@ crop() {
 
 crop graph graph-branchy 1280 800 0 0
 crop graph-narrow graph-branchy 600 640 0 0
-crop search small-search 900 390 0 0 # stops above the details' parent and author lines (an email address)
+crop search small-search 900 378 0 0 # stops above the details' parent and author lines (an email address)
 crop menu menu-branch 560 370 0 80
 crop worktrees worktrees 1280 490 0 40 # the toolbar, the graph and the side panel
 crop worktrees-narrow worktrees 300 450 980 80 # the side panel alone, for phones
@@ -52,7 +52,7 @@ crop pr-checks-narrow small-pr-tab-details 240 444 660 80 # down to the end of t
 crop notice notice-merge-push 410 164 568 630
 crop force dialog-force-push 490 214 395 98
 crop conflict small-banner-merge-partly 660 180 0 80
-crop log small-log-open 660 144 0 416
+crop log small-log-open 660 135 0 403 # down to the status bar
 crop settings settings 830 424 225 37 # down to the line above Tools
 crop shortcuts shortcuts 850 674 215 37
 

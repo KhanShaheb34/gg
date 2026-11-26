@@ -377,3 +377,133 @@ async fn read_only_and_kept_while_nothing_moved() {
         "{again:?}"
     );
 }
+
+/// `with_staging` as a repository pushed with `git push -u origin main` and never cloned has
+/// it: no `refs/remotes/origin/HEAD`.
+fn without_the_remotes_head() -> (TestRepo, TestRepo) {
+    let (repo, origin) = with_staging();
+    repo.git(&["remote", "set-head", "origin", "-d"]);
+    assert!(
+        repo.git(&["for-each-ref", "refs/remotes/origin/HEAD"])
+            .is_empty()
+    );
+    (repo, origin)
+}
+
+/// Without the remote's HEAD, main is still the default branch (the remote has it): no
+/// Committed on branch on it, and its suggestion is not the nearest branch by history
+/// (staging, one commit from it), but the default (step 5: main itself); a base the user
+/// picked for it still wins.
+#[tokio::test]
+async fn the_default_branch_without_the_remotes_head() {
+    let (repo, _origin) = without_the_remotes_head();
+    work(repo.path(), "m.txt");
+    // A push moves origin/main; a fetch would make origin/HEAD again (git 2.48 and later).
+    repo.git(&["push", "-q", "origin", "main"]);
+    assert!(
+        repo.git(&["for-each-ref", "refs/remotes/origin/HEAD"])
+            .is_empty()
+    );
+    assert_eq!(
+        repo.git(&["rev-list", "--count", "origin/staging..origin/main"]),
+        "1"
+    );
+    let memory = Arc::new(Memory::default());
+    let h = harness().await;
+    h.m.set_worktree_memory(memory.clone());
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(base(&h, id, "main").await, ("main".into(), None));
+    assert_eq!(
+        both(&h, id, "main", repo.path()).await,
+        ("main".into(), None)
+    );
+    // Picked by the user for main: that.
+    memory
+        .0
+        .lock()
+        .unwrap()
+        .insert("main".into(), "staging".into());
+    assert_eq!(
+        base(&h, id, "main").await,
+        ("staging".into(), Some("remembered"))
+    );
+    assert_eq!(
+        both(&h, id, "main", repo.path()).await,
+        ("staging".into(), Some("origin/staging".into()))
+    );
+}
+
+/// Without the remote's HEAD, a branch off main still has main as the default: a tie by
+/// history goes to it (staging is as near, and newer), and with nothing else to go by it is
+/// main.
+#[tokio::test]
+async fn a_feature_branch_without_the_remotes_head_goes_to_main() {
+    let (repo, _origin) = without_the_remotes_head();
+    repo.git(&[
+        "-c",
+        "core.logAllRefUpdates=false",
+        "branch",
+        "topic",
+        "main",
+    ]);
+    repo.checkout("topic");
+    work(repo.path(), "t.txt");
+    assert_eq!(
+        repo.git(&["rev-list", "--count", "origin/staging..topic"]),
+        "1"
+    );
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(
+        base(&h, id, "topic").await,
+        ("main".into(), Some("nearest"))
+    );
+    assert_eq!(
+        both(&h, id, "topic", repo.path()).await,
+        ("main".into(), Some("origin/main".into()))
+    );
+}
+
+/// `master` and `develop` on a remote without HEAD: master is the default branch (none on
+/// it; the end of the order for a branch with nothing to go by), not a `main` it lacks.
+#[tokio::test]
+async fn a_master_only_remote_without_its_head() {
+    let repo = TestRepo::new();
+    repo.write("app.txt", "app\n");
+    repo.commit_all("start");
+    repo.git(&["branch", "-m", "main", "master"]);
+    repo.git(&["branch", "develop"]);
+    repo.checkout("develop");
+    work(repo.path(), "d.txt");
+    repo.checkout("master");
+    work(repo.path(), "m.txt");
+    let _origin = repo.clone_as_remote();
+    assert!(
+        repo.git(&["for-each-ref", "refs/remotes/origin/HEAD"])
+            .is_empty()
+    );
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    assert_eq!(base(&h, id, "master").await, ("master".into(), None));
+    assert_eq!(
+        both(&h, id, "master", repo.path()).await,
+        ("master".into(), None)
+    );
+    // Nothing to go by (no reflog, no time to compare): master.
+    repo.git(&[
+        "-c",
+        "core.logAllRefUpdates=false",
+        "branch",
+        "topic",
+        "master",
+    ]);
+    repo.checkout("topic");
+    work(repo.path(), "t.txt");
+    h.m.set_nearest_limit(Duration::ZERO);
+    settle(&h, id).await;
+    assert_eq!(base(&h, id, "topic").await, ("master".into(), None));
+    assert_eq!(
+        both(&h, id, "topic", repo.path()).await,
+        ("master".into(), Some("origin/master".into()))
+    );
+}

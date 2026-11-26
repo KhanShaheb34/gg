@@ -194,6 +194,29 @@ test("none for the default branch or a detached HEAD; 500 rows and how many more
   await expect(page.getByTestId("branch-files-count")).toHaveText("5");
 });
 
+test("none on main when the remote has no HEAD (pushed with -u, never cloned): main is still the default branch", async ({ gg }) => {
+  const { page } = gg;
+  // branchy's origin was pushed to, never cloned or fetched from: git keeps no origin/HEAD.
+  expect(gg.git("branchy", "for-each-ref", "refs/remotes/origin/HEAD").trim()).toBe("");
+  const answers: unknown[] = [];
+  page.on("response", async (r) => {
+    if (!r.url().endsWith("/invoke") || !(r.request().postData() ?? "").includes('"cmd":"branch_files"')) return;
+    answers.push(((await r.json()) as { ok?: unknown }).ok);
+  });
+  await page.goto("/");
+  await open(page, gg.repoPath("branchy"));
+  await expect(page.getByRole("button", { name: /^Switch branch: main,/ })).toBeVisible();
+  // The core answered for main: no list (before, "vs origin/develop", the nearest by history).
+  await expect.poll(() => answers.length).toBeGreaterThan(0);
+  expect(answers).toEqual(answers.map(() => null));
+  await expect(section(page)).toHaveCount(0);
+  await expect(page.getByTestId("branch-files-base")).toHaveCount(0);
+
+  // A branch made from main there still has it: compared with origin/main.
+  gg.git("branchy", "switch", "-q", "develop");
+  await expect(page.getByTestId("branch-files-base")).toHaveText("vs origin/main");
+});
+
 test("asked for again when HEAD or the base moves, not for a file written or a refresh", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");

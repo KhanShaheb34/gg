@@ -83,8 +83,11 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   copy); without one, the base the pull request form offers the branch (below). Each file shows its name, its folder, the lines added and removed (none
   for a binary file) and its status (M, A, D, R; a rename is one row, its old path beside it);
   the first 500, then how many more. A file opens nothing (gg has no view of one file's
-  changes yet). There is no such section when HEAD is detached, on the default branch itself,
-  when no base is known, or when the branch changes nothing. It starts closed while the
+  changes yet). There is no such section when HEAD is detached, on the default branch itself
+  (unless you picked a base for it; the remote's `HEAD`, else gh's default branch as gh last
+  said it for the form, else `main` or `master` on the remote: a repository pushed with
+  `git push -u origin main`, never cloned, has no `HEAD` for its remote), when no base is
+  known, or when the branch changes nothing. It starts closed while the
   worktree has changes to commit and open while it has none; a click on its header holds only
   until that changes (changes appear, or are all committed), then the default applies again;
   it is not remembered when gg restarts. It is read again only when the branch's commit, the
@@ -134,7 +137,11 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   branch's reflog, or HEAD's when it was made with `switch -c` or in gg), else the nearest
   branch on that remote by history (fewest commits between them, the default branch on a
   tie), and only one the remote has; else the repository's default branch (gh's), the
-  remote's `HEAD`, `main`. You can pick any other. The button pushes the branch first when
+  remote's `HEAD`, `main` or `master` on the remote, `main`. For the default branch itself
+  (the remote's `HEAD`, else gh's default branch as gh last said it, else `main` or `master`
+  on the remote) only the base you last used for it counts, never where it came from or
+  its history; the tab says there is nothing to open a pull request into. You can pick any
+  other. The button pushes the branch first when
   it needs to, and the line above it says where. What you type is kept per branch while gg
   runs, whatever else you look at, until the pull request is made. A failure stays in the
   tab, with Show log. It says plainly when none can be made: HEAD detached, no remote, a

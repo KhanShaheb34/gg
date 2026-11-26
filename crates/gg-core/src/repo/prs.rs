@@ -440,10 +440,11 @@ impl RepoManager {
     /// the title is the commit's subject when the branch has one commit not on the base, else
     /// the branch's name as words; the description lists the subjects; the base is the
     /// branch's own (`repo/base.rs`: the one its last pull request went into, the branch it was
-    /// created from, the nearest by history, while still on the remote), else the repository's
-    /// default branch (`gh repo view`), else the remote's HEAD, else `main`. `existing` is asked
-    /// of `gh` for this branch (`gh pr list --head <branch>`), never taken from the list shown,
-    /// which may not hold it.
+    /// created from, the nearest by history, while still on the remote; for the default branch
+    /// only the first), else the repository's default branch (`gh repo view`, kept for
+    /// `repo/base.rs`), else the remote's HEAD, else `main` or `master` on the remote, else
+    /// `main`. `existing` is asked of `gh` for this branch (`gh pr list --head <branch>`),
+    /// never taken from the list shown, which may not hold it.
     pub async fn pr_suggest(&self, repo_id: u32, branch: &str) -> Result<PrSuggestion> {
         // On the heap: its future is large (it asks git and gh several things).
         Box::pin(self.suggest(repo_id, branch)).await
@@ -490,8 +491,8 @@ impl RepoManager {
         let gh = on.as_ref().and_then(|on| self.gh(&repo, &repo.runner, on));
 
         // The base (repo/base.rs): the one remembered for this branch, the branch it was
-        // created from, the nearest by history, while on the remote; else gh's default
-        // branch, the remote's HEAD, main.
+        // created from, the nearest by history, while on the remote (the default branch: the
+        // one remembered only); else gh's default branch, the remote's HEAD, main or master.
         let on_remote = |name: &str| {
             base_remote
                 .as_ref()
@@ -555,8 +556,21 @@ impl RepoManager {
             }
             None => (None, None),
         };
+        // What gh said is kept: repo/base.rs tells the default branch by it, never asking.
+        if base.is_none()
+            && gh.is_some()
+            && let Some(r) = base_remote.as_deref()
+        {
+            self.gh_says(&repo, r, default_branch.clone());
+        }
+        let said = base_remote.as_deref().and_then(|r| self.gh_said(&repo, r));
         let base = base.unwrap_or_else(|| {
-            super::base::default_base(&snap, base_remote.as_deref(), default_branch)
+            super::base::default_base(
+                &snap,
+                base_remote.as_deref(),
+                default_branch,
+                said.as_deref(),
+            )
         });
 
         // The branch's commits not on the base (on the remote, else here).

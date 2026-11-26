@@ -331,3 +331,61 @@ test("a branch with nothing ahead of its base: the pull request button says ther
   await expect(button).toHaveAttribute("aria-disabled", "true");
   await expect(button).toHaveAttribute("title", "Nothing to describe: level has no commits that are not on main.");
 });
+
+test("a generation belongs to the form, not to the panel showing it: shown again, the form still waits for it, can cancel it, and gets its answer once", async ({ gg }) => {
+  const { page } = gg;
+  gg.gh.reply("pr-list", 0, "[]");
+  gg.gh.reply("pr-list-head", 0, "[]");
+  gg.gh.reply("repo-view", 0, JSON.stringify({ defaultBranchRef: { name: "main" } }));
+  gg.ai.install("claude");
+  gg.ai.reply("claude", 0, JSON.stringify({ title: "Fix the README typo", body: "## Problem\nA typo.", draft: false }), "", 2_500);
+  await page.goto("/");
+  await open(page, gg.repoPath("prs"));
+  await setSettings(page, { aiNoticeSeen: ["claude"] });
+  await page.getByRole("grid", { name: "Commits" }).locator('[data-ref="fix/typo"]').first().locator(".name").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Create pull request…" }).click();
+  const panel = page.getByTestId("pr-panel");
+  await expect(panel.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await panel.getByTestId("pr-ai").click();
+  await expect(panel.getByTestId("pr-ai")).toHaveAttribute("data-state", "running");
+  // Another tab, then back: the form is made again, and still waits for it.
+  await page.getByTestId("side-tab-worktrees").click();
+  await expect(panel).toHaveCount(0);
+  await page.getByTestId("side-tab-pr").click();
+  await expect(panel.getByTestId("pr-ai")).toHaveAttribute("data-state", "running");
+  await expect(panel.getByTestId("pr-title")).toHaveAttribute("readonly", "");
+  await expect(panel.getByTestId("pr-ai-cancel")).toBeVisible();
+  // Its answer lands once, in the form shown now, with Undo.
+  await expect(panel.getByTestId("pr-title")).toHaveValue("Fix the README typo");
+  await expect(panel.getByTestId("pr-ai-undo")).toBeVisible();
+  expect(gg.ai.calls("claude")).toHaveLength(1);
+
+  // Cancelled from a form shown again: nothing of it lands, the tool is ended.
+  await panel.getByTestId("pr-title").fill("My own title");
+  gg.ai.reply("claude", 0, JSON.stringify({ title: "Too late", body: "x" }), "", 30_000);
+  await panel.getByTestId("pr-ai").click();
+  await expect.poll(() => gg.ai.calls("claude").length).toBe(2);
+  await page.getByTestId("side-tab-worktrees").click();
+  await page.getByTestId("side-tab-pr").click();
+  await panel.getByTestId("pr-ai-cancel").click();
+  await expect(panel.getByTestId("pr-ai")).toHaveAttribute("data-state", "ready");
+  await expect(panel.getByTestId("pr-title")).toHaveValue("My own title");
+  await page.waitForTimeout(500);
+  expect(gg.ai.calls("claude")[1].done).toBe(false);
+});
+
+test("the commit message's generation outlives the panel too: its answer is in the field when the Commit tab shows again", async ({ gg }) => {
+  const { page } = gg;
+  gg.ai.reply("claude", 0, "Tidy the notes\n", "", 2_000);
+  await commitPanel(gg);
+  await aiButton(page).click();
+  await expect(aiButton(page)).toHaveAttribute("data-state", "running");
+  await page.getByTestId("side-tab-worktrees").click();
+  await expect(page.getByTestId("commit-panel")).toHaveCount(0);
+  await page.getByTestId("side-tab-commit").click();
+  await expect(aiButton(page)).toHaveAttribute("data-state", "running");
+  await expect(message(page)).toHaveAttribute("readonly", "");
+  await expect(message(page)).toHaveValue("Tidy the notes");
+  await expect(aiButton(page)).toHaveAttribute("data-state", "ready");
+  expect(gg.ai.calls("claude")).toHaveLength(1);
+});

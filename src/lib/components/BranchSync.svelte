@@ -46,7 +46,7 @@
 </script>
 
 {#if sync}
-  <div class="sync" role="group" aria-label="{sync.branch} and {sync.upstream}" data-testid="branch-sync">
+  <div class="sync" role="group" aria-label="Sync {sync.branch} with {sync.upstream}" data-testid="branch-sync">
     {#if sync.push}
       {@const p = sync.push}
       {@const off = !!p.disabledReason || sending !== null}

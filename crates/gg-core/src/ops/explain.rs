@@ -1,56 +1,82 @@
 //! Plain explanations of git failures. A failed step carries git's own output as its
-//! detail, and a one-line message above it: an explanation where the failure is one the
-//! core recognises, else git's first line.
+//! detail, and a notice: an explanation where the failure is one the core recognises (what
+//! went wrong, and under it what to do), else "git merge failed" and git's most telling line.
 
 use std::time::Duration;
 
 use crate::dto::OpHint;
 use crate::git::runner::{Expired, GitOutput, git_failed};
+use crate::notice::{self, name, said, said_const, telling_line};
 use crate::ops::Step;
 
 /// Said when git could not take a lock because its lock file exists.
-const LOCKED: &str = "Another git process is working in this repository: git found its \
-                      lock file (named below). Try again once it is done.";
+const LOCKED: &str = said_const!(
+    "Another git process is working here",
+    "git found its lock file (named \
+                      in the log). Try again once it is done."
+);
 
 /// Said when HEAD is detached and the operation needs a current branch.
-pub(crate) const NO_BRANCH: &str = "No branch is checked out (HEAD is detached), so there \
+pub(crate) const NO_BRANCH: &str = said_const!(
+    "No branch is checked out",
+    "HEAD is detached, so there \
                                     is no current branch to do this on. Check out a branch \
-                                    first.";
+                                    first."
+);
 
 /// Said when a push is rejected because the remote branch has commits the local one lacks.
-pub(crate) const REMOTE_AHEAD: &str = "The remote has commits you don't have: fetch them, \
-                                       and merge or rebase (pull) before pushing again, or \
-                                       force push to discard them.";
+pub(crate) const REMOTE_AHEAD: &str = said_const!(
+    "Push rejected: the remote has new commits",
+    "Pull to \
+                                       bring them in first, or force push to discard them."
+);
 
 /// Said when a force push with lease is refused because the remote branch moved.
-pub(crate) const REMOTE_MOVED: &str = "The remote branch has changed since your last fetch, \
-                                       so the force push was refused (it would have \
-                                       discarded commits you have not seen). Fetch, look at \
-                                       what is new, then decide again.";
+pub(crate) const REMOTE_MOVED: &str = said_const!(
+    "Force push refused: the remote branch moved",
+    "It \
+                                       changed since your last fetch, and pushing would discard \
+                                       commits you have not seen. Fetch, look at what is new, \
+                                       then decide again."
+);
 
 /// Said when a remote cannot be reached at all.
-const UNREACHABLE: &str = "The remote could not be reached. Check the network connection \
-                           and the remote's address.";
+const UNREACHABLE: &str = said_const!(
+    "Could not reach the remote",
+    "Check the network connection and \
+                           the remote's address."
+);
 
 /// Said when git needs credentials it has no way to get.
-const NEEDS_CREDENTIALS: &str = "The remote asks for a username and password (or token), \
-                                 and git has none stored for it. This app cannot type them \
-                                 in: set up a credential helper or an SSH key, or run the \
-                                 command once in a terminal to store them.";
+const NEEDS_CREDENTIALS: &str = said_const!(
+    "The remote asks for a username and password",
+    "git has \
+                                 none stored for it, and gg cannot type them in: set up a \
+                                 credential helper or an SSH key, or run the command once in a \
+                                 terminal to store them."
+);
 
 /// Said when the remote refuses the credentials git gave it.
-const AUTH_FAILED: &str = "The remote refused the username and password (or token) git gave \
-                           it. Update the credentials stored for it, then try again.";
+const AUTH_FAILED: &str = said_const!(
+    "The remote refused your credentials",
+    "Update the username and \
+                           password (or token) stored for it, then try again."
+);
 
 /// Said when an SSH server refuses every key offered.
-const SSH_KEY_REFUSED: &str = "The SSH server refused your key (permission denied). Check \
-                               that your key is loaded (ssh-add) and added to your account \
-                               on the server.";
+const SSH_KEY_REFUSED: &str = said_const!(
+    "The SSH server refused your key",
+    "Check that it is loaded \
+                               (ssh-add) and added to your account on the server."
+);
 
 /// Said when ssh does not know, or no longer trusts, the server's host key.
-const HOST_KEY: &str = "ssh refused to connect: the server's host key is not known here, or \
-                        it has changed. Connect once with ssh in a terminal to check and \
-                        accept it.";
+const HOST_KEY: &str = said_const!(
+    "ssh does not trust the server's host key",
+    "It is not known here, \
+                        or it has changed. Connect once with ssh in a terminal to check and \
+                        accept it."
+);
 
 /// Most file names an explanation lists; the rest are counted.
 const MAX_FILES_LISTED: usize = 10;
@@ -77,12 +103,25 @@ pub fn explain(args: &[&str], out: &GitOutput) -> Step {
         .into_iter()
         .collect();
     let message =
-        known_failure(args, &all).unwrap_or_else(|| git_failed(args, out.code, &detail).message);
+        known_failure(args, &all).unwrap_or_else(|| failed_in_gits_words(args, out.code, &detail));
     Step::Failed {
         message,
         detail,
         hints,
     }
+}
+
+/// The notice of a failure the core does not recognise, from git (run with `args`) ending with
+/// `code` and `output`: "git merge failed", and git's most telling line under it (its whole
+/// output is in the log).
+pub(crate) fn failed_in_gits_words(args: &[&str], code: i32, output: &str) -> String {
+    let what = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .copied()
+        .unwrap_or("");
+    let line = telling_line(output).unwrap_or_else(|| git_failed(args, code, output).message);
+    said(format!("git {what} failed"), line)
 }
 
 /// A plain line for `out` if git (run with `args`) found nothing to do: already up to date,
@@ -102,17 +141,21 @@ pub(crate) fn nothing_to_do(args: &[&str], out: &GitOutput) -> Option<String> {
     let what = args.first().copied().unwrap_or("");
     if up_to_date {
         return Some(match what {
-            "rebase" => "Already up to date: there is nothing to rebase.".to_owned(),
-            _ => "Already up to date: there is nothing to merge.".to_owned(),
+            "rebase" => said("Already up to date", "Nothing to rebase."),
+            _ => said("Already up to date", "Nothing to merge."),
         });
     }
     if nothing_to_commit {
         return Some(match what {
-            "cherry-pick" => "Nothing to commit: the commit's changes are already here.".to_owned(),
-            "revert" => {
-                "Nothing to commit: the commit's changes are already undone here.".to_owned()
-            }
-            _ => "Nothing to commit.".to_owned(),
+            "cherry-pick" => said(
+                "Nothing to commit",
+                "The commit's changes are already here.",
+            ),
+            "revert" => said(
+                "Nothing to commit",
+                "The commit's changes are already undone here.",
+            ),
+            _ => "Nothing to commit".to_owned(),
         });
     }
     None
@@ -139,50 +182,49 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
         all,
         "Your local changes to the following files would be overwritten by ",
     ) {
-        return Some(format!(
-            "Your uncommitted changes to {files} would be overwritten by {what}. Commit or \
-             stash them first."
+        return Some(said(
+            "Your uncommitted changes are in the way",
+            format!("The {what} would overwrite {files}. Commit or stash them first."),
         ));
     }
     if let Some((what, files)) = files_in_the_way(
         all,
         "The following untracked working tree files would be overwritten by ",
     ) {
-        return Some(format!(
-            "Untracked files would be overwritten by {what}: {files}. Move or delete them \
-             first."
+        return Some(said(
+            "Untracked files are in the way",
+            format!("The {what} would overwrite {files}. Move or delete them first."),
         ));
     }
     for line in all.lines().map(str::trim) {
         if let Some((branch, path)) = held_by_worktree(line) {
-            let path = crate::platform::native_path(path);
-            return Some(format!(
-                "Branch \u{201c}{branch}\u{201d} is checked out in another worktree, at \
-                 {path}. Switch to that worktree, or check out another branch here."
+            let at = notice::path(crate::platform::native_path(path));
+            return Some(said(
+                format!("{} is checked out in another worktree", name(branch)),
+                format!("At {at}. Switch to that worktree, or check out another branch here."),
             ));
         }
-        if let Some(name) = between(line, "fatal: a branch named '", "' already exists") {
-            return Some(format!(
-                "A branch named \u{201c}{name}\u{201d} already exists."
-            ));
+        if let Some(n) = between(line, "fatal: a branch named '", "' already exists") {
+            return Some(format!("A branch named {} already exists", name(n)));
         }
-        if let Some(name) = between(line, "fatal: tag '", "' already exists") {
-            return Some(format!(
-                "A tag named \u{201c}{name}\u{201d} already exists."
-            ));
+        if let Some(n) = between(line, "fatal: tag '", "' already exists") {
+            return Some(format!("A tag named {} already exists", name(n)));
         }
         if let Some((branch, path)) = delete_refused_by_worktree(line) {
-            let path = crate::platform::native_path(path);
-            return Some(format!(
-                "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, so \
-                 it cannot be deleted. Check out another branch there, or delete that worktree, \
-                 first."
+            let at = notice::path(crate::platform::native_path(path));
+            return Some(said(
+                format!("{} is checked out in another worktree", name(branch)),
+                format!(
+                    "At {at}, so it cannot be deleted. Check out another branch there, or \
+                     delete that worktree, first."
+                ),
             ));
         }
-        if let Some(name) = between(line, "error: the branch '", "' is not fully merged") {
-            return Some(format!(
-                "Branch \u{201c}{name}\u{201d} is not fully merged: it has commits that are \
-                 not in its upstream branch (or, without one, in HEAD), so git keeps it."
+        if let Some(n) = between(line, "error: the branch '", "' is not fully merged") {
+            return Some(said(
+                format!("{} is not fully merged", name(n)),
+                "It has commits that are not in its upstream branch (or, without one, in \
+                 HEAD), so git keeps it.",
             ));
         }
         if line.ends_with("is a merge but no -m option was given.") {
@@ -190,9 +232,12 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
                 Some(&"revert") => "revert",
                 _ => "cherry-pick",
             };
-            return Some(format!(
-                "That commit is a merge: to {what} it, choose which of its parents is the \
-                 mainline (usually the first, the branch it was merged into)."
+            return Some(said(
+                "That commit is a merge",
+                format!(
+                    "To {what} it, choose which of its parents is the mainline (usually the \
+                     first, the branch it was merged into)."
+                ),
             ));
         }
         if line == "You are not currently on a branch." || line == "fatal: No current branch." {
@@ -218,10 +263,10 @@ fn known_failure(args: &[&str], all: &str) -> Option<String> {
         } else {
             format!("{} files", conflicts.len())
         };
-        return Some(format!(
-            "The changes were applied with conflicts in {files}, left in the working tree. \
-             No commit was made, so there is nothing to continue: resolve the conflicts and \
-             commit, or discard the changes."
+        return Some(said(
+            format!("Applied with conflicts in {files}"),
+            "No commit was made, so there is nothing to continue: resolve the conflicts and \
+             commit, or discard the changes.",
         ));
     }
     None
@@ -288,8 +333,9 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
         .find(|l| l.starts_with("Timed out: "))
     {
         let why = line.trim_start_matches("Timed out: ").trim_end_matches('.');
-        return Some(format!(
-            "The remote took too long to answer, so the command was stopped ({why})."
+        return Some(said(
+            "The remote took too long to answer",
+            format!("The command was stopped ({why})."),
         ));
     }
     if has("could not read Username for") || has("could not read Password for") {
@@ -318,54 +364,55 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
         return Some(UNREACHABLE.to_owned());
     }
     for line in all.lines().map(str::trim) {
-        if let Some(name) = between(line, "fatal: '", "' does not appear to be a git repository") {
-            return Some(format!(
-                "No git repository was found at \u{201c}{name}\u{201d}: there is no remote \
-                 of that name, or the remote's address is wrong, or the repository is gone."
+        if let Some(at) = between(line, "fatal: '", "' does not appear to be a git repository") {
+            return Some(said(
+                format!("No git repository at {}", name(at)),
+                "There is no remote of that name, or the remote's address is wrong, or the \
+                 repository is gone.",
             ));
         }
         if let Some(rest) = line.strip_prefix("fatal: refusing to fetch into branch 'refs/heads/")
             && let Some((branch, path)) = rest.split_once("' checked out at '")
         {
-            let path = crate::platform::native_path(path.strip_suffix('\'').unwrap_or(path));
-            return Some(format!(
-                "Branch \u{201c}{branch}\u{201d} is checked out in the worktree at {path}, and \
-                 git does not move a checked-out branch by fetching into it: switch to that \
-                 worktree and pull it there."
+            let at = notice::path(crate::platform::native_path(
+                path.strip_suffix('\'').unwrap_or(path),
+            ));
+            return Some(said(
+                format!("{} is checked out in another worktree", name(branch)),
+                format!(
+                    "At {at}, and git does not move a checked-out branch by fetching into it: \
+                     switch to that worktree and pull it there."
+                ),
             ));
         }
         if line == "There is no tracking information for the current branch." {
-            return Some(
-                "The current branch has no upstream branch, so there is nothing to pull from: \
-                 push it with an upstream first, or set one."
-                    .to_owned(),
-            );
+            return Some(said(
+                "The current branch has no upstream",
+                "There is nothing to pull from: push it with an upstream first, or set one.",
+            ));
         }
     }
     if args.first() == Some(&"pull") && fast_forward_only(all) {
-        return Some(
-            "This branch and its upstream have diverged, and git is set to pull by \
-             fast-forward only (pull.ff), which is not possible here: choose whether to pull \
-             by merging or by rebasing."
-                .to_owned(),
-        );
+        return Some(said(
+            "The branch and its upstream have diverged",
+            "git is set to pull by fast-forward only (pull.ff), which is not possible here: \
+             choose whether to pull by merging or by rebasing.",
+        ));
     }
     if needs_pull_mode(all) {
-        return Some(
-            "This branch and its upstream have diverged: choose whether to pull by merging or \
-             by rebasing."
-                .to_owned(),
-        );
+        return Some(said(
+            "The branch and its upstream have diverged",
+            "Choose whether to pull by merging or by rebasing.",
+        ));
     }
     match args.first() {
         Some(&"push") => match push_rejected(all)? {
             Rejected::RemoteAhead => Some(REMOTE_AHEAD.to_owned()),
             Rejected::StaleInfo => Some(REMOTE_MOVED.to_owned()),
-            Rejected::TagExists => Some(
-                "The remote already has a tag of that name, on another commit. A push does \
-                 not move tags: delete it on the remote first if it is to change."
-                    .to_owned(),
-            ),
+            Rejected::TagExists => Some(said(
+                "The remote has that tag on another commit",
+                "A push does not move tags: delete it on the remote first if it is to change.",
+            )),
         },
         Some(&"fetch") => all
             .lines()
@@ -374,10 +421,10 @@ fn network_failure(args: &[&str], all: &str) -> Option<String> {
             .find_map(|l| {
                 let (_, dst) = l.split_once("->")?;
                 let dst = dst.trim().trim_end_matches("(non-fast-forward)").trim();
-                Some(format!(
-                    "Branch \u{201c}{dst}\u{201d} has commits of its own that the remote \
-                     branch does not have, so it cannot simply be moved forward to it (not a \
-                     fast-forward). Check it out and pull, to merge or rebase."
+                Some(said(
+                    format!("{} has commits the remote branch does not have", name(dst)),
+                    "It cannot simply be moved forward (not a fast-forward). Check it out and \
+                     pull, to merge or rebase.",
                 ))
             }),
         _ => None,
@@ -509,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_failures_lead_with_gits_first_line() {
+    fn unknown_failures_quote_gits_telling_line() {
         let step = explain(
             &["branch", "--", "x", "nope"],
             &failed("\nfatal: not a valid object name: 'nope'\nmore\n", ""),
@@ -517,7 +564,7 @@ mod tests {
         assert_eq!(
             step,
             Step::Failed {
-                message: "fatal: not a valid object name: 'nope'".into(),
+                message: said("git branch failed", "Not a valid object name: 'nope'"),
                 detail: "\nfatal: not a valid object name: 'nope'\nmore\n".into(),
                 hints: vec![],
             }
@@ -532,12 +579,15 @@ mod tests {
         else {
             panic!("not failed");
         };
-        assert_eq!(message, "something odd");
+        assert_eq!(message, said("git commit failed", "Something odd"));
         assert_eq!(detail, "something odd\n");
         let Step::Failed { message, .. } = explain(&["commit"], &failed("", "")) else {
             panic!("not failed");
         };
-        assert_eq!(message, "git commit exited with code 128");
+        assert_eq!(
+            message,
+            said("git commit failed", "git commit exited with code 128")
+        );
     }
 
     #[test]
@@ -615,7 +665,7 @@ mod tests {
                 panic!("not failed");
             };
             assert!(message.contains(&at), "{args:?}: {message}");
-            assert!(message.contains("\u{201c}f\u{201d}"), "{args:?}: {message}");
+            assert!(message.contains(&name("f")), "{args:?}: {message}");
             // Worktrees are deleted, in the app's words, never "removed".
             assert!(
                 !message.to_lowercase().contains("remove"),
@@ -712,8 +762,10 @@ mod tests {
         );
         assert_eq!(
             message(&["push"], &out),
-            "The remote took too long to answer, so the command was stopped (no output from \
-             git for 2 min)."
+            said(
+                "The remote took too long to answer",
+                "The command was stopped (no output from git for 2 min)."
+            )
         );
     }
 

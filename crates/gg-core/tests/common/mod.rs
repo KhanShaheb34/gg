@@ -10,12 +10,27 @@ use std::time::Duration;
 
 use gg_core::dto::{
     Confirmed, DangerKind, HeadInfo, MergeTarget, MergeTargetKind, OpOutcome, OpRequest, OpStatus,
-    RepoSnapshot, ResetMode,
+    Part, RepoSnapshot, ResetMode,
 };
 use gg_core::git::runner::{CmdKind, CommandLog, CommandRecord, GitRunner};
 use gg_core::repo::RepoManager;
 use gg_core::testutil::{RecordingSink, TestRepo};
 use serde_json::Value;
+
+/// The names an outcome's notice sets off (branches, tags, commits, stashes, then paths, each
+/// in the order said), headline and line under it alike.
+pub fn names(out: &OpOutcome) -> Vec<String> {
+    let all = out.notice.title.iter().chain(&out.notice.note);
+    let refs = all.clone().filter_map(|p| match p {
+        Part::Ref(r) => Some(r.clone()),
+        _ => None,
+    });
+    let paths = all.filter_map(|p| match p {
+        Part::Path(p) => Some(p.clone()),
+        _ => None,
+    });
+    refs.chain(paths).collect()
+}
 
 /// Generous bound for anything asynchronous.
 pub const TIMEOUT: Duration = Duration::from_secs(20);

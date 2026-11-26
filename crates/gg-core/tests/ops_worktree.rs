@@ -144,7 +144,7 @@ async fn a_clean_pushed_worktree_is_removed_without_a_danger() {
     assert!(out.dangers.is_empty());
     assert_eq!(
         out.message,
-        format!("Deleted the worktree at {}.", real_gone(&wt))
+        format!("Deleted the worktree at {}", real_gone(&wt))
     );
     assert!(!wt.exists());
     assert_eq!(listed(&repo).len(), 1);
@@ -599,7 +599,7 @@ async fn a_commit_made_in_a_clean_detached_worktree_during_the_switch_stops_the_
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .starts_with("It changed while gg was getting ready; nothing was deleted."),
+            .starts_with("Nothing was deleted. The worktree changed while gg was getting ready."),
         "{}",
         out.message
     );
@@ -631,7 +631,7 @@ async fn head_moving_during_the_switch_after_a_confirmation_stops_the_removal() 
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .starts_with("It changed since you confirmed; nothing was deleted."),
+            .starts_with("Nothing was deleted. The worktree changed since you confirmed."),
         "{}",
         out.message
     );
@@ -836,7 +836,7 @@ async fn a_marked_file_edited_during_the_switch_stops_the_removal() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .starts_with("It changed while gg was getting ready; nothing was deleted."),
+            .starts_with("Nothing was deleted. The worktree changed while gg was getting ready."),
         "{}",
         out.message
     );
@@ -870,7 +870,7 @@ async fn a_locked_worktree_is_refused_with_its_reason() {
     assert_eq!(
         out.message,
         format!(
-            "Nothing was deleted: the worktree at {} is locked (on a usb disk). git keeps a \
+            "Nothing was deleted. The worktree at {} is locked (on a usb disk). git keeps a \
              locked worktree; unlock it first (git worktree unlock) if it may go.",
             real(&wt)
         )
@@ -1021,7 +1021,7 @@ async fn a_file_written_while_main_becomes_active_stops_the_removal() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .starts_with("It changed since you confirmed; nothing was deleted."),
+            .starts_with("Nothing was deleted. The worktree changed since you confirmed."),
         "{}",
         out.message
     );
@@ -1064,7 +1064,7 @@ async fn a_worktree_with_submodules_is_refused_with_what_a_forced_delete_would_l
     assert!(out.dangers.is_empty(), "no confirmation offered");
     assert!(
         out.message.starts_with(
-            "Nothing was deleted: git does not delete a worktree that contains submodules"
+            "Nothing was deleted. git does not delete a worktree that contains submodules"
         ),
         "{}",
         out.message
@@ -1191,7 +1191,7 @@ async fn another_repository_inside_is_never_removed_with_it() {
     // The inner repository named inside the worktree, not by a second long path (seen in
     // the real app).
     let says = format!(
-        "Nothing was deleted: {} contains another repository, at {} inside it, which git \
+        "Nothing was deleted. {} contains another repository, at {} inside it, which git \
          would delete with it. Move or delete it first.",
         real(&wt),
         native("build/other")
@@ -1271,7 +1271,7 @@ async fn a_worktree_that_is_not_what_the_dialog_showed_is_not_deleted() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message.starts_with(&format!(
-            "Nothing was deleted: the worktree at {} is not as the dialog showed it",
+            "Nothing was deleted. The worktree at {} is not as the dialog showed it",
             real(&wt)
         )),
         "{}",
@@ -1335,7 +1335,7 @@ async fn every_repository_inside_is_named_at_once() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message.starts_with(&format!(
-            "Nothing was deleted: {} contains 3 other repositories, which git would delete with \
+            "Nothing was deleted. {} contains 3 other repositories, which git would delete with \
              it:",
             real(&wt)
         )),
@@ -1416,7 +1416,7 @@ async fn deleting_a_merged_branch_with_its_worktree_needs_no_confirmation() {
     let out = h.run(id, remove(&wt, true)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert!(
-        out.message.ends_with("Deleted branch feature."),
+        out.message.ends_with(". Branch feature deleted too."),
         "{}",
         out.message
     );
@@ -1546,8 +1546,7 @@ async fn a_branch_checked_out_in_yet_another_worktree_is_kept_and_said_so() {
     assert_eq!(
         out.message,
         format!(
-            "Deleted the worktree at {}. Branch \u{201c}feature\u{201d} was not deleted: it is \
-             checked out in the worktree at {} too.",
+            "Deleted the worktree at {}. feature was not deleted: it is checked out at {} too.",
             real_gone(&wt),
             real(&other)
         )
@@ -1573,7 +1572,7 @@ async fn a_branch_that_cannot_be_deleted_after_its_worktree_is_said_in_a_done_ou
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert!(
         out.message.starts_with(&format!(
-            "Deleted the worktree at {}. Branch \u{201c}feature\u{201d} was not deleted: ",
+            "Deleted the worktree at {}. feature was not deleted: ",
             real_gone(&wt)
         )),
         "{}",
@@ -1603,7 +1602,7 @@ async fn a_worktree_path_that_is_a_link_is_refused() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .ends_with("is a link to another folder; delete the worktree from a terminal."),
+            .ends_with("is a link to another folder; delete the worktree from a terminal"),
         "{}",
         out.message
     );
@@ -1685,8 +1684,8 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     assert_eq!(
         out.message,
         format!(
-            "Pruned 1 stale worktree entry, whose folder was gone: {gone_listed}. 1 missing \
-             worktree is locked, so git keeps it."
+            "Pruned 1 worktree whose folder was gone. {gone_listed}. 1 missing worktree is \
+             locked, so git keeps it."
         )
     );
     let now = listed(&repo);
@@ -1733,7 +1732,7 @@ async fn prune_refuses_when_git_would_also_remove_entries_it_does_not_list() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message.starts_with(
-            "Nothing was pruned: git would also remove 1 worktree entry it does not list"
+            "Nothing was pruned. git would also remove 1 worktree entry it does not list"
         ),
         "{}",
         out.message
@@ -1821,7 +1820,7 @@ async fn a_worktree_is_added_for_an_existing_branch_and_not_made_active() {
     let at = real(&repo.dir.path().join("repo.worktrees/deep/feature-x"));
     assert_eq!(
         out.message,
-        format!("Created a worktree at {at}, on branch feature/x.")
+        format!("Created a worktree for feature/x. At {at}.")
     );
     assert_eq!(
         git_in(Path::new(&at), &["branch", "--show-current"]),
@@ -1907,7 +1906,8 @@ async fn a_worktree_is_added_with_a_new_branch_or_detached() {
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert!(
-        out.message.contains("on a new branch topic, at"),
+        out.message
+            .starts_with("Created a worktree for topic. A new branch at "),
         "{}",
         out.message
     );
@@ -1969,7 +1969,7 @@ async fn adding_refuses_a_bad_place_or_name() {
         (base.join("full"), "is not empty"),
         (repo.path().join("inside"), "is inside the worktree at"),
         (linked.join("deeper/still"), "is inside the worktree at"),
-        (linked.clone(), "there is a worktree at"),
+        (linked.clone(), "There is a worktree at"),
         (base.join("full/x"), "is not a folder"),
     ];
     for (path, why) in refused {
@@ -2083,7 +2083,7 @@ async fn adding_a_branch_checked_out_elsewhere_says_where_and_offers_to_make_it_
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message.contains(&format!(
-            "checked out in another worktree, at {}",
+            "checked out in another worktree. At {}.",
             real(&feature)
         )),
         "{}",
@@ -2126,8 +2126,10 @@ async fn a_failing_post_checkout_hook_is_reported_with_the_worktree_it_left() {
         .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
-        out.message
-            .starts_with(&format!("The worktree at {} was created", real(&target))),
+        out.message.starts_with(&format!(
+            "Created the worktree, but git reported a failure. At {}",
+            real(&target)
+        )),
         "{}",
         out.message
     );
@@ -2218,7 +2220,7 @@ async fn refusals_over_a_branch_checked_out_elsewhere_offer_to_make_it_active() 
     let out = h.run(id, delete_branch("feature")).await;
     assert_eq!(out.status, OpStatus::Failed);
     assert!(
-        out.message.contains("checked out in the worktree at"),
+        out.message.contains("checked out in another worktree. At "),
         "{}",
         out.message
     );
@@ -2255,7 +2257,7 @@ async fn a_clean_worktree_that_gains_files_during_the_switch_is_not_removed() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .starts_with("It changed while gg was getting ready; nothing was deleted."),
+            .starts_with("Nothing was deleted. The worktree changed while gg was getting ready."),
         "{}",
         out.message
     );

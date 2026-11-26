@@ -11,6 +11,7 @@ use crate::dto::{InProgressKind, OpHint, OpRequest};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::progress::{judge, read_kind, state_files};
 use crate::git::status::{paths, read_conflicted};
+use crate::notice::{name, said};
 use crate::ops::explain::{explain, recognised};
 use crate::ops::local::{
     autostash_note, current_branch, kind_name, stash_top, stopped_message,
@@ -230,8 +231,10 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
         }
         let branch = current_branch(ctx).await?;
         let done = Step::Done(match (kind, branch) {
-            (InProgressKind::Rebase, Some(branch)) => format!("Finished rebasing {branch}."),
-            _ => format!("Finished the {what}: it is committed."),
+            (InProgressKind::Rebase, Some(branch)) => {
+                format!("Finished rebasing {}", name(&branch))
+            }
+            _ => said(format!("Finished the {what}"), "It is committed."),
         });
         return autostash_note(ctx, done, &out, stash_before.as_deref()).await;
     };
@@ -245,9 +248,9 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
     if out.code == 0 {
         // An interactive rebase stopping where it was told to (`edit`, `break`).
         return Ok(Step::DoneWith {
-            message: format!(
-                "Continued the {what}; git stopped again without conflicts. It is still in \
-                 progress: continue it, or abort it."
+            message: said(
+                format!("Continued the {what}; git stopped again"),
+                "There are no conflicts. It is still in progress: continue it, or abort it.",
             ),
             detail: Some(detail),
             hints: Vec::new(),
@@ -263,10 +266,12 @@ pub(crate) async fn continue_op(ctx: &OpCtx<'_>) -> Result<Step> {
         && let Some(commit) = stopped_on
     {
         return Ok(Step::Failed {
-            message: format!(
-                "With the conflicts resolved this way the commit being applied has no \
-                 changes left (they are already here), and git will not continue with an \
-                 empty commit: skip this commit, or abort the {what}."
+            message: said(
+                "The commit being applied is now empty",
+                format!(
+                    "Resolved this way, its changes are already here, and git will not continue \
+                     with an empty commit: skip this commit, or abort the {what}."
+                ),
             ),
             detail,
             hints: vec![OpHint::Skip { commit }],
@@ -297,18 +302,23 @@ pub(crate) async fn skip_refused(ctx: &OpCtx<'_>, commit: &str) -> Result<Option
     let short = |h: &str| h.get(..8).unwrap_or(h).to_owned();
     Ok(match files.stopped_commit(kind) {
         Some(now) if now == commit => None,
-        Some(now) => Some(format!(
-            "Nothing was skipped: git has moved on, and the {} is now stopped on {}, not on \
-             {}. Look at it again, and skip again if it still applies.",
-            kind_name(kind),
-            short(&now),
-            short(commit)
+        Some(now) => Some(said(
+            "Nothing was skipped",
+            format!(
+                "git has moved on: the {} is now stopped on {}, not on {}. Look at it again, and \
+                 skip again if it still applies.",
+                kind_name(kind),
+                name(&short(&now)),
+                name(&short(commit))
+            ),
         )),
-        None => Some(format!(
-            "Nothing was skipped: the {} is no longer stopped on {}, the commit the skip was \
-             for.",
-            kind_name(kind),
-            short(commit)
+        None => Some(said(
+            "Nothing was skipped",
+            format!(
+                "The {} is no longer stopped on {}, the commit the skip was for.",
+                kind_name(kind),
+                name(&short(commit))
+            ),
         )),
     })
 }
@@ -331,7 +341,7 @@ pub(crate) async fn skip(ctx: &OpCtx<'_>) -> Result<Step> {
     let what = kind_name(kind);
     if kind == InProgressKind::Merge {
         return Ok(Step::Failed {
-            message: "A merge has no commit to skip: continue it, or abort it.".to_owned(),
+            message: said("A merge has no commit to skip", "Continue it, or abort it."),
             detail: String::new(),
             hints: Vec::new(),
         });
@@ -347,7 +357,10 @@ pub(crate) async fn skip(ctx: &OpCtx<'_>) -> Result<Step> {
         if out.code != 0 {
             return Ok(explain(&args, &out));
         }
-        let done = Step::Done(format!("Skipped the commit; the {what} is finished."));
+        let done = Step::Done(said(
+            "Skipped the commit",
+            format!("The {what} is finished."),
+        ));
         return autostash_note(ctx, done, &out, stash_before.as_deref()).await;
     };
     if !read_conflicted(&ctx.runner, &ctx.cwd).await?.is_empty() {
@@ -358,9 +371,12 @@ pub(crate) async fn skip(ctx: &OpCtx<'_>) -> Result<Step> {
     }
     if out.code == 0 {
         return Ok(Step::DoneWith {
-            message: format!(
-                "Skipped the commit; git stopped again without conflicts. The {what} is still \
-                 in progress: continue it, or abort it."
+            message: said(
+                "Skipped the commit; git stopped again",
+                format!(
+                    "There are no conflicts. The {what} is still in progress: continue it, or \
+                     abort it."
+                ),
             ),
             detail: Some(detail),
             hints: Vec::new(),
@@ -394,9 +410,10 @@ pub(crate) async fn abort(ctx: &OpCtx<'_>) -> Result<Step> {
     if all.contains("You seem to have moved HEAD") {
         // A sequence whose commit was made by hand: git ends it without rewinding.
         let done = Step::DoneWith {
-            message: format!(
-                "Stopped the {what}, without going back: commits were made since it started \
-                 (HEAD moved), so git leaves them as they are."
+            message: said(
+                format!("Stopped the {what} without going back"),
+                "Commits were made since it started (HEAD moved), so git leaves them as they \
+                 are.",
             ),
             detail: Some(all.trim().to_owned()),
             hints: Vec::new(),
@@ -404,9 +421,10 @@ pub(crate) async fn abort(ctx: &OpCtx<'_>) -> Result<Step> {
         return autostash_note(ctx, done, &out, stash_before.as_deref()).await;
     }
     let branch = current_branch(ctx).await?;
-    let back = branch.as_deref().unwrap_or("HEAD");
-    let done = Step::Done(format!(
-        "Aborted the {what}: {back} is back as it was before it."
+    let back = branch.as_deref().map_or_else(|| "HEAD".to_owned(), name);
+    let done = Step::Done(said(
+        format!("Aborted the {what}"),
+        format!("{back} is back as it was before it."),
     ));
     autostash_note(ctx, done, &out, stash_before.as_deref()).await
 }

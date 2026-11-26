@@ -23,6 +23,7 @@ use crate::gh::{GhFailure, already_exists, created_url, number_of, unavailable_m
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
+use crate::notice::{name, said};
 use crate::ops::network::{push, ref_commit};
 use crate::ops::{OpCtx, Step};
 use crate::pr_details::is_node_id;
@@ -103,8 +104,9 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         .await?
         .is_none()
     {
-        return Ok(refused(format!(
-            "Nothing was opened: there is no local branch named \u{201c}{branch}\u{201d}."
+        return Ok(refused(said(
+            "Nothing was opened",
+            format!("There is no local branch named {}.", name(branch)),
         )));
     }
     let facts = ctx
@@ -114,15 +116,17 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
     if let Some(r) = base_remote
         && !facts.is_remote(r)
     {
-        return Ok(refused(format!(
-            "Nothing was opened: there is no remote named {r}."
+        return Ok(refused(said(
+            "Nothing was opened",
+            format!("There is no remote named {r}."),
         )));
     }
     let base_remote = base_remote.or_else(|| facts.base_remote());
     let plan = push_plan(&ctx.runner, &ctx.cwd, &facts, branch).await?;
     let (Some((remote, behind)), Some(base_remote)) = (plan, base_remote) else {
-        return Ok(refused(format!(
-            "Nothing was opened: it is not clear which remote to push {branch} to."
+        return Ok(refused(said(
+            "Nothing was opened",
+            format!("It is not clear which remote to push {} to.", name(branch)),
         )));
     };
     let Some(on) = ctx
@@ -130,18 +134,21 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         .on_github(ctx.repo, &ctx.runner, &facts, base_remote)
         .await
     else {
-        return Ok(refused(format!(
-            "Nothing was opened: {}",
-            unavailable_message(PrUnavailable::NotGithub, None)
+        return Ok(refused(said(
+            "Nothing was opened",
+            unavailable_message(PrUnavailable::NotGithub, None),
         )));
     };
     if ref_commit(ctx, &format!("refs/remotes/{base_remote}/{base}"))
         .await?
         .is_none()
     {
-        return Ok(refused(format!(
-            "Nothing was opened: {base} is not a branch on {base_remote}. Choose another base, \
-             or fetch first."
+        return Ok(refused(said(
+            "Nothing was opened",
+            format!(
+                "{} is not a branch on {base_remote}. Choose another base, or fetch first.",
+                name(base)
+            ),
         )));
     }
     // A branch pushed to a fork is offered from there (`<owner>:<branch>`).
@@ -180,21 +187,30 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
 
     // Pushed first when its namesake there is missing or behind (`push_plan`, as the
     // suggestion said).
+    // What the push did, for the line under the headline: " · pushed to origin".
     let mut pushed = String::new();
     if behind {
         ctx.step(&format!("Pushing {branch} to {remote}/{branch}…"));
         match push(ctx, branch, remote, None, false, None, None).await? {
-            Step::Done(message) => pushed = format!("{message} "),
-            Step::DoneWith { message, .. } => pushed = format!("{message} "),
+            Step::Done(_) | Step::DoneWith { .. } => {
+                pushed = format!(" \u{b7} pushed to {remote}");
+            }
             failed => return Ok(failed),
         }
     }
+    let flow = format!("{} \u{2192} {}{pushed}", name(branch), name(base));
 
     let on_github_instead = |compare: Vec<OpHint>| {
         let message = if behind {
-            format!("Pushed {branch} to {remote}/{branch}. Finish on GitHub:")
+            said(
+                format!("Pushed {} to {remote}", name(branch)),
+                "Finish the pull request on GitHub.",
+            )
         } else {
-            format!("{branch} is on {remote}/{branch} already. Finish on GitHub:")
+            said(
+                format!("{} is on {remote} already", name(branch)),
+                "Finish the pull request on GitHub.",
+            )
         };
         Step::DoneWith {
             message,
@@ -245,18 +261,22 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
         Ok(out) => {
             remember_base(ctx, branch, base);
             ctx.manager.spawn_load_prs(ctx.repo, PrTrigger::Created);
+            let what = if draft {
+                "Draft pull request"
+            } else {
+                "Pull request"
+            };
             let Some(url) = created_url(&out.text(), &on.host) else {
-                return Ok(Step::Done(format!(
-                    "{pushed}The pull request was created, but gh did not print its address."
+                return Ok(Step::Done(said(
+                    format!("{what} opened"),
+                    format!("{flow} \u{b7} gh did not print its address"),
                 )));
             };
             let number = number_of(&url).map_or_else(String::new, |n| format!(" #{n}"));
-            let draft = if draft { "draft " } else { "" };
+            // Its address is not said: the notice's buttons open and copy it.
             Ok(opened(
                 url.clone(),
-                format!(
-                    "{pushed}Opened {draft}pull request{number} of {branch} into {base}: {url}"
-                ),
+                said(format!("{what}{number} opened"), flow),
             ))
         }
         Err(failure) => {
@@ -265,7 +285,10 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
                 let number = number_of(&url).map_or_else(String::new, |n| format!(" #{n}"));
                 return Ok(opened(
                     url,
-                    format!("{pushed}{branch} has a pull request open already{number}."),
+                    said(
+                        format!("Pull request{number} is open already"),
+                        flow.clone(),
+                    ),
                 ));
             }
             // Not signed in: as without gh, finished on the compare page.
@@ -273,14 +296,26 @@ pub(crate) async fn create(ctx: &OpCtx<'_>, request: Request<'_>) -> Result<Step
                 return Ok(on_github_instead(compare));
             }
             // Not installed after all: said as such; anything else is gh's own reason.
-            let why = match &failure {
-                GhFailure::Failed { message, .. } => {
-                    format!("gh could not open the pull request: {message}")
-                }
-                _ => unavailable_message(failure.reason(), Some(&failure)),
+            let pushed_first = if behind {
+                format!(" {} was pushed to {remote}.", name(branch))
+            } else {
+                String::new()
+            };
+            let message = match &failure {
+                GhFailure::Failed { message, .. } => said(
+                    "gh could not open the pull request",
+                    format!("{message}{pushed_first}"),
+                ),
+                _ => said(
+                    "Nothing was opened",
+                    format!(
+                        "{}{pushed_first}",
+                        unavailable_message(failure.reason(), Some(&failure))
+                    ),
+                ),
             };
             Ok(Step::Failed {
-                message: format!("{pushed}{why}"),
+                message,
                 detail: failure.detail(),
                 hints: compare,
             })
@@ -386,7 +421,7 @@ pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Resu
                 failure => unavailable_message(reason, failure.as_ref()),
             };
             return Ok(Step::Failed {
-                message: format!("Nothing was sent: {why}"),
+                message: said("Nothing was sent", why),
                 detail: failure.as_ref().map(GhFailure::detail).unwrap_or_default(),
                 hints: Vec::new(),
             });
@@ -457,19 +492,23 @@ pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Resu
             if args[0] == "api"
                 && let Some(why) = graphql_error(&out.stdout)
             {
-                return Ok(failed(format!("gh could not {verb}: {why}"), out.text()));
+                return Ok(failed(
+                    said(format!("gh could not {verb}"), why),
+                    out.text(),
+                ));
             }
             // The tab's next load asks gh, whatever the floor between loads says.
             ctx.manager.forget_pr_details(ctx.repo, number);
             Ok(Step::Done(done))
         }
-        Err(GhFailure::Failed { message, detail }) => {
-            Ok(failed(format!("gh could not {verb}: {message}"), detail))
-        }
+        Err(GhFailure::Failed { message, detail }) => Ok(failed(
+            said(format!("gh could not {verb}"), message),
+            detail,
+        )),
         Err(failure) => Ok(failed(
-            format!(
-                "Nothing was sent: {}",
-                unavailable_message(failure.reason(), Some(&failure))
+            said(
+                "Nothing was sent",
+                unavailable_message(failure.reason(), Some(&failure)),
             ),
             failure.detail(),
         )),

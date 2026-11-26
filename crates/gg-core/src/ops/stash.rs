@@ -10,15 +10,18 @@
 
 use crate::dto::{Danger, DangerKind};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::git::runner::{GitOutput, git_failed};
+use crate::git::runner::GitOutput;
 use crate::git::stash::{Stash, read_stashes};
-use crate::ops::explain::{file_list, recognised};
+use crate::notice::{name, said, said_const};
+use crate::ops::explain::{failed_in_gits_words, file_list, recognised};
 use crate::ops::local::{current_branch, short};
 use crate::ops::{OpCtx, Step};
 
 /// Said when the stash a request names is no longer in the list.
-const GONE: &str = "That stash no longer exists: it was dropped or popped since the list was \
-                    shown. Nothing was changed.";
+const GONE: &str = said_const!(
+    "That stash no longer exists",
+    "It was dropped or popped since the list was shown. Nothing was changed."
+);
 
 /// The stash whose commit is `hash`, as the list has it now (its `stash@{n}` included).
 async fn find(ctx: &OpCtx<'_>, hash: &str) -> Result<Option<Stash>> {
@@ -84,18 +87,19 @@ pub(crate) async fn save(
     if out.code != 0 {
         if all.contains("You do not have the initial commit yet") {
             return Ok(Step::Failed {
-                message: "There is nothing to stash on yet: this branch has no commits.".to_owned(),
+                message: said("Nothing to stash on yet", "This branch has no commits."),
                 detail: detail(&out),
                 hints: Vec::new(),
             });
         }
         return Ok(failed(&args, &out, None));
     }
-    Ok(Step::Done(if include_untracked {
-        "Stashed your changes and untracked files as stash@{0}.".to_owned()
+    let what = if include_untracked {
+        "Stashed your changes and untracked files"
     } else {
-        "Stashed your changes as stash@{0}.".to_owned()
-    }))
+        "Stashed your changes"
+    };
+    Ok(Step::Done(said(what, format!("As {}.", name("stash@{0}")))))
 }
 
 /// How a stash is put back.
@@ -121,13 +125,15 @@ pub(crate) async fn put_back(ctx: &OpCtx<'_>, hash: &str, how: PutBack) -> Resul
     if out.code != 0 {
         return Ok(failed(&args, &out, Some(how)));
     }
-    let named = format!("{} (\u{201c}{}\u{201d})", stash.selector, stash.subject);
+    let named = name(&stash.selector);
     Ok(Step::Done(match how {
-        PutBack::Apply => {
-            format!("Applied {named}: its changes are in the working tree, and the stash is kept.")
-        }
-        PutBack::Pop => format!(
-            "Popped {named}: its changes are in the working tree, and the stash is dropped."
+        PutBack::Apply => said(
+            format!("Applied {named}"),
+            "Its changes are in the working tree; the stash is kept.",
+        ),
+        PutBack::Pop => said(
+            format!("Popped {named}"),
+            "Its changes are in the working tree; the stash is dropped.",
         ),
     }))
 }
@@ -142,44 +148,46 @@ pub(crate) async fn drop(ctx: &OpCtx<'_>, hash: &str) -> Result<Step> {
     if out.code != 0 {
         return Ok(failed(&args, &out, None));
     }
-    Ok(Step::Done(format!(
-        "Dropped {} (\u{201c}{}\u{201d}).",
-        stash.selector, stash.subject
+    Ok(Step::Done(said(
+        format!("Dropped {}", name(&stash.selector)),
+        format!("\u{201c}{}\u{201d}", stash.subject),
     )))
 }
 
 /// `stash branch <name> <stash@{n}>`: a new branch at the stash's base, checked out, with
 /// the stash applied (and dropped if it applied cleanly). `bad_name` if a branch of that
 /// name exists (git is not asked).
-pub(crate) async fn branch(ctx: &OpCtx<'_>, hash: &str, name: &str) -> Result<Step> {
+pub(crate) async fn branch(ctx: &OpCtx<'_>, hash: &str, new: &str) -> Result<Step> {
     let exists = ctx
         .read(&[
             "rev-parse",
             "--verify",
             "--quiet",
-            &format!("refs/heads/{name}"),
+            &format!("refs/heads/{new}"),
         ])
         .await?;
     if exists.code == 0 {
         return Err(CoreError::new(
             ErrorCode::BadName,
-            format!("A branch named \u{201c}{name}\u{201d} already exists."),
+            format!("A branch named \u{201c}{new}\u{201d} already exists."),
         ));
     }
     let Some(stash) = find(ctx, hash).await? else {
         return Ok(gone_step());
     };
-    let args = ["stash", "branch", name, stash.selector.as_str()];
+    let args = ["stash", "branch", new, stash.selector.as_str()];
     let out = ctx.git(&args).await?;
     if out.code != 0 {
-        let made = current_branch(ctx).await?.as_deref() == Some(name);
-        return Ok(branch_failed(&args, &out, name, made));
+        let made = current_branch(ctx).await?.as_deref() == Some(new);
+        return Ok(branch_failed(&args, &out, new, made));
     }
-    Ok(Step::Done(format!(
-        "Created branch {name} at {} from {} and checked it out: the stash's changes are in \
-         the working tree, and the stash is dropped.",
-        short(&stash.base),
-        stash.selector
+    Ok(Step::Done(said(
+        format!("Created {} from {}", name(new), name(&stash.selector)),
+        format!(
+            "Checked out at {}, with the stash's changes in the working tree; the stash is \
+             dropped.",
+            name(short(&stash.base))
+        ),
     )))
 }
 
@@ -187,37 +195,23 @@ pub(crate) async fn branch(ctx: &OpCtx<'_>, hash: &str, name: &str) -> Result<St
 /// branch at the stash's base, then applies the stash. `made`: the checkout happened (the
 /// branch exists and is checked out) and applying failed; the stash is kept. Otherwise the
 /// checkout was blocked and nothing was made: told as a checkout's failure.
-fn branch_failed(args: &[&str], out: &GitOutput, name: &str, made: bool) -> Step {
+fn branch_failed(args: &[&str], out: &GitOutput, new: &str, made: bool) -> Step {
     let detail = detail(out);
     let message = if made {
+        let title = format!("Created {}, but the stash could not be applied", name(new));
         match put_back_failure(&detail, PutBack::Apply) {
-            Some(why) => format!(
-                "Created branch {name} and checked it out, but the stash could not be applied: \
-                 {}",
-                lowercase_first(&why)
-            ),
-            None => format!(
-                "Created branch {name} and checked it out, but the stash could not be applied. \
-                 The stash is kept."
-            ),
+            Some(why) => said(title, crate::notice::as_sentence(&why)),
+            None => said(title, "The stash is kept."),
         }
     } else {
         recognised(&["checkout"], &detail)
-            .unwrap_or_else(|| git_failed(args, out.code, &detail).message)
+            .unwrap_or_else(|| failed_in_gits_words(args, out.code, &detail))
     };
     Step::Failed {
         message,
         detail,
         hints: Vec::new(),
     }
-}
-
-/// `text` with its first letter in lower case, to follow a colon.
-fn lowercase_first(text: &str) -> String {
-    let mut chars = text.chars();
-    chars
-        .next()
-        .map_or_else(String::new, |c| c.to_lowercase().chain(chars).collect())
 }
 
 /// The step for a stash that went between the turn's check and the command.
@@ -247,7 +241,7 @@ fn failed(args: &[&str], out: &GitOutput, put_back: Option<PutBack>) -> Step {
     let message = put_back
         .and_then(|how| put_back_failure(&detail, how))
         .or_else(|| recognised(args, &detail))
-        .unwrap_or_else(|| git_failed(args, out.code, &detail).message);
+        .unwrap_or_else(|| failed_in_gits_words(args, out.code, &detail));
     Step::Failed {
         message,
         detail,
@@ -262,8 +256,8 @@ fn put_back_failure(all: &str, how: PutBack) -> Option<String> {
         PutBack::Pop => "The stash is kept, not dropped: drop it once you no longer need it.",
     };
     let doing = match how {
-        PutBack::Apply => "Applying the stash",
-        PutBack::Pop => "Popping the stash",
+        PutBack::Apply => "Applying",
+        PutBack::Pop => "Popping",
     };
     let conflicts: Vec<&str> = all
         .lines()
@@ -284,9 +278,9 @@ fn put_back_failure(all: &str, how: PutBack) -> Option<String> {
         } else {
             format!("{} files", conflicts.len())
         };
-        return Some(format!(
-            "{doing} ran into conflicts in {files}, left in the working tree for you to \
-             resolve. {kept}"
+        return Some(said(
+            format!("{doing} the stash ran into conflicts"),
+            format!("In {files}, left in the working tree for you to resolve. {kept}"),
         ));
     }
     let mut lines = all.lines();
@@ -296,10 +290,13 @@ fn put_back_failure(all: &str, how: PutBack) -> Option<String> {
             .map(str::trim)
             .filter(|f| !f.is_empty())
             .collect();
-        return Some(format!(
-            "Your uncommitted changes to {} would be overwritten by the stash, so nothing was \
-             applied. Commit them, or stash them too, first. {kept}",
-            file_list(&files)
+        return Some(said(
+            "Your uncommitted changes are in the way",
+            format!(
+                "The stash would overwrite {}, so nothing was applied. Commit them, or stash \
+                 them too, first. {kept}",
+                file_list(&files)
+            ),
         ));
     }
     let untracked: Vec<&str> = all
@@ -307,10 +304,13 @@ fn put_back_failure(all: &str, how: PutBack) -> Option<String> {
         .filter_map(|l| l.trim().strip_suffix(" already exists, no checkout"))
         .collect();
     if !untracked.is_empty() {
-        return Some(format!(
-            "Untracked files would be overwritten by the stash's untracked files: {}. Move \
-             or delete them first. {kept}",
-            file_list(&untracked)
+        return Some(said(
+            "Untracked files are in the way",
+            format!(
+                "The stash's untracked files would overwrite {}. Move or delete them first. \
+                 {kept}",
+                file_list(&untracked)
+            ),
         ));
     }
     None
@@ -330,7 +330,7 @@ mod tests {
 
     fn message(step: Step) -> String {
         match step {
-            Step::Failed { message, .. } => message,
+            Step::Failed { message, .. } => crate::notice::as_sentence(&message),
             other => panic!("not failed: {other:?}"),
         }
     }
@@ -350,7 +350,7 @@ mod tests {
             &o,
             Some(PutBack::Pop),
         ));
-        assert!(m.starts_with("Untracked files would be overwritten"), "{m}");
+        assert!(m.starts_with("Untracked files are in the way."), "{m}");
         assert!(m.contains("u2") && m.contains("not dropped"), "{m}");
     }
 
@@ -367,7 +367,7 @@ mod tests {
         ));
         assert_eq!(
             m,
-            "Applying the stash ran into conflicts in a, left in the working tree for you to \
+            "Applying the stash ran into conflicts. In a, left in the working tree for you to \
              resolve. The stash is kept."
         );
     }
@@ -376,6 +376,6 @@ mod tests {
     fn other_failures_lead_with_gits_line() {
         let o = out("fatal: log for 'stash' only has 3 entries\n", "");
         let m = message(failed(&["stash", "drop", "stash@{9}"], &o, None));
-        assert_eq!(m, "fatal: log for 'stash' only has 3 entries");
+        assert_eq!(m, "git stash failed. Log for 'stash' only has 3 entries.");
     }
 }

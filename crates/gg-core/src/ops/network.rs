@@ -11,12 +11,34 @@
 use crate::dto::{OpHint, PullMode};
 use crate::error::Result;
 use crate::git::runner::GitOutput;
+use crate::notice::{name, said};
 use crate::ops::explain::{Rejected, needs_pull_mode, nothing_to_do, push_rejected};
 use crate::ops::local::{
     autostash_note, current_branch, git_may_stop, head_commit, kind_name, short, stash_top,
     stopped_kind,
 };
 use crate::ops::{OpCtx, Step, explain};
+
+/// Where `branch` is on `remote` for a notice, `short` its remote-tracking name there
+/// (`origin/x`): the remote's name alone when it is the branch of the same name, else that
+/// branch, set off.
+pub(crate) fn where_on(branch: &str, remote: &str, short: &str) -> String {
+    if short == format!("{remote}/{branch}") {
+        remote.to_owned()
+    } else {
+        name(short)
+    }
+}
+
+/// `remote` of an upstream's short name `short` (`origin/x`), when the upstream is known;
+/// for a notice (see [`where_on`]).
+fn upstream_where(branch: &str, up: &Upstream) -> String {
+    if up.remote == "." {
+        name(&up.short)
+    } else {
+        where_on(branch, &up.remote, &up.short)
+    }
+}
 
 /// A local branch's upstream, as configured.
 pub(crate) struct Upstream {
@@ -65,9 +87,16 @@ pub(crate) async fn not_its_upstream(
         .await?
         .is_some_and(|up| up.remote == remote && up.remote_ref == wanted);
     Ok((!ok).then(|| {
-        format!(
-            "{remote}/{to} is not the upstream of {branch}: a push goes to {remote}/{branch}, or \
-             to the branch's upstream when you choose it."
+        said(
+            format!(
+                "{} is not the upstream of {}",
+                name(&format!("{remote}/{to}")),
+                name(branch)
+            ),
+            format!(
+                "A push goes to {remote}/{branch}, or to the branch's upstream when you choose \
+                 it."
+            ),
         )
     }))
 }
@@ -120,12 +149,13 @@ pub(crate) async fn unknown_remote(ctx: &OpCtx<'_>, remote: &str) -> Result<Opti
         return Ok(None);
     }
     let there = if known.is_empty() {
-        "it has none".to_owned()
+        "It has none.".to_owned()
     } else {
-        format!("its remotes: {}", known.join(", "))
+        format!("Its remotes: {}.", known.join(", "))
     };
-    Ok(Some(format!(
-        "\u{201c}{remote}\u{201d} is not a remote of this repository ({there})."
+    Ok(Some(said(
+        format!("{} is not a remote of this repository", name(remote)),
+        there,
     )))
 }
 
@@ -200,7 +230,7 @@ pub(crate) async fn push(
         args.push(&lease_arg);
     }
     args.extend([remote, refspec.as_str()]);
-    let to_shown = &target.short;
+    let there = where_on(branch, remote, &target.short);
     let out = ctx.git_net(&args).await?;
     if out.code != 0 {
         let all = format!("{}\n{}", out.stderr, out.text());
@@ -222,15 +252,17 @@ pub(crate) async fn push(
         return Ok(with_hints(explain(&args, &out), hints));
     }
     if pushed_nothing(&out) {
-        return Ok(Step::Done(format!(
-            "Already up to date: {to_shown} has every commit of {branch}."
+        return Ok(Step::Done(said(
+            "Nothing to push",
+            format!("{} is up to date on {there}.", name(branch)),
         )));
     }
     let what = if force { "Force-pushed" } else { "Pushed" };
+    let pushed = format!("{what} {} to {there}", name(branch));
     Ok(Step::Done(if set_upstream {
-        format!("{what} {branch} to {to_shown}, and set it as its upstream.")
+        said(pushed, "Upstream set.")
     } else {
-        format!("{what} {branch} to {to_shown}.")
+        pushed
     }))
 }
 
@@ -260,9 +292,12 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         }
         PullMode::Rebase => args.push("--rebase"),
     }
-    let from = upstream(ctx, branch).await?.map(|u| u.short);
+    let from = upstream(ctx, branch)
+        .await?
+        .map(|up| upstream_where(branch, &up));
     let stash_before = stash_top(ctx).await?;
     let stash_before = stash_before.as_deref();
+    let head_before = head_commit(ctx).await?;
     let out = match git_may_stop(ctx, &args, true).await? {
         Ok(out) => out,
         Err(step) => {
@@ -283,16 +318,32 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         }
     };
     if nothing_to_do(&args, &out).is_some() {
-        let done = format!(
-            "Already up to date: {branch} has every commit of {}.",
-            from.as_deref().unwrap_or("its upstream")
+        let done = said(
+            format!("{} is up to date", name(branch)),
+            format!(
+                "Nothing new on {}.",
+                from.as_deref().unwrap_or("its upstream")
+            ),
         );
         return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
-    let done = match from {
-        Some(from) => format!("Pulled {from} into {branch}."),
-        None => format!("Pulled into {branch}."),
+    // How it came in: a merge commit made, a rebase asked for, else (a fast-forward, or a
+    // rebase the config chose) just where from.
+    let merged = head_commit(ctx).await? != head_before
+        && ctx
+            .read(&["rev-parse", "--verify", "--quiet", "HEAD^2"])
+            .await?
+            .code
+            == 0;
+    let from = from.unwrap_or_else(|| "its upstream".to_owned());
+    let how = if merged {
+        format!("Merged from {from}.")
+    } else if mode == PullMode::Rebase {
+        format!("Rebased onto {from}.")
+    } else {
+        format!("From {from}.")
     };
+    let done = said(format!("Pulled {}", name(branch)), how);
     autostash_note(ctx, Step::Done(done), &out, stash_before).await
 }
 
@@ -315,9 +366,12 @@ async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
     // From the repository's config, so checked like every other argument: never an option.
     if up.remote.starts_with('-') || up.remote_ref.starts_with('-') {
         return Ok(Step::Failed {
-            message: format!(
-                "The upstream configured for {branch} (branch.{branch}.remote and .merge) is not \
-                 a remote and branch git can be given."
+            message: said(
+                format!("The upstream of {} cannot be used", name(branch)),
+                format!(
+                    "branch.{branch}.remote and .merge do not name a remote and a branch git \
+                     can be given."
+                ),
             ),
             detail: format!(
                 "remote \u{201c}{}\u{201d}, branch \u{201c}{}\u{201d}\n",
@@ -335,16 +389,19 @@ async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
         return fetch_into_failed(ctx, &args, &out, "pull").await;
     }
     let after = ref_commit(ctx, &into).await?;
+    let from = upstream_where(branch, &up);
     Ok(Step::Done(if before == after {
-        format!(
-            "Already up to date: {branch} has every commit of {}.",
-            up.short
+        said(
+            format!("{} is up to date", name(branch)),
+            format!("Nothing new on {from}."),
         )
     } else {
-        format!(
-            "Fast-forwarded {branch} to {} ({}), without checking it out.",
-            up.short,
-            after.as_deref().map_or("", short)
+        said(
+            format!("Fast-forwarded {}", name(branch)),
+            format!(
+                "To {} from {from}, without checking it out.",
+                name(after.as_deref().map_or("", short))
+            ),
         )
     }))
 }
@@ -352,9 +409,9 @@ async fn pull_other(ctx: &OpCtx<'_>, branch: &str) -> Result<Step> {
 /// The failure of pulling `branch`, which has no upstream.
 fn no_upstream(branch: &str) -> Step {
     Step::Failed {
-        message: format!(
-            "Branch \u{201c}{branch}\u{201d} has no upstream branch, so there is nothing to \
-             pull from: push it with an upstream first, or set one."
+        message: said(
+            format!("{} has no upstream", name(branch)),
+            "There is nothing to pull from: push it with an upstream first, or set one.",
         ),
         detail: format!("Branch \u{201c}{branch}\u{201d} has no upstream configured.\n"),
         hints: Vec::new(),
@@ -417,9 +474,9 @@ async fn fetch_into_failed(
             "use Pull to update it"
         };
         return Ok(Step::Failed {
-            message: format!(
-                "Branch \u{201c}{branch}\u{201d} is checked out here, and git does not move a \
-                 checked-out branch by fetching into it: {instead}."
+            message: said(
+                format!("{} is checked out here", name(&branch)),
+                format!("git does not move a checked-out branch by fetching into it: {instead}."),
             ),
             detail,
             hints,
@@ -427,10 +484,12 @@ async fn fetch_into_failed(
     };
     let kind = kind_name(kind);
     Ok(Step::Failed {
-        message: format!(
-            "A {kind} is in progress in this worktree, on branch \u{201c}{branch}\u{201d}: \
-             until it ends, git counts the branch as checked out here and does not move it by \
-             fetching. Continue or abort the {kind} first, then {then}."
+        message: said(
+            format!("A {kind} is in progress on {}", name(&branch)),
+            format!(
+                "Until it ends, git counts the branch as checked out here and does not move it \
+                 by fetching. Continue or abort the {kind} first, then {then}."
+            ),
         ),
         detail,
         hints,
@@ -448,8 +507,8 @@ pub(crate) async fn fetch_into_local(
     let Some((remote, branch)) = split_remote_branch(ctx, remote_branch).await? else {
         return Ok(Step::Failed {
             message: format!(
-                "\u{201c}{remote_branch}\u{201d} does not name a branch of any remote of this \
-                 repository."
+                "{} is not a branch of any remote of this repository",
+                name(remote_branch)
             ),
             detail: format!("No remote's name is a prefix of {remote_branch}.\n"),
             hints: Vec::new(),
@@ -465,13 +524,21 @@ pub(crate) async fn fetch_into_local(
         return fetch_into_failed(ctx, &args, &out, "fetch").await;
     }
     let after = ref_commit(ctx, &into).await?;
-    let at = after.as_deref().map_or("", short);
+    let at = name(after.as_deref().map_or("", short));
+    let from = where_on(local, &remote, remote_branch);
     Ok(Step::Done(match before {
-        None => format!("Created branch {local} at {remote_branch} ({at})."),
-        Some(b) if Some(&b) == after.as_ref() => {
-            format!("Already up to date: {local} has every commit of {remote_branch}.")
-        }
-        Some(_) => format!("Fast-forwarded {local} to {remote_branch} ({at})."),
+        None => said(
+            format!("Created branch {}", name(local)),
+            format!("At {at} from {from}."),
+        ),
+        Some(b) if Some(&b) == after.as_ref() => said(
+            format!("{} is up to date", name(local)),
+            format!("Nothing new on {from}."),
+        ),
+        Some(_) => said(
+            format!("Fast-forwarded {}", name(local)),
+            format!("To {at} from {from}."),
+        ),
     }))
 }
 
@@ -498,7 +565,7 @@ pub(crate) async fn delete_remote_branch(
     ];
     let out = ctx.git_net(&args).await?;
     if out.code == 0 {
-        return Ok(Step::Done(format!("Deleted branch {branch} on {remote}.")));
+        return Ok(Step::Done(format!("Deleted {} on {remote}", name(branch))));
     }
     let all = format!("{}\n{}", out.stderr, out.text());
     let step = explain(&args, &out);
@@ -509,17 +576,18 @@ pub(crate) async fn delete_remote_branch(
         return Ok(step);
     };
     // Without a lease commit it was never fetched here: nothing of it has been seen.
+    let title = format!("{} on {remote} was not deleted", name(branch));
     let message = if lease.is_none_or(str::is_empty) {
-        format!(
-            "Branch \u{201c}{branch}\u{201d} on {remote} has not been fetched here, so it was \
-             not deleted (that would delete commits you have not seen). Fetch, look at what is \
-             on it, then decide again."
+        said(
+            title,
+            "It has not been fetched here, and deleting it would delete commits you have not \
+             seen. Fetch, look at what is on it, then decide again.",
         )
     } else {
-        format!(
-            "Branch \u{201c}{branch}\u{201d} on {remote} has changed since your last fetch, so \
-             it was not deleted (that would have deleted commits you have not seen). Fetch, \
-             look at what is new, then decide again."
+        said(
+            title,
+            "It changed since your last fetch, and deleting it would delete commits you have \
+             not seen. Fetch, look at what is new, then decide again.",
         )
     };
     Ok(Step::Failed {
@@ -530,16 +598,19 @@ pub(crate) async fn delete_remote_branch(
 }
 
 /// `push --progress <remote> refs/tags/<name>`.
-pub(crate) async fn push_tag(ctx: &OpCtx<'_>, name: &str, remote: &str) -> Result<Step> {
-    let full = format!("refs/tags/{name}");
+pub(crate) async fn push_tag(ctx: &OpCtx<'_>, tag: &str, remote: &str) -> Result<Step> {
+    let full = format!("refs/tags/{tag}");
     let args = ["push", "--progress", remote, full.as_str()];
     let out = ctx.git_net(&args).await?;
     Ok(if out.code != 0 {
         explain(&args, &out)
     } else if pushed_nothing(&out) {
-        Step::Done(format!("Already up to date: {remote} has tag {name}."))
+        Step::Done(said(
+            "Nothing to push",
+            format!("{remote} has tag {} already.", name(tag)),
+        ))
     } else {
-        Step::Done(format!("Pushed tag {name} to {remote}."))
+        Step::Done(format!("Pushed tag {} to {remote}", name(tag)))
     })
 }
 
@@ -548,10 +619,10 @@ pub(crate) async fn push_tag(ctx: &OpCtx<'_>, name: &str, remote: &str) -> Resul
 /// nothing has changed; a remote that does not have the tag is fine.
 pub(crate) async fn delete_tag_everywhere(
     ctx: &OpCtx<'_>,
-    name: &str,
+    tag: &str,
     remote: &str,
 ) -> Result<Step> {
-    let full = format!("refs/tags/{name}");
+    let full = format!("refs/tags/{tag}");
     let args = ["push", "--progress", remote, "--delete", full.as_str()];
     let out = ctx.git_net(&args).await?;
     let all = format!("{}\n{}", out.stderr, out.text());
@@ -562,15 +633,16 @@ pub(crate) async fn delete_tag_everywhere(
     if out.code != 0 && !absent {
         return Ok(explain(&args, &out));
     }
-    let local = ["tag", "-d", "--", name];
+    let local = ["tag", "-d", "--", tag];
     let out = ctx.git(&local).await?;
     if out.code != 0 {
         return Ok(explain(&local, &out));
     }
+    let deleted = format!("Deleted tag {}", name(tag));
     Ok(Step::Done(if absent {
-        format!("Deleted tag {name} ({remote} did not have it).")
+        said(deleted, format!("{remote} did not have it."))
     } else {
-        format!("Deleted tag {name}, here and on {remote}.")
+        said(deleted, format!("Here and on {remote}."))
     }))
 }
 
@@ -584,38 +656,34 @@ pub(crate) async fn fast_forward_checked_out(
     checked_out: String,
 ) -> Result<Step> {
     let Some(up) = upstream(ctx, branch).await? else {
-        return Ok(Step::Done(format!(
-            "{checked_out} It has no upstream branch, so there was nothing to fast-forward to."
+        return Ok(Step::Done(said(
+            &checked_out,
+            "It has no upstream to fast-forward to.",
         )));
     };
+    let from = upstream_where(branch, &up);
     let args = ["merge", "--ff-only", "@{upstream}"];
     let before = head_commit(ctx).await?;
     let out = ctx.git(&args).await?;
     if out.code != 0 {
         let all = format!("{}\n{}", out.stderr, out.text());
         let why = if all.contains("Not possible to fast-forward") {
-            format!(
-                "{branch} has commits of its own that {} does not have",
-                up.short
-            )
+            format!("it has commits {from} does not have.")
         } else {
             match explain(&args, &out) {
-                Step::Failed { message, .. } => message.trim_end_matches('.').to_owned(),
-                _ => "git refused".to_owned(),
+                Step::Failed { message, .. } => crate::notice::as_sentence(&message),
+                _ => "git refused.".to_owned(),
             }
         };
         return Ok(Step::DoneWith {
-            message: format!(
-                "{checked_out} It could not be fast-forwarded to {}: {why}.",
-                up.short
-            ),
+            message: said(&checked_out, format!("Not fast-forwarded to {from}: {why}")),
             detail: Some(all.trim().to_owned()),
             hints: Vec::new(),
         });
     }
     Ok(Step::Done(if head_commit(ctx).await? == before {
-        format!("{checked_out} It is up to date with {}.", up.short)
+        said(&checked_out, format!("Up to date with {from}."))
     } else {
-        format!("{checked_out} It was fast-forwarded to {}.", up.short)
+        said(&checked_out, format!("Fast-forwarded to {from}."))
     }))
 }

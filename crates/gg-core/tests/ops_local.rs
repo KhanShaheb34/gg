@@ -249,10 +249,8 @@ async fn an_existing_branch_name_explains() {
     for request in [rename, remote] {
         let out = h.run(id, request).await;
         assert_eq!(out.status, OpStatus::Failed, "{out:?}");
-        assert_eq!(
-            out.message,
-            "A branch named \u{201c}b\u{201d} already exists."
-        );
+        assert_eq!(out.message, "A branch named b already exists");
+        assert_eq!(names(&out), ["b"]);
         assert!(out.detail.unwrap().contains("already exists"));
     }
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/heads/a"]));
@@ -305,8 +303,7 @@ async fn checkout_branch_held_by_another_worktree_explains() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     let wt = dunce::canonicalize(&wt).unwrap();
     assert!(
-        out.message.contains("\u{201c}held\u{201d}")
-            && out.message.contains(wt.to_string_lossy().as_ref())
+        names(&out) == ["held".to_owned(), wt.to_string_lossy().into_owned()]
             && out.message.contains("another worktree"),
         "{}",
         out.message
@@ -722,7 +719,8 @@ async fn merge_commit_refused_by_a_hook_fails_with_its_output() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert_eq!(
         out.message,
-        "A hook stopped the merge commit; the merge is staged and not committed."
+        "A hook stopped the merge commit. The merge is staged, not committed. What the hook said \
+         is in the log."
     );
     let detail = out.detail.as_deref().unwrap_or_default();
     assert!(detail.contains("hook says no"), "{detail}");
@@ -1239,7 +1237,7 @@ async fn revert_merge_commit_needs_a_mainline() {
     let out = h.run(id, revert(&merge_commit, None)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
-        out.message.contains("to revert it") && out.message.contains("mainline"),
+        out.message.contains("To revert it") && out.message.contains("mainline"),
         "{}",
         out.message
     );
@@ -1468,11 +1466,7 @@ async fn delete_tag_deletes_it_locally() {
     // On a remote too: the remote goes first, so when it fails the tag stays here.
     let out = h.run(id, request(Some("origin"))).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
-    assert!(
-        out.message.contains("\u{201c}origin\u{201d}"),
-        "{}",
-        out.message
-    );
+    assert!(names(&out) == ["origin"], "{}", out.message);
     assert!(repo.git_succeeds(&["rev-parse", "--verify", "--quiet", "refs/tags/v1"]));
 
     let out = h.run(id, request(None)).await;
@@ -1589,7 +1583,7 @@ async fn checkout_with_untracked_files_in_the_way_explains() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message
-            .starts_with("Untracked files would be overwritten by checkout: made.txt."),
+            .starts_with("Untracked files are in the way. The checkout would overwrite made.txt."),
         "{}",
         out.message
     );
@@ -1623,8 +1617,8 @@ async fn a_squash_merge_with_conflicts_changes_nothing() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert_eq!(
         out.message,
-        "This squash merge has conflicts. A squash can't be continued here, so nothing was \
-         changed. Merge normally, or squash in a terminal."
+        "The squash merge has conflicts: nothing was changed. A squash can't be continued here. \
+         Merge normally, or squash in a terminal."
     );
     assert!(
         out.detail.as_deref().unwrap_or("").contains("CONFLICT"),

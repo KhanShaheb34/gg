@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::dto::{Danger, DangerKind, OpHint};
 use crate::error::Result;
+use crate::notice::said;
 use crate::ops::{OpCtx, Step};
 use crate::platform::GitScan;
 
@@ -290,43 +291,52 @@ pub(crate) async fn explain_failure(ctx: &OpCtx<'_>, step: Step) -> Result<Step>
     let Some(lock) = found else {
         // Gone already (the other git finished): a retry may work.
         return Ok(Step::Failed {
-            message: "Another git process was working in this repository: git found its lock \
-                      file, index.lock. It is gone now: try again."
-                .to_owned(),
+            message: said(
+                "Another git process was working here",
+                "git found its lock file, index.lock. It is gone now: try again.",
+            ),
             detail,
             hints,
         });
     };
-    let shown = named(&lock.path, &ctx.cwd);
+    let shown = crate::notice::path(named(&lock.path, &ctx.cwd));
     let age = age_text(lock.age());
     let message = match judge(ctx, &lock).await {
-        Verdict::Fresh | Verdict::AppGit => format!(
-            "Another git process is working in this repository: git found its lock file, \
-             {shown}, made {age} ago. Try again once it is done."
+        Verdict::Fresh | Verdict::AppGit => said(
+            "Another git process is working here",
+            format!("git found its lock file, {shown}, made {age} ago. Try again once it is done."),
         ),
-        Verdict::OtherGit(pid) => format!(
-            "A git process (pid {pid}) is working in this repository: git found its lock \
-             file, {shown}, made {age} ago. Try again once it is done (a commit waiting for \
-             its message in an editor holds it until the editor is closed)."
+        Verdict::OtherGit(pid) => said(
+            format!("A git process (pid {pid}) is working here"),
+            format!(
+                "git found its lock file, {shown}, made {age} ago. Try again once it is done (a \
+                 commit waiting for its message in an editor holds it until the editor is \
+                 closed)."
+            ),
         ),
         Verdict::Stale { checked } => {
             hints.push(OpHint::RemoveIndexLock {
                 path: lock.path.display().to_string(),
                 worktree: ctx.cwd.display().to_string(),
             });
+            let title = format!("A lock file from {age} ago is in the way");
             if checked {
-                format!(
-                    "git found a lock file, {shown}, made {age} ago, and no git process on this \
-                     computer has this folder as its working folder: it was probably left \
-                     behind by a git that crashed. Another program may still be using it; if \
-                     none is, remove it."
+                said(
+                    title,
+                    format!(
+                        "No git process on this computer is working in this folder: {shown} was \
+                         probably left behind by a git that crashed. Another program may still \
+                         be using it; if none is, remove it."
+                    ),
                 )
             } else {
-                format!(
-                    "git found a lock file, {shown}, made {age} ago, and no git started by gg \
-                     is running here; {NOT_CHECKED}. It may have been left behind by a git \
-                     that crashed: if no other git or editor is using this repository, \
-                     remove it."
+                said(
+                    title,
+                    format!(
+                        "No git started by gg is running here; {NOT_CHECKED}. {shown} may have \
+                         been left behind by a git that crashed: if no other git or editor is \
+                         using this repository, remove it."
+                    ),
                 )
             }
         }
@@ -444,9 +454,12 @@ pub(crate) async fn remove(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> 
             });
         }
     }
-    Ok(Step::Done(format!(
-        "Removed the lock file {}. Try again what failed.",
-        named(&lock.path, &ctx.cwd)
+    Ok(Step::Done(said(
+        format!(
+            "Removed the lock file {}",
+            crate::notice::path(named(&lock.path, &ctx.cwd))
+        ),
+        "Try again what failed.",
     )))
 }
 

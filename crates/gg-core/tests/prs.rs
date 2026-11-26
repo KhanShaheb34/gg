@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use common::{TIMEOUT, harness};
 use gg_core::dto::{
-    OpHint, OpRequest, OpStatus, PrStatus, PrUnavailable, PullRequestState, RefKind, RepoSnapshot,
+    Notice, OpHint, OpRequest, OpStatus, Part, PrStatus, PrUnavailable, PullRequestState, RefKind,
+    RepoSnapshot,
 };
 use gg_core::testutil::{FakeGh, TestRepo};
 use serde_json::{Value, json};
@@ -758,7 +759,7 @@ async fn the_compare_page_the_dialog_promised_never_runs_gh() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
-        "Pushed feature to origin/feature. Finish on GitHub:"
+        "Pushed feature to origin. Finish the pull request on GitHub."
     );
     assert!(
         matches!(&out.hints[..], [OpHint::OpenUrl { url, .. }] if url.contains("/compare/")),
@@ -881,18 +882,25 @@ async fn a_pull_request_is_made_after_the_push_with_the_body_on_stdin() {
         s.h.run(s.id, create("feature/x", "main", "Add x", body, true))
             .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    assert!(
-        out.message
-            .starts_with("Pushed feature/x to origin/feature/x"),
-        "{}",
-        out.message
+    // A headline, and under it the branch into its base and the push, each name once; never
+    // the address, which the notice's buttons open and copy.
+    assert_eq!(
+        out.notice,
+        Notice {
+            title: vec![Part::Text("Draft pull request #42 opened".into())],
+            note: vec![
+                Part::Ref("feature/x".into()),
+                Part::Text(" \u{2192} ".into()),
+                Part::Ref("main".into()),
+                Part::Text(" \u{b7} pushed to origin".into()),
+            ],
+        }
     );
-    assert!(
-        out.message
-            .ends_with("Opened draft pull request #42 of feature/x into main: https://github.com/octo/cat/pull/42"),
-        "{}",
-        out.message
+    assert_eq!(
+        out.message,
+        "Draft pull request #42 opened. feature/x into main, pushed to origin."
     );
+    assert!(!out.message.contains("https://"), "{}", out.message);
     assert_eq!(
         out.hints,
         [OpHint::OpenUrl {
@@ -1000,7 +1008,7 @@ async fn a_pull_request_is_made_after_the_push_with_the_body_on_stdin() {
             .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert!(
-        out.message.starts_with("Opened pull request #43"),
+        out.message.starts_with("Pull request #43 opened"),
         "{}",
         out.message
     );
@@ -1034,7 +1042,10 @@ async fn an_existing_pull_request_is_offered_to_open() {
         s.h.run(s.id, create("feature", "main", "T", "b", false))
             .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    assert_eq!(out.message, "feature has a pull request open already #7.");
+    assert_eq!(
+        out.message,
+        "Pull request #7 is open already. feature into main."
+    );
     assert_eq!(
         out.hints,
         [OpHint::OpenUrl {
@@ -1061,7 +1072,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
-        "Pushed feature to origin/feature. Finish on GitHub:"
+        "Pushed feature to origin. Finish the pull request on GitHub."
     );
     assert_eq!(
         out.hints,
@@ -1084,7 +1095,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
-        "feature is on origin/feature already. Finish on GitHub:"
+        "feature is on origin already. Finish the pull request on GitHub."
     );
 
     // Signed out: as without gh, done, finished on the compare page.
@@ -1104,7 +1115,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
-        "Pushed feature to origin/feature. Finish on GitHub:"
+        "Pushed feature to origin. Finish the pull request on GitHub."
     );
     assert!(matches!(&out.hints[..], [OpHint::OpenUrl { url, .. }] if url.contains("/compare/")));
     assert_eq!(s.gh.calls_of(&["pr", "create"]).len(), 1);
@@ -1124,7 +1135,7 @@ async fn without_gh_the_compare_page_is_offered_and_a_rejected_push_stops_it() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
-        "feature is on origin/feature already. Finish on GitHub:"
+        "feature is on origin already. Finish the pull request on GitHub."
     );
     assert_eq!(s.gh.calls_of(&["pr", "create"]).len(), 1, "not asked again");
 
@@ -1173,7 +1184,7 @@ async fn bad_pull_request_requests_are_refused_before_anything_runs() {
     assert_eq!(out.status, OpStatus::Failed);
     assert_eq!(
         out.message,
-        "Nothing was opened: nowhere is not a branch on origin. Choose another base, or fetch first."
+        "Nothing was opened. nowhere is not a branch on origin. Choose another base, or fetch first."
     );
     assert!(s.h.writes_since(mark).is_empty(), "nothing pushed");
     assert!(s.gh.calls().is_empty());
@@ -1300,7 +1311,7 @@ async fn a_fork_workflow_names_the_base_repository_and_the_forks_branch() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert_eq!(
         out.message,
-        "gh could not open the pull request: HTTP 502: bad gateway"
+        "gh could not open the pull request. HTTP 502: bad gateway."
     );
     assert_eq!(
         out.hints,
@@ -1474,7 +1485,7 @@ async fn a_pull_request_made_without_an_address_printed_is_done() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
-        "The pull request was created, but gh did not print its address."
+        "Pull request opened. feature into main, gh did not print its address."
     );
     tokio::time::timeout(TIMEOUT, s.h.m.wait_prs_loads(s.id, loads))
         .await
@@ -1490,11 +1501,11 @@ async fn a_pull_request_made_without_an_address_printed_is_done() {
         s.h.run(s.id, create("feature", "main", "T", "", false))
             .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
+    assert_eq!(out.message, "Pull request #8 opened. feature into main.");
     assert!(
-        out.message
-            .ends_with("https://github.com:443/octo/cat/pull/8"),
-        "{}",
-        out.message
+        matches!(&out.hints[..], [OpHint::OpenUrl { url, .. }] if url == "https://github.com:443/octo/cat/pull/8"),
+        "{:?}",
+        out.hints
     );
 }
 

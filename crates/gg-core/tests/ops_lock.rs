@@ -59,7 +59,7 @@ async fn a_stale_lock_is_named_and_removed_only_once_confirmed() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     let shown = canonical(&path);
     assert!(
-        out.message.contains("index.lock") && out.message.contains("made 3 h ago"),
+        out.message.contains("index.lock") && out.message.contains("from 3 h ago"),
         "{}",
         out.message
     );

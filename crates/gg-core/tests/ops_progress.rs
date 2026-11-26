@@ -535,7 +535,7 @@ async fn a_skip_for_another_commit_is_refused() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message
-            .starts_with("Nothing was skipped: git has moved on"),
+            .starts_with("Nothing was skipped. git has moved on"),
         "{}",
         out.message
     );
@@ -863,7 +863,7 @@ async fn other_operations_explain_while_in_progress() {
             out.message
         );
         assert!(
-            out.message.contains("continue it or abort it"),
+            out.message.contains("Continue it or abort it"),
             "{}",
             out.message
         );

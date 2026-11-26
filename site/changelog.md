@@ -17,6 +17,22 @@ as the rest of the site does. Anything else stops the script with the line it is
 the newest entry here is not the version in public/latest.json.
 -->
 
+## 0.5.0 (2026-11-26)
+
+Pull requests move into the side panel: create one, then follow its checks and comments, without leaving gg.
+
+### What changed
+
+- **One side panel, three tabs.** The toolbar's Commit and Worktrees buttons are now one side panel button, ⌘B (Ctrl+B), with the count of your uncommitted files. Inside the panel, icon tabs switch between **Commit**, **Pull request** and **Worktrees**; the arrow keys move between them, and the panel opens on the tab you used last in each repository. The Commit tab has a dot when there is something to commit. ⌘K still opens the Commit tab with its message ready.
+- **Create a pull request in the panel.** The **Pull request** tab (⌘⇧P, Ctrl+Shift+P) is about the current branch. With no pull request yet, it holds the form that used to be a dialog: a title and description suggested from the branch's commits, the branch it goes into, **Create as draft**, and a button that pushes the branch first when it needs to. What you type is kept per branch while gg runs. **Create pull request…** on a branch or a worktree opens the tab for that branch.
+- **It goes into the branch you started from.** The form offers, by default, the branch yours was created from, as git's own records say: a branch cut from `staging` goes into `staging`. You can pick any other.
+- **The tab opens after a push.** When you push a branch that has no pull request, other than the default branch, the tab shows by itself, without taking the focus. Turn this off in **Settings › Pull requests**.
+- **Checks and comments.** Under an open pull request the tab shows where it stands (Ready to merge, Checks running, Checks failing, Conflicts, Approved, Changes requested…), its checks, failing first, each with how long it took, asked again every 15 seconds while one runs and the window is in front, and its comments: the conversation, review summaries and comments on the code with their replies, with an **All / Humans / Bots** filter. The tab's icon has a dot for the checks: red, amber or green. It is all read through `gh pr view` and one read-only `gh api graphql` query; gg still never reads or stores a GitHub token.
+- **Comments are drawn safely.** A comment's Markdown is drawn without its HTML, and nothing in it is loaded from the web. An image shows as its alt text; a link opens in your browser only when it is an `https://` address.
+- **Committed on branch.** Under the commit message, the Commit tab lists every file your branch's commits change since it left its base: name, folder, lines added and removed, and status. The base is the pull request's, or else the branch yours was created from, the same one the form offers. The list is open when you have nothing to commit, and folded away when you do.
+- **Fixed: git failing before it started, on macOS.** Now and then a git that gg started failed at once with “git exited with code -1” and no message. A race inside macOS when a process starts caused it; gg now prepares for that once, before it starts any git.
+- **Smaller things.** While the pull requests first load, the tab says “Looking for a pull request…” instead of offering to make one. The side panel has one button to hide it, the one in the toolbar.
+
 ## 0.4.2 (2026-11-24)
 
 A tidier toolbar: one View menu, and a Commit button beside Worktrees.

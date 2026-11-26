@@ -285,7 +285,7 @@ for (const [prefix, width, height] of SIZES)
       await page.waitForTimeout(200);
       await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
     };
-    // The side panel on its Worktrees tab, as in the graph's shot (the small window has it hidden).
+    // The default window: the side panel on its Worktrees tab, as in the graph's shot.
     if (width >= 1000) await showWorktrees(page);
 
     // A commit's menu with the reset submenu open, the hard reset under the pointer.
@@ -1247,8 +1247,8 @@ for (const [prefix, width, height] of SIZES)
         await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
       };
       if (width < 1000) await page.getByTestId("side-toggle").click();
-      // The Worktrees tab: the marker beside the worktree's branch too.
-      await showWorktrees(page);
+      // The default window: the Worktrees tab, the marker beside the worktree's branch too.
+      else await showWorktrees(page);
       await park(page);
       await shot("prs-markers");
 

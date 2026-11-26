@@ -507,6 +507,8 @@ impl Slot {
                     .find(|r| r.kind == RefKind::Branch && r.name == branch)?;
                 Some(WorktreeUpstream {
                     name: r.upstream.clone()?,
+                    remote: r.upstream_remote.clone(),
+                    branch: r.upstream_branch.clone(),
                     ahead: r.ahead,
                     behind: r.behind,
                 })
@@ -925,6 +927,7 @@ impl RepoManager {
             show_tags: true,
             show_stashes: true,
         };
+        let fetched_at_ms = super::fetch::fetched_at(&location.common_dir);
         let repo = Arc::new(Repo {
             identity: RepoIdentity {
                 repo_id: id,
@@ -945,7 +948,10 @@ impl RepoManager {
                 pending: None,
                 load_id: 0,
                 load_failed: false,
-                fetch: FetchState::default(),
+                fetch: FetchState {
+                    fetched_at_ms,
+                    ..FetchState::default()
+                },
                 closed: false,
                 op: None,
                 held_status: None,
@@ -2517,6 +2523,9 @@ impl RepoManager {
         force: bool,
         takes_switch: bool,
     ) -> Result<RepoSnapshot> {
+        // A fetch from outside (a terminal, a pull) shows as its `FETCH_HEAD`: read with every
+        // refresh, before the lock is taken.
+        let fetched_at_ms = super::fetch::fetched_at(&repo.common_dir);
         let (to_emit, snapshot) = {
             let mut slot = repo.slot.write().await;
             if slot.closed {
@@ -2571,7 +2580,10 @@ impl RepoManager {
             if op_cleared {
                 slot.op = None;
             }
-            let changed = changed || op_cleared || force;
+            let newest = super::fetch::newest(slot.fetch.fetched_at_ms, fetched_at_ms);
+            let fetched = slot.fetch.fetched_at_ms != newest;
+            slot.fetch.fetched_at_ms = newest;
+            let changed = changed || op_cleared || force || fetched;
             slot.emitted_or_current(&repo.identity, repo.is_loading(), changed)
         };
         if let Some(stamped) = to_emit {

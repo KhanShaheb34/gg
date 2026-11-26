@@ -1,12 +1,13 @@
 // One repository's side panel: whether it shows (RepoPrefs.sidePanel, kept by the core), the
 // tab it shows (the commit panel, the pull request, or the worktree list), the worktree
 // selected in the list, the switch underway, which worktree's commit panel the Commit tab
-// holds, and which branch the Pull request tab is about. Made with the
+// holds, which branch the Pull request tab is about, and the drafts written there. Made with the
 // repository's view (outside any reactive context, so everything reading it follows its
 // changes); see worktrees.svelte.ts.
 
 import { api } from "../ipc";
 import { BranchFold } from "./branchFiles.svelte";
+import { PrCompose } from "./prDrafts.svelte";
 
 /** The side panel's tabs, in the order its tab strip shows them. */
 export const SIDE_TABS = ["commit", "pr", "worktrees"] as const;
@@ -83,6 +84,11 @@ export class PanelState {
   commitFocusDone = 0;
   /** Whether the Commit tab's "Committed on branch" is open (never saved; see BranchFold). */
   branchFold = new BranchFold();
+  /**
+   * What the user writes in the Pull request tab, per pull request and thread (replies,
+   * comments), and the threads being resolved: in memory only, kept while the view is.
+   */
+  prCompose = new PrCompose();
   /** The user chose since the view opened: the remembered choice no longer applies. */
   chosen = false;
 

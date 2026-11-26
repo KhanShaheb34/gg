@@ -117,6 +117,9 @@ afterwards and says which it is.
   a branch's label.
 - Search subjects, authors and hashes; filter which branches are shown; show or hide remote
   branches, tags and stashes (View, in the toolbar).
+- The toolbar holds actions; a quiet status bar along the window's foot holds the active
+  worktree's folder (a click copies it or shows it in Finder) and when the repository was
+  last fetched, by gg or from a terminal (View › Status bar hides it).
 - Select a commit for its details: full hash, parents, author, date, message, and the files
   it changed with added and deleted line counts, as a tree or a list.
 - The uncommitted changes of the active worktree as a row at the top.
@@ -190,11 +193,14 @@ the form to make one, with a title and description suggested from its commits, t
 goes into (by default the one it was created from: a branch cut from `staging` goes into
 `staging`), and Create as draft; it pushes the branch first when it needs to, and says so.
 **Create pull request…** on a branch or worktree shows the tab for that branch. Under an open
-pull request the tab shows, read-only, where it stands (Ready to merge, Checks failing,
+pull request the tab shows where it stands (Ready to merge, Checks failing,
 Conflicts with main, Approved…), its checks as they run (asked again every 15 s while one
 runs and the window is in front), and its comments, review summaries and code comments, with
 people's and bots' apart. Comments are drawn without their HTML and never load images or
-anything else from the web; a link opens in your browser. After you push a branch that has no
+anything else from the web; a link opens in your browser. You can reply in a code comment's
+thread, resolve or unresolve it, and add a comment to the conversation, where GitHub lets
+you: nothing is sent until you click Reply, Resolve or Comment (or press ⌘↩), and what you
+write is kept while gg runs if it fails or you look elsewhere. After you push a branch that has no
 pull request, the tab opens by itself (a setting). Open pull requests show as markers beside
 their branches and worktrees. Without `gh`, gg pushes the branch and opens GitHub's compare
 page instead. gg never reads or stores a GitHub token.
@@ -225,6 +231,8 @@ page instead. gg never reads or stores a GitHub token.
   branch onto it, push, pull, add a worktree, create a pull request; remote branches: check
   out as a local branch, fetch into a local branch, merge, delete from the remote.
 - Tags: push, delete. Stashes: save, apply, pop, drop, create a branch from one.
+- The current branch's ↓behind and ↑ahead counts in the toolbar, just before Fetch: one click
+  pulls or pushes it.
 - Push sets the upstream on a first push. A push the remote rejects offers fetch, pull or a
   separate **force push**, which always uses `--force-with-lease` pinned to the remote commit
   you were shown.
@@ -425,7 +433,7 @@ Method, all numbers, the misses, and how to reproduce them:
 
 ## Status
 
-gg is at version 0.5.0. It is used every day on macOS. The Windows and Linux builds are built
+gg is at version 0.5.2. It is used every day on macOS. The Windows and Linux builds are built
 and tested on CI on every change, but have not been used for real yet.
 
 ## Contributing

@@ -1,6 +1,7 @@
 <!--
   The graph's toolbar, in the repository header: which branches the graph shows, the View
-  button (remote branches, tags and stashes), then the running operation, search, fetch,
+  button (remote branches, tags and stashes), then the running operation, search, the current
+  branch's ↑ahead ↓behind counts (each pushes or pulls in one click; BranchSync), fetch,
   refresh, the command log and the side panel (with a count of the files to commit). Every
   control changes at once when used; the work it starts shows as it runs (spinning icons, a
   loading line along the header's bottom edge). An operation shows once it has run for
@@ -22,6 +23,7 @@
   import type { RepoView } from "../state/repo.svelte";
   import type { RepoSnapshot } from "../types";
   import BranchFilter from "./BranchFilter.svelte";
+  import BranchSync from "./BranchSync.svelte";
   import MiddleText from "./MiddleText.svelte";
   import SearchBox from "./SearchBox.svelte";
   import ViewOptions from "./ViewOptions.svelte";
@@ -186,6 +188,10 @@
 
   <SearchBox {view} disabled={noCommits} />
 
+  <!-- How the current branch stands with its upstream, when it is not level: pull or push in
+       one click, beside Fetch, which brings the counts up to date. -->
+  <BranchSync {view} />
+
   <button
     class="icon-btn tool"
     aria-label="Fetch"
@@ -282,8 +288,8 @@
 </div>
 
 <style>
-  /* Never squeezed or cut off: what gives way in a narrow window is the repository's name
-     and path beside it (and a long operation title, which is contained). */
+  /* Never squeezed or cut off: what gives way in a narrow window is the branch beside it
+     (and a long operation title, which is contained). */
   .toolbar {
     display: flex;
     align-items: center;
@@ -297,7 +303,7 @@
     gap: 2px;
   }
 
-  /* Separates the repository's name and path from the controls. */
+  /* Separates where the actions run (the branch) from what the graph shows. */
   .divider {
     flex: none;
     width: 1px;

@@ -1535,3 +1535,106 @@ for (const theme of ["light", "dark"] as const) {
     await shot("from");
   });
 }
+
+// The sync control in the toolbar, just before Fetch: behind (as the user's main was), diverged, the
+// counts hovered and waiting while an action runs; at the default size and the narrowest
+// window the app allows, with a long branch name.
+for (const theme of ["light", "dark"] as const) {
+  test(`branch sync, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    const repo = gg.repoPath("routine");
+    const other = otherClone(repo);
+    gg.gitAt(other, "switch", "-q", "main");
+    for (let i = 1; i <= 9; i++) gg.gitAt(other, "commit", "-q", "--allow-empty", "-m", `Remote change ${i}`);
+    gg.gitAt(other, "push", "-q", "origin", "main");
+    gg.git("routine", "fetch", "-q", "origin");
+    await page.goto("/");
+    await open(page, repo);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    const pull = page.getByTestId("sync-pull");
+    await expect(pull).toHaveText("9");
+    const shot = async (name: string) => {
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `sync-${name}-${theme}.png`), clip: { x: 0, y: 0, width: page.viewportSize()!.width, height: 120 } });
+    };
+    await park(page);
+    await shot("behind");
+    await pull.hover();
+    await shot("behind-hover");
+
+    gg.git("routine", "commit", "-q", "--allow-empty", "-m", "Local one");
+    gg.git("routine", "commit", "-q", "--allow-empty", "-m", "Local two");
+    await expect(page.getByTestId("sync-push")).toHaveText("2");
+    await park(page);
+    await shot("diverged");
+
+    // A pull held by a slow hook: both counts wait, the running pull shows at the right.
+    const hook = path.join(repo, ".git", "hooks", "post-merge");
+    writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
+    chmodSync(hook, 0o755);
+    gg.git("routine", "config", "pull.rebase", "false");
+    await pull.click();
+    await expect(page.getByTestId("busy")).toBeVisible();
+    await park(page);
+    await shot("running");
+    await expect(pull).toHaveCount(0);
+    await page.getByRole("status").getByRole("button", { name: "Dismiss notification" }).first().click();
+
+    await page.setViewportSize({ width: 800, height: 560 });
+    gg.git("routine", "reset", "-q", "--hard", "HEAD~1"); // the merge undone: diverged again
+    gg.git("routine", "branch", "-q", "-m", "main", "feature/a-rather-long-branch-name-for-the-header");
+    gg.git("routine", "branch", "-q", "--set-upstream-to", "origin/main");
+    gg.git("routine", "commit", "-q", "--allow-empty", "-m", "Local three");
+    await expect(page.getByTestId("active-worktree")).toContainText("feature/");
+    await park(page);
+    await shot("narrow");
+  });
+}
+
+// The header (actions) and the status bar (the folder, when it was last fetched): at the
+// default size, then the narrowest window the app allows on a worktree with a long path,
+// the side panel shown and hidden, with the path's menu and the View popover open.
+for (const theme of ["light", "dark"] as const) {
+  test(`status bar, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    const repo = gg.repoPath("small");
+    gg.git("small", "fetch", "-q", "origin");
+    // A clone deep in the home folder, as an agent's worktree folder is.
+    const origin = path.join(path.dirname(repo), "small-origin.git");
+    const deep = path.join(gg.home, "Code", "experiments", "payments-service", ".agents", "worktrees");
+    const long = makeRepo("agent-a883f2c1e9b7d4a6-the-status-bar-and-a-header-for-actions-only-at-the-narrowest-width", (git) => {
+      git("clone", "-q", origin, ".");
+      git("fetch", "-q", "origin");
+    }, deep);
+    await page.goto("/");
+    await open(page, repo);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await expect(page.getByTestId("status-fetched")).toHaveText("Fetched just now");
+    const shot = async (name: string) => {
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `statusbar-${name}-${theme}.png`) });
+    };
+    await park(page);
+    await shot("normal");
+    await page.getByTestId("status-path").click();
+    await shot("menu");
+    await page.keyboard.press("Escape");
+    await page.getByTestId("view-options").click();
+    await shot("view");
+    await page.keyboard.press("Escape");
+
+    await page.setViewportSize({ width: 800, height: 560 });
+    await open(page, long);
+    await expect(page.getByTestId("status-path")).toContainText("narrowest-width");
+    await park(page);
+    await shot("long-nopanel");
+    // Narrow, the side panel shows over the graph, down to the status bar.
+    await page.keyboard.press("ControlOrMeta+b");
+    await park(page);
+    await shot("long-panel");
+  });
+}

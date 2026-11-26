@@ -612,6 +612,83 @@ async fn fetch_failure_sets_last_error() {
     );
 }
 
+/// When the repository was last fetched is its newest `FETCH_HEAD`: unknown before any fetch,
+/// then from a fetch outside gg (seen by the watcher), gg's own, and one in a linked
+/// worktree (whose `FETCH_HEAD` is its own); a fetch that cannot reach its remote leaves it.
+#[tokio::test]
+async fn fetched_at_is_the_newest_fetch_head() {
+    let repo = TestRepo::new();
+    repo.commit("one");
+    let h = harness().await;
+    let snap = h.open(repo.path()).await;
+    assert_eq!(snap.fetch.fetched_at_ms, None, "never fetched");
+
+    // A fetch in a terminal: the refresh the watcher asks for reads its FETCH_HEAD.
+    let _origin = repo.clone_as_remote();
+    let outside = h
+        .changed(snap.repo_id, CHANGE_TIMEOUT, |s| {
+            s.fetch.fetched_at_ms.is_some()
+        })
+        .await
+        .expect("a fetch outside gg shows")
+        .fetch
+        .fetched_at_ms
+        .unwrap();
+    let head = repo.path().join(".git").join("FETCH_HEAD");
+    let modified = |path: &Path| {
+        let time = std::fs::metadata(path).unwrap().modified().unwrap();
+        i64::try_from(
+            time.duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+    };
+    assert_eq!(outside, modified(&head));
+
+    // gg's own fetch: the snapshot that ends it has the time already.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    h.m.fetch(snap.repo_id).await.expect("fetch");
+    let now = h.m.snapshot(snap.repo_id).await.unwrap();
+    let ours = now.fetch.fetched_at_ms.unwrap();
+    assert!(ours > outside, "{ours} after {outside}");
+    assert_eq!(ours, modified(&head));
+    assert!(now.fetch.last_at_ms.unwrap() >= ours);
+
+    // A fetch in a linked worktree writes that worktree's FETCH_HEAD; the newest one counts.
+    let wt = repo.add_worktree("side");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    repo.git(&["-C", wt.to_str().unwrap(), "fetch", "-q", "origin"]);
+    let linked = repo.path().join(".git/worktrees/wt-side/FETCH_HEAD");
+    assert!(
+        linked.is_file(),
+        "git keeps a linked worktree's FETCH_HEAD apart"
+    );
+    let there = h
+        .changed(snap.repo_id, CHANGE_TIMEOUT, |s| {
+            s.fetch.fetched_at_ms > Some(ours)
+        })
+        .await
+        .expect("a fetch in a linked worktree shows")
+        .fetch
+        .fetched_at_ms
+        .unwrap();
+    assert_eq!(there, modified(&linked));
+
+    // A remote that cannot be reached: the fetch fails, having emptied FETCH_HEAD; the time
+    // of the last one that fetched stays.
+    let missing = repo.dir.path().join("no such remote");
+    repo.git(&["remote", "set-url", "origin", missing.to_str().unwrap()]);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    h.m.fetch(snap.repo_id)
+        .await
+        .expect("a failed fetch is still Ok");
+    h.m.refresh(snap.repo_id).await.unwrap();
+    let failed = h.m.snapshot(snap.repo_id).await.unwrap();
+    assert!(failed.fetch.last_error.is_some());
+    assert_eq!(failed.fetch.fetched_at_ms, Some(there));
+}
+
 /// With several remotes, git prints a "From <url>" line for each one that fetched before the
 /// one that failed. The message names the failure, and the full stderr is kept as detail.
 #[tokio::test]

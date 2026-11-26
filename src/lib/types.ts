@@ -33,7 +33,9 @@ export type WorktreeInfo = {
   prunable: boolean;
   active: boolean; // every action runs in the active worktree
   status: WorktreeStatus | null; // null until read; the active one's is the snapshot's `status`
-  upstream: { name: string; ahead: number; behind: number } | null; // null = no upstream (or detached)
+  // null = no upstream (or detached). `remote` and `branch` as configured ("origin", "main"; remote "." for a local
+  // branch): `name` cannot say where the remote's name ends ("up/stream/main" is "stream/main" on "up" or "main" on "up/stream").
+  upstream: { name: string; remote: string | null; branch: string | null; ahead: number; behind: number } | null;
   unpushed: number | null; // commits of its HEAD on no remote-tracking branch; null = unknown
   inProgress: InProgress["kind"] | null;
   lockReason: string | null; // when locked with a reason
@@ -87,6 +89,8 @@ export type PrDetails = {
   threadsError: string | null;
   /** More review threads than were read (the first 50). */
   threadsPartial: boolean;
+  /** A comment can be added to the conversation (not archived; locked, only with write access). */
+  canComment: boolean;
   loadedAtMs: number;
 };
 export type MergeStatus = "draft" | "conflicts" | "behind" | "blocked" | "unstable" | "ready" | "unknown";
@@ -103,10 +107,26 @@ export type PrCheck = {
 };
 export type ChecksSummary = Record<CheckState, number> & { total: number };
 export type PrReply = { id: string; author: string; isBot: boolean; createdAtMs: number | null; body: string; url: string };
+/**
+ * A review thread: where it is, how it stands, its replies, its GraphQL node id (what pr_reply and
+ * pr_resolve name; "" when GitHub did not give it) and what the user may do to it, as GitHub says
+ * (viewerCanReply, viewerCanResolve, viewerCanUnresolve; false when it did not say).
+ */
+export type PrThread = {
+  id: string;
+  path: string;
+  line: number | null;
+  resolved: boolean;
+  outdated: boolean;
+  replies: PrReply[];
+  canReply: boolean;
+  canResolve: boolean;
+  canUnresolve: boolean;
+};
 export type PrComment = PrReply & {
   kind: "comment" | "review" | "thread";
   reviewState: "approved" | "changes_requested" | "commented" | "dismissed" | "pending" | "unknown" | null;
-  thread: { path: string; line: number | null; resolved: boolean; outdated: boolean; replies: PrReply[] } | null;
+  thread: PrThread | null;
   /** Hidden on GitHub by a maintainer. */
   minimized: boolean;
 };
@@ -118,6 +138,8 @@ export type FetchState = {
   lastError: string | null;
   lastErrorDetail: string | null;
   lastAtMs: number | null;
+  /** When the repository was last fetched, by gg or anything else (its newest non-empty FETCH_HEAD), epoch ms; null while nothing says. */
+  fetchedAtMs: number | null;
 };
 
 export type RepoSnapshot = {
@@ -533,7 +555,12 @@ export type OpRequest =
       draft: boolean;
       /** The Pull request tab promised GitHub's compare page (no form): the core only pushes, and never runs gh. */
       comparePage: boolean;
-    };
+    }
+  // The Pull request tab's writes, through gh on the repository pr_details reads; the text on gh's stdin.
+  // A blank body, pull request 0 or a thread id GitHub would not give: bad_request.
+  | { op: "pr_reply"; number: number; threadId: string; body: string }
+  | { op: "pr_resolve"; number: number; threadId: string; resolved: boolean }
+  | { op: "pr_comment"; number: number; body: string };
 
 /** What a new worktree checks out: an existing local branch, a new branch at a commit (full hash), or a commit, detached. */
 export type WorktreeBranch = { existing: string } | { create: string; at: string } | { detach: string };

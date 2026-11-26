@@ -5,6 +5,17 @@
 //! When `gh` cannot make it (not installed, signed out), the branch is still pushed and the
 //! outcome is done with the host's compare page to finish on; any other failure says so
 //! plainly and offers the compare page too.
+//!
+//! Also the writes of the Pull request tab, each on the repository `pr_details` reads (the
+//! base repository, found the same way, so a fork's pull request is written to where it is
+//! read from), its text always on `gh`'s stdin, never in an argument nor in a query:
+//! - `pr_reply`: `gh api graphql --input -`, stdin a JSON request whose query is
+//!   `addPullRequestReviewThreadReply` and whose variables are the thread's id and the body;
+//! - `pr_resolve`: `gh api graphql -f query=<resolveReviewThread or unresolveReviewThread>
+//!   -f thread=<id>` (`-f`: a string as it is, never a file's contents);
+//! - `pr_comment`: `gh pr comment <number> --repo <repo> --body-file -`, stdin the body.
+//!
+//! Each done, the pull request's details are forgotten, so the tab's next load asks `gh`.
 
 use crate::dto::{OpHint, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
@@ -14,6 +25,7 @@ use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
 use crate::ops::network::{push, ref_commit};
 use crate::ops::{OpCtx, Step};
+use crate::pr_details::is_node_id;
 use crate::repo::prs::{PrTrigger, push_plan};
 
 /// The step said (`op-progress`) while `gh pr create` runs.
@@ -304,6 +316,164 @@ fn query_encode(text: &str) -> String {
         }
     }
     out
+}
+
+/// What the Pull request tab writes to a pull request (see the module comment).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Write<'a> {
+    /// A reply `body` in review thread `thread` (its node id).
+    Reply { thread: &'a str, body: &'a str },
+    /// Review thread `thread` resolved, or (`resolved` false) unresolved.
+    Resolve { thread: &'a str, resolved: bool },
+    /// A comment `body` on the conversation.
+    Comment { body: &'a str },
+}
+
+/// The reply's mutation: `$thread` the thread's node id, `$body` the text.
+pub(crate) const REPLY_MUTATION: &str = "mutation($thread:ID!,$body:String!){\
+addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread,body:$body}){\
+comment{id url}}}";
+/// Resolving a thread: `$thread` its node id.
+pub(crate) const RESOLVE_MUTATION: &str =
+    "mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{id isResolved}}}";
+/// Unresolving a thread: `$thread` its node id.
+pub(crate) const UNRESOLVE_MUTATION: &str = "mutation($thread:ID!){\
+unresolveReviewThread(input:{threadId:$thread}){thread{id isResolved}}}";
+
+/// Checks a write's request without `gh`: a pull request's number (never 0), a thread's
+/// node id as GitHub writes them, and a body with something in it.
+pub(crate) fn check_write(number: u32, thread: Option<&str>, body: Option<&str>) -> Result<()> {
+    if number == 0 {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            "No pull request is number 0.",
+        ));
+    }
+    if let Some(thread) = thread
+        && !is_node_id(thread)
+    {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            "That is not a review thread GitHub named.",
+        ));
+    }
+    if body.is_some_and(|b| b.trim().is_empty()) {
+        return Err(CoreError::new(
+            ErrorCode::BadRequest,
+            "Nothing was sent: the comment is empty.",
+        ));
+    }
+    Ok(())
+}
+
+/// The first error message in GraphQL answer `json`, if it has one (`gh` exits 0 for some).
+fn graphql_error(json: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(json).ok()?;
+    v.get("errors")?
+        .as_array()?
+        .iter()
+        .find_map(|e| e.get("message")?.as_str().map(str::trim).map(str::to_owned))
+        .filter(|m| !m.is_empty())
+}
+
+/// Writes `what` to pull request `number` through `gh` (see the module comment).
+pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Result<Step> {
+    let (gh, _facts) = match ctx.manager.gh_for_prs(ctx.repo, &ctx.runner).await {
+        Ok(ready) => ready,
+        Err((reason, failure, _)) => {
+            let why = match &failure {
+                Some(GhFailure::Failed { message, .. }) => message.clone(),
+                failure => unavailable_message(reason, failure.as_ref()),
+            };
+            return Ok(Step::Failed {
+                message: format!("Nothing was sent: {why}"),
+                detail: failure.as_ref().map(GhFailure::detail).unwrap_or_default(),
+                hints: Vec::new(),
+            });
+        }
+    };
+    let n = number.to_string();
+    let (query, thread_field);
+    let (args, stdin, verb, done): (Vec<&str>, StdinPolicy, &str, String) = match what {
+        Write::Reply { thread, body } => {
+            let request = serde_json::json!({
+                "query": REPLY_MUTATION,
+                "variables": { "thread": thread, "body": body },
+            });
+            ctx.step("Sending the reply…");
+            (
+                vec!["api", "graphql", "--input", "-"],
+                StdinPolicy::Bytes(request.to_string().into_bytes()),
+                "post the reply",
+                format!("Replied on pull request #{number}."),
+            )
+        }
+        Write::Resolve { thread, resolved } => {
+            let mutation = if resolved {
+                RESOLVE_MUTATION
+            } else {
+                UNRESOLVE_MUTATION
+            };
+            query = format!("query={mutation}");
+            thread_field = format!("thread={thread}");
+            ctx.step(if resolved {
+                "Resolving the conversation…"
+            } else {
+                "Unresolving the conversation…"
+            });
+            (
+                vec!["api", "graphql", "-f", &query, "-f", &thread_field],
+                StdinPolicy::Null,
+                if resolved {
+                    "resolve the conversation"
+                } else {
+                    "unresolve the conversation"
+                },
+                if resolved {
+                    format!("Resolved a conversation on pull request #{number}.")
+                } else {
+                    format!("Unresolved a conversation on pull request #{number}.")
+                },
+            )
+        }
+        Write::Comment { body } => {
+            ctx.step("Sending the comment…");
+            (
+                vec!["pr", "comment", &n, "--repo", gh.repo(), "--body-file", "-"],
+                StdinPolicy::Bytes(body.as_bytes().to_vec()),
+                "post the comment",
+                format!("Commented on pull request #{number}."),
+            )
+        }
+    };
+    let ran = gh.run(&args, CmdKind::Write, stdin).await?;
+    let failed = |message: String, detail: String| Step::Failed {
+        message,
+        detail,
+        hints: Vec::new(),
+    };
+    match ran {
+        Ok(out) => {
+            if args[0] == "api"
+                && let Some(why) = graphql_error(&out.stdout)
+            {
+                return Ok(failed(format!("gh could not {verb}: {why}"), out.text()));
+            }
+            // The tab's next load asks gh, whatever the floor between loads says.
+            ctx.manager.forget_pr_details(ctx.repo, number);
+            Ok(Step::Done(done))
+        }
+        Err(GhFailure::Failed { message, detail }) => {
+            Ok(failed(format!("gh could not {verb}: {message}"), detail))
+        }
+        Err(failure) => Ok(failed(
+            format!(
+                "Nothing was sent: {}",
+                unavailable_message(failure.reason(), Some(&failure))
+            ),
+            failure.detail(),
+        )),
+    }
 }
 
 /// Remembers `base` as `branch`'s next pull request's suggested base, in the background.

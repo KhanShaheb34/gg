@@ -15,6 +15,17 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 - ⌘F searches subjects, authors and hashes (Enter / Shift+Enter: next / previous hit),
   ⌘⇧F fetches from all remotes, ⌘R re-reads the repository. On Windows and Linux, Ctrl
   stands for ⌘.
+- The bar above the graph is for actions: the branch picker, which branches the graph shows
+  and what else (Show all, View), search, the branch's pull and push counts, fetch, refresh,
+  the command log and the side panel.
+  The repository's name is on its tab. The status bar along the window's foot is for
+  information: the active worktree's folder (home as `~`, cut in the middle when long, in
+  full in its tooltip; a click offers Copy path and Reveal in Finder, Show in File Explorer
+  on Windows, Open containing folder on Linux) and when the repository was last fetched, by
+  gg or anything else (a terminal, a pull, another app): "Fetched 2 min ago", the moment in
+  its tooltip. That comes from git's `FETCH_HEAD`, so it says nothing until there is a fetch
+  to go by (a fresh clone has none; a fetch that fails does not count). View › Status bar
+  hides the bar, for every repository; the choice is remembered.
 - The command log (⌘⇧L, or the terminal button in the toolbar) shows the git commands the app
   ran for the repository: each operation under its title, with each command's line, time,
   duration, exit code and output; "Background reads" adds the reads the app makes by itself.
@@ -51,9 +62,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   changes (kept up to date as files change), how it stands with its upstream, and what is
   unusual (locked, folder missing, a merge stopped there). In a window narrower than 840 px
   the panel lies over the graph. The **active** worktree, where every action
-  runs, is marked there and named, with its branch, at the top of the window (the branch
-  opens the branch picker; while the panel is hidden, the worktree count beside it shows the
-  panel); double-click another (or "Make active")
+  runs, is marked there; its branch is at the top of the window (it opens the branch picker;
+  while the panel is hidden, the worktree count beside it shows the panel) and its folder in
+  the status bar at the foot; double-click another (or "Make active")
   to switch. ⌘⌥1…⌘⌥9 switch to a worktree by its place in the list (Ctrl+Shift+1…9 on
   Windows and Linux).
 - **Add worktree…** (the panel's + or menu, or a branch or commit menu) makes a folder for a
@@ -104,7 +115,7 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   branch's or a worktree's) showed it; then a line at the top names that branch, with a
   button back to the current one. With an open pull request, it shows its number, state
   (open or draft), title, base ← head, **Open in browser** and **Copy link** (and "as of …"
-  when the list may be out of date; the tab's Refresh loads it again). Below, read-only, what
+  when the list may be out of date; the tab's Refresh loads it again). Below, what
   `gh` says of it now: a status line (Ready to merge, Checks running, Checks failing,
   Conflicts with or Behind its base, Blocked, Draft, Merged; Approved, Changes requested,
   Review required); its **Checks**, summed up ("1 failing · 2 passing"), open while one fails
@@ -120,7 +131,20 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   before "Ready") shows as nothing; one that is all of a link (a bot's button) shows as that
   link, its alt text as its words; one with no alt text (a decorative icon) shows as nothing, or
   as "image" when it is all of a link. A link to an `https://` address opens in your browser (its address
-  in its tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
+  in its tooltip), anything else is text; a very long comment is cut, with a way to GitHub.
+  You can answer from there too. Under a review thread's replies, a quiet **Reply…** line
+  grows into a box when you click it; **Reply** (or ⌘↩, Ctrl+Enter elsewhere) sends what it
+  holds, and only that does: Enter is a new line, and Reply is off while the box is blank or
+  sending. Beside it, **Resolve** resolves the thread; a resolved thread shows folded (its
+  first lines, its replies behind **Show more**, as on GitHub), with **Unresolve**, and its
+  reply box once shown whole. At the end of the comments, **Add a comment…** comments on the
+  conversation the same way (**Comment**). What GitHub says you may not do is not offered: no
+  reply box on a thread you cannot reply to, no Resolve or Unresolve without the right to,
+  no comment box when the repository is archived or the conversation locked to you. Once
+  `gh` has it, the checks and comments are loaded again (what was shown stays meanwhile), the
+  reply shows in its thread and the box is emptied. If it fails, what you wrote stays in the
+  box and the reason shows under it, with Show log. What you write is kept per thread while gg
+  runs, through the other tabs and other commits, never saved. The checks and comments
   are asked of `gh` when the tab shows the pull request, on Refresh, after the list reloads
   and after a push of the branch, and every 15 s only while a check runs, the tab shows and
   the window is in front (never more than once every 10 s per pull request). A failure keeps
@@ -156,8 +180,13 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   auth token --hostname` whether a host other than github.com is GitHub (its answer never
   read), `gh pr view <number> --json …` for one's
   merge status, checks, comments and reviews, and `gh api graphql` with one read-only query
-  for its review threads; each names the repository. The app never reads or stores a GitHub
-  token. Note that `gh`, by its
+  for its review threads (and what you may do to each); each names the repository. Only when
+  you click Reply, Resolve, Unresolve or Comment: `gh api graphql --input -` for a reply (the
+  query and your text sent to `gh` as JSON on its input), `gh api graphql -f query=… -f
+  thread=<id>` to resolve or unresolve, and `gh pr comment <number> --repo <repo> --body-file
+  -` for a comment (your text on its input), on the repository the pull request is read from
+  (for a fork's, the base repository); each is in the command log. The app never reads or
+  stores a GitHub token. Note that `gh`, by its
   own design, sends a token it finds in your environment (`GH_TOKEN`, `GITHUB_TOKEN`) to
   github.com and to any `*.ghe.com` host (GitHub's own enterprise cloud): a repository whose
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
@@ -256,6 +285,16 @@ on the selected row) for its menu. Items that cannot run say why when you point 
   A branch without an upstream gets the branch pushed to as its upstream; an existing
   upstream is never changed.
 - **Pull** on a branch that has diverged from its upstream asks whether to merge or rebase.
+- **Pull and push in one click**: when the current branch is behind or ahead of its upstream,
+  its counts show in the toolbar, just before the Fetch button, as on its label in the
+  graph (↓9: 9 commits to pull; ↑2: 2 to push; both when it has diverged), and change when a
+  fetch brings new commits. Each count is a button: ↓ pulls the branch as its menu's **Pull**
+  does (asking whether to merge or rebase a diverged branch, with the same notices); ↑ pushes
+  it to its upstream as **Push** does, without the dialog. A push the remote refuses (the
+  branch has diverged) offers Fetch, Pull and Force push… on its notice. A branch whose
+  upstream has another name gets the Push dialog instead, which names where the push goes.
+  Nothing shows when the branch is level with its upstream, has none, or HEAD is detached;
+  while an action runs, the counts wait for it.
 - Actions on one repository run one at a time, in the order asked; a second waits (the
   toolbar shows what runs and how many wait). A busy indicator shows when one takes more
   than 150 ms. An action on the current branch (reset, merge, rebase, cherry-pick, revert,

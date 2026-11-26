@@ -3,12 +3,14 @@
 // demand: GG_SCREENS=1 pnpm e2e ai-screens
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, type GG, test } from "./fixtures";
+import { expect, type GG, STATUS_BAR_H, test } from "./fixtures";
 
 const OUT = path.resolve(import.meta.dirname, "..", ".screens");
 
 test.skip(!process.env.GG_SCREENS, "set GG_SCREENS=1 to take screenshots");
-test.use({ viewport: { width: 900, height: 560 }, deviceScaleFactor: 2 });
+// As much taller as the status bar takes, so the panel has the room it had before it.
+const H = 560 + STATUS_BAR_H;
+test.use({ viewport: { width: 900, height: H }, deviceScaleFactor: 2 });
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -22,7 +24,7 @@ async function shoot(page: Page, name: string) {
   await page.waitForTimeout(200);
   const side = (await page.locator('[data-region="side-panel"]').boundingBox())!;
   const x = Math.max(0, side.x - 60);
-  await page.screenshot({ path: path.join(OUT, `ai-${name}.png`), clip: { x, y: 0, width: 900 - x, height: 560 } });
+  await page.screenshot({ path: path.join(OUT, `ai-${name}.png`), clip: { x, y: 0, width: 900 - x, height: H } });
 }
 
 async function setSettings(page: Page, patch: object) {
@@ -129,7 +131,7 @@ for (const theme of ["light", "dark"] as const) {
 
   test(`generate with AI: settings, ${theme}`, async ({ gg }) => {
     const { page } = gg;
-    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.setViewportSize({ width: 1280, height: 800 + STATUS_BAR_H });
     await page.emulateMedia({ colorScheme: theme });
     gg.ai.install("claude");
     await page.goto("/");

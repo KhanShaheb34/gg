@@ -13,14 +13,16 @@ use crate::git::runner::{CmdKind, GitRunner, git_failed};
 /// refuses it in a commit message), each ref's record ending in a NUL before git's own newline, so that the
 /// subject, the last field, can never run into the next record. Fields: refname, object
 /// type, object, peeled type, peeled object (both empty unless the ref is an annotated tag;
-/// git peels nested tags fully), upstream, upstream tracking (`[ahead N, behind M]`,
+/// git peels nested tags fully), upstream, the upstream's remote and its branch there as
+/// configured (`branch.<name>.remote` and `.merge`: `origin` and `refs/heads/main`; `.` for a
+/// local branch), upstream tracking (`[ahead N, behind M]`,
 /// `[gone]` or empty), symref target; then of the commit a branch points at (empty for an
 /// annotated tag, whose object is the tag), its committer time (unix seconds), author name
 /// and subject (git joins a first paragraph of several lines with spaces). These last three
 /// come from the commit object `%(objecttype)` reads anyway: no other git command is needed
 /// for them.
-const REF_FORMAT: &str = "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(symref)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)%00";
-const REF_FIELDS: usize = 11;
+const REF_FORMAT: &str = "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track)%00%(symref)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)%00";
+const REF_FIELDS: usize = 13;
 /// What ends a record: the format's final NUL and git's newline.
 const RECORD_END: &[u8] = b"\0\n";
 
@@ -35,6 +37,12 @@ pub struct RefInfo {
     pub hash: String,
     /// Short name of the configured upstream (kept when the upstream is gone).
     pub upstream: Option<String>,
+    /// The upstream's remote as configured (`origin`; `.` for a local branch): its short
+    /// name cannot say where the remote's name ends when one remote's name starts with
+    /// another's (`up` and `up/stream`).
+    pub upstream_remote: Option<String>,
+    /// The upstream's branch on that remote (`main` of `refs/heads/main`).
+    pub upstream_branch: Option<String>,
     /// Commits on this branch that are not on its upstream (0 when there is none).
     pub ahead: u32,
     /// Commits on the upstream that are not on this branch (0 when there is none).
@@ -117,7 +125,8 @@ fn parse_remote_heads(out: &[u8]) -> BTreeMap<String, String> {
         .filter_map(|record| {
             let mut fields = record.split(|&b| b == 0);
             let refname = String::from_utf8_lossy(fields.next()?);
-            let symref = String::from_utf8_lossy(fields.nth(6)?);
+            // The symref: the tenth field (see REF_FORMAT), the eighth after the refname.
+            let symref = String::from_utf8_lossy(fields.nth(8)?);
             let remote = refname
                 .strip_prefix("refs/remotes/")?
                 .strip_suffix("/HEAD")?;
@@ -157,6 +166,8 @@ fn parse_ref_line(line: &[u8]) -> Option<RefInfo> {
         peeled_ty,
         peeled,
         upstream,
+        upstream_remote,
+        upstream_ref,
         track,
         symref,
         time,
@@ -196,6 +207,12 @@ fn parse_ref_line(line: &[u8]) -> Option<RefInfo> {
         name: name.to_owned(),
         hash,
         upstream: non_empty(short_name(&upstream)),
+        upstream_remote: non_empty(&upstream_remote),
+        upstream_branch: non_empty(
+            upstream_ref
+                .strip_prefix("refs/heads/")
+                .unwrap_or(&upstream_ref),
+        ),
         ahead,
         behind,
         time,
@@ -264,7 +281,7 @@ mod tests {
             "\0\0"
         };
         format!(
-            "{refname}\0{ty}\0{obj}\0{peeled_ty}\0{peeled}\0{upstream}\0{track}\0{symref}\0{commit}\0\n"
+            "{refname}\0{ty}\0{obj}\0{peeled_ty}\0{peeled}\0{upstream}\0\0\0{track}\0{symref}\0{commit}\0\n"
         )
     }
 
@@ -275,6 +292,8 @@ mod tests {
             name: name.into(),
             hash: hash.into(),
             upstream: upstream.map(Into::into),
+            upstream_remote: None,
+            upstream_branch: None,
             ahead,
             behind: 0,
             time: 7,
@@ -391,8 +410,8 @@ mod tests {
         // git joins a first paragraph's lines; a message made otherwise (or an older git) may
         // still bring a line end: the record ends only at NUL and newline together.
         let out = format!(
-            "refs/heads/a\0commit\0{C}\0\0\0\0\0\01700000000\0Ada Lovelace\0one\ntwo\0\n\
-             refs/heads/b\0commit\0{C}\0\0\0\0\0\0\0Grace\0\0\n"
+            "refs/heads/a\0commit\0{C}\0\0\0\0\0\0\0\01700000000\0Ada Lovelace\0one\ntwo\0\n\
+             refs/heads/b\0commit\0{C}\0\0\0\0\0\0\0\0\0Grace\0\0\n"
         );
         let refs = parse_refs(out.as_bytes());
         assert_eq!(refs.len(), 2, "{refs:?}");
@@ -432,11 +451,38 @@ mod tests {
         assert_eq!((refs[0].ahead, refs[0].behind), (0, 2));
     }
 
+    /// `stream/main` on remote `up` and `main` on remote `up/stream` both read
+    /// `up/stream/main`: the configured remote and branch say which it is.
+    #[test]
+    fn the_upstream_remote_and_branch_are_read_as_configured() {
+        let out = format!(
+            "refs/heads/main\0commit\0{C}\0\0\0refs/remotes/up/stream/main\0up\0refs/heads/stream/main\0[ahead 1]\0\07\0Ada\0Tip\0\n\
+             refs/heads/topic\0commit\0{C}\0\0\0refs/heads/main\0.\0refs/heads/main\0\0\07\0Ada\0Tip\0\n\
+             refs/heads/alone\0commit\0{C}\0\0\0\0\0\0\0\07\0Ada\0Tip\0\n"
+        );
+        let refs = parse_refs(out.as_bytes());
+        assert_eq!(
+            refs.iter()
+                .map(|r| (
+                    r.upstream.as_deref(),
+                    r.upstream_remote.as_deref(),
+                    r.upstream_branch.as_deref(),
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (Some("up/stream/main"), Some("up"), Some("stream/main")),
+                (Some("main"), Some("."), Some("main")),
+                (None, None, None),
+            ]
+        );
+        assert_eq!(refs[0].ahead, 1);
+    }
+
     #[test]
     fn skips_tags_that_do_not_point_at_commits() {
         let out = [
             line("refs/tags/tree", "tree", C, "", "", "", ""),
-            format!("refs/tags/blobtag\0tag\0{T}\0blob\0{C}\0\0\0\0\0\0\0\n"),
+            format!("refs/tags/blobtag\0tag\0{T}\0blob\0{C}\0\0\0\0\0\0\0\0\0\n"),
         ]
         .concat();
         assert!(parse_refs(out.as_bytes()).is_empty());
@@ -461,23 +507,24 @@ mod tests {
         assert!(parse_refs(b"\xFF\xFE\0\0").is_empty());
         // Truncated records: too few fields, missing hash, unknown namespace.
         assert!(parse_refs(b"refs/heads/main\0commit\0").is_empty());
-        assert!(parse_refs(b"refs/heads/main\0commit\0\0\0\0\0\0\0\0\0\0\n").is_empty());
+        assert!(parse_refs(b"refs/heads/main\0commit\0\0\0\0\0\0\0\0\0\0\0\0\n").is_empty());
         assert!(
-            parse_refs(format!("refs/notes/x\0commit\0{C}\0\0\0\0\0\0\0\0\0\n").as_bytes())
+            parse_refs(format!("refs/notes/x\0commit\0{C}\0\0\0\0\0\0\0\0\0\0\0\n").as_bytes())
                 .is_empty()
         );
         assert!(
-            parse_refs(format!("refs/heads/\0commit\0{C}\0\0\0\0\0\0\0\0\0\n").as_bytes())
+            parse_refs(format!("refs/heads/\0commit\0{C}\0\0\0\0\0\0\0\0\0\0\0\n").as_bytes())
                 .is_empty()
         );
         // A record of the format before the commit's fields (8 fields) is not taken.
         assert!(parse_refs(format!("refs/heads/a\0commit\0{C}\0\0\0\0\0\n").as_bytes()).is_empty());
         // Non-UTF-8 names decode lossily.
-        let refs =
-            parse_refs(format!("refs/heads/a\u{FFFD}\0commit\0{C}\0\0\0\0\0\0\0\0\0\n").as_bytes());
+        let refs = parse_refs(
+            format!("refs/heads/a\u{FFFD}\0commit\0{C}\0\0\0\0\0\0\0\0\0\0\0\n").as_bytes(),
+        );
         assert_eq!(refs.len(), 1);
         let mut raw = b"refs/heads/b\xFF".to_vec();
-        raw.extend_from_slice(format!("\0commit\0{C}\0\0\0\0\0\0\0").as_bytes());
+        raw.extend_from_slice(format!("\0commit\0{C}\0\0\0\0\0\0\0\0\0").as_bytes());
         raw.extend_from_slice(b"A\xFF\0s\xFE\0\n");
         let refs = parse_refs(&raw);
         assert_eq!(refs[0].name, "b\u{FFFD}");

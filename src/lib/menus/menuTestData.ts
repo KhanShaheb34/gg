@@ -67,7 +67,7 @@ export function snap(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
     uncommittedSubject: "Uncommitted changes (0)",
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
-    fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
+    fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null, fetchedAtMs: null },
     op: null,
     prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
     branchPrs: {},

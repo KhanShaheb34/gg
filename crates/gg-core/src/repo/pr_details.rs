@@ -162,6 +162,14 @@ impl RepoManager {
         Ok(assemble(view, threads, unix_ms()))
     }
 
+    /// Forgets pull request `number`'s last load in `repo`, after the user changed it from the
+    /// tab (a reply, a thread resolved, a comment): the next `pr_details` asks `gh` at once,
+    /// whatever the 10 s floor says. A load still running gives its answer to whoever waits
+    /// for it; a request after this one starts another.
+    pub(crate) fn forget_pr_details(&self, repo: &Repo, number: u32) {
+        lock(&repo.pr_details).remove(&number);
+    }
+
     /// Least time between two loads of a pull request's details (see
     /// [`RepoManager::set_pr_details_every`]).
     fn pr_details_every(&self) -> Duration {

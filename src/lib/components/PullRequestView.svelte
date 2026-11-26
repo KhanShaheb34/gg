@@ -11,13 +11,19 @@
   started are there), and every 15 s while some check runs and the window is focused and
   visible; never otherwise. The first load shows placeholders of the sections' size; a reload
   keeps what is shown; a failed one keeps it too and says so in one line, with Retry.
+
+  The comments take what the user may write (prCompose.svelte.ts): a reply in a thread,
+  resolving it, a comment on the conversation; their drafts are the panel's (PanelState), so
+  they stay through other tabs and other commits. Each sent, the details load again, the
+  comments shown meanwhile.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
   import { visibleText } from "../format";
   import { mergeWording, POLL_MS, reviewWording, shouldPoll } from "../prDetails";
-  import { app, windowState } from "../state/app.svelte";
+  import { app, showLog, windowState } from "../state/app.svelte";
   import { openExternal } from "../state/editor";
+  import { writesFor } from "../state/prCompose.svelte";
   import { detailsOf, loadDetails } from "../state/prDetails.svelte";
   import { clock, copyLink, openPullRequest } from "../state/prs.svelte";
   import type { RepoView } from "../state/repo.svelte";
@@ -47,6 +53,8 @@
   const details = $derived(entry?.data ?? null);
   const status = $derived(details ? mergeWording(details, pr.base) : null);
   const review = $derived(details ? reviewWording(details.review) : null);
+  /** What the comments can write to this pull request, with the panel's drafts. */
+  const writes = $derived(writesFor(panel.prCompose, { repoId, root, number }, (from) => showLog(repoId, from)));
 
   /** How often a running check is asked about again (tests may make it shorter). */
   function pollMs(): number {
@@ -145,7 +153,7 @@
       </div>
       <PrChecks id="{root}#{number}" checks={details.checks} summary={details.checksSummary} now={Math.max(clock.now, details.loadedAtMs)} onlink={openLink} />
       <div class="divider" aria-hidden="true"></div>
-      <PrComments {details} dateFormat={app.settings.dateFormat} now={clock.now} onpage={openPage} onlink={openLink} />
+      <PrComments {details} dateFormat={app.settings.dateFormat} now={clock.now} onpage={openPage} onlink={openLink} {writes} />
     {:else if !entry?.error}
       <!-- The first load: the sections' outline, as tall as they will start. -->
       <div class="skeleton" aria-hidden="true" data-testid="pr-details-loading">

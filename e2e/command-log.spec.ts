@@ -4,7 +4,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, type GG, runOp, test } from "./fixtures";
+import { expect, type GG, runOp, STATUS_BAR_H, test } from "./fixtures";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -264,7 +264,7 @@ test("the graph keeps its minimum under the banner, the details and the log", as
 
 test("show_log_in_a_small_window_shows_the_operation_above_the_details", async ({ gg }) => {
   const { page } = gg;
-  await page.setViewportSize({ width: 900, height: 560 });
+  await page.setViewportSize({ width: 900, height: 560 + STATUS_BAR_H });
   const dir = gg.repoPath("conflicts");
   await page.goto("/");
   await open(page, dir);

@@ -742,6 +742,60 @@ fn prepare(request: &OpRequest) -> Result<Prepared> {
                 }),
             )
         }
+        OpRequest::PrReply {
+            number,
+            thread_id,
+            body: text,
+        } => {
+            pr::check_write(number, Some(&thread_id), Some(&text))?;
+            (
+                fixed(format!("Reply on pull request #{number}")),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        let what = pr::Write::Reply {
+                            thread: &thread_id,
+                            body: &text,
+                        };
+                        pr::write(ctx, number, what).await
+                    })
+                }),
+            )
+        }
+        OpRequest::PrResolve {
+            number,
+            thread_id,
+            resolved,
+        } => {
+            pr::check_write(number, Some(&thread_id), None)?;
+            let title = if resolved {
+                format!("Resolve a conversation on pull request #{number}")
+            } else {
+                format!("Unresolve a conversation on pull request #{number}")
+            };
+            (
+                fixed(title),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        let what = pr::Write::Resolve {
+                            thread: &thread_id,
+                            resolved,
+                        };
+                        pr::write(ctx, number, what).await
+                    })
+                }),
+            )
+        }
+        OpRequest::PrComment { number, body: text } => {
+            pr::check_write(number, None, Some(&text))?;
+            (
+                fixed(format!("Comment on pull request #{number}")),
+                body(move |ctx, _| {
+                    Box::pin(async move {
+                        pr::write(ctx, number, pr::Write::Comment { body: &text }).await
+                    })
+                }),
+            )
+        }
     };
     Ok(Prepared { title, body })
 }

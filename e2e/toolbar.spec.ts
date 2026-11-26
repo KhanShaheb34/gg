@@ -2,7 +2,7 @@
 // (remote branches, tags, stashes), search, fetch and refresh.
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { BIG_COMMITS, bigSubject, closeButton, expect, makeRepo, test, viewOption, viewPopover } from "./fixtures";
+import { BIG_COMMITS, bigSubject, closeButton, expect, makeRepo, STATUS_BAR_H, test, viewOption, viewPopover } from "./fixtures";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
@@ -37,6 +37,7 @@ function gitSubjects(gg: { git(name: string, ...args: string[]): string }, repo:
 
 test("selecting only one branch leaves exactly its commits; Show all restores them", async ({ gg }) => {
   const { page } = gg;
+  await page.setViewportSize({ width: 1280, height: 720 + STATUS_BAR_H });
   await page.goto("/");
   await open(page, gg.repoPath("small"));
   const all = gitSubjects(gg, "small", "--all");
@@ -478,11 +479,16 @@ test("View works from the keyboard, and only one of the toolbar's popovers is op
   await expect(box("Tags")).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(box("Stashes")).toBeFocused();
+  // On past the graph's rows to the window's.
   await page.keyboard.press("ArrowDown");
-  await expect(box("Stashes")).toBeFocused();
+  await expect(box("Status bar")).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(box("Status bar")).toBeFocused();
   await page.keyboard.press("Home");
   await expect(box("Remote branches")).toBeFocused();
   await page.keyboard.press("End");
+  await expect(box("Status bar")).toBeFocused();
+  await page.keyboard.press("ArrowUp");
   await expect(box("Stashes")).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await expect(box("Tags")).toBeFocused();

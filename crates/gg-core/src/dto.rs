@@ -67,6 +67,12 @@ pub struct WorktreeInfo {
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeUpstream {
     pub name: String,
+    /// Its remote as configured (`origin`; `.` for a local branch), `None` if not read: the
+    /// short name cannot say where the remote's name ends (`up` with `stream/main`, or
+    /// `up/stream` with `main`, both `up/stream/main`).
+    pub remote: Option<String>,
+    /// Its branch on that remote, as configured (`main`).
+    pub branch: Option<String>,
     pub ahead: u32,
     pub behind: u32,
 }
@@ -182,6 +188,11 @@ pub struct PrDetails {
     pub threads_error: Option<String>,
     /// More review threads than were read (the first 50 are).
     pub threads_partial: bool,
+    /// The user can add a comment to the conversation (`pr_comment`), as far as GitHub's answer
+    /// tells: not when the repository is archived, nor when the conversation is locked and the
+    /// user cannot write to the repository. True when the review threads' query failed (a
+    /// comment that cannot be made then fails, and says why).
+    pub can_comment: bool,
     /// When this was read from `gh`, unix milliseconds.
     pub loaded_at_ms: i64,
 }
@@ -322,6 +333,9 @@ pub struct PrComment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrThread {
+    /// GitHub's node id of the thread (`PRRT_…`), which `pr_reply` and `pr_resolve` name;
+    /// empty when GitHub did not give it (nothing can then be done to the thread here).
+    pub id: String,
     pub path: String,
     /// Its line in the file (its original line once outdated), if it is on one.
     pub line: Option<u32>,
@@ -330,6 +344,11 @@ pub struct PrThread {
     pub outdated: bool,
     /// The comments after the first, oldest first.
     pub replies: Vec<PrReply>,
+    /// What the user may do to it, as GitHub says (`viewerCanReply`, `viewerCanResolve`,
+    /// `viewerCanUnresolve`); false when it did not say.
+    pub can_reply: bool,
+    pub can_resolve: bool,
+    pub can_unresolve: bool,
 }
 
 /// A reply in a review thread.
@@ -538,6 +557,13 @@ pub struct FetchState {
     pub last_error_detail: Option<String>,
     /// When the last fetch finished, unix milliseconds.
     pub last_at_ms: Option<i64>,
+    /// When the repository was last fetched, by gg or by anything else (a terminal, an
+    /// editor, a pull), unix milliseconds: the newest `FETCH_HEAD` among its worktrees that
+    /// holds something (git writes one on every fetch; one that could not reach its remote
+    /// leaves it empty), and never earlier than what was known before. `None` while nothing
+    /// says (a fresh clone, or the last fetch before gg opened it failed). Read without git,
+    /// on every refresh.
+    pub fetched_at_ms: Option<i64>,
 }
 
 /// Everything the UI shows about an open repository, apart from its rows.
@@ -1091,7 +1117,7 @@ pub enum PullMode {
 /// abort and skip also when the commit moved.
 ///
 /// Every request that runs in a working directory (all but push, push_tag, delete_tag,
-/// delete_remote_branch, fetch_into_local, the worktree operations and pr_create) carries `expect_worktree`: the active worktree
+/// delete_remote_branch, fetch_into_local, the worktree operations and the pull request ones) carries `expect_worktree`: the active worktree
 /// the UI showed. The core refuses it, running nothing, when another worktree is active by
 /// its turn, so switching worktrees never redirects a request already asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1345,6 +1371,28 @@ pub enum OpRequest {
         draft: bool,
         compare_page: bool,
     },
+    /// Replies `body` (any text but blank) in review thread `thread_id` (its GraphQL node id,
+    /// `PrThread.id`) of pull request `number`, through `gh api graphql`
+    /// (`addPullRequestReviewThreadReply`), the query and its variables on gh's stdin.
+    /// Runs from the main worktree, on the repository `pr_details` reads.
+    PrReply {
+        number: u32,
+        thread_id: String,
+        body: String,
+    },
+    /// Resolves (`resolved`) or unresolves review thread `thread_id` of pull request `number`
+    /// through `gh api graphql` (`resolveReviewThread`, `unresolveReviewThread`).
+    PrResolve {
+        number: u32,
+        thread_id: String,
+        resolved: bool,
+    },
+    /// Adds `body` (any text but blank) to pull request `number`'s conversation: `gh pr comment
+    /// <number> --repo <repo> --body-file -`, the body on gh's stdin.
+    PrComment {
+        number: u32,
+        body: String,
+    },
 }
 
 /// What a new worktree checks out: an existing local branch, a new branch made at a commit
@@ -1370,7 +1418,8 @@ pub struct WorktreePath {
 
 impl OpRequest {
     /// Whether the request runs from the main worktree whichever is active: the worktree
-    /// operations, which name the worktree they are about, and `pr_create`, which needs none.
+    /// operations, which name the worktree they are about, and the pull request ones
+    /// (`pr_create`, `pr_reply`, `pr_resolve`, `pr_comment`), which need none.
     pub fn runs_in_main(&self) -> bool {
         matches!(
             self,
@@ -1378,6 +1427,9 @@ impl OpRequest {
                 | Self::WorktreeRemove { .. }
                 | Self::WorktreePrune {}
                 | Self::PrCreate { .. }
+                | Self::PrReply { .. }
+                | Self::PrResolve { .. }
+                | Self::PrComment { .. }
         )
     }
 
@@ -1459,7 +1511,10 @@ impl OpRequest {
             | Self::WorktreeAdd { .. }
             | Self::WorktreeRemove { .. }
             | Self::WorktreePrune {}
-            | Self::PrCreate { .. } => None,
+            | Self::PrCreate { .. }
+            | Self::PrReply { .. }
+            | Self::PrResolve { .. }
+            | Self::PrComment { .. } => None,
         }
     }
 
@@ -1541,7 +1596,10 @@ impl OpRequest {
             | Self::WorktreeAdd { .. }
             | Self::WorktreeRemove { .. }
             | Self::WorktreePrune {}
-            | Self::PrCreate { .. } => None,
+            | Self::PrCreate { .. }
+            | Self::PrReply { .. }
+            | Self::PrResolve { .. }
+            | Self::PrComment { .. } => None,
         }
     }
 }
@@ -2257,8 +2315,12 @@ mod tests {
         let full = WorktreeInfo {
             active: true,
             status: Some(WorktreeStatus::default()),
+            // Branch stream/main on remote up, whose short name a remote up/stream would
+            // give too: the remote and the branch are sent as configured.
             upstream: Some(WorktreeUpstream {
-                name: "origin/main".into(),
+                name: "up/stream/main".into(),
+                remote: Some("up".into()),
+                branch: Some("stream/main".into()),
                 ahead: 2,
                 behind: 1,
             }),
@@ -2278,7 +2340,8 @@ mod tests {
         let v = serde_json::to_value(&full).unwrap();
         assert_eq!(
             v["upstream"],
-            json!({"name": "origin/main", "ahead": 2, "behind": 1})
+            json!({"name": "up/stream/main", "remote": "up", "branch": "stream/main",
+                   "ahead": 2, "behind": 1})
         );
         assert_eq!(v["inProgress"], "cherry-pick");
         assert_eq!(v["lockReason"], "on a usb disk");
@@ -2496,7 +2559,7 @@ mod tests {
                 "uncommittedSubject": "Uncommitted changes (3)",
                 "viewOptions": {"branches": null, "showRemotes": true, "showTags": true,
                                 "showStashes": true},
-                "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},
+                "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null, "fetchedAtMs": null},
                 "op": {"id": 4, "title": "Create branch x", "startedAtMs": 9, "queued": 1},
                 "prs": {"status": "ready", "reason": "failed", "loadedAtMs": 5, "partial": true},
                 "branchPrs": {"fix/x": {"number": 12, "title": "Fix",

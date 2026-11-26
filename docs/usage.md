@@ -15,6 +15,16 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 - ⌘F searches subjects, authors and hashes (Enter / Shift+Enter: next / previous hit),
   ⌘⇧F fetches from all remotes, ⌘R re-reads the repository. On Windows and Linux, Ctrl
   stands for ⌘.
+- The bar above the graph is for actions: the branch picker, which branches the graph shows
+  and what else (Show all, View), search, fetch, refresh, the command log and the side panel.
+  The repository's name is on its tab. The status bar along the window's foot is for
+  information: the active worktree's folder (home as `~`, cut in the middle when long, in
+  full in its tooltip; a click offers Copy path and Reveal in Finder, Show in File Explorer
+  on Windows, Open containing folder on Linux) and when the repository was last fetched, by
+  gg or anything else (a terminal, a pull, another app): "Fetched 2 min ago", the moment in
+  its tooltip. That comes from git's `FETCH_HEAD`, so it says nothing until there is a fetch
+  to go by (a fresh clone has none; a fetch that fails does not count). View › Status bar
+  hides the bar, for every repository; the choice is remembered.
 - The command log (⌘⇧L, or the terminal button in the toolbar) shows the git commands the app
   ran for the repository: each operation under its title, with each command's line, time,
   duration, exit code and output; "Background reads" adds the reads the app makes by itself.
@@ -51,9 +61,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   changes (kept up to date as files change), how it stands with its upstream, and what is
   unusual (locked, folder missing, a merge stopped there). In a window narrower than 840 px
   the panel lies over the graph. The **active** worktree, where every action
-  runs, is marked there and named, with its branch, at the top of the window (the branch
-  opens the branch picker; while the panel is hidden, the worktree count beside it shows the
-  panel); double-click another (or "Make active")
+  runs, is marked there; its branch is at the top of the window (it opens the branch picker;
+  while the panel is hidden, the worktree count beside it shows the panel) and its folder in
+  the status bar at the foot; double-click another (or "Make active")
   to switch. ⌘⌥1…⌘⌥9 switch to a worktree by its place in the list (Ctrl+Shift+1…9 on
   Windows and Linux).
 - **Add worktree…** (the panel's + or menu, or a branch or commit menu) makes a folder for a

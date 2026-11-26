@@ -538,6 +538,13 @@ pub struct FetchState {
     pub last_error_detail: Option<String>,
     /// When the last fetch finished, unix milliseconds.
     pub last_at_ms: Option<i64>,
+    /// When the repository was last fetched, by gg or by anything else (a terminal, an
+    /// editor, a pull), unix milliseconds: the newest `FETCH_HEAD` among its worktrees that
+    /// holds something (git writes one on every fetch; one that could not reach its remote
+    /// leaves it empty), and never earlier than what was known before. `None` while nothing
+    /// says (a fresh clone, or the last fetch before gg opened it failed). Read without git,
+    /// on every refresh.
+    pub fetched_at_ms: Option<i64>,
 }
 
 /// Everything the UI shows about an open repository, apart from its rows.
@@ -2329,7 +2336,7 @@ mod tests {
                 "uncommittedSubject": "Uncommitted changes (3)",
                 "viewOptions": {"branches": null, "showRemotes": true, "showTags": true,
                                 "showStashes": true},
-                "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null},
+                "fetch": {"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null, "fetchedAtMs": null},
                 "op": {"id": 4, "title": "Create branch x", "startedAtMs": 9, "queued": 1},
                 "prs": {"status": "ready", "reason": "failed", "loadedAtMs": 5, "partial": true},
                 "branchPrs": {"fix/x": {"number": 12, "title": "Fix",

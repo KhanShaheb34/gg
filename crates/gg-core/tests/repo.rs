@@ -351,6 +351,8 @@ async fn snapshot_lists_refs_sorted_with_idle_fetch_state() {
     assert_eq!(snap.remotes, ["origin"]);
     assert_eq!(snap.status.changed + snap.status.untracked, 0);
     assert_eq!(snap.view_options, all_refs());
+    // Not fetched by gg yet; fetched once by git (`clone_as_remote`), which its FETCH_HEAD says.
+    let fetched = snap.fetch.fetched_at_ms.expect("FETCH_HEAD's time");
     assert_eq!(
         snap.fetch,
         FetchState {
@@ -358,6 +360,7 @@ async fn snapshot_lists_refs_sorted_with_idle_fetch_state() {
             last_error: None,
             last_error_detail: None,
             last_at_ms: None,
+            fetched_at_ms: Some(fetched),
         }
     );
     assert_eq!(snap.max_lane, 0);
@@ -365,7 +368,7 @@ async fn snapshot_lists_refs_sorted_with_idle_fetch_state() {
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(
         v["fetch"],
-        serde_json::json!({"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null})
+        serde_json::json!({"running": false, "lastError": null, "lastErrorDetail": null, "lastAtMs": null, "fetchedAtMs": fetched})
     );
     assert_eq!(v["head"]["branch"], "main");
 }

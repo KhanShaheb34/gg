@@ -6,6 +6,7 @@
 //! runs no auto-maintenance and writes no commit-graph,
 //! never runs the repository's hooks and is killed after a fixed time.
 
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -410,6 +411,8 @@ impl RepoManager {
             }
             Err(e) => (Some(e.message), e.detail.map(|d| keep_tail(d, MAX_DETAIL))),
         };
+        // What the fetch wrote, read before the lock is taken.
+        let fetched_at_ms = fetched_at(&repo.common_dir);
         let finished = {
             let mut slot = repo.slot.write().await;
             if initiator == Initiator::User {
@@ -421,6 +424,7 @@ impl RepoManager {
                 last_error: error,
                 last_error_detail: detail,
                 last_at_ms: Some(unix_ms()),
+                fetched_at_ms: newest(slot.fetch.fetched_at_ms, fetched_at_ms),
             };
             if slot.closed {
                 return Err(unknown_repo(repo_id));
@@ -646,6 +650,37 @@ pub(super) fn unix_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// When the repository whose common git dir is `common_dir` was last fetched, as far as its
+/// files say, unix milliseconds: the newest modification time of its `FETCH_HEAD`s that hold
+/// something. git writes `FETCH_HEAD` in the git dir of the worktree it fetches from (the main
+/// one's, or a linked one's under `worktrees/<name>/`) on every fetch and pull, a line per ref
+/// fetched. It empties it first, so a fetch that could not reach its remote leaves it empty:
+/// that was no fetch, and says nothing of when the last one was (the caller keeps what it
+/// knew; see [`newest`]). `None` when none holds anything. A few file system reads, no git.
+pub(crate) fn fetched_at(common_dir: &Path) -> Option<i64> {
+    let modified = |dir: &Path| -> Option<i64> {
+        let meta = std::fs::metadata(dir.join("FETCH_HEAD")).ok()?;
+        if meta.len() == 0 {
+            return None;
+        }
+        let time = meta.modified().ok()?;
+        let ms = time.duration_since(UNIX_EPOCH).ok()?.as_millis();
+        i64::try_from(ms).ok()
+    };
+    let linked = std::fs::read_dir(common_dir.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| modified(&entry.ok()?.path()));
+    modified(common_dir).into_iter().chain(linked).max()
+}
+
+/// The later of what was known of the last fetch and what the files say now: an emptied
+/// `FETCH_HEAD` (a failed fetch), or a linked worktree removed with its own, never takes it
+/// back.
+pub(crate) fn newest(known: Option<i64>, read: Option<i64>) -> Option<i64> {
+    known.max(read)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -848,5 +883,52 @@ mod tests {
         // Focus comes back: the overdue fetch runs at once.
         let back = blurred + 3 * 60 * MIN;
         assert_eq!(fetch_due(back, five, t, focused(back)), Due::Now);
+    }
+
+    /// Writes `dir/FETCH_HEAD` with a fetched ref in it, modified `secs` past the epoch.
+    fn fetch_head(dir: &Path, secs: u64) {
+        use std::io::Write;
+        std::fs::create_dir_all(dir).unwrap();
+        let mut file = std::fs::File::create(dir.join("FETCH_HEAD")).unwrap();
+        writeln!(file, "{}\t\tbranch 'main' of ../origin", "a".repeat(40)).unwrap();
+        file.set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    #[test]
+    fn fetched_at_is_the_newest_fetch_head_of_any_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        assert_eq!(fetched_at(dir), None, "never fetched");
+        // A linked worktree's admin folder without one counts for nothing.
+        std::fs::create_dir_all(dir.join("worktrees/idle")).unwrap();
+        assert_eq!(fetched_at(dir), None);
+        fetch_head(dir, 1_000);
+        assert_eq!(fetched_at(dir), Some(1_000_000));
+        fetch_head(&dir.join("worktrees/side"), 2_000);
+        assert_eq!(
+            fetched_at(dir),
+            Some(2_000_000),
+            "a linked worktree's, newer"
+        );
+        fetch_head(dir, 3_000);
+        assert_eq!(
+            fetched_at(dir),
+            Some(3_000_000),
+            "the main one's, newer again"
+        );
+        assert_eq!(fetched_at(&dir.join("gone")), None, "no such folder");
+        // A fetch that failed left the main one empty, newer: the linked one's still counts.
+        std::fs::File::create(dir.join("FETCH_HEAD")).unwrap();
+        assert_eq!(fetched_at(dir), Some(2_000_000));
+    }
+
+    #[test]
+    fn what_was_known_of_the_last_fetch_is_never_taken_back() {
+        assert_eq!(newest(None, None), None);
+        assert_eq!(newest(None, Some(5)), Some(5));
+        assert_eq!(newest(Some(5), None), Some(5), "emptied by a failed fetch");
+        assert_eq!(newest(Some(5), Some(3)), Some(5));
+        assert_eq!(newest(Some(5), Some(8)), Some(8));
     }
 }

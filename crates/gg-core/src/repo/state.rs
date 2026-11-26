@@ -1777,6 +1777,7 @@ mod tests {
             last_error: Some("e".into()),
             last_error_detail: Some("fatal: e\n".into()),
             last_at_ms: Some(5),
+            fetched_at_ms: Some(4),
         };
         let snap = s.snapshot(&identity(), true, &fetch);
         assert_eq!(snap.repo_id, 3);

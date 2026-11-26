@@ -228,6 +228,16 @@ on the selected row) for its menu. Items that cannot run say why when you point 
   A branch without an upstream gets the branch pushed to as its upstream; an existing
   upstream is never changed.
 - **Pull** on a branch that has diverged from its upstream asks whether to merge or rebase.
+- **Pull and push in one click**: when the current branch is behind or ahead of its upstream,
+  its counts show beside the branch name at the top of the window, as on its label in the
+  graph (↓9: 9 commits to pull; ↑2: 2 to push; both when it has diverged), and change when a
+  fetch brings new commits. Each count is a button: ↓ pulls the branch as its menu's **Pull**
+  does (asking whether to merge or rebase a diverged branch, with the same notices); ↑ pushes
+  it to its upstream as **Push** does, without the dialog. A push the remote refuses (the
+  branch has diverged) offers Fetch, Pull and Force push… on its notice. A branch whose
+  upstream has another name gets the Push dialog instead, which names where the push goes.
+  Nothing shows when the branch is level with its upstream, has none, or HEAD is detached;
+  while an action runs, the counts wait for it.
 - Actions on one repository run one at a time, in the order asked; a second waits (the
   toolbar shows what runs and how many wait). A busy indicator shows when one takes more
   than 150 ms. An action on the current branch (reset, merge, rebase, cherry-pick, revert,

@@ -215,6 +215,8 @@ page instead. gg never reads or stores a GitHub token.
   branch onto it, push, pull, add a worktree, create a pull request; remote branches: check
   out as a local branch, fetch into a local branch, merge, delete from the remote.
 - Tags: push, delete. Stashes: save, apply, pop, drop, create a branch from one.
+- The current branch's ↓behind and ↑ahead counts beside its name at the top of the window:
+  one click pulls or pushes it.
 - Push sets the upstream on a first push. A push the remote rejects offers fetch, pull or a
   separate **force push**, which always uses `--force-with-lease` pinned to the remote commit
   you were shown.

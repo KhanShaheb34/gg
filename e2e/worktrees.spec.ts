@@ -61,11 +61,10 @@ test("every worktree is listed with how it stands, the main one first and the ac
   await expect(row(page, "hotfix").locator(".badge")).toHaveText("merging");
   await expect(row(page, "hotfix").locator(".changes")).toHaveClass(/conflicts/);
 
-  // The header names the active worktree and its branch; the branch opens the branch picker.
+  // The header names the active worktree's branch, which opens the branch picker; the status bar its folder.
   const header = page.getByTestId("active-worktree");
   await expect(header.locator(".wt-branch")).toHaveText("main");
-  await expect(page.locator(".repo-head .wt-folders")).toHaveText("~/repos/");
-  await expect(page.locator(".repo-head .wt-folder")).toHaveText("worktrees");
+  await expect(page.getByTestId("status-path")).toHaveText("~/repos/worktrees");
   await expect(header).toHaveAttribute("aria-label", /^Switch branch: main, in the active worktree ~\/repos\/worktrees, one of 8 worktrees/);
   // Rows hold no interactive element inside an option: a grid of rows, buttons in their own cells.
   await expect(list(page).locator('[role="option"]')).toHaveCount(0);

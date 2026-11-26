@@ -17,6 +17,25 @@ as the rest of the site does. Anything else stops the script with the line it is
 the newest entry here is not the version in public/latest.json.
 -->
 
+## 0.5.2 (2026-11-26)
+
+A status bar at the bottom of the window, and a quieter header.
+
+### What changed
+
+- **A status bar.** A slim bar at the bottom of the window shows the folder you are working in on the left and when the repository was last fetched on the right ("Fetched 2 min ago", with the exact time in its tooltip). Click the folder for **Copy path** and **Reveal in Finder** (Show in File Explorer, Open containing folder). The fetch time also notices a fetch or pull you run in a terminal. Hide the bar with **View › Status bar**.
+- **A shorter header.** The repository's name is no longer repeated under its tab, and the path has moved to the status bar, so the header starts with the branch and holds only things you act on.
+
+## 0.5.1 (2026-11-26)
+
+Answer a pull request's review from the side panel, and pull or push the current branch in one click.
+
+### What changed
+
+- **Reply, resolve and comment in the Pull request tab.** Each review thread has a **Reply…** box and a **Resolve** button; a resolved thread has **Unresolve**; and a box at the end of the comments adds a comment to the conversation. Nothing is sent until you press the button or ⌘↩ (Ctrl+Enter). If sending fails, your text stays in the box with the reason under it. Drafts are kept while you switch tabs or commits, until gg quits. What you are not allowed to do on a pull request is not offered. It all goes through your `gh`; gg still never reads or stores a GitHub token.
+- **Pull and push from the toolbar.** When the current branch is behind its upstream, a `↓9` count appears in the toolbar just before Fetch; one click pulls. Ahead, it shows `↑2` and one click pushes. Diverged, it shows both, each its own button, and pulling asks whether to merge or rebase as before. In sync, nothing shows. The counts update when a fetch lands.
+- **The upstream is read from git, not guessed.** gg now takes each branch's upstream remote and branch from git's configuration, so a remote with a slash in its name can no longer be mistaken for another.
+
 ## 0.5.0 (2026-11-26)
 
 Pull requests move into the side panel: create one, then follow its checks and comments, without leaving gg.

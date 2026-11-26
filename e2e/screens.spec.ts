@@ -1535,3 +1535,60 @@ for (const theme of ["light", "dark"] as const) {
     await shot("from");
   });
 }
+
+// The sync control beside the branch picker: behind (as the user's main was), diverged, the
+// counts hovered and waiting while an action runs; at the default size and the narrowest
+// window the app allows, with a long branch name.
+for (const theme of ["light", "dark"] as const) {
+  test(`branch sync, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    const repo = gg.repoPath("routine");
+    const other = otherClone(repo);
+    gg.gitAt(other, "switch", "-q", "main");
+    for (let i = 1; i <= 9; i++) gg.gitAt(other, "commit", "-q", "--allow-empty", "-m", `Remote change ${i}`);
+    gg.gitAt(other, "push", "-q", "origin", "main");
+    gg.git("routine", "fetch", "-q", "origin");
+    await page.goto("/");
+    await open(page, repo);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    const pull = page.getByTestId("sync-pull");
+    await expect(pull).toHaveText("9");
+    const shot = async (name: string) => {
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `sync-${name}-${theme}.png`), clip: { x: 0, y: 0, width: page.viewportSize()!.width, height: 120 } });
+    };
+    await park(page);
+    await shot("behind");
+    await pull.hover();
+    await shot("behind-hover");
+
+    gg.git("routine", "commit", "-q", "--allow-empty", "-m", "Local one");
+    gg.git("routine", "commit", "-q", "--allow-empty", "-m", "Local two");
+    await expect(page.getByTestId("sync-push")).toHaveText("2");
+    await park(page);
+    await shot("diverged");
+
+    // A pull held by a slow hook: both counts wait, the running pull shows at the right.
+    const hook = path.join(repo, ".git", "hooks", "post-merge");
+    writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
+    chmodSync(hook, 0o755);
+    gg.git("routine", "config", "pull.rebase", "false");
+    await pull.click();
+    await expect(page.getByTestId("busy")).toBeVisible();
+    await park(page);
+    await shot("running");
+    await expect(pull).toHaveCount(0);
+    await page.getByRole("status").getByRole("button", { name: "Dismiss notification" }).first().click();
+
+    await page.setViewportSize({ width: 800, height: 560 });
+    gg.git("routine", "reset", "-q", "--hard", "HEAD~1"); // the merge undone: diverged again
+    gg.git("routine", "branch", "-q", "-m", "main", "feature/a-rather-long-branch-name-for-the-header");
+    gg.git("routine", "branch", "-q", "--set-upstream-to", "origin/main");
+    gg.git("routine", "commit", "-q", "--allow-empty", "-m", "Local three");
+    await expect(page.getByTestId("active-worktree")).toContainText("feature/");
+    await park(page);
+    await shot("narrow");
+  });
+}

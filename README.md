@@ -180,11 +180,14 @@ the form to make one, with a title and description suggested from its commits, t
 goes into (by default the one it was created from: a branch cut from `staging` goes into
 `staging`), and Create as draft; it pushes the branch first when it needs to, and says so.
 **Create pull request…** on a branch or worktree shows the tab for that branch. Under an open
-pull request the tab shows, read-only, where it stands (Ready to merge, Checks failing,
+pull request the tab shows where it stands (Ready to merge, Checks failing,
 Conflicts with main, Approved…), its checks as they run (asked again every 15 s while one
 runs and the window is in front), and its comments, review summaries and code comments, with
 people's and bots' apart. Comments are drawn without their HTML and never load images or
-anything else from the web; a link opens in your browser. After you push a branch that has no
+anything else from the web; a link opens in your browser. You can reply in a code comment's
+thread, resolve or unresolve it, and add a comment to the conversation, where GitHub lets
+you: nothing is sent until you click Reply, Resolve or Comment (or press ⌘↩), and what you
+write is kept while gg runs if it fails or you look elsewhere. After you push a branch that has no
 pull request, the tab opens by itself (a setting). Open pull requests show as markers beside
 their branches and worktrees. Without `gh`, gg pushes the branch and opens GitHub's compare
 page instead. gg never reads or stores a GitHub token.

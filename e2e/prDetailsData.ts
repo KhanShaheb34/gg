@@ -70,18 +70,42 @@ export function view(
   };
 }
 
-type ThreadSpec = { path: string; line: number; resolved?: boolean; outdated?: boolean; comments: { id: string; login: string; bot?: boolean; body: string; minutesAgo: number }[] };
+/**
+ * A review thread: its place, state and comments; `id` (else `T<i>`); what the user may do to it
+ * (GitHub's viewerCan…): by default reply, and resolve it or unresolve it as it stands.
+ */
+export type ThreadSpec = {
+  id?: string;
+  path: string;
+  line: number;
+  resolved?: boolean;
+  outdated?: boolean;
+  canReply?: boolean;
+  canResolve?: boolean;
+  canUnresolve?: boolean;
+  comments: { id: string; login: string; bot?: boolean; body: string; minutesAgo: number }[];
+};
 
-/** The review threads' GraphQL answer: `threads`, and which authors are bots (`bots`, besides the threads'). */
-export function threads(threads: ThreadSpec[], bots: string[] = []) {
+/**
+ * The review threads' GraphQL answer: `threads`, and which authors are bots (`bots`, besides the
+ * threads'); `room`: whether the conversation is locked, the repository archived, and the user's
+ * permission on it (default: open, not archived, WRITE).
+ */
+export function threads(threads: ThreadSpec[], bots: string[] = [], room: { locked?: boolean; archived?: boolean; permission?: string } = {}) {
   return {
     data: {
       repository: {
+        isArchived: room.archived ?? false,
+        viewerPermission: room.permission ?? "WRITE",
         pullRequest: {
+          locked: room.locked ?? false,
           reviewThreads: {
             pageInfo: { hasNextPage: false, endCursor: null },
             nodes: threads.map((t, i) => ({
-              id: `T${i}`,
+              id: t.id ?? `T${i}`,
+              viewerCanReply: t.canReply ?? true,
+              viewerCanResolve: t.canResolve ?? !(t.resolved ?? false),
+              viewerCanUnresolve: t.canUnresolve ?? (t.resolved ?? false),
               isResolved: t.resolved ?? false,
               isOutdated: t.outdated ?? false,
               path: t.path,

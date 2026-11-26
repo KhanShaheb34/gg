@@ -724,8 +724,10 @@ export function cliFolders(home: string, extra = 0): string[] {
  * reaches GitHub. Each `gh` call's arguments are recorded; it answers with what the test set
  * for that kind of call (`pr-list`, `pr-list-head` with `--head`, `repo-view`, `pr-create`,
  * `auth-token`, `pr-view`, `api-graphql`; a pull request's own `pr-view-<n>` and
- * `api-graphql-<n>` first, when set), else prints nothing. `ssh -G` says the host it is asked
- * about is itself.
+ * `api-graphql-<n>` first, when set; the Pull request tab's writes: `gql-reply`, `gql-resolve`,
+ * `gql-unresolve` (`gh api graphql` with that mutation) and `pr-comment`), else prints nothing.
+ * A call that exits 0 then puts the answers set for it with `then` in place (what GitHub
+ * answers once it has the write). `ssh -G` says the host it is asked about is itself.
  */
 const FAKE_GH = `#!/bin/sh
 PATH=/usr/bin:/bin
@@ -737,6 +739,10 @@ for a in "$@"; do printf '%s\\0' "$a"; done > "$d/calls/$i/argv"
 cat > "$d/calls/$i/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
+if [ "$key" = api-graphql ]; then
+  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; esac; done
+  if grep -q addPullRequestReviewThreadReply "$d/calls/$i/stdin"; then key=gql-reply; fi
+fi
 n=""
 if [ "$key" = pr-view ]; then n="$3"; fi
 if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in n=*) n="\${a#n=}";; esac; done; fi
@@ -745,8 +751,10 @@ r="$d/replies/$key"
 if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi
 if [ -f "$r.err" ]; then cat "$r.err" >&2; fi
 if [ -f "$r.out" ]; then cat "$r.out"; fi
-if [ -f "$r.code" ]; then exit "$(cat "$r.code")"; fi
-exit 0
+code=0
+if [ -f "$r.code" ]; then code="$(cat "$r.code")"; fi
+if [ "$code" = 0 ] && [ -d "$r.then" ]; then cp "$r.then"/* "$d/replies/"; fi
+exit "$code"
 `;
 const FAKE_SSH = `#!/bin/sh
 PATH=/usr/bin:/bin
@@ -826,6 +834,8 @@ export type FakeGh = {
   reply(key: string, code: number, stdout: string, stderr?: string): void;
   /** Makes calls of `key` wait `secs` seconds before answering. */
   slow(key: string, secs: number): void;
+  /** Once a call of `key` exits 0, calls of each key of `then` answer (exit 0) with its text. */
+  then(key: string, then: Record<string, string>): void;
   /** Each call's arguments so far, oldest first. */
   calls(): string[][];
   /** What the call `i` (0 = first) read on stdin. */
@@ -848,6 +858,16 @@ function fakeGh(home: string): FakeGh {
     },
     slow(key, secs) {
       writeFileSync(path.join(dir, "replies", `${key}.sleep`), String(secs));
+    },
+    then(key, then) {
+      const into = path.join(dir, "replies", `${key}.then`);
+      rmSync(into, { recursive: true, force: true });
+      mkdirSync(into, { recursive: true });
+      for (const [k, stdout] of Object.entries(then)) {
+        writeFileSync(path.join(into, `${k}.out`), stdout);
+        writeFileSync(path.join(into, `${k}.err`), "");
+        writeFileSync(path.join(into, `${k}.code`), "0");
+      }
     },
     calls() {
       const out: string[][] = [];

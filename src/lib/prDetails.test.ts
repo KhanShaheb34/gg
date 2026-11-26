@@ -154,7 +154,11 @@ describe("comments", () => {
     comment(`t${replies.join("")}${firstBot}`, firstBot, {
       kind: "thread",
       thread: {
+        id: "T1",
         path: "a.ts",
+        canReply: true,
+        canResolve: true,
+        canUnresolve: false,
         line: 1,
         resolved: false,
         outdated: false,

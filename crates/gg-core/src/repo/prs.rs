@@ -61,7 +61,7 @@ pub(crate) struct PrSlot {
 
 /// Why there is no list: the reason, `gh`'s failure, and whether it is worth saying (not for
 /// a repository without remotes).
-type Unloaded = (PrUnavailable, Option<GhFailure>, bool);
+pub(crate) type Unloaded = (PrUnavailable, Option<GhFailure>, bool);
 /// How a load ended: the list, or why there is none.
 type Loaded = std::result::Result<PrData, Unloaded>;
 
@@ -259,14 +259,25 @@ impl RepoManager {
         &self,
         repo: &Repo,
     ) -> std::result::Result<(Gh, RemoteFacts), Unloaded> {
+        self.gh_for_prs(repo, &repo.runner).await
+    }
+
+    /// [`RepoManager::gh_for_list`], its commands logged through `runner` (an operation's,
+    /// for `pr_reply`, `pr_resolve` and `pr_comment`): the pull requests' repository is
+    /// found one way for reading them and for writing to them.
+    pub(crate) async fn gh_for_prs(
+        &self,
+        repo: &Repo,
+        runner: &GitRunner,
+    ) -> std::result::Result<(Gh, RemoteFacts), Unloaded> {
         let facts = self
-            .remote_facts(repo, &repo.runner, &repo.root)
+            .remote_facts(repo, runner, &repo.root)
             .await
             .map_err(failed)?;
         let Some(remote) = facts.base_remote() else {
             return Err((PrUnavailable::NotGithub, None, false));
         };
-        let Some(on) = self.on_github(repo, &repo.runner, &facts, remote).await else {
+        let Some(on) = self.on_github(repo, runner, &facts, remote).await else {
             // A host that only gh could vouch for, and gh is not there to ask: gh is what is
             // missing.
             let unknown_host = facts
@@ -277,7 +288,7 @@ impl RepoManager {
             }
             return Err((PrUnavailable::NotGithub, None, true));
         };
-        let Some(gh) = self.gh(repo, &repo.runner, &on) else {
+        let Some(gh) = self.gh(repo, runner, &on) else {
             return Err((PrUnavailable::NoGh, Some(GhFailure::NoGh), true));
         };
         Ok((gh, facts))

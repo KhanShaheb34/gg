@@ -26,7 +26,7 @@ describe("worktreeMenu", () => {
     const signedOut = snap({ prs: { status: "unavailable", reason: "signed_out", loadedAtMs: null, partial: false } });
     // The dialog decides (and says) whether it pushes first.
     expect(find(worktreeMenu(worktree(), signedOut), "pr.create").label).toBe("Create pull request…");
-    const pushed = worktree({ upstream: { name: "origin/feature/x", ahead: 0, behind: 0 } });
+    const pushed = worktree({ upstream: { name: "origin/feature/x", remote: "origin", branch: "feature/x", ahead: 0, behind: 0 } });
     expect(find(worktreeMenu(pushed, signedOut), "pr.create").label).toBe("Create pull request…");
     const notGithub = snap({ prs: { status: "unavailable", reason: "not_github", loadedAtMs: null, partial: false } });
     expect(find(worktreeMenu(worktree(), notGithub), "pr.create").disabledReason).toBe("This remote is not on GitHub");

@@ -33,7 +33,9 @@ export type WorktreeInfo = {
   prunable: boolean;
   active: boolean; // every action runs in the active worktree
   status: WorktreeStatus | null; // null until read; the active one's is the snapshot's `status`
-  upstream: { name: string; ahead: number; behind: number } | null; // null = no upstream (or detached)
+  // null = no upstream (or detached). `remote` and `branch` as configured ("origin", "main"; remote "." for a local
+  // branch): `name` cannot say where the remote's name ends ("up/stream/main" is "stream/main" on "up" or "main" on "up/stream").
+  upstream: { name: string; remote: string | null; branch: string | null; ahead: number; behind: number } | null;
   unpushed: number | null; // commits of its HEAD on no remote-tracking branch; null = unknown
   inProgress: InProgress["kind"] | null;
   lockReason: string | null; // when locked with a reason

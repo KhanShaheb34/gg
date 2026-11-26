@@ -1,6 +1,6 @@
 <!--
-  Beside the branch picker: how the current branch stands with its upstream, as its label in
-  the graph shows it (↑ ahead, ↓ behind), each count a button. ↓ pulls the current branch as its
+  In the toolbar, just before Fetch: how the current branch stands with its upstream, as its
+  label in the graph shows it (↑ ahead, ↓ behind), each count a button. ↓ pulls the current branch as its
   menu's Pull does; ↑ pushes it to its upstream as Push does (to an upstream of another name,
   through the Push dialog, which names where it goes). Nothing shows when the branch is level
   with its upstream, has none, or HEAD is detached. While an action runs in the repository
@@ -89,15 +89,16 @@
 {/if}
 
 <style>
-  /* A quiet accent pill, as the running operation's: something to do. It keeps its width (the
-     branch's name and the folder beside it give way first). */
+  /* A quiet accent pill, as tall as the running operation's: something to do. Centred on the
+     icon buttons beside it; it keeps its width (the toolbar is never squeezed: the repository's
+     name and path give way). */
   .sync {
     display: inline-flex;
     align-items: stretch;
     flex: none;
-    height: 22px;
-    margin: 0 6px 0 -6px;
-    border-radius: 11px;
+    height: 24px;
+    margin: 0 2px 0 4px;
+    border-radius: 12px;
     background: color-mix(in srgb, var(--accent) 11%, transparent);
     color: var(--accent);
     font-size: var(--fs-sm);
@@ -113,7 +114,7 @@
     gap: 3px;
     padding: 0 8px 0 7px;
     border: 0;
-    border-radius: 11px;
+    border-radius: 12px;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -131,19 +132,19 @@
 
   .part:has(+ .part) {
     padding-right: 6px;
-    border-radius: 11px 0 0 11px;
+    border-radius: 12px 0 0 12px;
   }
 
   .part + .part {
-    border-radius: 0 11px 11px 0;
+    border-radius: 0 12px 12px 0;
   }
 
   .part + .part::before {
     content: "";
     position: absolute;
     left: 0;
-    top: 5px;
-    bottom: 5px;
+    top: 6px;
+    bottom: 6px;
     width: 1px;
     background: color-mix(in srgb, var(--accent) 30%, transparent);
   }

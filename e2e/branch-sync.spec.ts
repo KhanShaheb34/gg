@@ -1,4 +1,4 @@
-// The sync control beside the branch picker, end to end against the real core and a local
+// The sync control in the toolbar (just before Fetch), end to end against the real core and a local
 // bare remote (the `routine` fixture: `main` checked out, level with `origin/main`; a second
 // clone that moves the remote): it shows how far the current branch is behind or ahead of its
 // upstream, its counts pull and push in one click, and it is absent when there is nothing to do.
@@ -41,7 +41,7 @@ function commitHere(gg: GG, subject: string) {
   gg.git("routine", "commit", "-q", "-m", subject);
 }
 
-test("behind its upstream: a fetch shows ↓N beside the branch, and one click pulls it", async ({ gg }) => {
+test("behind its upstream: a fetch shows ↓N in the toolbar, and one click pulls it", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   await open(page, gg.repoPath("routine"));

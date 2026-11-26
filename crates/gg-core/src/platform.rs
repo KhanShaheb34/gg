@@ -199,17 +199,22 @@ pub(crate) fn windows_absolute(path: &str) -> bool {
 /// group it leads (its pid; the child is made a session leader at its start); on Windows the
 /// job object it was put in before it ran.
 ///
-/// On Unix the group's id is only the child's while the child has not been waited for
-/// (reaped): until then its pid, ended or not, is given to no other process, nor is a group
-/// of that id made. Once reaped, the id is free, and may be another process's group (every
-/// git child of the app's leads one) by the time a signal is sent. So the tree is signalled
-/// only while its child has not been waited for: callers wait for the child after deciding
-/// whether to end the tree, never before.
+/// On Unix the group's id is taken while the group has a process in it, the child (its
+/// leader) counting until it has been waited for (reaped), ended or not: while a helper the
+/// child started is still in the group, the group still owns its id, and the id can be given
+/// to another process (and so another group: every git child of the app's leads one) only
+/// once the group has ended. As its last member may end at any moment, only the unreaped
+/// leader keeps the id the tree's for sure: the tree is signalled only while its child has
+/// not been waited for, never after. Callers wait for the child after ending the tree, never
+/// before.
 pub struct ProcessTree {
     #[cfg(unix)]
     group: Option<i32>,
     #[cfg(windows)]
     job: Option<job::Job>,
+    /// The child has been waited for (unit tests: a signal sent after it is recorded so).
+    #[cfg(all(test, unix))]
+    reaped: std::sync::atomic::AtomicBool,
 }
 
 impl ProcessTree {
@@ -244,11 +249,22 @@ impl ProcessTree {
         }
     }
 
+    /// Notes that the child has been waited for (reaped), at once after it was: from then
+    /// on the tree is never signalled (unit tests record any signal sent after it).
+    pub(crate) fn reaped(&self) {
+        #[cfg(all(test, unix))]
+        self.reaped.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     #[cfg(unix)]
     fn signal(&self, signal: libc::c_int) {
         if let Some(group) = self.group {
             #[cfg(test)]
-            signals::record(group, signal);
+            signals::record(
+                group,
+                signal,
+                self.reaped.load(std::sync::atomic::Ordering::SeqCst),
+            );
             // SAFETY: killpg only sends a signal; a group that is gone is ESRCH.
             unsafe {
                 libc::killpg(group, signal);
@@ -257,8 +273,8 @@ impl ProcessTree {
     }
 }
 
-/// The signals sent to process trees (unit tests): each with whether the group's leader had
-/// already been reaped then, which must never be (see [`ProcessTree`]).
+/// The signals sent to process trees (unit tests): each with whether that tree's child had
+/// already been waited for (reaped) then, which must never be (see [`ProcessTree`]).
 #[cfg(all(test, unix))]
 pub(crate) mod signals {
     use std::sync::Mutex;
@@ -266,19 +282,16 @@ pub(crate) mod signals {
     /// A signal sent to a group.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct Sent {
+        /// The group's id (its leader's pid), for the diagnostics.
         pub group: i32,
         pub signal: libc::c_int,
-        /// No process had the group's id: its leader had been reaped.
+        /// The tree's own child, its leader, had been reaped: the id may not have been its.
         pub leader_reaped: bool,
     }
 
     static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
 
-    pub(super) fn record(group: i32, signal: libc::c_int) {
-        // Signal 0 only checks: a leader that has ended but not been reaped still answers.
-        // SAFETY: signal 0 sends nothing.
-        let leader_reaped = unsafe { libc::kill(group, 0) } == -1
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    pub(super) fn record(group: i32, signal: libc::c_int, leader_reaped: bool) {
         SENT.lock().unwrap_or_else(|e| e.into_inner()).push(Sent {
             group,
             signal,
@@ -326,6 +339,8 @@ pub(crate) fn spawn(
         let tree = ProcessTree {
             #[cfg(unix)]
             group: child.id().and_then(|pid| i32::try_from(pid).ok()),
+            #[cfg(all(test, unix))]
+            reaped: std::sync::atomic::AtomicBool::new(false),
         };
         Ok((child, tree))
     }
@@ -405,6 +420,25 @@ pub(crate) fn process_gone(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// Whether this process's child `pid` has exited, without waiting for (reaping) it: an
+/// exited child stays a zombie, its pid (and the group id it gives) still its own, until it
+/// is waited for. `false` while it runs, or if it cannot be told.
+#[cfg(unix)]
+pub(crate) fn exited_unreaped(pid: libc::id_t) -> bool {
+    // SAFETY: zeroed is a valid siginfo_t; with WNOWAIT, waitid only looks, and with
+    // WNOHANG it does not wait. si_signo is SIGCHLD only when a child was found exited.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let found = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    found == 0 && info.si_signo == libc::SIGCHLD
 }
 
 /// A path as git writes it in its output (git for Windows: `C:/Users/me/repo`) in the

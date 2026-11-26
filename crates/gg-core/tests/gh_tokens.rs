@@ -173,7 +173,9 @@ async fn tokens_reach_only_hosts_gh_has_credentials_stored_for() {
             assert!(
                 call.argv
                     .iter()
-                    .any(|a| a == "--repo" || a.ends_with("team/app"))
+                    .any(|a| a == "--repo" || a.ends_with("team/app")),
+                "a command that names no repository: {:?}",
+                call.argv
             );
         }
     }

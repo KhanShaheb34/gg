@@ -336,9 +336,9 @@ impl Adapter for Codex {
         // The last agent message among the events.
         codex_events(stdout)
             .iter()
+            .rev()
             .filter(|e| e["type"] == "item.completed" && e["item"]["type"] == "agent_message")
-            .filter_map(|e| e["item"]["text"].as_str())
-            .last()
+            .find_map(|e| e["item"]["text"].as_str())
             .unwrap_or_default()
             .to_owned()
     }

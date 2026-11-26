@@ -16,7 +16,8 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   ⌘⇧F fetches from all remotes, ⌘R re-reads the repository. On Windows and Linux, Ctrl
   stands for ⌘.
 - The bar above the graph is for actions: the branch picker, which branches the graph shows
-  and what else (Show all, View), search, fetch, refresh, the command log and the side panel.
+  and what else (Show all, View), search, the branch's pull and push counts, fetch, refresh,
+  the command log and the side panel.
   The repository's name is on its tab. The status bar along the window's foot is for
   information: the active worktree's folder (home as `~`, cut in the middle when long, in
   full in its tooltip; a click offers Copy path and Reveal in Finder, Show in File Explorer

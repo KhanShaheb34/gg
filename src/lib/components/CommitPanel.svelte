@@ -395,7 +395,12 @@
     if (outcome.status === "done" && outcome.message !== null) {
       undo = before.trim() !== "" && before !== outcome.message ? { previous: before, generated: outcome.message } : null;
       message = outcome.message;
-      void tick().then(() => field?.focus());
+      // The subject in sight, the caret before it.
+      void tick().then(() => {
+        field?.focus();
+        field?.setSelectionRange(0, 0);
+        if (field) field.scrollTop = 0;
+      });
     } else if (outcome.status === "failed" && outcome.kind !== "cancelled") {
       aiFailure = outcome;
     }

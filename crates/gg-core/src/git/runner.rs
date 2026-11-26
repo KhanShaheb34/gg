@@ -1564,8 +1564,13 @@ async fn exec_limited(
         Err(hit) => {
             tree.kill();
             let _ = child.kill().await;
+            let note = if hit == Expired::Cancelled {
+                "cancelled"
+            } else {
+                "timed out"
+            };
             exec.log
-                .push(exec.tags, kind, cwd, args, started, -1, b"", "timed out");
+                .push(exec.tags, kind, cwd, args, started, -1, b"", note);
             Ok(Err(TimedOut {
                 limit: hit,
                 stdout: take(&out),

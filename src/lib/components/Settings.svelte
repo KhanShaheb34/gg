@@ -1157,7 +1157,16 @@
 
   .tool-row {
     flex-wrap: wrap;
+    align-items: baseline;
     gap: 4px 7px;
+  }
+
+  .tool-row .dot {
+    align-self: center;
+  }
+
+  .tool-row .link-btn {
+    line-height: inherit;
   }
 
   .tool-name {

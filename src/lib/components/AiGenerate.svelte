@@ -214,7 +214,7 @@
           <button type="button" class="pbtn primary" data-autofocus data-testid="ai-notice-continue" onclick={() => void goOn()}>Continue</button>
         </div>
       {:else}
-        <p class="pop-title" id="ai-pop-title-{uid}">Generate with AI</p>
+        <p class="pop-title" id="ai-pop-title-{uid}">{missing ? `${missing.name} was not found` : "No AI tool found"}</p>
         {#if missing}
           <p class="pop-text" data-testid="ai-missing-text">
             Settings choose {missing.name}, which was not found on this computer. Install it and sign in, or choose Automatic.

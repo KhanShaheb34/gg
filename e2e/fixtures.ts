@@ -820,6 +820,57 @@ function fakeUpdates(home: string): FakeUpdates {
   };
 }
 
+/** The stand-in for the AI tools, built with the devserver (`crates/gg-devserver/src/bin/gg-fake-ai.rs`). */
+const FAKE_AI = path.join(ROOT, "target", "debug", "gg-fake-ai");
+
+/**
+ * The stand-in for the command-line AI tools (`claude`, `codex`) of a test: none is installed
+ * until `install`; then the devserver finds it in the tool folder and runs it, never a real
+ * tool. Each call's arguments and stdin are recorded; it answers with what the test set.
+ */
+export type FakeAi = {
+  install(name: "claude" | "codex"): void;
+  uninstall(name: "claude" | "codex"): void;
+  /** Answers each call with `stdout` (and `stderr`), exiting with `code`, after `sleepMs`. */
+  reply(name: "claude" | "codex", code: number, stdout: string, stderr?: string, sleepMs?: number): void;
+  /** Each call's arguments and what it read on stdin, oldest first. */
+  calls(name: "claude" | "codex"): { argv: string[]; stdin: string; done: boolean }[];
+};
+
+function fakeAi(home: string): FakeAi {
+  const tools = path.join(home, "tools");
+  const state = (name: string) => {
+    const dir = path.join(tools, `${name}.fake`);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+  return {
+    install(name) {
+      execFileSync("cp", [FAKE_AI, path.join(tools, name)]);
+    },
+    uninstall(name) {
+      rmSync(path.join(tools, name), { force: true });
+    },
+    reply(name, code, stdout, stderr = "", sleepMs = 0) {
+      const dir = state(name);
+      writeFileSync(path.join(dir, "reply.out"), stdout);
+      writeFileSync(path.join(dir, "reply.err"), stderr);
+      writeFileSync(path.join(dir, "reply.code"), String(code));
+      writeFileSync(path.join(dir, "reply.sleep"), String(sleepMs));
+    },
+    calls(name) {
+      const out: { argv: string[]; stdin: string; done: boolean }[] = [];
+      for (let i = 1; existsSync(path.join(state(name), "calls", String(i), "argv")); i++) {
+        const c = path.join(state(name), "calls", String(i));
+        const argv = readFileSync(path.join(c, "argv"), "utf8").split("\0");
+        argv.pop();
+        out.push({ argv, stdin: readFileSync(path.join(c, "stdin"), "utf8"), done: existsSync(path.join(c, "done")) });
+      }
+      return out;
+    },
+  };
+}
+
 /** The fake `gh` of a test (see FAKE_GH). */
 export type FakeGh = {
   /** Answers calls of `key` (`pr-list`, `pr-list-head`, `repo-view`, `pr-create`, `auth-token`). */
@@ -1060,6 +1111,8 @@ export type GG = {
   launches(): string[][];
   /** The fake `gh` the devserver runs (the real one never runs). */
   gh: FakeGh;
+  /** The stand-ins for the AI tools (none installed until a test says so; a real one never runs). */
+  ai: FakeAi;
   /** The stand-in for gg's updater. */
   updates: FakeUpdates;
   /** The app quit and started again: a new devserver on the same config folder, the page loaded afresh. */
@@ -1154,7 +1207,7 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggShellName: str
         await page.reload();
       };
 
-      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), updates: fakeUpdates(root), relaunch });
+      await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), ai: fakeAi(root), updates: fakeUpdates(root), relaunch });
     } finally {
       if (server) await stopDevserver(server);
       rmSync(root, { recursive: true, force: true });

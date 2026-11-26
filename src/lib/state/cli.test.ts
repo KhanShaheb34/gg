@@ -83,19 +83,19 @@ describe("the gg command's state", () => {
     vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce({ ...before, removed: ["/h/bin/gg", "/h/.local/bin/gg"], ...noLine });
     await cli.removeCli();
     expect(app.cli).toEqual(before);
-    expect(app.toasts.map((t) => [t.kind, t.message])).toEqual([
-      ["info", "Removed the gg command: /h/bin/gg, /h/.local/bin/gg."],
+    expect(app.toasts.map((t) => [t.kind, t.message, t.note])).toEqual([
+      ["info", "Removed the gg command", "/h/bin/gg, /h/.local/bin/gg."],
     ]);
     // Removed meanwhile by hand: nothing went, and only that is said.
     vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce({ ...before, removed: [], ...noLine });
     await cli.removeCli();
-    expect(app.toasts.at(-1)?.message).toBe("Nothing to remove: no gg command written by gg was found on your PATH.");
+    expect(app.toasts.at(-1)).toMatchObject({ message: "Nothing to remove", note: "No gg command written by gg was found on your PATH." });
     app.cli = after;
     const refusal = new ipc.CoreError({ code: "io", message: "Could not remove /h/bin/gg", detail: "denied" });
     vi.mocked(ipc.api.uninstallCli).mockRejectedValueOnce(refusal);
     await cli.removeCli();
     expect(app.cli).toEqual(after);
-    expect(app.toasts.at(-1)).toMatchObject({ kind: "error", message: "Could not remove the gg command: Could not remove /h/bin/gg" });
+    expect(app.toasts.at(-1)).toMatchObject({ kind: "error", message: "Could not remove the gg command", note: "Could not remove /h/bin/gg" });
   });
 
   it("installs with the line when the box is ticked, and keeps the state without the outcome", async () => {
@@ -118,12 +118,12 @@ describe("the gg command's state", () => {
     await cli.removeCli();
     expect(app.cli).toEqual(before);
     expect(app.toasts.map((t) => [t.kind, t.message, t.note])).toEqual([
-      ["info", "Removed the gg command: /h/bin/gg.", "Took gg’s line out of /h/.zshrc; new terminal windows no longer run it."],
+      ["info", "Removed the gg command", "/h/bin/gg. Took gg’s line out of /h/.zshrc; new terminal windows no longer run it."],
     ]);
     const problem = "Could not take gg's line out of /h/.zshrc: Permission denied (os error 13).";
     vi.mocked(ipc.api.uninstallCli).mockResolvedValueOnce({ ...before, removed: ["/h/bin/gg"], lineRemovedFrom: [], lineProblem: problem });
     await cli.removeCli();
-    expect(app.toasts.at(-1)).toMatchObject({ kind: "error", message: "Removed the gg command: /h/bin/gg.", note: problem });
+    expect(app.toasts.at(-1)).toMatchObject({ kind: "error", message: "Removed the gg command", note: `/h/bin/gg. ${problem}` });
   });
 
   it("turns the shell's gg off from Settings and says whether the shell still has it", async () => {
@@ -185,10 +185,10 @@ describe("the gg command's state", () => {
     vi.mocked(ipc.api.getAppState).mockResolvedValue({ cli: homebrew } as never);
     await cli.openCliDialog();
     expect(overlays.overlays.dialogs).toHaveLength(0);
-    expect(app.toasts.map((t) => [t.kind, t.message, t.detail])).toEqual([
+    expect(app.toasts.map((t) => [t.kind, t.message, t.note])).toEqual([
       [
         "info",
-        "The gg command is already installed by Homebrew at /opt/homebrew/bin/gg.",
+        "The gg command is already installed by Homebrew at /opt/homebrew/bin/gg",
         "Homebrew made it, a link to the launcher inside gg.app, and removes it when you uninstall gg with Homebrew; gg leaves it alone.",
       ],
     ]);
@@ -197,8 +197,8 @@ describe("the gg command's state", () => {
     await cli.openCliDialog();
     expect(overlays.overlays.dialogs).toHaveLength(0);
     expect(app.toasts.at(-1)).toMatchObject({
-      message: "The gg command is already installed at /usr/local/bin/gg, a link to gg’s launcher.",
-      detail: "gg did not make this link and leaves it alone.",
+      message: "The gg command is already installed at /usr/local/bin/gg, a link to gg’s launcher",
+      note: "gg did not make this link and leaves it alone.",
     });
   });
 });

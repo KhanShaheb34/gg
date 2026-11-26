@@ -44,20 +44,21 @@ export async function uninstallCli(): Promise<{ removed: string[]; line: ShellLi
   return { removed, line: { lineRemovedFrom, lineProblem } };
 }
 
-/** What removing the command did, in one line: only the files that actually went. */
-export function removedMessage(removed: string[]): string {
-  if (removed.length === 0) return "Nothing to remove: no gg command written by gg was found on your PATH.";
-  return `Removed the gg command: ${removed.map(short).join(", ")}.`;
+/** What removing the command did: a headline, and the files that actually went. */
+export function removedMessage(removed: string[]): { message: string; note: string } {
+  if (removed.length === 0) return { message: "Nothing to remove", note: "No gg command written by gg was found on your PATH." };
+  return { message: "Removed the gg command", note: `${removed.map(short).join(", ")}.` };
 }
 
 /** Says what removing the command did: what went, and what became of gg's line. */
 export function reportRemoved(removed: string[], line: ShellLineRemoved): void {
-  const note = lineRemovedNote(line, short);
-  if (note === null) {
-    toast("info", removedMessage(removed));
-  } else {
-    notify({ kind: line.lineProblem === null ? "info" : "error", message: removedMessage(removed), note });
-  }
+  const lineNote = lineRemovedNote(line, short);
+  const { message, note } = removedMessage(removed);
+  notify({
+    kind: line.lineProblem === null ? "info" : "error",
+    message,
+    note: lineNote === null ? note : `${note} ${lineNote}`,
+  });
 }
 
 /**
@@ -121,7 +122,7 @@ export async function openCliDialog(): Promise<void> {
   const at = installedAt(app.cli, (p) => shortenPath(p, app.homeDir));
   const note = linkNote(app.cli.link);
   if (at !== null && note !== null) {
-    notify({ kind: "info", message: `The gg command is already ${at}.`, detail: note });
+    notify({ kind: "info", message: `The gg command is already ${at}`, note });
     return;
   }
   showDialog(InstallCliDialog, {});

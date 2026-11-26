@@ -23,16 +23,22 @@
   const shown = $derived(shortenPath(path, app.homeDir));
   const fetchedAt = $derived(view.snapshot.fetch.fetchedAtMs);
 
-  /** The time the wording is written for: moved on when it next changes, and when the window shows again. */
-  let now = $state(Date.now());
+  /** Moves the wording on: when it next changes, and when the window shows again. */
+  let tick = $state(0);
+  /** The time the wording is written for: read afresh with every tick and every new fetch time (another tab's, say). */
+  const now = $derived.by(() => {
+    void tick;
+    void fetchedAt;
+    return Date.now();
+  });
   $effect(() => {
     if (fetchedAt === null) return;
-    const timer = setTimeout(() => (now = Date.now()), nextChangeIn(fetchedAt, now) + 50);
+    const timer = setTimeout(() => tick++, nextChangeIn(fetchedAt, now) + 50);
     return () => clearTimeout(timer);
   });
   $effect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") now = Date.now();
+      if (document.visibilityState === "visible") tick++;
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);

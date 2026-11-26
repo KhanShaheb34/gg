@@ -229,7 +229,7 @@ on the selected row) for its menu. Items that cannot run say why when you point 
   upstream is never changed.
 - **Pull** on a branch that has diverged from its upstream asks whether to merge or rebase.
 - **Pull and push in one click**: when the current branch is behind or ahead of its upstream,
-  its counts show beside the branch name at the top of the window, as on its label in the
+  its counts show in the toolbar, just before the Fetch button, as on its label in the
   graph (↓9: 9 commits to pull; ↑2: 2 to push; both when it has diverged), and change when a
   fetch brings new commits. Each count is a button: ↓ pulls the branch as its menu's **Pull**
   does (asking whether to merge or rebase a diverged branch, with the same notices); ↑ pushes

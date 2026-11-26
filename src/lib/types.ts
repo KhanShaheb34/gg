@@ -118,6 +118,8 @@ export type FetchState = {
   lastError: string | null;
   lastErrorDetail: string | null;
   lastAtMs: number | null;
+  /** When the repository was last fetched, by gg or anything else (its newest non-empty FETCH_HEAD), epoch ms; null while nothing says. */
+  fetchedAtMs: number | null;
 };
 
 export type RepoSnapshot = {

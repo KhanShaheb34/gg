@@ -45,7 +45,8 @@ gg runs git on repositories that may come from anyone, so these matter most:
 
 gg itself talks to no AI service. When the user clicks Generate with AI (never otherwise),
 gg runs the command-line tool the user installed and signed in to, Claude Code (`claude`) or
-Codex (`codex`), found as `gh` is (the login shell's `PATH`, never inside the repository), as
+Codex (`codex`), found as `gh` is (the login shell's `PATH`; never a program inside an open
+repository's folder or one of its worktrees, not even to ask its version), as
 an argument array, without a shell or a terminal, in a temporary folder of its own, never in
 the repository. gg never reads, stores or passes on a token for it; the tool uses its own
 sign-in and sends the prompt to its provider (Anthropic, OpenAI) as it does in a terminal.
@@ -53,29 +54,41 @@ sign-in and sends the prompt to its provider (Anthropic, OpenAI) as it does in a
 - **What is sent.** The prompt (gg's, from Orca, or the user's template from the settings)
   with the branch's name, the list of files, and their diff (for a commit, only the files the
   user ticked; for a pull request, the branch's commits, files and diff since its base, and
-  the title and description the form holds), cut to about 200 KB. Binary files are named,
-  never read; text conversion and external diff programs are never run. It goes on the tool's
-  standard input; the command line holds only fixed words, a model name (checked: letters,
-  digits and `.-_:/@[]`, never starting with `-` or `@`) and a path of gg's. The command log
-  keeps neither the prompt nor the diff (Codex repeats the prompt on its stderr: only its
-  settings and error lines are logged).
+  the title and description the form holds), cut to about 200 KB. A binary file is named,
+  never sent: any part of the diff that holds a NUL byte is replaced by a line saying so,
+  whatever the repository's `.gitattributes` say (a `diff` attribute makes git print a binary
+  file as text). Nothing of the repository's configuration runs while gg reads: no external
+  diff or text conversion program (`--no-ext-diff`, `--no-textconv`), and no clean or smudge
+  filter (each filter driver configured is turned off for those reads with `-c
+  filter.<name>.clean=` and the like; git would otherwise run one to read a changed file of the
+  working tree). The prompt goes on the tool's standard input; the command line holds only
+  fixed words, a model name (checked: letters, digits and `.-_:/@[]`, never starting with `-`
+  or `@`) and a path of gg's. The command log keeps neither the prompt nor the diff: any line
+  of the tool's stderr that is a line of the prompt is left out, whatever it looks like, and
+  Codex is run with `--json`, where it repeats nothing of the prompt and reports its errors as
+  events.
 - **The diff is not trusted.** A repository's text may try to instruct the model. The prompt
   puts it in code fences it cannot close and says it is data, never instructions; and the
   tool cannot act on it: Claude Code runs with no tools (`--tools ""`), no MCP servers
   (`--strict-mcp-config`), no settings files and so none of their hooks
   (`--setting-sources ""`), no slash commands and no session kept. Codex runs with its shell
   (`shell_tool`, `unified_exec`) and image viewer (`view_image`) turned off, as are web search,
-  the user's MCP servers, connectors, plugins, hooks, the browser and the computer, in its
-  read-only sandbox, with no session kept (`--ephemeral`). Checked against Codex 0.163 with a
+  connectors, plugins, hooks, the browser and the computer; without the user's `config.toml`
+  (`--ignore-user-config`, so none of its MCP servers start: `-c mcp_servers={}` does not remove
+  the servers a config names, as seen with Codex 0.163 and a dummy server; Codex's sign-in is
+  still its own), in its read-only sandbox, with no session kept (`--ephemeral`). Checked
+  against Codex 0.163 with a
   stand-in model that asked it to run `cat /etc/hosts`: with the read-only sandbox alone the
   command ran and its output went back to the model; with gg's settings Codex refused it
   ("unsupported call"). Codex still offers its `apply_patch` tool, which the read-only sandbox
-  stops from writing. A Codex that does not know one of the switches that keep commands off is
-  not run (the user is told to update it).
+  stops from writing. A Codex that does not know one of the switches that keep commands and
+  MCP servers off is not run (the user is told to update it).
 - **What is left.** The model can still write misleading text into the field from what the diff
   says: gg only fills the field, the user reads it, and nothing is committed or created by it.
   Settings an organization manages for Claude Code (its managed settings and hooks) apply as
-  they do anywhere. A tool added to a newer Codex that gg does not know to turn off would be
+  they do anywhere. gg's own status reads (the commit panel's list of changed files) run git
+  as a terminal does, filters included; only what is read for a prompt turns them off. A tool
+  added to a newer Codex that gg does not know to turn off would be
   offered to the model, inside the read-only sandbox. gg does not scan the diff for secrets
   before sending it: it is the user's own diff, sent to the provider the user already uses for
   that code, on the user's click, after a first-use notice says so.

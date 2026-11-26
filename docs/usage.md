@@ -214,13 +214,15 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   never the prompt or the diff). The prompt (gg's default, from Orca) has the branch's name,
   the files and their diff, cut to about 200 KB with a note of what was left out; binary files
   are named, never read. The tool runs in a temporary folder, never in the repository, with
-  no tools (Claude Code) or with its commands, web search and MCP servers off in its
+  no tools (Claude Code) or with its commands, web search and your `config.toml` (its MCP
+  servers, profiles and model) off in its
   read-only sandbox (Codex), and keeps no session.
 - **Settings** (⌘,): theme (system, light or dark), date format, background fetch, the
   editor and terminal the worktree menu opens, the worktree location pattern, whether a push
   shows the Pull request tab, Generate with AI (the tool: Automatic, Claude Code or Codex,
   each shown with its version or Not installed and a link to install it; each tool's model,
-  by default `haiku` for Claude Code and Codex's own for Codex, from a short list or typed;
+  by default `haiku` for Claude Code and Codex's own for Codex (gg runs Codex without your
+  `config.toml`, so a model set there is not used: set it here), from a short list or typed;
   the two prompts, with their variables and Reset to default), and the `gg` command. **?**
   lists the keyboard shortcuts.
 

@@ -347,7 +347,7 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
   description as the form has them), cut to about 200 KB; binary files are named, never read.
   It goes on the tool's standard input, never on a command line or into the command log. The
   tool runs in a temporary folder, never in the repository, with no tools (Claude Code) or
-  with its commands, image viewer, web search and MCP servers off and its sandbox read-only
+  with its commands, image viewer, web search and your `config.toml` (its MCP servers) off and its sandbox read-only
   (Codex), so it cannot change the repository or read other files; it keeps no session. gg
   never reads, stores or passes on a token for it. A small notice says this before a tool's
   first use.

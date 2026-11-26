@@ -6,6 +6,11 @@
   shows its first lines only, without its replies; any body longer than about 12 lines is
   shortened; "Show more" and "Show less" toggle either, and the user's choice is kept while
   the app runs.
+
+  A thread also takes what the user may do to it, as GitHub says (`writes` given): a quiet
+  "Reply…" box under its replies (PrComposer) and Resolve; a resolved one, collapsed, offers
+  Unresolve only, and its box once shown whole. What the user may not do is not offered. Each
+  change is sent only on the user's click (or ⌘↩ in the box), and shows once gh has it.
 -->
 <script lang="ts" module>
   import { SvelteMap } from "svelte/reactivity";
@@ -18,8 +23,10 @@
   import { formatDate, formatDateLong, type DateFormat } from "../format";
   import { renderMarkdown, type Rendered } from "../markdown";
   import { shownLines, startsShortened } from "../prDetails";
+  import type { PrWrites } from "../state/prCompose.svelte";
   import type { PrComment, PrReply } from "../types";
   import Markdown from "./Markdown.svelte";
+  import PrComposer from "./PrComposer.svelte";
 
   type Props = {
     comment: PrComment;
@@ -29,9 +36,22 @@
     onpage: (url: string) => void;
     /** Opens a link of a body (any https address). */
     onlink: (url: string) => void;
+    /** What can be written to the pull request (a thread's reply, resolving it); none: read-only. */
+    writes?: PrWrites | null;
   };
 
-  let { comment, dateFormat, now, onpage, onlink }: Props = $props();
+  let { comment, dateFormat, now, onpage, onlink, writes = null }: Props = $props();
+
+  /** The thread the user may act on, with what they may do; null for anything else. */
+  const acts = $derived.by(() => {
+    const t = comment.thread;
+    if (!writes || !t || t.id === "") return null;
+    const reply = t.canReply;
+    const resolve = !t.resolved && t.canResolve;
+    const unresolve = t.resolved && t.canUnresolve;
+    return reply || resolve || unresolve ? { id: t.id, reply, resolve, unresolve } : null;
+  });
+  const resolving = $derived(acts && writes ? writes.resolving(acts.id) : null);
 
   const shortened = $derived(startsShortened(comment));
   const expanded = $derived(toggled.get(comment.id) ?? false);
@@ -39,8 +59,13 @@
   const replies = $derived((comment.thread?.replies ?? []).map((r) => ({ ...r, rendered: renderMarkdown(r.body) })));
   /** The body is taller than the lines shown before "Show more". */
   let overflows = $state(false);
-  /** Something is hidden until "Show more": the body's end, or a resolved thread's replies. */
-  const hasMore = $derived(overflows || (shortened === "resolved" && replies.length > 0));
+  /** A resolved thread (or a hidden comment) shown folded: its first lines only. */
+  const folded = $derived(shortened === "resolved" && !expanded);
+  /**
+   * Something is hidden until "Show more": the body's end, a resolved thread's replies, or the
+   * box to reply in it.
+   */
+  const hasMore = $derived(overflows || (shortened === "resolved" && (replies.length > 0 || acts?.reply === true)));
 
   const context = $derived.by(() => {
     const parts: string[] = [];
@@ -153,18 +178,97 @@
       {#each replies as r (r.id)}{@render replyCard(r)}{/each}
     </ul>
   {/if}
-  {#if hasMore || expanded}
-    <button
-      class="text-btn more"
-      type="button"
-      aria-expanded={expanded}
-      data-testid="pr-comment-more"
-      onclick={() => toggled.set(comment.id, !expanded)}
-    >
-      {expanded ? "Show less" : shortened === "resolved" && replies.length > 0 ? `Show more (${replies.length} ${replies.length === 1 ? "reply" : "replies"})` : "Show more"}
-    </button>
+  {#if acts && folded}
+    <!-- Folded: Show more, and Unresolve on the same line. -->
+    <div class="foot">
+      {#if hasMore}{@render more()}{/if}
+      <span class="spacer"></span>
+      {#if acts.unresolve}{@render resolveButton(acts.id, false)}{/if}
+    </div>
+    {@render resolveFailed()}
+  {:else}
+    {#if hasMore || expanded}{@render more()}{/if}
+    {#if acts && writes}
+      <div class="acts">
+        {#if acts.reply}
+          <PrComposer
+            draft={writes.draft(acts.id)}
+            placeholder="Reply…"
+            label="Reply to {comment.author} on {comment.thread?.path ?? 'the code'}"
+            sendLabel="Reply"
+            onsend={() => writes?.send(acts.id)}
+            onlog={writes.showLog}
+            testid="pr-reply-box"
+            lead={acts.resolve || acts.unresolve ? lead : undefined}
+          />
+        {:else}
+          <div class="foot">{@render lead()}</div>
+        {/if}
+        {@render resolveFailed()}
+      </div>
+    {/if}
   {/if}
 </article>
+
+{#snippet more()}
+  <button
+    class="text-btn more"
+    type="button"
+    aria-expanded={expanded}
+    data-testid="pr-comment-more"
+    onclick={() => toggled.set(comment.id, !expanded)}
+  >
+    {expanded ? "Show less" : shortened === "resolved" && replies.length > 0 ? `Show more (${replies.length} ${replies.length === 1 ? "reply" : "replies"})` : "Show more"}
+  </button>
+{/snippet}
+
+{#snippet lead()}
+  {#if acts?.resolve}{@render resolveButton(acts.id, true)}{:else if acts?.unresolve}{@render resolveButton(acts.id, false)}{/if}
+{/snippet}
+
+<!-- Resolve (or Unresolve) the thread: quiet, beside the box; sent on the click alone. -->
+{#snippet resolveButton(id: string, resolve: boolean)}
+  {@const pending = resolving?.pending ?? false}
+  <button
+    class="resolve"
+    type="button"
+    disabled={pending}
+    aria-label={pending ? (resolve ? "Resolving the conversation" : "Unresolving the conversation") : resolve ? "Resolve conversation" : "Unresolve conversation"}
+    title={resolve ? "Resolve this conversation on GitHub" : "Open this conversation again on GitHub"}
+    data-testid="pr-thread-resolve"
+    data-action={resolve ? "resolve" : "unresolve"}
+    onclick={() => writes?.setResolved(id, resolve)}
+  >
+    {#if pending}
+      <svg class="spin" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.8" />
+        <path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+      </svg>
+    {:else if resolve}
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <circle cx="6" cy="6" r="4.9" fill="none" stroke="currentColor" stroke-width="1.1" />
+        <path d="M3.9 6.1 5.4 7.6 8.2 4.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    {:else}
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <path d="M2.6 4.4h4.6a2.6 2.6 0 0 1 0 5.2H5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+        <path d="M4.3 2.6 2.5 4.4l1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    {/if}
+    <span>{pending ? (resolve ? "Resolving…" : "Unresolving…") : resolve ? "Resolve" : "Unresolve"}</span>
+  </button>
+{/snippet}
+
+{#snippet resolveFailed()}
+  {#if resolving?.error && !resolving.pending}
+    <p class="failed" role="alert" data-testid="pr-thread-resolve-error">
+      <span class="failed-text" title={resolving.error}>{resolving.error}</span>
+      {#if resolving.logFrom > 0}
+        <button class="text-btn" type="button" onclick={() => writes?.showLog(resolving?.logFrom ?? 0)}>Show log</button>
+      {/if}
+    </p>
+  {/if}
+{/snippet}
 
 <style>
   .card {
@@ -380,5 +484,105 @@
   .more {
     align-self: flex-start;
     margin-top: 2px;
+  }
+
+  /* What the user may do to a thread: under its replies, apart from them. */
+  .acts {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    margin-top: 2px;
+  }
+
+  .foot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 24px;
+  }
+
+  .foot .more {
+    align-self: center;
+    margin-top: 0;
+  }
+
+  /* Resolve and Unresolve: a quiet button, its colour only on hover. */
+  .resolve {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+    height: 24px;
+    margin-left: -6px;
+    padding: 0 7px 0 6px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    font-weight: 550;
+    white-space: nowrap;
+    transition:
+      background-color 80ms linear,
+      color 80ms linear;
+  }
+
+  .foot .spacer + .resolve {
+    margin-left: 0;
+    margin-right: -6px;
+  }
+
+  .resolve svg {
+    flex: none;
+  }
+
+  .resolve:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+
+  .resolve[data-action="resolve"]:hover:not(:disabled) svg {
+    color: color-mix(in srgb, var(--success) 85%, var(--text));
+  }
+
+  .resolve:active:not(:disabled) {
+    background: var(--bg-pressed);
+  }
+
+  .resolve:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+  }
+
+  .resolve:disabled {
+    color: var(--text-faint);
+  }
+
+  .spin {
+    animation: spin 0.8s linear infinite;
+  }
+
+  /* Why it could not be resolved: as the tab's own failed line. */
+  .failed {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+    padding: 4px 8px 4px 9px;
+    border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+    border-radius: 6px;
+    background: var(--danger-tint);
+    color: var(--text);
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+  }
+
+  .failed-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 </style>

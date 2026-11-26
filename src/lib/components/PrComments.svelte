@@ -2,7 +2,9 @@
   A pull request's comments in the Pull request tab: a header with how many there are and an
   All / Humans / Bots filter (kept while the app runs), then each comment as a card
   (PrCommentCard), oldest first. Says so when the filter leaves none, when older comments or
-  review threads were left out, and when the review threads could not be read.
+  review threads were left out, and when the review threads could not be read. With `writes`,
+  each thread offers what the user may do to it (PrCommentCard), and a box at the end adds a
+  comment to the conversation, unless GitHub says the user cannot (archived, or locked to them).
 -->
 <script lang="ts" module>
   import type { CommentFilter } from "../prDetails";
@@ -14,8 +16,10 @@
 <script lang="ts">
   import type { DateFormat } from "../format";
   import { commentCounts, filterComments, noComments } from "../prDetails";
+  import type { PrWrites } from "../state/prCompose.svelte";
   import type { PrDetails } from "../types";
   import PrCommentCard from "./PrCommentCard.svelte";
+  import PrComposer from "./PrComposer.svelte";
   import Segmented from "./Segmented.svelte";
 
   type Props = {
@@ -24,9 +28,11 @@
     now: number;
     onpage: (url: string) => void;
     onlink: (url: string) => void;
+    /** What can be written to the pull request; none: read-only. */
+    writes?: PrWrites | null;
   };
 
-  let { details, dateFormat, now, onpage, onlink }: Props = $props();
+  let { details, dateFormat, now, onpage, onlink, writes = null }: Props = $props();
 
   const counts = $derived(commentCounts(details.comments));
   const shown = $derived(filterComments(details.comments, chosen.filter));
@@ -62,12 +68,25 @@
   {:else}
     <ol class="list">
       {#each shown as c (c.id || c.url)}
-        <li><PrCommentCard comment={c} {dateFormat} {now} {onpage} {onlink} /></li>
+        <li><PrCommentCard comment={c} {dateFormat} {now} {onpage} {onlink} {writes} /></li>
       {/each}
     </ol>
   {/if}
   {#if details.threadsPartial}
     <p class="note">Only the first 50 code comment threads are shown.</p>
+  {/if}
+  {#if writes && details.canComment}
+    <div class="add">
+      <PrComposer
+        draft={writes.draft(null)}
+        placeholder="Add a comment…"
+        label="Add a comment to pull request #{details.number}"
+        sendLabel="Comment"
+        onsend={() => writes?.send(null)}
+        onlog={writes.showLog}
+        testid="pr-comment-box"
+      />
+    </div>
   {/if}
 </section>
 
@@ -140,6 +159,11 @@
     padding: 6px 12px 0 28px;
     color: var(--text-faint);
     font-size: var(--fs-sm);
+  }
+
+  /* The conversation's box, after its last comment. */
+  .add {
+    margin: 10px 10px 0;
   }
 
   .note {

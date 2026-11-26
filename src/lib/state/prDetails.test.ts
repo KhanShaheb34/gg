@@ -26,6 +26,7 @@ const details = (number: number, loadedAtMs: number): PrDetails => ({
   commentsOmitted: 0,
   threadsError: null,
   threadsPartial: false,
+  canComment: true,
   loadedAtMs,
 });
 

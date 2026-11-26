@@ -1209,7 +1209,10 @@ pub enum OpRequest {
     },
     /// Adds `body` (any text but blank) to pull request `number`'s conversation: `gh pr comment
     /// <number> --repo <repo> --body-file -`, the body on gh's stdin.
-    PrComment { number: u32, body: String },
+    PrComment {
+        number: u32,
+        body: String,
+    },
 }
 
 /// What a new worktree checks out: an existing local branch, a new branch made at a commit

@@ -1089,6 +1089,29 @@ mod tests {
         );
     }
 
+    /// A thread's id is kept as GitHub gave it (the captured one), and nothing is offered for
+    /// what the answer does not say the user may do (captured before the query asked); an id
+    /// GitHub would never write is dropped.
+    #[test]
+    fn a_threads_id_is_kept_and_its_permissions_default_to_none() {
+        let d = assemble(
+            parse_view(VIEW_FINISHED).unwrap(),
+            parse_threads(THREADS),
+            0,
+        );
+        let t = d.comments[1].thread.as_ref().unwrap();
+        assert_eq!(t.id, "PRRT_kwDOVsODgM67XTTJ");
+        assert!(!t.can_reply && !t.can_resolve && !t.can_unresolve);
+        // Nothing said of the conversation's lock: a comment is offered.
+        assert!(d.can_comment);
+        for ok in ["PRRT_kwDOVsODgM67XTTJ", "MDEy=", "a-b_c"] {
+            assert!(is_node_id(ok), "{ok}");
+        }
+        for bad in ["", "-x", "a b", "a\"", "a}", "é", &"a".repeat(201)] {
+            assert!(!is_node_id(bad), "{bad}");
+        }
+    }
+
     #[test]
     fn only_https_pages_are_kept() {
         assert_eq!(

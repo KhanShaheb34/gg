@@ -20,12 +20,12 @@
 use crate::dto::{OpHint, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::gh::{GhFailure, already_exists, created_url, number_of, unavailable_message};
-use crate::pr_details::is_node_id;
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
 use crate::ops::network::{push, ref_commit};
 use crate::ops::{OpCtx, Step};
+use crate::pr_details::is_node_id;
 use crate::repo::prs::{PrTrigger, push_plan};
 
 /// The step said (`op-progress`) while `gh pr create` runs.

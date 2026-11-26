@@ -30,8 +30,7 @@ use super::context::{self, Nothing};
 use super::prompt::{self, PrFields};
 use super::tools::{ADAPTERS, Adapter, Exit, adapter};
 use crate::dto::{
-    AiFailureKind, AiOutcome, AiTask, AiTool, AiToolChoice, AiToolInfo, AiTools, EntryStatus,
-    Settings,
+    AiFailureKind, AiOutcome, AiTask, AiTool, AiToolChoice, AiToolInfo, AiTools, Settings,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::{CmdKind, Expired, STOPPED, StdinPolicy, Stop, TimeLimit};
@@ -99,8 +98,28 @@ impl RepoManager {
         Some((reread.unwrap_or_else(|| self.login_path()), false))
     }
 
-    /// Where `a`'s program is, never inside `inside` (the repository).
-    fn find_ai_tool(&self, a: &dyn Adapter, inside: Option<&Path>) -> Option<Found> {
+    /// The folders of every open repository: each one's main folder and its worktrees'. A
+    /// tool found inside one of them is never run, not even for its version.
+    async fn open_folders(&self) -> Vec<PathBuf> {
+        let repos: Vec<(u32, PathBuf)> = lock(&self.repos)
+            .iter()
+            .map(|(id, r)| (*id, r.root.clone()))
+            .collect();
+        let mut folders = Vec::new();
+        for (id, root) in repos {
+            folders.push(root);
+            if let Ok(snap) = self.snapshot(id).await {
+                folders.extend(snap.worktrees.iter().map(|w| PathBuf::from(&w.path)));
+            }
+        }
+        folders
+            .into_iter()
+            .map(|f| dunce::canonicalize(&f).unwrap_or(f))
+            .collect()
+    }
+
+    /// Where `a`'s program is, never inside one of `excluded` (the open repositories' folders).
+    fn find_ai_tool(&self, a: &dyn Adapter, excluded: &[PathBuf]) -> Option<Found> {
         let (path, first_only) = self.ai_search_path()?;
         let search = match (&path, first_only) {
             (Some(p), true) => Some(std::env::split_paths(p).next()?.into_os_string()),
@@ -110,12 +129,12 @@ impl RepoManager {
             crate::platform::find_program(a.program(), search.as_deref()),
             cfg!(windows),
         )?;
-        if let Some(root) = inside {
-            let real = dunce::canonicalize(&program).unwrap_or_else(|_| program.clone());
-            let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_owned());
-            if real.starts_with(&root) || program.starts_with(&root) {
-                return None;
-            }
+        let real = dunce::canonicalize(&program).unwrap_or_else(|_| program.clone());
+        if excluded
+            .iter()
+            .any(|root| real.starts_with(root) || program.starts_with(root))
+        {
+            return None;
         }
         // Run with the PATH it was found on, so what it starts (node) is found the same way.
         let run_path = if first_only || lock(&self.ai.login_path).is_some() {
@@ -140,9 +159,10 @@ impl RepoManager {
                 *lock(&self.ai.login_path) = Some(path);
             }
         }
+        let excluded = self.open_folders().await;
         let mut tools = Vec::new();
         for a in ADAPTERS {
-            let found = self.find_ai_tool(a, None);
+            let found = self.find_ai_tool(a, &excluded);
             let version = match (&found, versions) {
                 (Some(f), true) => self.ai_version(a, f).await,
                 (Some(f), false) => lock(&self.ai.versions)
@@ -266,9 +286,10 @@ impl RepoManager {
             AiToolChoice::Claude => vec![adapter(AiTool::Claude)],
             AiToolChoice::Codex => vec![adapter(AiTool::Codex)],
         };
+        let excluded = self.open_folders().await;
         let Some((a, found)) = order
             .iter()
-            .find_map(|a| Some((*a, self.find_ai_tool(*a, Some(&repo.root))?)))
+            .find_map(|a| Some((*a, self.find_ai_tool(*a, &excluded)?)))
         else {
             let message = match settings.ai_tool {
                 AiToolChoice::Auto => {
@@ -373,27 +394,17 @@ impl RepoManager {
         // What it is written from.
         let gathered = match &task {
             AiTask::Commit { path, paths } => {
-                let files = self
-                    .worktree_files(repo.identity.repo_id, Path::new(path))
-                    .await?;
-                let ticked: std::collections::BTreeSet<&str> =
-                    paths.iter().map(String::as_str).collect();
-                let entries: Vec<&crate::dto::FileEntry> = files
-                    .files
-                    .iter()
-                    .filter(|e| e.status != EntryStatus::U)
-                    .filter(|e| {
-                        ticked.contains(e.path.as_str())
-                            || (e.status == EntryStatus::R
-                                && e.orig_path.as_deref().is_some_and(|o| ticked.contains(o)))
-                    })
-                    .collect();
-                let worktree = crate::repo::canonical(Path::new(path));
-                context::commit_context(&runner, &worktree, &entries)
-                    .await
-                    .map(|c| {
-                        c.map(|c| prompt::commit_prompt(settings.ai_commit_prompt.as_deref(), &c))
-                    })
+                let worktree = checked_worktree(repo, Path::new(path)).await?;
+                // No filter of the repository's runs while gg reads (see `context`).
+                let filters = context::no_filters(&runner, &worktree).await?;
+                async {
+                    let entries =
+                        context::ticked_entries(&runner, &worktree, paths, &filters).await?;
+                    let entries: Vec<&crate::dto::FileEntry> = entries.iter().collect();
+                    context::commit_context(&runner, &worktree, &entries, &filters).await
+                }
+                .await
+                .map(|c| c.map(|c| prompt::commit_prompt(settings.ai_commit_prompt.as_deref(), &c)))
             }
             AiTask::Pr {
                 branch,
@@ -435,7 +446,7 @@ impl RepoManager {
             // `claude` gg runs is a session of its own.
             .without_env("CLAUDECODE")
             .without_env("CLAUDE_CODE_ENTRYPOINT")
-            .logging_stderr(a.log_scrub());
+            .logging_stderr(without_prompt(&prompt_text));
         if found.path.is_some() {
             tool_runner = tool_runner.with_path(found.path.clone());
         }
@@ -503,7 +514,7 @@ impl RepoManager {
             break (out, exit);
         };
         if out.code != 0 {
-            let detail = failure_detail(a, &exit);
+            let detail = failure_detail(a, &exit, &prompt_text);
             if let Some(advice) = a.advice(&exit) {
                 return failed(AiFailureKind::Failed, advice, detail);
             }
@@ -526,7 +537,7 @@ impl RepoManager {
             .and_then(|f| std::fs::read(f).ok())
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .filter(|t| !t.trim().is_empty())
-            .unwrap_or(exit.stdout);
+            .unwrap_or_else(|| a.answer_of(&exit.stdout));
         match task {
             AiTask::Commit { .. } => match prompt::commit_message(&prompt::clean_answer(&answer)) {
                 Some(message) => Ok(AiOutcome::Done {
@@ -582,6 +593,58 @@ fn runnable(found: crate::platform::Lookup, windows: bool) -> Option<PathBuf> {
     }
 }
 
+/// A filter of a tool's stderr for the command log and a failure's details that drops every
+/// line that is a line of `prompt` (what gg sent it: the repository's text): a tool that
+/// repeats its input, or part of it, never puts it in the log, whatever the line looks like.
+fn without_prompt(prompt: &str) -> crate::git::runner::StderrFilter {
+    let lines: std::collections::HashSet<String> = prompt
+        .lines()
+        .map(|l| l.trim().to_owned())
+        .filter(|l| !l.is_empty())
+        .collect();
+    std::sync::Arc::new(move |stderr: &str| {
+        let mut kept = Vec::new();
+        let mut dropped = 0usize;
+        for line in stderr.lines() {
+            if lines.contains(line.trim()) {
+                dropped += 1;
+            } else {
+                kept.push(line);
+            }
+        }
+        let mut out = kept.join("\n");
+        if dropped > 0 {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "({dropped} lines not kept: they repeat the prompt gg sent)"
+            ));
+        }
+        out
+    })
+}
+
+/// The worktree at `path`, when git lists it as one of `repo`'s with its folder there (not
+/// the bare repository itself), with symbolic links resolved.
+async fn checked_worktree(repo: &crate::repo::Repo, path: &Path) -> Result<PathBuf> {
+    let target = crate::repo::canonical(path);
+    let listed = crate::repo::canonical_paths(
+        crate::git::worktrees::read_worktrees(&repo.runner, &repo.root).await?,
+    );
+    match listed.iter().find(|w| Path::new(&w.path) == target) {
+        Some(wt) if !wt.bare && !wt.prunable && target.is_dir() => Ok(target),
+        Some(_) => Err(CoreError::new(
+            ErrorCode::PathMissing,
+            format!("{} has no files to describe.", path.display()),
+        )),
+        None => Err(CoreError::new(
+            ErrorCode::BadRequest,
+            format!("{} is not a worktree of this repository.", path.display()),
+        )),
+    }
+}
+
 /// The tool settings choose, of those `installed` says are there: the one named, or the
 /// first in gg's order.
 pub(crate) fn chosen_tool(
@@ -626,12 +689,12 @@ fn sentence(line: &str) -> String {
 
 /// The tool's own output for a failure's details: its error line and what the log keeps of
 /// its stderr (never the prompt Codex repeats there).
-fn failure_detail(a: &dyn Adapter, exit: &Exit) -> String {
+fn failure_detail(a: &dyn Adapter, exit: &Exit, prompt: &str) -> String {
     let mut parts = Vec::new();
     if let Some(line) = a.failure_line(exit) {
         parts.push(line);
     }
-    let kept = (a.log_scrub())(&exit.stderr);
+    let kept = (without_prompt(prompt))(&exit.stderr);
     let kept = kept.trim();
     if !kept.is_empty() && !parts.iter().any(|p| p == kept) {
         parts.push(kept.to_owned());
@@ -670,10 +733,14 @@ impl Scratch {
         for _ in 0..100 {
             let n = NEXT.fetch_add(1, Ordering::Relaxed);
             let dir = base.join(format!("gg-ai-{}-{n}-{nanos}", std::process::id()));
-            let mut builder = std::fs::DirBuilder::new();
+            // Only the user can enter it, on Unix.
             #[cfg(unix)]
-            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-            match builder.create(&dir) {
+            let created =
+                std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+                    .create(&dir);
+            #[cfg(not(unix))]
+            let created = std::fs::DirBuilder::new().create(&dir);
+            match created {
                 Ok(()) => return Ok(Self(dunce::canonicalize(&dir).unwrap_or(dir))),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => {
@@ -705,6 +772,22 @@ impl Drop for Scratch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What gg sent is never logged from a tool's stderr, whatever a line of it looks like (a
+    /// pull request description's "Warning: …" repeated by the tool); the tool's own lines stay.
+    #[test]
+    fn a_tools_stderr_is_logged_without_the_prompt() {
+        let prompt = "Write it.\n\nCurrent description:\nWarning: SECRET-LINE\nERROR: also mine\n";
+        let stderr =
+            "model: x\nWarning: SECRET-LINE\n  ERROR: also mine\nERROR: 401 Unauthorized\n";
+        let kept = (without_prompt(prompt))(stderr);
+        assert!(!kept.contains("SECRET-LINE"), "{kept}");
+        assert!(!kept.contains("also mine"), "{kept}");
+        assert!(kept.contains("model: x"));
+        assert!(kept.contains("ERROR: 401 Unauthorized"));
+        assert!(kept.ends_with("(2 lines not kept: they repeat the prompt gg sent)"));
+        assert_eq!((without_prompt(prompt))("all mine\n"), "all mine");
+    }
 
     #[test]
     fn automatic_takes_the_first_installed() {

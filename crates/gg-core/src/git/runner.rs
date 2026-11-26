@@ -775,6 +775,16 @@ impl GitRunner {
         runner
     }
 
+    /// Resolves once the operation this runner runs for is stopped (never, for a runner of no
+    /// operation): for a command streamed with [`GitRunner::spawn_stream`], which the Stop
+    /// does not end by itself.
+    pub(crate) async fn stopped(&self) {
+        match &self.stop {
+            Some(stop) => stop.stopped().await,
+            None => std::future::pending().await,
+        }
+    }
+
     /// Whether the operation this runner runs for was stopped.
     pub(crate) fn is_stopped(&self) -> bool {
         self.stop.as_ref().is_some_and(|s| s.is_stopped())
@@ -1250,13 +1260,16 @@ pub struct ToolRunner {
     stop: Option<Arc<Stop>>,
     /// What of a command's stderr the log keeps, when not all of it (see
     /// [`ToolRunner::logging_stderr`]).
-    log_stderr: Option<fn(&str) -> String>,
+    log_stderr: Option<StderrFilter>,
 }
+
+/// What of a command's stderr the command log keeps (see [`ToolRunner::logging_stderr`]).
+pub(crate) type StderrFilter = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 impl ToolRunner {
     /// This runner, keeping in the command log only what `keep` gives of each command's
     /// stderr (a tool that repeats its input there: the input is not logged).
-    pub(crate) fn logging_stderr(mut self, keep: fn(&str) -> String) -> Self {
+    pub(crate) fn logging_stderr(mut self, keep: StderrFilter) -> Self {
         self.log_stderr = Some(keep);
         self
     }
@@ -1341,7 +1354,7 @@ impl ToolRunner {
             log: &self.log,
             tags: self.tags,
             stop: self.stop.as_deref(),
-            log_stderr: self.log_stderr,
+            log_stderr: self.log_stderr.as_deref(),
         };
         let run = Run {
             cwd,
@@ -1367,7 +1380,7 @@ struct Exec<'a> {
     tags: Tags,
     stop: Option<&'a Stop>,
     /// What of stderr the log keeps; all of it when `None`.
-    log_stderr: Option<fn(&str) -> String>,
+    log_stderr: Option<&'a (dyn Fn(&str) -> String + Send + Sync)>,
 }
 
 /// A limited command's arguments (beside the program, in its `Command`), what it reads on
@@ -1615,6 +1628,15 @@ pub struct StreamChild {
 }
 
 impl StreamChild {
+    /// Ends git and everything it started at once (its process group, its job object); then
+    /// wait for it with [`StreamChild::wait`].
+    pub(crate) fn kill_tree(&mut self) {
+        if let Some(tree) = &self.tree {
+            tree.kill();
+        }
+        let _ = self.child.start_kill();
+    }
+
     /// Waits for git to end (see [`Child::wait`]).
     pub async fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
         let status = self.child.wait().await;

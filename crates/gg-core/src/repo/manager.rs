@@ -80,7 +80,7 @@ pub struct RepoManager {
     /// "Generate with AI": the tools found, the generations running.
     pub(crate) ai: crate::ai::AiState,
     pub(crate) sink: Arc<dyn EventSink>,
-    pub(super) repos: Mutex<HashMap<u32, Arc<Repo>>>,
+    pub(crate) repos: Mutex<HashMap<u32, Arc<Repo>>>,
     /// gg is restarting to update: no operation or fetch the user asks for is admitted.
     /// Operations and user fetches are counted (`op_waiting`, `user_fetch`) with this held,
     /// and [`RepoManager::begin_restart`] looks for them with it held, so none slips in

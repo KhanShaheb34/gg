@@ -56,9 +56,9 @@ pub trait Adapter: Sync {
     /// The command line that writes an answer to `prompt` with `model` ("": the tool's own),
     /// in `scratch` (a folder of gg's for this run).
     fn invocation(&self, model: &str, prompt: &str, scratch: &Path) -> Invocation;
-    /// What of its stderr the command log keeps (Codex repeats the whole prompt there).
-    fn log_scrub(&self) -> fn(&str) -> String {
-        keep
+    /// Its answer in what it printed on stdout (when it wrote none to a file).
+    fn answer_of(&self, stdout: &str) -> String {
+        stdout.to_owned()
     }
     /// The command line to run again after `run` failed with `exit` because of a setting this
     /// version of the tool does not take, when that setting can be left out.
@@ -75,10 +75,6 @@ pub trait Adapter: Sync {
     fn classify(&self, exit: &Exit) -> Option<(AiFailureKind, String)>;
     /// The tool's own line about a failure, for the message.
     fn failure_line(&self, exit: &Exit) -> Option<String>;
-}
-
-fn keep(text: &str) -> String {
-    text.to_owned()
 }
 
 /// The adapters, in the order "Automatic" tries them.
@@ -240,8 +236,11 @@ impl Adapter for Claude {
 // --- Codex --------------------------------------------------------------------------------
 
 /// Codex: `codex exec` in its read-only sandbox, ephemeral (no session kept), outside any
-/// repository (`--skip-git-repo-check`), with low reasoning effort for speed; the prompt on
-/// stdin (`-`), the answer written to a file of gg's (`--output-last-message`).
+/// repository (`--skip-git-repo-check`), without the user's `config.toml`
+/// (`--ignore-user-config`: its MCP servers, hooks and profiles; the sign-in is still Codex's
+/// own), with low reasoning effort for speed; the prompt on stdin (`-`), the answer written to
+/// a file of gg's (`--output-last-message`), and what happens as JSON events on stdout
+/// (`--json`: Codex then repeats nothing of the prompt, and its errors are events).
 pub struct Codex;
 
 impl Adapter for Codex {
@@ -281,6 +280,8 @@ impl Adapter for Codex {
             "exec",
             "--ephemeral",
             "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--json",
             "--sandbox",
             "read-only",
             "--color",
@@ -324,20 +325,27 @@ impl Adapter for Codex {
         Some(again)
     }
     fn advice(&self, exit: &Exit) -> Option<String> {
-        let name = unknown_feature(&exit.stderr)?;
-        CODEX_NO_COMMANDS.contains(&name.as_str()).then(|| {
-            format!(
-                "This Codex cannot be run with its commands turned off (it does not know \u{201c}{name}\u{201d}), so gg does not run it. Update Codex (codex update), then try again."
-            )
-        })
+        let name = unknown_feature(&exit.stderr)
+            .filter(|n| CODEX_NO_COMMANDS.contains(&n.as_str()))
+            .or_else(|| unknown_option(&exit.stderr))?;
+        Some(format!(
+            "This Codex cannot be run as gg runs it, with its commands and your MCP servers off (it does not know \u{201c}{name}\u{201d}), so gg does not run it. Update Codex (codex update), then try again."
+        ))
     }
-    fn log_scrub(&self) -> fn(&str) -> String {
-        codex_log
+    fn answer_of(&self, stdout: &str) -> String {
+        // The last agent message among the events.
+        codex_events(stdout)
+            .iter()
+            .filter(|e| e["type"] == "item.completed" && e["item"]["type"] == "agent_message")
+            .filter_map(|e| e["item"]["text"].as_str())
+            .last()
+            .unwrap_or_default()
+            .to_owned()
     }
     fn classify(&self, exit: &Exit) -> Option<(AiFailureKind, String)> {
-        // Only its error lines: its stderr also repeats the prompt, which may say anything.
-        let errors = codex_errors(&exit.stderr);
-        let all = format!("{}\n{}", errors.join("\n"), exit.stdout).to_lowercase();
+        // Its error events and its own error lines; nothing of the prompt is in them.
+        let errors = codex_errors(exit);
+        let all = errors.join("\n").to_lowercase();
         let line = self.failure_line(exit).unwrap_or_default();
         if has_any(
             &all,
@@ -386,10 +394,9 @@ impl Adapter for Codex {
     }
     fn failure_line(&self, exit: &Exit) -> Option<String> {
         // Its last error, without the retries announced on the way.
-        codex_errors(&exit.stderr)
+        codex_errors(exit)
             .into_iter()
             .rfind(|e| !e.starts_with("Reconnecting"))
-            .or_else(|| first_line(&exit.stdout))
     }
 }
 
@@ -414,13 +421,10 @@ const CODEX_ALSO_OFF: [&str; 10] = [
     "in_app_browser",
     "image_generation",
 ];
-/// Codex settings for every run: no web search, none of the user's MCP servers, low
-/// reasoning effort (an answer in seconds).
-const CODEX_CONFIG: [&str; 3] = [
-    "web_search=disabled",
-    "mcp_servers={}",
-    "model_reasoning_effort=low",
-];
+/// Codex settings for every run: no web search, low reasoning effort (an answer in seconds).
+/// (The user's MCP servers are kept out by `--ignore-user-config`: `-c mcp_servers={}` does not
+/// remove those a config file names, as seen with Codex 0.163.)
+const CODEX_CONFIG: [&str; 2] = ["web_search=disabled", "model_reasoning_effort=low"];
 
 /// The feature Codex said it does not know (`Error: Unknown feature flag: <name>`).
 fn unknown_feature(stderr: &str) -> Option<String> {
@@ -431,53 +435,48 @@ fn unknown_feature(stderr: &str) -> Option<String> {
     })
 }
 
-/// Codex's error lines (`ERROR: …`), without the prefix.
-fn codex_errors(stderr: &str) -> Vec<String> {
-    crate::ai::prompt::strip_ansi(stderr)
+/// The option Codex said it does not know (`error: unexpected argument '--json' found`).
+fn unknown_option(stderr: &str) -> Option<String> {
+    stderr.lines().find_map(|l| {
+        let (_, rest) = l.split_once("unexpected argument '")?;
+        let (name, _) = rest.split_once('\'')?;
+        (!name.is_empty()).then(|| name.to_owned())
+    })
+}
+
+/// The JSON events Codex printed on stdout (`--json`), one per line; other lines are skipped.
+fn codex_events(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("ERROR: "))
-        .map(str::to_owned)
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .filter(serde_json::Value::is_object)
         .collect()
 }
 
-/// What the command log keeps of Codex's stderr: its settings lines and its warnings and
-/// errors; never the prompt it repeats (the diff) nor the model's own words.
-fn codex_log(stderr: &str) -> String {
-    const SETTINGS: [&str; 6] = [
-        "model:",
-        "provider:",
-        "approval:",
-        "sandbox:",
-        "reasoning effort:",
-        "OpenAI Codex",
-    ];
-    let mut kept = Vec::new();
-    let mut left = 0usize;
-    for line in stderr.lines() {
-        let t = line.trim_start();
-        let lower = t.to_lowercase();
-        let keep = SETTINGS.iter().any(|s| t.starts_with(s))
-            || lower.starts_with("error")
-            || lower.starts_with("warning")
-            || (t.len() > 20
-                && t.as_bytes()[..4].iter().all(u8::is_ascii_digit)
-                && (t.contains(" ERROR ") || t.contains(" WARN ")));
-        if keep {
-            kept.push(line);
-        } else if !t.is_empty() {
-            left += 1;
-        }
-    }
-    let mut out = kept.join("\n");
-    if left > 0 {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&format!(
-            "({left} more lines not kept: the prompt Codex repeats, and its progress)"
-        ));
-    }
-    out
+/// What Codex said went wrong: the messages of its `error` and `turn.failed` events, then its
+/// own error lines on stderr (an option it refused before it started, its log's errors).
+fn codex_errors(exit: &Exit) -> Vec<String> {
+    let mut errors: Vec<String> = codex_events(&exit.stdout)
+        .iter()
+        .filter_map(|e| match e["type"].as_str() {
+            Some("error") => e["message"].as_str(),
+            Some("turn.failed") => e["error"]["message"].as_str(),
+            _ => None,
+        })
+        .map(str::to_owned)
+        .collect();
+    errors.extend(
+        crate::ai::prompt::strip_ansi(&exit.stderr)
+            .lines()
+            .map(str::trim)
+            .filter_map(|l| {
+                l.strip_prefix("ERROR: ")
+                    .or_else(|| l.strip_prefix("Error: "))
+                    .or_else(|| l.strip_prefix("error: "))
+            })
+            .map(str::to_owned),
+    );
+    errors
 }
 
 #[cfg(test)]
@@ -550,11 +549,19 @@ mod tests {
         }
         assert!(has(["--sandbox", "read-only"]));
         assert!(has(["-c", "web_search=disabled"]));
-        assert!(has(["-c", "mcp_servers={}"]));
         assert!(has(["-c", "model_reasoning_effort=low"]));
+        // The user's config.toml (its MCP servers) is not loaded: `-c mcp_servers={}` does not
+        // remove the servers a config names (seen with Codex 0.163: a dummy server started).
+        assert!(!run.args.iter().any(|a| a.starts_with("mcp_servers")));
         assert_eq!(
-            &run.args[..3],
-            ["exec", "--ephemeral", "--skip-git-repo-check"]
+            &run.args[..5],
+            [
+                "exec",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--json"
+            ]
         );
         assert_eq!(
             &run.args[run.args.len() - 3..],
@@ -589,6 +596,35 @@ mod tests {
         }
         assert_eq!(Codex.retry(&run, &exit(1, "", "ERROR: boom")), None);
         assert_eq!(Claude.retry(&run, &said("goals")), None);
+        // A Codex too old for --ignore-user-config (or --json) is not run without it.
+        let old = exit(
+            2,
+            "",
+            "error: unexpected argument '--ignore-user-config' found\n",
+        );
+        assert_eq!(Codex.retry(&run, &old), None);
+        let advice = Codex.advice(&old).unwrap();
+        assert!(
+            advice.contains("\u{201c}--ignore-user-config\u{201d}"),
+            "{advice}"
+        );
+        assert!(advice.contains("Update Codex"));
+    }
+
+    /// Codex's answer, when it wrote none to its file, is the last agent message among its
+    /// JSON events.
+    #[test]
+    fn codex_answers_in_its_events() {
+        let events = concat!(
+            "{\"type\":\"thread.started\",\"thread_id\":\"t\"}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"First\"}}\n",
+            "not json\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Fix it\"}}\n",
+            "{\"type\":\"turn.completed\"}\n",
+        );
+        assert_eq!(Codex.answer_of(events), "Fix it");
+        assert_eq!(Codex.answer_of("plain text"), "");
+        assert_eq!(Claude.answer_of("plain text"), "plain text");
     }
 
     #[test]
@@ -670,9 +706,14 @@ mod tests {
             "Not logged in · Please run /login"
         );
 
-        let signed_out = "OpenAI Codex v0.163.0\n--------\nuser\nthe prompt, maybe saying not logged in\nERROR: Reconnecting... 5/5\nERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses\n";
+        // Codex with --json: its errors are events on stdout (seen with Codex 0.163).
+        let signed_out = concat!(
+            "{\"type\":\"thread.started\",\"thread_id\":\"t\"}\n",
+            "{\"type\":\"error\",\"message\":\"Reconnecting... 5/5\"}\n",
+            "{\"type\":\"turn.failed\",\"error\":{\"message\":\"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses\"}}\n",
+        );
         assert_eq!(
-            Codex.classify(&exit(1, "", signed_out)),
+            Codex.classify(&exit(1, signed_out, "")),
             Some((
                 AiFailureKind::SignedOut,
                 "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses".into()
@@ -683,8 +724,8 @@ mod tests {
                 &Codex,
                 exit(
                     1,
-                    "",
-                    "ERROR: You've hit your usage limit. Try again later.\n"
+                    "{\"type\":\"error\",\"message\":\"You've hit your usage limit. Try again later.\"}\n",
+                    ""
                 )
             ),
             Some(AiFailureKind::Limited)
@@ -700,29 +741,12 @@ mod tests {
             ),
             Some(AiFailureKind::BadModel)
         );
-        // Words in the prompt it repeats are not its errors.
+        // Words of an answer or of another event are not its errors.
+        let answer = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"rate limit, usage limit, not logged in\"}}\n{\"type\":\"error\",\"message\":\"boom\"}\n";
+        assert_eq!(kind(&Codex, exit(1, answer, "")), None);
         assert_eq!(
-            kind(
-                &Codex,
-                exit(
-                    1,
-                    "",
-                    "user\nrate limit, usage limit, not logged in\nERROR: boom\n"
-                )
-            ),
-            None
+            Codex.failure_line(&exit(1, answer, "")).as_deref(),
+            Some("boom")
         );
-    }
-
-    #[test]
-    fn codex_stderr_is_logged_without_the_prompt() {
-        let stderr = "OpenAI Codex v0.163.0\n--------\nworkdir: /tmp/x\nmodel: gpt-6.1-sol\nprovider: openai\nsandbox: read-only\n--------\nuser\nsecret diff line\n+password = 1\n2026-11-26T17:18:28.463002Z ERROR codex_api: failed to connect: 401\nERROR: unexpected status 401 Unauthorized\n";
-        let logged = codex_log(stderr);
-        assert!(!logged.contains("secret diff line"), "{logged}");
-        assert!(!logged.contains("password"), "{logged}");
-        assert!(logged.contains("model: gpt-6.1-sol"));
-        assert!(logged.contains("ERROR: unexpected status 401 Unauthorized"));
-        assert!(logged.contains("ERROR codex_api"));
-        assert!(logged.contains("more lines not kept"));
     }
 }

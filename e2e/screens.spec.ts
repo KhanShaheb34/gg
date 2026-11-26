@@ -1306,12 +1306,14 @@ for (const [prefix, width, height] of SIZES)
     });
   }
 
-// The Pull request tab for the current branch, at the default window: the create form for a
-// branch with none, then an open pull request's merge status, checks and comments. For the
-// README and the site; only fixture names (octo/cat, ada, grace, a bot).
-for (const theme of ["light", "dark"] as const) {
-  test(`pull request tab, create and details, ${theme}`, async ({ gg }) => {
+// The Pull request tab for the current branch: the create form for a branch with none, then an
+// open pull request's merge status, checks and comments. For the README (the default window)
+// and the site (the small one); only fixture names (octo/cat, ada, grace, a bot).
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`pull request tab, create and details, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     const repo = gg.repoPath("prs");
     gg.git("prs", "switch", "-q", "fix/typo");
@@ -1338,7 +1340,7 @@ for (const theme of ["light", "dark"] as const) {
     const shot = async (name: string) => {
       await park(page);
       await page.waitForTimeout(250);
-      await page.screenshot({ path: path.join(OUT, `${name}-${theme}.png`) });
+      await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
     };
 
     // No pull request yet: the form, filled in from the branch's commit.
@@ -1389,17 +1391,23 @@ for (const theme of ["light", "dark"] as const) {
     await expect(tab.getByTestId("pr-view")).toBeVisible();
     await expect(tab.getByTestId("pr-merge-status")).toHaveText("Ready to merge");
     await expect(tab.getByTestId("pr-comment").first()).toBeVisible();
-    await tab.getByTestId("pr-checks-toggle").click();
-    await expect(tab.getByTestId("pr-check")).toHaveCount(4);
+    // The checks opened in the default window; in the small one they stay summed up, so the
+    // comments show below them.
+    if (prefix === "") {
+      await tab.getByTestId("pr-checks-toggle").click();
+      await expect(tab.getByTestId("pr-check")).toHaveCount(4);
+    }
     await shot("pr-tab-details");
   });
 }
 
 // The Commit tab's "Committed on branch": two files to commit, and below the message the
 // files the branch's commits change since it left origin/main, opened.
-for (const theme of ["light", "dark"] as const) {
-  test(`committed on branch, ${theme}`, async ({ gg }) => {
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`committed on branch, ${width}x${height}, ${theme}`, async ({ gg }) => {
     const { page } = gg;
+    await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: theme });
     const repo = gg.repoPath("branchfiles");
     writeFileSync(path.join(repo, "src/report.ts"), "export const a = 1;\nexport const b = 20;\nexport const c = 30;\nexport const d = 4;\n");
@@ -1417,7 +1425,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByTestId("branch-file")).toHaveCount(5);
     await park(page);
     await page.waitForTimeout(250);
-    await page.screenshot({ path: path.join(OUT, `committed-on-branch-${theme}.png`) });
+    await page.screenshot({ path: path.join(OUT, `${prefix}committed-on-branch-${theme}.png`) });
   });
 }
 

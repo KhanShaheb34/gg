@@ -263,7 +263,7 @@ async fn a_commit_message_is_written_from_the_ticked_changes() {
     let s = setup(&["claude"]).await;
     s.repo.write(
         "README.md",
-        "# demo\n\nA fast git graph with $(rm -rf ~) and `ticks`.\n",
+        "# demo\n\nA fast history viewer with $(rm -rf ~) and `ticks`.\n",
     );
     s.repo.write("notes.txt", "not ticked\n");
     s.repo.write("img.bin", [0u8, 1, 2, 0, 255, 254]);
@@ -311,7 +311,7 @@ async fn a_commit_message_is_written_from_the_ticked_changes() {
     let stdin = &call.stdin;
     assert!(stdin.starts_with("You are generating a single git commit message."));
     assert!(
-        stdin.contains("+A fast git graph with $(rm -rf ~) and `ticks`."),
+        stdin.contains("+A fast history viewer with $(rm -rf ~) and `ticks`."),
         "{stdin}"
     );
     assert!(

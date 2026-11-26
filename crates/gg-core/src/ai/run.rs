@@ -49,12 +49,15 @@ const EARLY_CANCEL_TTL: Duration = Duration::from_secs(60);
 /// Most runs of a tool for one generation (see [`Adapter::retry`]).
 const MAX_TRIES: usize = 12;
 
+/// A version asked: the program, its file's size and time then, and the version it said.
+type Asked = (PathBuf, Option<(u64, SystemTime)>, Option<String>);
+
 /// The AI tools' state in the core: generations running (by the UI's request id, with their
 /// Stop), versions asked, and the login `PATH` as last read for them.
 pub(crate) struct AiState {
     running: Mutex<HashMap<String, (Arc<Stop>, std::time::Instant)>>,
     /// Per tool: the program, its file's size and time, and the version it said.
-    versions: Mutex<HashMap<AiTool, (PathBuf, Option<(u64, SystemTime)>, Option<String>)>>,
+    versions: Mutex<HashMap<AiTool, Asked>>,
     /// The login shell's `PATH` read again on "Check again" (`None`: the one read at start).
     login_path: Mutex<Option<Option<OsString>>>,
     limit_ms: AtomicU64,

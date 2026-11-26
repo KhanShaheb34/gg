@@ -1905,7 +1905,7 @@ mod tests {
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                              "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
                              "dateFormat": "standard", "checkForUpdates": true,
-                             "openPrTabAfterPush": true},
+                             "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []},
                 "launchPath": "/l",
                 "homeDir": "/h",
                 "settingsProblem": null,

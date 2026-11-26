@@ -43,9 +43,12 @@ crop search small-search 900 390 0 0 # stops above the details' parent and autho
 crop menu menu-branch 560 370 0 80
 crop worktrees worktrees 1280 490 0 40 # the toolbar, the graph and the side panel
 crop worktrees-narrow worktrees 300 450 980 80 # the side panel alone, for phones
-crop commit small-commit 900 520 0 40 # the small window: the uncommitted row and the commit panel
-crop commit-narrow small-commit 240 480 660 80 # the commit panel alone, for phones
-crop prs prs-dialog 570 474 355 98
+crop commit small-committed-on-branch 900 520 0 40 # the small window: the Commit tab, Committed on branch
+crop commit-narrow small-committed-on-branch 240 480 660 80 # the Commit tab alone, for phones
+crop prs small-pr-tab-create 900 520 0 40 # the small window: the Pull request tab's form
+crop prs-narrow small-pr-tab-create 240 480 660 80 # the form alone, for phones
+crop pr-checks small-pr-tab-details 900 520 0 40 # a pull request's status, checks and comments
+crop pr-checks-narrow small-pr-tab-details 240 444 660 80 # down to the end of the first comment
 crop notice notice-merge-push 410 164 568 630
 crop force dialog-force-push 490 214 395 98
 crop conflict small-banner-merge-partly 660 180 0 80

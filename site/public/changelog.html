@@ -60,11 +60,32 @@
     <p class="lede">What changed in each release of gg, newest first. Each version links to its release on GitHub, with the downloads for every system and their checksums.</p>
   </section>
 
+  <article class="block release" id="v0.5.0" aria-labelledby="v0.5.0-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.5.0-title"><a class="ref ref-tag" href="#v0.5.0"><span class="sr-only">gg </span>v0.5.0</a></h2>
+      <span class="ref ref-latest">latest</span>
+      <p class="release-meta"><time datetime="2026-11-26">26 November 2026</time><a href="/github/releases/tag/v0.5.0">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">Pull requests move into the side panel: create one, then follow its checks and comments, without leaving gg.</p>
+    <h3>What changed</h3>
+    <ul class="changes">
+      <li><b>One side panel, three tabs.</b> The toolbar's Commit and Worktrees buttons are now one side panel button, ⌘B (Ctrl+B), with the count of your uncommitted files. Inside the panel, icon tabs switch between <b>Commit</b>, <b>Pull request</b> and <b>Worktrees</b>; the arrow keys move between them, and the panel opens on the tab you used last in each repository. The Commit tab has a dot when there is something to commit. ⌘K still opens the Commit tab with its message ready.</li>
+      <li><b>Create a pull request in the panel.</b> The <b>Pull request</b> tab (⌘⇧P, Ctrl+Shift+P) is about the current branch. With no pull request yet, it holds the form that used to be a dialog: a title and description suggested from the branch's commits, the branch it goes into, <b>Create as draft</b>, and a button that pushes the branch first when it needs to. What you type is kept per branch while gg runs. <b>Create pull request…</b> on a branch or a worktree opens the tab for that branch.</li>
+      <li><b>It goes into the branch you started from.</b> The form offers, by default, the branch yours was created from, as git's own records say: a branch cut from <code>staging</code> goes into <code>staging</code>. You can pick any other.</li>
+      <li><b>The tab opens after a push.</b> When you push a branch that has no pull request, other than the default branch, the tab shows by itself, without taking the focus. Turn this off in <b>Settings › Pull requests</b>.</li>
+      <li><b>Checks and comments.</b> Under an open pull request the tab shows where it stands (Ready to merge, Checks running, Checks failing, Conflicts, Approved, Changes requested…), its checks, failing first, each with how long it took, asked again every 15 seconds while one runs and the window is in front, and its comments: the conversation, review summaries and comments on the code with their replies, with an <b>All / Humans / Bots</b> filter. The tab's icon has a dot for the checks: red, amber or green. It is all read through <code>gh pr view</code> and one read-only <code>gh api graphql</code> query; gg still never reads or stores a GitHub token.</li>
+      <li><b>Comments are drawn safely.</b> A comment's Markdown is drawn without its HTML, and nothing in it is loaded from the web. An image shows as its alt text; a link opens in your browser only when it is an <code>https://</code> address.</li>
+      <li><b>Committed on branch.</b> Under the commit message, the Commit tab lists every file your branch's commits change since it left its base: name, folder, lines added and removed, and status. The base is the pull request's, or else the branch yours was created from, the same one the form offers. The list is open when you have nothing to commit, and folded away when you do.</li>
+      <li><b>Fixed: git failing before it started, on macOS.</b> Now and then a git that gg started failed at once with “git exited with code -1” and no message. A race inside macOS when a process starts caused it; gg now prepares for that once, before it starts any git.</li>
+      <li><b>Smaller things.</b> While the pull requests first load, the tab says “Looking for a pull request…” instead of offering to make one. The side panel has one button to hide it, the one in the toolbar.</li>
+    </ul>
+  </article>
+
   <article class="block release" id="v0.4.2" aria-labelledby="v0.4.2-title">
     <span class="node" aria-hidden="true"></span>
     <header class="release-head">
       <h2 class="release-version" id="v0.4.2-title"><a class="ref ref-tag" href="#v0.4.2"><span class="sr-only">gg </span>v0.4.2</a></h2>
-      <span class="ref ref-latest">latest</span>
       <p class="release-meta"><time datetime="2026-11-24">24 November 2026</time><a href="/github/releases/tag/v0.4.2">Downloads on GitHub</a></p>
     </header>
     <p class="release-lede">A tidier toolbar: one View menu, and a Commit button beside Worktrees.</p>

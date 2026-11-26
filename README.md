@@ -1,14 +1,14 @@
 # gg
 
-A small, fast desktop app for the git commit graph, your worktrees, and the everyday actions
-on them.
+A small, fast desktop app for the git commit graph, your worktrees and pull requests, and the
+everyday actions on them.
 
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/graph-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screens/graph-light.png">
-  <img alt="gg showing a repository's commit graph: coloured lanes on the left, branch, remote and tag labels beside each commit's subject, then date, author and short hash columns, and the worktree panel on the right" src="docs/screens/graph-light.png" width="1280">
+  <img alt="gg showing a repository's commit graph: coloured lanes on the left, branch, remote and tag labels beside each commit's subject, then date, author and short hash columns, and the side panel on the right, on its Worktrees tab" src="docs/screens/graph-light.png" width="1280">
 </picture>
 
 ## Why
@@ -126,7 +126,7 @@ afterwards and says which it is.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/worktrees-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screens/worktrees-light.png">
-  <img alt="The worktree panel beside the graph: eight worktrees, each with its branch, its uncommitted changes and how it stands with its upstream, and markers for a merge in progress, a missing folder and a locked worktree" src="docs/screens/worktrees-light.png" width="640">
+  <img alt="The side panel's Worktrees tab beside the graph: eight worktrees, each with its branch, its uncommitted changes and how it stands with its upstream, and markers for a merge in progress, a missing folder and a locked worktree" src="docs/screens/worktrees-light.png" width="640">
 </picture>
 
 - The side panel (⌘B, or its button at the right of the toolbar) has three icon tabs, Commit,
@@ -148,7 +148,7 @@ afterwards and says which it is.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/commit-panel-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screens/commit-panel-light.png">
-  <img alt="The commit panel: six changed files, each ticked, with its status letter, a message box with a subject and a body, and the Commit and Commit and Push to origin/main buttons" src="docs/screens/commit-panel-light.png" width="640">
+  <img alt="The side panel's Commit tab: six changed files, each ticked, with its status letter, a message box with a subject and a body, and the Commit and Commit and Push to origin/main buttons" src="docs/screens/commit-panel-light.png" width="640">
 </picture>
 
 Press ⌘K (or open the side panel's Commit tab, or click a worktree's change count) to commit the files
@@ -160,12 +160,18 @@ branch's own commits change since it left its base (the pull request's base, els
 branch it was created from, as the pull request form offers it): each file with its folder,
 lines added and removed, and its status.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/committed-on-branch-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/committed-on-branch-light.png">
+  <img alt="The Commit tab on feature/report: two changed files ticked and a message, and under the Commit buttons, Committed on branch: 5 files against origin/main, each with its folder, lines added and removed and its status letter, one of them renamed from docs/old-guide.md" src="docs/screens/committed-on-branch-light.png" width="640">
+</picture>
+
 **Pull requests**
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pull-requests-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/screens/pull-requests-light.png">
-  <img alt="Pull request markers such as #1284 and #1295 beside branch labels in the graph and beside a worktree in the side panel" src="docs/screens/pull-requests-light.png" width="640">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pr-details-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/pr-details-light.png">
+  <img alt="The side panel's Pull request tab for fix/typo: pull request #1302, open, main ← fix/typo, with Open in browser and Copy link; Ready to merge and Approved; four passing checks; and four comments with an All, Humans and Bots filter: a person's comment, a bot's, a code comment on README.md:3 with its reply, and an approving review" src="docs/screens/pr-details-light.png" width="640">
 </picture>
 
 Through the GitHub CLI [`gh`](https://cli.github.com), signed in. The side panel's **Pull
@@ -182,6 +188,18 @@ anything else from the web; a link opens in your browser. After you push a branc
 pull request, the tab opens by itself (a setting). Open pull requests show as markers beside
 their branches and worktrees. Without `gh`, gg pushes the branch and opens GitHub's compare
 page instead. gg never reads or stores a GitHub token.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pr-create-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/pr-create-light.png">
+  <img alt="The Pull request tab for fix/typo, which has no pull request yet: the title and description suggested from its commit, into main of octo/cat, Create as draft, and the button Push and create PR, which pushes first to origin/fix/typo" src="docs/screens/pr-create-light.png" width="640">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pull-requests-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/pull-requests-light.png">
+  <img alt="Pull request markers such as #1284 and #1295 beside branch labels in the graph and beside a worktree in the side panel's Worktrees tab" src="docs/screens/pull-requests-light.png" width="640">
+</picture>
 
 **Right-click actions**
 
@@ -234,7 +252,7 @@ applied has nothing left to apply.
 - The command log (⌘⇧L) shows every git command gg ran for the repository, grouped by
   operation, with its output, exit code and duration. A failed operation's notice links to
   its entry.
-- The graph and the worktree panel refresh by themselves when the repository changes on disk
+- The graph and the side panel refresh by themselves when the repository changes on disk
   (a commit in a terminal, an agent working in a worktree), keeping your scroll position, and
   gg fetches from your remotes in the background, every 5 minutes by default.
 
@@ -242,8 +260,8 @@ applied has nothing left to apply.
 
 **Settings** (⌘,) holds the theme (follow the system, light or dark), the date format, the
 background fetch interval (or turning it off), the editor and terminal gg opens, where new
-worktrees go, and the `gg` command. The button at the top right of the window cycles the
-theme.
+worktrees go, whether a push opens the Pull request tab, and the `gg` command. The button at
+the top right of the window cycles the theme.
 
 **Keyboard**
 
@@ -254,7 +272,7 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 | ⌘O | Open a repository |
 | ⌘F | Search commits (Enter / Shift+Enter: next / previous) |
 | ⌘⇧F | Fetch from all remotes |
-| ⌘R | Refresh |
+| ⌘R | Refresh (and the pull requests) |
 | ⌘P | Switch branch, or create one (the branch picker) |
 | ⌘K | Commit (the side panel's Commit tab, its message focused); ⌘Enter commits |
 | ⌘⇧P | The side panel's Pull request tab, for the current branch |
@@ -384,7 +402,7 @@ Method, all numbers, the misses, and how to reproduce them:
 
 ## Status
 
-gg is at version 0.4.0. It is used every day on macOS. The Windows and Linux builds are built
+gg is at version 0.5.0. It is used every day on macOS. The Windows and Linux builds are built
 and tested on CI on every change, but have not been used for real yet.
 
 ## Contributing

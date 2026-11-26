@@ -30,7 +30,7 @@
 <meta name="twitter:image:alt" content="gg: the commit graph, without the editor. A screenshot of its commit graph.">
 <meta name="author" content="Shakirul">
 <meta name="robots" content="index, follow, max-image-preview:large">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"gg","description":"A small, fast desktop git client for macOS built around the commit graph. Check out, merge, rebase and push from a right-click, work in several worktrees at once, commit, and open pull requests, with the git you already have.","url":"https://gg.shakirul.com/","image":"https://gg.shakirul.com/og.png","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 12 or later","processorRequirements":"Apple silicon or Intel","softwareVersion":"0.4.2","fileSize":"10.6 MB","downloadUrl":"https://gg.shakirul.com/download/gg-macos-universal.dmg","license":"https://opensource.org/license/mit","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Shakirul","url":"https://shakirul.com"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"gg","description":"A small, fast desktop git client for macOS built around the commit graph. Check out, merge, rebase and push from a right-click, work in several worktrees at once, commit, and open pull requests, with the git you already have.","url":"https://gg.shakirul.com/","image":"https://gg.shakirul.com/og.png","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 12 or later","processorRequirements":"Apple silicon or Intel","softwareVersion":"0.5.0","fileSize":"10.9 MB","downloadUrl":"https://gg.shakirul.com/download/gg-macos-universal.dmg","license":"https://opensource.org/license/mit","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Shakirul","url":"https://shakirul.com"}}</script>
 <link rel="stylesheet" href="/site.css">
 <script src="/theme.js"></script>
 <script src="/main.js" defer></script>
@@ -65,7 +65,7 @@
     <span class="node node-head" aria-hidden="true"></span>
     <p class="refs" aria-hidden="true">
       <span class="ref ref-head">main</span>
-      <span class="ref ref-tag"><span>v<span data-latest="version">0.4.2</span></span></span>
+      <span class="ref ref-tag"><span>v<span data-latest="version">0.5.0</span></span></span>
     </p>
     <div class="hero-grid">
       <p class="wordmark" aria-hidden="true">gg</p>
@@ -78,10 +78,10 @@
             Download for macOS
           </a>
           <p class="get-meta">
-            <span><a href="/changelog" title="What changed in each version">v<span data-latest="version">0.4.2</span></a></span>
+            <span><a href="/changelog" title="What changed in each version">v<span data-latest="version">0.5.0</span></a></span>
             <span>macOS 12+</span>
             <span>Apple silicon and Intel</span>
-            <span data-latest="size">10.6 MB</span>
+            <span data-latest="size">10.9 MB</span>
           </p>
         </div>
         <div class="alt">
@@ -109,7 +109,7 @@
               </dd>
             </div>
           </dl>
-          <p class="sha" data-latest="sha">SHA-256 of the download: <code data-latest="sha256">dfbaff9130136da77001f55dbff1c9d424c32812b72d835dacd1ac3d56846a9b</code></p>
+          <p class="sha" data-latest="sha">SHA-256 of the download: <code data-latest="sha256">56ed459c4f374e02992d72823922d2f031200e41cfa0cc52f9a8d4900a109a3d</code></p>
           <p class="sha">After this, gg updates itself: it downloads a new version in the background, checks its signature, and asks before restarting.</p>
         </div>
       </div>
@@ -165,14 +165,14 @@
     <span class="node node-sm" aria-hidden="true"></span>
     <div class="feature-text">
       <h3>Every worktree, side by side</h3>
-      <p>The side panel (<kbd>⌘B</kbd>) lists the repository's worktrees as git does, including ones made in a terminal: each with its branch, its uncommitted changes as they happen, how it stands with its upstream, and anything unusual, such as a locked worktree, a missing folder or a merge stopped there. Double-click one to make it active; every action runs there. Add a worktree for a new or existing branch, and delete one safely: anything that would be lost is listed in a red confirmation first.</p>
+      <p>The side panel (<kbd>⌘B</kbd>) has three tabs, Commit, Pull request and Worktrees, and opens on the one you used last. Worktrees lists the repository's worktrees as git does, including ones made in a terminal: each with its branch, its uncommitted changes as they happen, how it stands with its upstream, and anything unusual, such as a locked worktree, a missing folder or a merge stopped there. Double-click one to make it active; every action runs there. Add a worktree for a new or existing branch, and delete one safely: anything that would be lost is listed in a red confirmation first.</p>
     </div>
     <figure class="shot">
       <picture>
         <source data-scheme="dark" data-base="(max-width: 640px)" media="(max-width: 640px) and (prefers-color-scheme: dark)" srcset="/img/worktrees-narrow-dark-1x.webp 1x, /img/worktrees-narrow-dark-2x.webp 2x" width="300" height="450">
         <source data-scheme="light" data-base="(max-width: 640px)" media="(max-width: 640px)" srcset="/img/worktrees-narrow-light-1x.webp 1x, /img/worktrees-narrow-light-2x.webp 2x" width="300" height="450">
         <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/worktrees-dark-1x.webp 1x, /img/worktrees-dark-2x.webp 2x">
-        <img src="/img/worktrees-light-1x.webp" srcset="/img/worktrees-light-1x.webp 1x, /img/worktrees-light-2x.webp 2x" width="1280" height="490" loading="lazy" decoding="async" alt="The graph with the worktrees side panel beside it: eight worktrees of one repository, main active, feature/login with 2 changed files and 2 commits ahead, 1 behind, hotfix with a merge stopped, old-spike's folder missing and release locked.">
+        <img src="/img/worktrees-light-1x.webp" srcset="/img/worktrees-light-1x.webp 1x, /img/worktrees-light-2x.webp 2x" width="1280" height="490" loading="lazy" decoding="async" alt="The graph with the side panel's Worktrees tab beside it: eight worktrees of one repository, main active, feature/login with 2 changed files and 2 commits ahead, 1 behind, hotfix with a merge stopped, old-spike's folder missing and release locked.">
       </picture>
     </figure>
   </div>
@@ -181,14 +181,14 @@
     <span class="node node-sm" aria-hidden="true"></span>
     <div class="feature-text">
       <h3>Commit what you tick</h3>
-      <p>The commit panel (<kbd>⌘K</kbd>) lists the active worktree's changed files. Tick the ones that belong in this commit, write the message, then <b>Commit</b>, or <b>Commit &amp; Push</b> to the branch's upstream. When a merge is being concluded, its message is filled in.</p>
+      <p>The Commit tab (<kbd>⌘K</kbd>) lists the active worktree's changed files. Tick the ones that belong in this commit, write the message, then <b>Commit</b>, or <b>Commit &amp; Push</b> to the branch's upstream. When a merge is being concluded, its message is filled in. Below, <b>Committed on branch</b> lists every file your branch's commits change since it left its base, the pull request's or the branch it was created from, with lines added and removed.</p>
     </div>
     <figure class="shot">
       <picture>
         <source data-scheme="dark" data-base="(max-width: 640px)" media="(max-width: 640px) and (prefers-color-scheme: dark)" srcset="/img/commit-narrow-dark-1x.webp 1x, /img/commit-narrow-dark-2x.webp 2x" width="240" height="480">
         <source data-scheme="light" data-base="(max-width: 640px)" media="(max-width: 640px)" srcset="/img/commit-narrow-light-1x.webp 1x, /img/commit-narrow-light-2x.webp 2x" width="240" height="480">
         <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/commit-dark-1x.webp 1x, /img/commit-dark-2x.webp 2x">
-        <img src="/img/commit-light-1x.webp" srcset="/img/commit-light-1x.webp 1x, /img/commit-light-2x.webp 2x" width="900" height="520" loading="lazy" decoding="async" alt="A small window with “Uncommitted changes (6)” in the graph and the commit panel for main beside it: 6 of 6 files ticked (modified, renamed, deleted and new files), the message “Rework the checkout summary”, and the buttons Commit and Commit & Push to origin/main.">
+        <img src="/img/commit-light-1x.webp" srcset="/img/commit-light-1x.webp 1x, /img/commit-light-2x.webp 2x" width="900" height="520" loading="lazy" decoding="async" alt="A small window with “Uncommitted changes (2)” in the graph and the Commit tab for feature/report beside it: 2 of 2 files ticked, the message “Chart the report's totals”, the buttons Commit and Commit & Push, and under them Committed on branch: 5 files against origin/main, each with its folder, lines added and removed and its status.">
       </picture>
     </figure>
   </div>
@@ -197,12 +197,30 @@
     <span class="node node-sm" aria-hidden="true"></span>
     <div class="feature-text">
       <h3>Pull requests, through GitHub's <code>gh</code></h3>
-      <p><b>Create pull request…</b> on a branch or a worktree suggests a title and description from its commits, and pushes the branch first when it needs to. Open pull requests show as markers beside their branches and worktrees. gg never reads or stores a GitHub token: <code>gh</code> does the signing in. Without <code>gh</code>, it pushes and opens GitHub's compare page.</p>
+      <p>The Pull request tab (<kbd>⌘⇧P</kbd>) is about the current branch. With no pull request yet, it holds the form: a title and description suggested from the branch's commits, the branch it goes into (by default the one yours was created from), and a button that pushes first when it needs to. After you push a branch that has none, the tab opens by itself. Open pull requests show as markers beside their branches and worktrees. gg never reads or stores a GitHub token: <code>gh</code> does the signing in. Without <code>gh</code>, it pushes and opens GitHub's compare page.</p>
     </div>
     <figure class="shot">
       <picture>
+        <source data-scheme="dark" data-base="(max-width: 640px)" media="(max-width: 640px) and (prefers-color-scheme: dark)" srcset="/img/prs-narrow-dark-1x.webp 1x, /img/prs-narrow-dark-2x.webp 2x" width="240" height="480">
+        <source data-scheme="light" data-base="(max-width: 640px)" media="(max-width: 640px)" srcset="/img/prs-narrow-light-1x.webp 1x, /img/prs-narrow-light-2x.webp 2x" width="240" height="480">
         <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/prs-dark-1x.webp 1x, /img/prs-dark-2x.webp 2x">
-        <img src="/img/prs-light-1x.webp" srcset="/img/prs-light-1x.webp 1x, /img/prs-light-2x.webp 2x" width="570" height="474" loading="lazy" decoding="async" alt="The Create pull request dialog for fix/typo, not pushed to origin yet: the title and description suggested from its commit, into main of octo/cat, a Draft box, and the button Push fix/typo to origin/fix/typo and create pull request.">
+        <img src="/img/prs-light-1x.webp" srcset="/img/prs-light-1x.webp 1x, /img/prs-light-2x.webp 2x" width="900" height="520" loading="lazy" decoding="async" alt="A small window on fix/typo, which has no pull request yet, with the Pull request tab beside the graph: the title and description suggested from its commit, into main of octo/cat, Create as draft, and Push and create PR, which pushes first to origin/fix/typo. In the graph, the markers #1295 and #1284 beside two other branches.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="block feature">
+    <span class="node node-sm" aria-hidden="true"></span>
+    <div class="feature-text">
+      <h3>Checks and comments, as they stand</h3>
+      <p>Once the branch has a pull request, the same tab shows where it stands: ready to merge, checks running or failing, conflicts, approved or changes requested. Below are its checks, asked for again while one runs, and its comments, review summaries and comments on the code, with people's and bots' apart. Comments are drawn without their HTML, and nothing in them is loaded from the web.</p>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source data-scheme="dark" data-base="(max-width: 640px)" media="(max-width: 640px) and (prefers-color-scheme: dark)" srcset="/img/pr-checks-narrow-dark-1x.webp 1x, /img/pr-checks-narrow-dark-2x.webp 2x" width="240" height="444">
+        <source data-scheme="light" data-base="(max-width: 640px)" media="(max-width: 640px)" srcset="/img/pr-checks-narrow-light-1x.webp 1x, /img/pr-checks-narrow-light-2x.webp 2x" width="240" height="444">
+        <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/pr-checks-dark-1x.webp 1x, /img/pr-checks-dark-2x.webp 2x">
+        <img src="/img/pr-checks-light-1x.webp" srcset="/img/pr-checks-light-1x.webp 1x, /img/pr-checks-light-2x.webp 2x" width="900" height="520" loading="lazy" decoding="async" alt="The Pull request tab for pull request #1302, Fix a typo in the README: open, main ← fix/typo, with Open in browser and Copy link; Ready to merge and Approved; Checks, 4 passing; and its comments with an All, Humans and Bots filter, the first one by ada.">
       </picture>
     </figure>
   </div>
@@ -267,7 +285,7 @@
     <span class="node node-sm" aria-hidden="true"></span>
     <div class="feature-text">
       <h3>Settings, and every shortcut on one sheet</h3>
-      <p>Settings (<kbd>⌘,</kbd>) hold the theme, the date format, the background fetch, the editor and terminal a worktree opens in, and where new worktrees go. Press <kbd>?</kbd> for the keyboard shortcuts: tabs, the graph, commits, panels and worktrees.</p>
+      <p>Settings (<kbd>⌘,</kbd>) hold the theme, the date format, the background fetch, the editor and terminal a worktree opens in, where new worktrees go, and whether a push opens the Pull request tab. Press <kbd>?</kbd> for the keyboard shortcuts: tabs, the graph, commits, panels and worktrees.</p>
     </div>
     <figure class="shot">
       <picture>
@@ -282,7 +300,7 @@
     <figure class="shot">
       <picture>
         <source data-scheme="dark" media="(prefers-color-scheme: dark)" srcset="/img/shortcuts-dark-1x.webp 1x, /img/shortcuts-dark-2x.webp 2x">
-        <img src="/img/shortcuts-light-1x.webp" srcset="/img/shortcuts-light-1x.webp 1x, /img/shortcuts-light-2x.webp 2x" width="850" height="674" loading="lazy" decoding="async" alt="The keyboard shortcuts sheet, in sections: Repositories, Graph, Actions, Panels and Worktrees, each shortcut with its keys, such as ⌘K for the commit panel and ⌘B for the side panel.">
+        <img src="/img/shortcuts-light-1x.webp" srcset="/img/shortcuts-light-1x.webp 1x, /img/shortcuts-light-2x.webp 2x" width="850" height="674" loading="lazy" decoding="async" alt="The keyboard shortcuts sheet, in sections: Repositories, Graph, Actions, Panels and Worktrees, each shortcut with its keys, such as ⌘K for the side panel's Commit tab, ⌘⇧P for its Pull request tab and ⌘B for the side panel.">
       </picture>
     </figure>
   </div>
@@ -323,7 +341,7 @@
       <div><dt>CPU while idle</dt><dd>0<small> %</small></dd></div>
       <div><dt>Memory while idle, the app and its WebKit processes</dt><dd>~155<small> MB</small></dd></div>
       <div><dt>App size, built for Apple silicon only (the app in the download holds Intel too)</dt><dd>7.9<small> MB</small></dd></div>
-      <div><dt>The download: one app for Apple silicon and Intel, in a disk image</dt><dd>10.6<small> MB</small></dd></div>
+      <div><dt>The download: one app for Apple silicon and Intel, in a disk image</dt><dd>10.9<small> MB</small></dd></div>
       <div><dt>From a click on another worktree to the panel showing the switch</dt><dd>4.5<small> ms</small></dd></div>
     </dl>
     <p class="fine">Memory grows while you scroll through the whole history: 30 seconds after jumping through all 20,000 commits it is about 285 MB, which WebKit gives back under memory pressure.

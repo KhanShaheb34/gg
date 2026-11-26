@@ -50,7 +50,8 @@ sh scripts/deploy.sh      # publish to gg.shakirul.com; checks the download is p
   `e2e/screens.spec.ts` at device scale 1 and 2 against gg-devserver and the Vite dev server,
   as the e2e tests do, and writes the shots to `.shots/` (git-ignored). It needs
   `pnpm install`, cargo (it builds gg-devserver into this checkout's `target/`; delete that
-  folder afterwards, it is large), ImageMagick and cwebp, and port 1420 free.
+  folder afterwards, it is large), ImageMagick and cwebp, and port 1420 free (or another port in `GG_E2E_PORT`, as for the
+  e2e tests).
 - `og/og.html`: the social preview, drawn from the 2× capture at twice its size and scaled to
   1200×630.
 - `node site/scripts/preview.mjs [url]` (site served) screenshots the page at device scale 1

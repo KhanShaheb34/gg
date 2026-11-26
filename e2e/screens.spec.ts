@@ -5,6 +5,7 @@ import { chmodSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, makeRepo, otherClone, runOp, test } from "./fixtures";
+import { answer, comment, review, run, threads, view } from "./prDetailsData";
 
 const OUT = path.resolve(import.meta.dirname, "..", ".screens");
 
@@ -67,6 +68,7 @@ for (const theme of ["light", "dark"] as const) {
 
     await open(page, gg.repoPath("branchy"));
     await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await showWorktrees(page);
     await park(page);
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(OUT, `graph-branchy-${theme}.png`) });
@@ -283,6 +285,8 @@ for (const [prefix, width, height] of SIZES)
       await page.waitForTimeout(200);
       await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
     };
+    // The default window: the side panel on its Worktrees tab, as in the graph's shot.
+    if (width >= 1000) await showWorktrees(page);
 
     // A commit's menu with the reset submenu open, the hard reset under the pointer.
     await grid.locator('[role="row"]', { hasText: "Plugin sandboxing" }).locator(".subject").click({ button: "right" });
@@ -1190,7 +1194,7 @@ for (const [prefix, width, height] of SIZES)
 const LONG = "feature/rework-the-parser-error-recovery-for-unterminated-strings";
 
 // Pull requests: markers beside labels with ahead/behind counts and long names, on
-// worktree rows, stale ones; the branch menu; the side panel's Pull request tab loading,
+// worktree rows (the Worktrees tab), stale ones; the branch menu; the side panel's Pull request tab loading,
 // filled, waiting on the push, failed, for a branch that has one already, and for a long one.
 for (const [prefix, width, height] of SIZES)
   for (const theme of ["light", "dark"] as const) {
@@ -1243,6 +1247,8 @@ for (const [prefix, width, height] of SIZES)
         await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
       };
       if (width < 1000) await page.getByTestId("side-toggle").click();
+      // The default window: the Worktrees tab, the marker beside the worktree's branch too.
+      else await showWorktrees(page);
       await park(page);
       await shot("prs-markers");
 
@@ -1299,6 +1305,129 @@ for (const [prefix, width, height] of SIZES)
       await shot("prs-tab-long");
     });
   }
+
+// The Pull request tab for the current branch: the create form for a branch with none, then an
+// open pull request's merge status, checks and comments. For the README (the default window)
+// and the site (the small one); only fixture names (octo/cat, ada, grace, a bot).
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`pull request tab, create and details, ${width}x${height}, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.setViewportSize({ width, height });
+    await page.emulateMedia({ colorScheme: theme });
+    const repo = gg.repoPath("prs");
+    gg.git("prs", "switch", "-q", "fix/typo");
+    const pr = (number: number, head: string, title: string) => ({
+      number,
+      title,
+      url: `https://github.com/octo/cat/pull/${number}`,
+      isDraft: false,
+      headRefName: head,
+      baseRefName: "main",
+      headRepositoryOwner: { login: "octo" },
+      isCrossRepository: false,
+    });
+    const others = [pr(1284, "feature/login", "Add the login form"), pr(1295, "docs/readme", "Explain the parser")];
+    gg.gh.reply("pr-list", 0, JSON.stringify(others));
+    gg.gh.reply("pr-list-head", 0, "[]");
+    gg.gh.reply("repo-view", 0, JSON.stringify({ defaultBranchRef: { name: "main" } }));
+    await page.goto("/");
+    await open(page, repo);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(grid.locator(`button.pr-chip[data-pr="1284"]`).first()).toBeVisible();
+    const shot = async (name: string) => {
+      await park(page);
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: path.join(OUT, `${prefix}${name}-${theme}.png`) });
+    };
+
+    // No pull request yet: the form, filled in from the branch's commit.
+    await grid.focus();
+    await page.keyboard.press("ControlOrMeta+Shift+P");
+    const tab = page.getByTestId("pr-panel");
+    await expect(tab.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+    await expect(tab.getByTestId("pr-body")).not.toHaveValue("");
+    await shot("pr-tab-create");
+
+    // The branch pushed and its pull request opened: status, checks, comments.
+    gg.git("prs", "push", "-q", "-u", "origin", "fix/typo");
+    const mine = pr(1302, "fix/typo", "Fix a typo in the README");
+    gg.gh.reply("pr-list", 0, JSON.stringify([...others, mine]));
+    gg.gh.reply("pr-list-head", 0, JSON.stringify([mine]));
+    answer(
+      gg,
+      1302,
+      view(1302, {
+        review: "APPROVED",
+        checks: [
+          run("macos-latest", "passing", 11 * 60_000),
+          run("ubuntu-latest", "passing", 9 * 60_000),
+          run("windows-latest", "passing", 17 * 60_000),
+          run("lint", "passing", 60_000),
+        ],
+        comments: [
+          comment("1", "ada", "Thanks! While you are in there, the **Install** section has the same typo twice.", 95),
+          comment("2", "docs-preview", "Preview of the README for `fix/typo` is ready: no broken links found.", 90),
+        ],
+        reviews: [review("R1", "grace", "Approved: both typos are fixed now.", "APPROVED", 20)],
+      }),
+      threads(
+        [
+          {
+            path: "README.md",
+            line: 3,
+            comments: [
+              { id: "c1", login: "grace", body: "Should this say `pnpm`, as the build section does?", minutesAgo: 60 },
+              { id: "c2", login: "ada", body: "Yes, changed in the second commit.", minutesAgo: 40 },
+            ],
+          },
+        ],
+        ["docs-preview"],
+      ),
+    );
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(tab.getByTestId("pr-view")).toBeVisible();
+    await expect(tab.getByTestId("pr-merge-status")).toHaveText("Ready to merge");
+    await expect(tab.getByTestId("pr-comment").first()).toBeVisible();
+    // The checks opened in the default window; in the small one they stay summed up, so the
+    // comments show below them.
+    if (prefix === "") {
+      await tab.getByTestId("pr-checks-toggle").click();
+      await expect(tab.getByTestId("pr-check")).toHaveCount(4);
+    }
+    await shot("pr-tab-details");
+  });
+}
+
+// The Commit tab's "Committed on branch": two files to commit, and below the message the
+// files the branch's commits change since it left origin/main, opened.
+for (const [prefix, width, height] of SIZES)
+  for (const theme of ["light", "dark"] as const) {
+  test(`committed on branch, ${width}x${height}, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.setViewportSize({ width, height });
+    await page.emulateMedia({ colorScheme: theme });
+    const repo = gg.repoPath("branchfiles");
+    writeFileSync(path.join(repo, "src/report.ts"), "export const a = 1;\nexport const b = 20;\nexport const c = 30;\nexport const d = 4;\n");
+    writeFileSync(path.join(repo, "src/chart.ts"), "export const chart = {};\n");
+    await page.goto("/");
+    await open(page, repo);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.getByRole("listbox", { name: "Changed files" }).getByRole("option")).toHaveCount(2);
+    await page.getByTestId("commit-message").fill("Chart the report's totals");
+    const toggle = page.getByTestId("branch-files-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(page.getByTestId("branch-file")).toHaveCount(5);
+    await park(page);
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: path.join(OUT, `${prefix}committed-on-branch-${theme}.png`) });
+  });
+}
 
 // Settings and keyboard shortcuts: the sheet at its top, a refused command with the
 // one beside it running, the lower sections, the reset confirmation; the shortcuts sheet; the

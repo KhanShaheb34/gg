@@ -76,7 +76,9 @@ pub trait WorktreeMemory: Send + Sync + 'static {
 
 /// Opens repositories and keeps their state. Create one per app with [`RepoManager::new`].
 pub struct RepoManager {
-    runner: GitRunner,
+    pub(crate) runner: GitRunner,
+    /// "Generate with AI": the tools found, the generations running.
+    pub(crate) ai: crate::ai::AiState,
     pub(crate) sink: Arc<dyn EventSink>,
     pub(super) repos: Mutex<HashMap<u32, Arc<Repo>>>,
     /// gg is restarting to update: no operation or fetch the user asks for is admitted.
@@ -168,7 +170,7 @@ pub struct RepoManager {
     pub(super) gh_timeout_ms: AtomicU64,
     /// Tests and the devserver only: the `PATH` `gh` and `ssh` are found on and run with,
     /// instead of the login shell's (in a test build they never run without one).
-    pub(super) tool_path: Mutex<Option<std::ffi::OsString>>,
+    pub(crate) tool_path: Mutex<Option<std::ffi::OsString>>,
     /// Tests only: the least time between two loads of the pull requests, instead of 60 s.
     #[cfg(any(test, feature = "testutil"))]
     pub(super) prs_every: Mutex<Option<Duration>>,
@@ -743,6 +745,7 @@ impl RepoManager {
             #[cfg(any(test, feature = "testutil"))]
             status_delay_ms: AtomicU64::new(0),
             opening: Mutex::new(HashMap::new()),
+            ai: crate::ai::AiState::default(),
             last_op_id: AtomicU64::new(0),
             #[cfg(any(test, feature = "testutil"))]
             op_delay_ms: AtomicU64::new(0),

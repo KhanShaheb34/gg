@@ -829,6 +829,159 @@ pub struct Settings {
     /// branch pushed, when the branch has no open pull request (and is not the default
     /// branch, and pull requests can be made there). The UI decides; the core keeps it.
     pub open_pr_tab_after_push: bool,
+    /// Which command-line AI tool "Generate with AI" runs (see [`crate::ai`]).
+    pub ai_tool: AiToolChoice,
+    /// The model each tool is run with, by tool (`claude`, `codex`): an empty value runs the
+    /// tool's own default; a tool not listed takes gg's default for it (`haiku` for Claude
+    /// Code, the tool's own default for Codex).
+    pub ai_models: BTreeMap<String, String>,
+    /// The prompt template for a commit message; `None` is gg's default.
+    pub ai_commit_prompt: Option<String>,
+    /// The prompt template for a pull request's title and description; `None` is gg's default.
+    pub ai_pr_prompt: Option<String>,
+    /// The tools whose first-use notice (what is sent, and to whom) the user went on from.
+    pub ai_notice_seen: Vec<AiTool>,
+}
+
+/// A command-line AI tool gg can run for "Generate with AI" (see [`crate::ai`]). Serialized
+/// lowercase (`"claude"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiTool {
+    /// Claude Code (`claude`).
+    Claude,
+    /// Codex (`codex`).
+    Codex,
+}
+
+impl AiTool {
+    /// Its id, as settings and the UI name it.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}
+
+/// Which tool "Generate with AI" runs: the first installed in gg's order (Claude Code, then
+/// Codex), or the one named.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiToolChoice {
+    #[default]
+    Auto,
+    Claude,
+    Codex,
+}
+
+/// One AI tool as gg finds it on this computer (`ai_tools`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiToolInfo {
+    pub tool: AiTool,
+    /// "Claude Code".
+    pub name: String,
+    /// Who it sends prompts to: "Anthropic".
+    pub provider: String,
+    pub installed: bool,
+    /// Its version, when it was asked (`versions`) and answered.
+    pub version: Option<String>,
+    /// Where it was found.
+    pub path: Option<String>,
+    /// Its official install page.
+    pub install_url: String,
+    /// What to run in a terminal to sign in ("claude", "codex login").
+    pub sign_in: String,
+    /// gg's default model for it ("" for the tool's own).
+    pub default_model: String,
+    /// A short list of models to offer; any other can be typed.
+    pub models: Vec<String>,
+}
+
+/// What `ai_tools` returns: each tool, and the one "Generate with AI" runs with the settings
+/// as they are (none when it is not installed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTools {
+    pub tools: Vec<AiToolInfo>,
+    pub chosen: Option<AiTool>,
+}
+
+/// What "Generate with AI" is asked to write (`ai_generate`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AiTask {
+    /// A commit message for the files `paths` (as the commit panel lists them) of the
+    /// worktree at `path`: what a commit of them would record.
+    Commit { path: String, paths: Vec<String> },
+    /// A pull request's title and description for local branch `branch` going into `base`
+    /// on `base_remote` (its local namesake when the remote does not have it), with what the
+    /// form holds now.
+    Pr {
+        branch: String,
+        base: String,
+        base_remote: Option<String>,
+        title: String,
+        body: String,
+        draft: bool,
+    },
+}
+
+/// Why "Generate with AI" gave no text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiFailureKind {
+    /// The tool chosen is not installed (or none is).
+    NoTool,
+    /// The tool is not signed in.
+    SignedOut,
+    /// The tool says a usage or rate limit is reached.
+    Limited,
+    /// It did not answer in time.
+    TimedOut,
+    /// The user cancelled it.
+    Cancelled,
+    /// It answered nothing usable.
+    Empty,
+    /// There is nothing to describe (no change ticked, no commit ahead of the base).
+    Nothing,
+    /// The tool does not know the model set.
+    BadModel,
+    /// Anything else: its own message.
+    Failed,
+}
+
+/// What `ai_generate` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum AiOutcome {
+    /// The text written: a commit message (`message`), or a pull request's `title`, `body` and
+    /// `draft`.
+    Done {
+        tool: AiTool,
+        /// The model it ran with ("" for the tool's own default).
+        model: String,
+        message: Option<String>,
+        title: Option<String>,
+        body: Option<String>,
+        draft: Option<bool>,
+        /// The first command log record of this generation.
+        log_from: u64,
+    },
+    Failed {
+        tool: Option<AiTool>,
+        kind: AiFailureKind,
+        message: String,
+        /// The tool's own output, when it said something.
+        detail: String,
+        log_from: u64,
+    },
 }
 
 /// The default [`Settings::worktree_pattern`].
@@ -845,6 +998,11 @@ impl Default for Settings {
             date_format: DateFormat::Standard,
             check_for_updates: true,
             open_pr_tab_after_push: true,
+            ai_tool: AiToolChoice::Auto,
+            ai_models: BTreeMap::new(),
+            ai_commit_prompt: None,
+            ai_pr_prompt: None,
+            ai_notice_seen: Vec::new(),
         }
     }
 }

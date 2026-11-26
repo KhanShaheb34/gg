@@ -415,6 +415,11 @@ impl CommandLog {
         merged
     }
 
+    /// The id the next record will have.
+    pub fn next_id(&self) -> u64 {
+        self.lock().next_id
+    }
+
     /// Ids of the first and last write of operation `op_id` still kept, if any.
     pub fn op_writes(&self, op_id: u64) -> Option<(u64, u64)> {
         let inner = self.lock();
@@ -1033,6 +1038,7 @@ impl GitRunner {
             log: &self.log,
             tags: self.tags,
             stop: self.stop.as_deref(),
+            log_stderr: None,
         };
         let cmd = self.command(Some(cwd), args);
         let run = Run {
@@ -1160,6 +1166,7 @@ impl GitRunner {
                 ..self.tags
             },
             stop: self.stop.clone(),
+            log_stderr: None,
         }
     }
 }
@@ -1241,9 +1248,19 @@ pub struct ToolRunner {
     removed: Vec<&'static str>,
     tags: Tags,
     stop: Option<Arc<Stop>>,
+    /// What of a command's stderr the log keeps, when not all of it (see
+    /// [`ToolRunner::logging_stderr`]).
+    log_stderr: Option<fn(&str) -> String>,
 }
 
 impl ToolRunner {
+    /// This runner, keeping in the command log only what `keep` gives of each command's
+    /// stderr (a tool that repeats its input there: the input is not logged).
+    pub(crate) fn logging_stderr(mut self, keep: fn(&str) -> String) -> Self {
+        self.log_stderr = Some(keep);
+        self
+    }
+
     /// This runner with `PATH` `path` for its children instead.
     pub(crate) fn with_path(mut self, path: Option<OsString>) -> Self {
         self.path = path;
@@ -1324,6 +1341,7 @@ impl ToolRunner {
             log: &self.log,
             tags: self.tags,
             stop: self.stop.as_deref(),
+            log_stderr: self.log_stderr,
         };
         let run = Run {
             cwd,
@@ -1348,6 +1366,8 @@ struct Exec<'a> {
     log: &'a CommandLog,
     tags: Tags,
     stop: Option<&'a Stop>,
+    /// What of stderr the log keeps; all of it when `None`.
+    log_stderr: Option<fn(&str) -> String>,
 }
 
 /// A limited command's arguments (beside the program, in its `Command`), what it reads on
@@ -1523,8 +1543,17 @@ async fn exec_limited(
             tree.release();
             let code = status.code().unwrap_or(-1);
             let stderr = String::from_utf8_lossy(&err).into_owned();
-            exec.log
-                .push(exec.tags, kind, cwd, args, started, code, &out, &stderr);
+            let logged = exec.log_stderr.map(|keep| keep(&stderr));
+            exec.log.push(
+                exec.tags,
+                kind,
+                cwd,
+                args,
+                started,
+                code,
+                &out,
+                logged.as_deref().unwrap_or(&stderr),
+            );
             Ok(Ok(GitOutput {
                 stdout: out,
                 stderr,

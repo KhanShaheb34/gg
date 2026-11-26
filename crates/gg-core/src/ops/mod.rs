@@ -7,7 +7,7 @@
 //! the active worktree, and ended with one refresh that also clears `snapshot.op`. Every git
 //! command it runs is logged with the repository's and the operation's id.
 
-mod commit;
+pub(crate) mod commit;
 mod danger;
 mod explain;
 mod local;

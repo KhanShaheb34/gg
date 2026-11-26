@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { BIG_COMMITS, bigSubject, closeButton, expect, test, viewOption } from "./fixtures";
+import { BIG_COMMITS, bigSubject, closeButton, expect, STATUS_BAR_H, test, viewOption } from "./fixtures";
 
 test.use({ timezoneId: "UTC" });
 
@@ -417,6 +417,7 @@ test("the lane canvas follows the Graph column's width and never covers the desc
 
 test("each rendered row has its own id and its real row index", async ({ gg }) => {
   const { page } = gg;
+  await page.setViewportSize({ width: 1280, height: 720 + STATUS_BAR_H });
   await page.goto("/");
   await open(page, gg.repoPath("small")); // fewer rows than the pool: some slots are unused
   await expect(subject(row(page, 0))).not.toBeEmpty();
@@ -727,6 +728,7 @@ test("stashes: one row each with a stash label; the Stashes toggle hides them an
 
 test("hiding and showing stashes keeps the selected commit and the first visible commit in place", async ({ gg }) => {
   const { page } = gg;
+  await page.setViewportSize({ width: 1280, height: 720 + STATUS_BAR_H });
   await page.goto("/");
   await open(page, gg.repoPath("stashes"));
   await expect(grid(page)).toHaveAttribute("aria-rowcount", String(300 + 2 + 1));

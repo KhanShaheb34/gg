@@ -1033,6 +1033,12 @@ export function closeButton(page: Page, name: string) {
   return page.getByRole("tab", { name, exact: true }).locator("xpath=..").locator(".close");
 }
 
+/**
+ * How tall the status bar at the window's foot is, px. A test that measures the graph or the
+ * panels under it makes its window this much taller, so they keep the room they were written for.
+ */
+export const STATUS_BAR_H = 22;
+
 /** The toolbar's View popover (open or not). */
 export function viewPopover(page: Page): Locator {
   return page.getByRole("dialog", { name: "View", exact: true });

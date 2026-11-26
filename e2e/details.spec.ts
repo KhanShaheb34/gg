@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { expect, makeRepo, test } from "./fixtures";
+import { expect, makeRepo, STATUS_BAR_H, test } from "./fixtures";
 
 test.use({ timezoneId: "UTC" });
 
@@ -223,6 +223,7 @@ test("the uncommitted changes row opens no panel", async ({ gg }) => {
 
 test("the panel's height can be changed and survives a reload", async ({ gg }) => {
   const { page } = gg;
+  await page.setViewportSize({ width: 1280, height: 720 + STATUS_BAR_H });
   await page.goto("/");
   await open(page, gg.repoPath("details"));
   await rowWith(page, "Main work").click();

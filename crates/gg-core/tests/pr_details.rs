@@ -226,6 +226,9 @@ async fn failures_are_said_and_retried_after_the_floor() {
         "",
         "GraphQL: Could not resolve to a PullRequest with the number of 99.\n",
     );
+    // The floor counts from the failed load: measured from its start, a slow machine (that
+    // load taking a while) does not shorten what the next one is seen to wait.
+    let failed = Instant::now();
     let err = s.h.m.pr_details(s.id, 99).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::Io);
     assert_eq!(
@@ -234,12 +237,11 @@ async fn failures_are_said_and_retried_after_the_floor() {
          with the number of 99."
     );
     s.gh.reply("pr-view", 0, VIEW, "");
-    let asked = Instant::now();
     let d = s.h.m.pr_details(s.id, 99).await.unwrap();
     assert!(
-        asked.elapsed() >= Duration::from_millis(500),
+        failed.elapsed() >= Duration::from_millis(800),
         "waited for the floor: {:?}",
-        asked.elapsed()
+        failed.elapsed()
     );
     assert_eq!(d.number, 22);
     assert_eq!(s.gh.calls_of(&["pr", "view", "99"]).len(), 2);

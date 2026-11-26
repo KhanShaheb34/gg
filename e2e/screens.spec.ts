@@ -1592,3 +1592,49 @@ for (const theme of ["light", "dark"] as const) {
     await shot("narrow");
   });
 }
+
+// The header (actions) and the status bar (the folder, when it was last fetched): at the
+// default size, then the narrowest window the app allows on a worktree with a long path,
+// the side panel shown and hidden, with the path's menu and the View popover open.
+for (const theme of ["light", "dark"] as const) {
+  test(`status bar, ${theme}`, async ({ gg }) => {
+    const { page } = gg;
+    await page.emulateMedia({ colorScheme: theme });
+    const repo = gg.repoPath("small");
+    gg.git("small", "fetch", "-q", "origin");
+    // A clone deep in the home folder, as an agent's worktree folder is.
+    const origin = path.join(path.dirname(repo), "small-origin.git");
+    const deep = path.join(gg.home, "Code", "experiments", "payments-service", ".agents", "worktrees");
+    const long = makeRepo("agent-a883f2c1e9b7d4a6-the-status-bar-and-a-header-for-actions-only-at-the-narrowest-width", (git) => {
+      git("clone", "-q", origin, ".");
+      git("fetch", "-q", "origin");
+    }, deep);
+    await page.goto("/");
+    await open(page, repo);
+    const grid = page.getByRole("grid", { name: "Commits" });
+    await expect(grid.locator('[data-index="0"] .subject')).not.toBeEmpty();
+    await expect(page.getByTestId("status-fetched")).toHaveText("Fetched just now");
+    const shot = async (name: string) => {
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(OUT, `statusbar-${name}-${theme}.png`) });
+    };
+    await park(page);
+    await shot("normal");
+    await page.getByTestId("status-path").click();
+    await shot("menu");
+    await page.keyboard.press("Escape");
+    await page.getByTestId("view-options").click();
+    await shot("view");
+    await page.keyboard.press("Escape");
+
+    await page.setViewportSize({ width: 800, height: 560 });
+    await open(page, long);
+    await expect(page.getByTestId("status-path")).toContainText("narrowest-width");
+    await park(page);
+    await shot("long-nopanel");
+    // Narrow, the side panel shows over the graph, down to the status bar.
+    await page.keyboard.press("ControlOrMeta+b");
+    await park(page);
+    await shot("long-panel");
+  });
+}

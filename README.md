@@ -117,6 +117,9 @@ afterwards and says which it is.
   a branch's label.
 - Search subjects, authors and hashes; filter which branches are shown; show or hide remote
   branches, tags and stashes (View, in the toolbar).
+- The toolbar holds actions; a quiet status bar along the window's foot holds the active
+  worktree's folder (a click copies it or shows it in Finder) and when the repository was
+  last fetched, by gg or from a terminal (View › Status bar hides it).
 - Select a commit for its details: full hash, parents, author, date, message, and the files
   it changed with added and deleted line counts, as a tree or a list.
 - The uncommitted changes of the active worktree as a row at the top.

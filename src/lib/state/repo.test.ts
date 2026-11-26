@@ -74,7 +74,7 @@ function snapshot(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     status: { changed: 0, untracked: 0, conflicted: 0, conflictedPaths: [] },
     uncommittedSubject: "Uncommitted changes (0)",
     viewOptions: { branches: null, showRemotes: true, showTags: true, showStashes: true },
-    fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null },
+    fetch: { running: false, lastError: null, lastErrorDetail: null, lastAtMs: null, fetchedAtMs: null },
     op: null,
     prs: { status: "unknown", reason: null, loadedAtMs: null, partial: false },
     branchPrs: {},
@@ -720,7 +720,7 @@ describe("RepoView view options", () => {
     vi.mocked(ipc.api.setViewOptions).mockImplementation(() => new Promise((r) => (answer = r)));
     const done = view.setViewOptions({ showTags: false, showStashes: true });
     // An event (newer than the answer) arrives first: the fetch finished.
-    const fetched = { running: false, lastError: "fatal: x", lastErrorDetail: "fatal: x\n", lastAtMs: 5 };
+    const fetched = { running: false, lastError: "fatal: x", lastErrorDetail: "fatal: x\n", lastAtMs: 5, fetchedAtMs: null };
     const latest = snapshot({ viewOptions: { ...ALL, showTags: false }, fetch: fetched });
     core.handler?.(latest);
     await settle();
@@ -943,7 +943,7 @@ describe("RepoView fetch and refresh", () => {
     let answer: (s: RepoSnapshot) => void = () => {};
     vi.mocked(ipc.api.refresh).mockImplementation(() => new Promise((r) => (answer = r)));
     const done = view.refresh();
-    const fetched = { running: false, lastError: "fatal: x", lastErrorDetail: "fatal: x\n", lastAtMs: 5 };
+    const fetched = { running: false, lastError: "fatal: x", lastErrorDetail: "fatal: x\n", lastAtMs: 5, fetchedAtMs: null };
     const latest = snapshot({ fetch: fetched });
     core.handler?.(latest);
     await settle();
@@ -992,7 +992,7 @@ describe("RepoView fetch and refresh", () => {
     expect(view.fetching).toBe(true);
     await done;
     expect(ipc.api.fetch).toHaveBeenCalledWith(7);
-    core.handler?.(snapshot({ fetch: { running: true, lastError: null, lastErrorDetail: null, lastAtMs: null } }));
+    core.handler?.(snapshot({ fetch: { running: true, lastError: null, lastErrorDetail: null, lastAtMs: null, fetchedAtMs: null } }));
     await settle();
     expect(view.fetching).toBe(true);
     core.handler?.(
@@ -1002,6 +1002,7 @@ describe("RepoView fetch and refresh", () => {
           lastError: "fatal: no such remote",
           lastErrorDetail: "From /o\n   a..b  main -> origin/main\nfatal: no such remote\n",
           lastAtMs: Date.now() + 1,
+          fetchedAtMs: null,
         },
       }),
     );
@@ -1017,7 +1018,7 @@ describe("RepoView fetch and refresh", () => {
     const view = await openView(0);
     const notice = vi.fn();
     view.onNotice = notice;
-    core.handler?.(snapshot({ fetch: { running: false, lastError: "fatal: offline", lastErrorDetail: null, lastAtMs: Date.now() } }));
+    core.handler?.(snapshot({ fetch: { running: false, lastError: "fatal: offline", lastErrorDetail: null, lastAtMs: Date.now(), fetchedAtMs: null } }));
     await settle();
     expect(notice).not.toHaveBeenCalled();
     expect(view.snapshot.fetch.lastError).toBe("fatal: offline");

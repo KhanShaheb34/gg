@@ -120,7 +120,9 @@ Reads follow the same path without the queue: `get_snapshot`, `get_rows`,
   viewport.
 - `src/lib/menus/`: what each right-click menu offers and why an item is disabled, as plain
   functions with unit tests; `dispatch.ts` turns a picked item into a request or a dialog.
-- `src/lib/components/`: dialogs, banner, notices, command log, toolbar, tabs, the side panel
+- `src/lib/components/`: dialogs, banner, notices, command log, toolbar, tabs, the status bar
+  (`StatusBar.svelte`: the active worktree's folder, and the last fetch from the snapshot's
+  `fetch.fetchedAtMs`, which the core reads from `FETCH_HEAD`), the side panel
   (`SidePanel.svelte` with `WorktreePanel.svelte` and `CommitPanel.svelte`, which holds
   `CommittedFiles.svelte`, the branch's committed files; the Pull request tab's
   `PullRequestView.svelte` with its comments, `PrCommentCard.svelte`, and the boxes to reply

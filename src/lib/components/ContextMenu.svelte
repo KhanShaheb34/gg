@@ -18,7 +18,7 @@
 
   type Item = Extract<MenuItem, { id: string }>;
   /** Where a panel goes, worked out once its size is known. */
-  type Anchor = { kind: "point"; x: number; y: number } | { kind: "item"; rect: DOMRect };
+  type Anchor = { kind: "point"; x: number; y: number; above?: boolean } | { kind: "item"; rect: DOMRect };
   type Level = { items: MenuItem[]; anchor: Anchor; active: number; parent: number };
 
   /** Gap kept between a panel and the window's edges, px. */
@@ -55,7 +55,7 @@
     levels = [
       {
         items: menu.items,
-        anchor: { kind: "point", x: menu.x, y: menu.y },
+        anchor: { kind: "point", x: menu.x, y: menu.y, above: menu.above },
         active: menu.keyboard ? next(menu.items, -1, 1) : -1,
         parent: -1,
       },
@@ -307,7 +307,7 @@
     let top: number;
     if (anchor.kind === "point") {
       left = anchor.x + width <= maxX ? anchor.x : anchor.x - width;
-      top = anchor.y + height <= maxY ? anchor.y : maxY - height;
+      top = anchor.above ? anchor.y - height : anchor.y + height <= maxY ? anchor.y : maxY - height;
     } else {
       const r = anchor.rect;
       left = r.right + 2 + width <= maxX ? r.right + 2 : r.left - 2 - width;

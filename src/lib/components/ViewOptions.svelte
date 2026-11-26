@@ -1,8 +1,9 @@
 <!--
   What the graph shows besides its branches: a View button that opens a popover of three
-  checkboxes (remote branches, tags, stashes). Each tick applies at once and the popover stays
-  open. While any of them is off, the button reads in the accent colour (as the branch filter
-  does when it filters) and its tooltip says what is hidden. In a narrow window (`compact`) it
+  checkboxes (remote branches, tags, stashes), then one for the window's status bar (one
+  choice for the whole app). Each tick applies at once and the popover stays open. While any
+  of the graph's is off, the button reads in the accent colour (as the branch filter does
+  when it filters) and its tooltip says what is hidden. In a narrow window (`compact`) it
   shows its icon only, its name in the tooltip. Keys: Down on the button opens; Up, Down, Home
   and End move between the rows, Space or Enter ticks, Esc closes (the focus back on the
   button); a press outside, or the focus leaving, closes too.
@@ -10,6 +11,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { RepoView } from "../state/repo.svelte";
+  import { setStatusBarShown, statusBar } from "../state/statusBar.svelte";
 
   let { view, disabled = false, compact = false }: { view: RepoView; disabled?: boolean; compact?: boolean } = $props();
 
@@ -154,6 +156,24 @@
           </label>
         {/each}
       </div>
+      <div class="separator" role="separator"></div>
+      <div class="heading" id="{id}-window" aria-hidden="true">Show in the window</div>
+      <div role="group" aria-labelledby="{id}-window">
+        <label class="row">
+          <input
+            type="checkbox"
+            class="checkbox"
+            checked={statusBar.shown}
+            onchange={(e) => setStatusBarShown(e.currentTarget.checked)}
+          />
+          <!-- A window with a strip along its foot: the status bar. -->
+          <svg class="glyph" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.35" />
+            <path d="M2.6 10.4h10.8" stroke="currentColor" stroke-width="1.35" />
+          </svg>
+          <span>Status bar</span>
+        </label>
+      </div>
     </div>
   {/if}
 </div>
@@ -269,6 +289,12 @@
     font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.02em;
+  }
+
+  .separator {
+    height: 1px;
+    margin: 5px 2px 1px;
+    background: var(--border);
   }
 
   .row {

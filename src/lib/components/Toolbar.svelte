@@ -288,8 +288,8 @@
 </div>
 
 <style>
-  /* Never squeezed or cut off: what gives way in a narrow window is the repository's name
-     and path beside it (and a long operation title, which is contained). */
+  /* Never squeezed or cut off: what gives way in a narrow window is the branch beside it
+     (and a long operation title, which is contained). */
   .toolbar {
     display: flex;
     align-items: center;
@@ -303,7 +303,7 @@
     gap: 2px;
   }
 
-  /* Separates the repository's name and path from the controls. */
+  /* Separates where the actions run (the branch) from what the graph shows. */
   .divider {
     flex: none;
     width: 1px;

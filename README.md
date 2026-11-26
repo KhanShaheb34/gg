@@ -260,8 +260,8 @@ applied has nothing left to apply.
 
 **Settings** (⌘,) holds the theme (follow the system, light or dark), the date format, the
 background fetch interval (or turning it off), the editor and terminal gg opens, where new
-worktrees go, whether a push opens the Pull request tab, and the `gg` command. The button at the top right of the window cycles the
-theme.
+worktrees go, whether a push opens the Pull request tab, and the `gg` command. The button at
+the top right of the window cycles the theme.
 
 **Keyboard**
 

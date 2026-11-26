@@ -434,7 +434,10 @@ impl Store {
             }
             for (tool, model) in patch.ai_models.unwrap_or_default() {
                 match model {
-                    Some(model) => data.settings.ai_models.insert(tool, model.trim().to_owned()),
+                    Some(model) => data
+                        .settings
+                        .ai_models
+                        .insert(tool, model.trim().to_owned()),
                     None => data.settings.ai_models.remove(&tool),
                 };
             }
@@ -1609,7 +1612,10 @@ mod tests {
             })))
             .unwrap();
         assert_eq!(s.ai_tool, AiToolChoice::Codex);
-        assert_eq!(s.ai_models.get("claude").map(String::as_str), Some("sonnet"));
+        assert_eq!(
+            s.ai_models.get("claude").map(String::as_str),
+            Some("sonnet")
+        );
         assert_eq!(s.ai_notice_seen, [AiTool::Claude, AiTool::Codex]);
         let again = Store::load(config.path()).settings();
         assert_eq!(again, s);
@@ -1631,7 +1637,10 @@ mod tests {
             .unwrap();
         assert_eq!(s.ai_models.get("claude"), None);
         assert_eq!(s.ai_commit_prompt, None);
-        assert!(serde_json::from_value::<SettingsPatch>(serde_json::json!({"aiTool": "gemini"})).is_err());
+        assert!(
+            serde_json::from_value::<SettingsPatch>(serde_json::json!({"aiTool": "gemini"}))
+                .is_err()
+        );
         fs::write(
             config.path().join("state.json"),
             r#"{"settings": {"aiModels": {"claude": "-p", "codex": "gpt-5.5"}, "aiTool": "nope"}}"#,
@@ -1640,7 +1649,10 @@ mod tests {
         let edited = Store::load(config.path()).settings();
         assert_eq!(edited.ai_tool, AiToolChoice::Auto);
         assert_eq!(edited.ai_models.get("claude"), None);
-        assert_eq!(edited.ai_models.get("codex").map(String::as_str), Some("gpt-5.5"));
+        assert_eq!(
+            edited.ai_models.get("codex").map(String::as_str),
+            Some("gpt-5.5")
+        );
     }
 
     /// Showing the Pull request tab after a push: on by default, turned off and on, kept

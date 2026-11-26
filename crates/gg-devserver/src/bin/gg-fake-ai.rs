@@ -67,7 +67,9 @@ fn main() {
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
     let _ = fs::write(call.join("cwd"), cwd);
-    let env: String = std::env::vars().map(|(k, v)| format!("{k}={v}\n")).collect();
+    let env: String = std::env::vars()
+        .map(|(k, v)| format!("{k}={v}\n"))
+        .collect();
     let _ = fs::write(call.join("env"), env);
     let mut stdin = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut stdin);

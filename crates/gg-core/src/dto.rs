@@ -959,7 +959,11 @@ pub enum AiFailureKind {
 
 /// What `ai_generate` returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum AiOutcome {
     /// The text written: a commit message (`message`), or a pull request's `title`, `body` and
     /// `draft`.

@@ -670,7 +670,8 @@ impl Core {
                         .await
                 });
                 let outcome = run.await.map_err(|e| {
-                    CoreError::new(ErrorCode::Io, "The generation failed").with_detail(e.to_string())
+                    CoreError::new(ErrorCode::Io, "The generation failed")
+                        .with_detail(e.to_string())
                 })??;
                 to_json(outcome)
             }

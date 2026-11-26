@@ -45,6 +45,8 @@ const VERSION_LIMIT: Duration = Duration::from_secs(10);
 const DETAIL_MAX: usize = 4000;
 /// Cancels asked for before their generation started are forgotten after this long.
 const EARLY_CANCEL_TTL: Duration = Duration::from_secs(60);
+/// Most runs of a tool for one generation (see [`Adapter::retry`]).
+const MAX_TRIES: usize = 12;
 
 /// The AI tools' state in the core: generations running (by the UI's request id, with their
 /// Stop), versions asked, and the login `PATH` as last read for them.
@@ -192,10 +194,7 @@ impl RepoManager {
             Ok(Ok(out)) if out.code == 0 => a.version_of(&out.text()),
             _ => None,
         };
-        lock(&self.ai.versions).insert(
-            a.tool(),
-            (found.program.clone(), stamp, version.clone()),
-        );
+        lock(&self.ai.versions).insert(a.tool(), (found.program.clone(), stamp, version.clone()));
         version
     }
 
@@ -336,7 +335,13 @@ impl RepoManager {
                 log_from,
             })
         };
-        let cancelled = || failed(AiFailureKind::Cancelled, "Cancelled.".to_owned(), String::new());
+        let cancelled = || {
+            failed(
+                AiFailureKind::Cancelled,
+                "Cancelled.".to_owned(),
+                String::new(),
+            )
+        };
         let shown_model = if model.is_empty() {
             String::new()
         } else {
@@ -348,14 +353,17 @@ impl RepoManager {
             AiTask::Commit { .. } => "a commit message",
             AiTask::Pr { .. } => "a pull request\u{2019}s title and description",
         };
-        runner
-            .log()
-            .name_op(op_id, &format!("Write {what} with {}{shown_model}", a.name()));
+        runner.log().name_op(
+            op_id,
+            &format!("Write {what} with {}{shown_model}", a.name()),
+        );
 
         // What it is written from.
         let gathered = match &task {
             AiTask::Commit { path, paths } => {
-                let files = self.worktree_files(repo.identity.repo_id, Path::new(path)).await?;
+                let files = self
+                    .worktree_files(repo.identity.repo_id, Path::new(path))
+                    .await?;
                 let ticked: std::collections::BTreeSet<&str> =
                     paths.iter().map(String::as_str).collect();
                 let entries: Vec<&crate::dto::FileEntry> = files
@@ -371,7 +379,9 @@ impl RepoManager {
                 let worktree = crate::repo::canonical(Path::new(path));
                 context::commit_context(&runner, &worktree, &entries)
                     .await
-                    .map(|c| c.map(|c| prompt::commit_prompt(settings.ai_commit_prompt.as_deref(), &c)))
+                    .map(|c| {
+                        c.map(|c| prompt::commit_prompt(settings.ai_commit_prompt.as_deref(), &c))
+                    })
             }
             AiTask::Pr {
                 branch,
@@ -405,7 +415,7 @@ impl RepoManager {
 
         // Its own folder, never the repository; removed when done.
         let scratch = Scratch::new()?;
-        let run = a.invocation(model, &prompt_text, scratch.path());
+        let mut run = a.invocation(model, &prompt_text, scratch.path());
         let mut tool_runner = runner
             .tool(found.program.clone(), a.program())
             .with_git_protection()
@@ -417,56 +427,73 @@ impl RepoManager {
         if found.path.is_some() {
             tool_runner = tool_runner.with_path(found.path.clone());
         }
-        let args: Vec<&str> = run.args.iter().map(String::as_str).collect();
         let limit = Duration::from_millis(self.ai.limit_ms.load(Ordering::Relaxed));
-        let ran = tool_runner
-            .run(
-                scratch.path(),
-                &args,
-                CmdKind::Read,
-                StdinPolicy::Bytes(run.stdin),
-                TimeLimit::total(limit),
-            )
-            .await;
-        let out = match ran {
-            Ok(Ok(out)) => out,
-            Ok(Err(gave_up)) => {
-                return match gave_up.limit {
-                    Expired::Cancelled => cancelled(),
-                    _ => failed(
-                        AiFailureKind::TimedOut,
-                        format!(
-                            "{} did not answer within {} s.",
-                            a.name(),
-                            limit.as_secs().max(1)
+        // Run again, a few times at most, without a setting this version does not take.
+        let mut tries = 0;
+        let (out, exit) = loop {
+            tries += 1;
+            let args: Vec<&str> = run.args.iter().map(String::as_str).collect();
+            let ran = tool_runner
+                .run(
+                    scratch.path(),
+                    &args,
+                    CmdKind::Read,
+                    StdinPolicy::Bytes(run.stdin.clone()),
+                    TimeLimit::total(limit),
+                )
+                .await;
+            let out = match ran {
+                Ok(Ok(out)) => out,
+                Ok(Err(gave_up)) => {
+                    return match gave_up.limit {
+                        Expired::Cancelled => cancelled(),
+                        _ => failed(
+                            AiFailureKind::TimedOut,
+                            format!(
+                                "{} did not answer within {} s.",
+                                a.name(),
+                                limit.as_secs().max(1)
+                            ),
+                            String::new(),
                         ),
+                    };
+                }
+                Err(e) if e.message == STOPPED => return cancelled(),
+                Err(e) if e.message.ends_with("was not found on PATH") => {
+                    return failed(
+                        AiFailureKind::NoTool,
+                        format!("{} was not found on this computer.", a.name()),
                         String::new(),
-                    ),
-                };
+                    );
+                }
+                Err(e) => {
+                    return failed(
+                        AiFailureKind::Failed,
+                        format!("{} could not be started: {}", a.name(), e.message),
+                        e.detail.unwrap_or_default(),
+                    );
+                }
+            };
+            let exit = Exit {
+                code: out.code,
+                stdout: out.text(),
+                stderr: out.stderr.clone(),
+            };
+            if out.code != 0
+                && tries < MAX_TRIES
+                && !stop.is_stopped()
+                && let Some(again) = a.retry(&run, &exit)
+            {
+                run = again;
+                continue;
             }
-            Err(e) if e.message == STOPPED => return cancelled(),
-            Err(e) if e.message.ends_with("was not found on PATH") => {
-                return failed(
-                    AiFailureKind::NoTool,
-                    format!("{} was not found on this computer.", a.name()),
-                    String::new(),
-                );
-            }
-            Err(e) => {
-                return failed(
-                    AiFailureKind::Failed,
-                    format!("{} could not be started: {}", a.name(), e.message),
-                    e.detail.unwrap_or_default(),
-                );
-            }
-        };
-        let exit = Exit {
-            code: out.code,
-            stdout: out.text(),
-            stderr: out.stderr.clone(),
+            break (out, exit);
         };
         if out.code != 0 {
             let detail = failure_detail(a, &exit);
+            if let Some(advice) = a.advice(&exit) {
+                return failed(AiFailureKind::Failed, advice, detail);
+            }
             let line = a.failure_line(&exit);
             return match a.classify(&exit) {
                 Some((kind, said)) => failed(kind, failure_message(a, kind, &said, model), detail),
@@ -488,24 +515,22 @@ impl RepoManager {
             .filter(|t| !t.trim().is_empty())
             .unwrap_or(exit.stdout);
         match task {
-            AiTask::Commit { .. } => {
-                match prompt::commit_message(&prompt::clean_answer(&answer)) {
-                    Some(message) => Ok(AiOutcome::Done {
-                        tool,
-                        model: model.to_owned(),
-                        message: Some(message),
-                        title: None,
-                        body: None,
-                        draft: None,
-                        log_from,
-                    }),
-                    None => failed(
-                        AiFailureKind::Empty,
-                        format!("{} returned an empty message.", a.name()),
-                        String::new(),
-                    ),
-                }
-            }
+            AiTask::Commit { .. } => match prompt::commit_message(&prompt::clean_answer(&answer)) {
+                Some(message) => Ok(AiOutcome::Done {
+                    tool,
+                    model: model.to_owned(),
+                    message: Some(message),
+                    title: None,
+                    body: None,
+                    draft: None,
+                    log_from,
+                }),
+                None => failed(
+                    AiFailureKind::Empty,
+                    format!("{} returned an empty message.", a.name()),
+                    String::new(),
+                ),
+            },
             AiTask::Pr {
                 title, body, draft, ..
             } => {
@@ -546,7 +571,10 @@ fn runnable(found: crate::platform::Lookup, windows: bool) -> Option<PathBuf> {
 
 /// The tool settings choose, of those `installed` says are there: the one named, or the
 /// first in gg's order.
-pub(crate) fn chosen_tool(choice: AiToolChoice, installed: impl Fn(AiTool) -> bool) -> Option<AiTool> {
+pub(crate) fn chosen_tool(
+    choice: AiToolChoice,
+    installed: impl Fn(AiTool) -> bool,
+) -> Option<AiTool> {
     let order = match choice {
         AiToolChoice::Auto => vec![AiTool::Claude, AiTool::Codex],
         AiToolChoice::Claude => vec![AiTool::Claude],
@@ -668,7 +696,10 @@ mod tests {
     #[test]
     fn automatic_takes_the_first_installed() {
         let only = |t: AiTool| move |x: AiTool| x == t;
-        assert_eq!(chosen_tool(AiToolChoice::Auto, |_| true), Some(AiTool::Claude));
+        assert_eq!(
+            chosen_tool(AiToolChoice::Auto, |_| true),
+            Some(AiTool::Claude)
+        );
         assert_eq!(
             chosen_tool(AiToolChoice::Auto, only(AiTool::Codex)),
             Some(AiTool::Codex)
@@ -687,8 +718,7 @@ mod tests {
     fn windows_shims_are_run_and_programs_come_first() {
         use crate::platform::{Lookup, windows_lookup};
         let path = r"C:\Users\me\AppData\Roaming\npm;C:\Users\me\.local\bin";
-        let shim_only =
-            |f: &str| f == r"C:\Users\me\AppData\Roaming\npm\codex.cmd";
+        let shim_only = |f: &str| f == r"C:\Users\me\AppData\Roaming\npm\codex.cmd";
         let found = windows_lookup("codex", path, None, &shim_only);
         assert_eq!(
             found,
@@ -726,7 +756,10 @@ mod tests {
             ),
             "Codex has reached a limit: You've hit your usage limit."
         );
-        assert!(failure_message(claude, AiFailureKind::BadModel, "x", "opus-9").contains("\u{201c}opus-9\u{201d}"));
+        assert!(
+            failure_message(claude, AiFailureKind::BadModel, "x", "opus-9")
+                .contains("\u{201c}opus-9\u{201d}")
+        );
         assert_eq!(cut("äbc", 1), "\u{2026}");
     }
 

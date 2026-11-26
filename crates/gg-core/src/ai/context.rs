@@ -157,8 +157,7 @@ fn new_file_diff(worktree: &Path, path: &str) -> String {
     let parts: Vec<&str> = path.split('/').collect();
     for part in &parts[..parts.len().saturating_sub(1)] {
         at.push(part);
-        if std::fs::symlink_metadata(worktree.join(&at)).is_ok_and(|m| m.file_type().is_symlink())
-        {
+        if std::fs::symlink_metadata(worktree.join(&at)).is_ok_and(|m| m.file_type().is_symlink()) {
             return format!("{header}new file\n(not read: it is below a symbolic link)\n");
         }
     }
@@ -185,7 +184,9 @@ fn new_file_diff(worktree: &Path, path: &str) -> String {
         return format!("{header}new file\n(could not be read)\n");
     }
     if bytes[..bytes.len().min(BINARY_PROBE)].contains(&0) {
-        return format!("{header}new file mode 100644\nBinary files /dev/null and b/{path} differ\n");
+        return format!(
+            "{header}new file mode 100644\nBinary files /dev/null and b/{path} differ\n"
+        );
     }
     let cut = bytes.len() > NEW_FILE_CAP;
     bytes.truncate(NEW_FILE_CAP);
@@ -224,7 +225,12 @@ pub(crate) async fn pr_context(
         runner
             .run_unchecked(
                 root,
-                &["rev-parse", "--verify", "--quiet", &format!("{full}^{{commit}}")],
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{full}^{{commit}}"),
+                ],
                 CmdKind::Read,
             )
             .await
@@ -287,7 +293,15 @@ pub(crate) async fn pr_context(
     let names = runner
         .run(
             root,
-            &["diff", "--no-color", "--name-status", "-M", &from, &head, "--"],
+            &[
+                "diff",
+                "--no-color",
+                "--name-status",
+                "-M",
+                &from,
+                &head,
+                "--",
+            ],
             CmdKind::Read,
         )
         .await?;

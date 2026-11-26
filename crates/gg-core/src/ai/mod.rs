@@ -39,8 +39,7 @@ pub fn check_model_setting(tool: &str, model: Option<&str>) -> Result<()> {
         ));
     }
     if let Some(model) = model {
-        tools::check_model(model.trim())
-            .map_err(|m| CoreError::new(ErrorCode::BadRequest, m))?;
+        tools::check_model(model.trim()).map_err(|m| CoreError::new(ErrorCode::BadRequest, m))?;
     }
     Ok(())
 }

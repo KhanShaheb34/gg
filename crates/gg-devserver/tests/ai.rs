@@ -34,7 +34,10 @@ struct Call {
 impl Tools {
     fn new(names: &[&str]) -> Self {
         let tools = Self {
-            dir: tempfile::Builder::new().prefix("gg-fake-ai-").tempdir().unwrap(),
+            dir: tempfile::Builder::new()
+                .prefix("gg-fake-ai-")
+                .tempdir()
+                .unwrap(),
         };
         for name in names {
             tools.install(name);
@@ -43,7 +46,9 @@ impl Tools {
     }
 
     fn exe(&self, name: &str) -> PathBuf {
-        self.dir.path().join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        self.dir
+            .path()
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     }
 
     fn state(&self, name: &str) -> PathBuf {
@@ -193,7 +198,10 @@ async fn tools_are_found_in_gg_s_order() {
     assert_eq!(none.chosen, None);
     assert!(none.tools.iter().all(|t| !t.installed));
     assert_eq!(none.tools[0].name, "Claude Code");
-    assert_eq!(none.tools[0].install_url, "https://code.claude.com/docs/en/setup");
+    assert_eq!(
+        none.tools[0].install_url,
+        "https://code.claude.com/docs/en/setup"
+    );
 
     s.tools.install("codex");
     let one = s.m.ai_tools(&auto, true, false).await;
@@ -201,7 +209,9 @@ async fn tools_are_found_in_gg_s_order() {
     assert_eq!(one.tools[1].version.as_deref(), Some("0.0.1"));
     assert_eq!(one.tools[0].version, None);
     // Chosen in the settings but not there: none runs.
-    let claude = s.m.ai_tools(&settings(AiToolChoice::Claude), false, false).await;
+    let claude =
+        s.m.ai_tools(&settings(AiToolChoice::Claude), false, false)
+            .await;
     assert_eq!(claude.chosen, None);
 
     s.tools.install("claude");
@@ -209,7 +219,9 @@ async fn tools_are_found_in_gg_s_order() {
     let both = s.m.ai_tools(&auto, true, false).await;
     assert_eq!(both.chosen, Some(AiTool::Claude));
     assert_eq!(both.tools[0].version.as_deref(), Some("2.1.332"));
-    let codex = s.m.ai_tools(&settings(AiToolChoice::Codex), false, false).await;
+    let codex =
+        s.m.ai_tools(&settings(AiToolChoice::Codex), false, false)
+            .await;
     assert_eq!(codex.chosen, Some(AiTool::Codex));
 
     // Gone again: Check again sees it.
@@ -222,7 +234,9 @@ async fn tools_are_found_in_gg_s_order() {
 async fn no_tool_says_so() {
     let s = setup(&[]).await;
     s.repo.write("a.txt", "a\n");
-    let out = s.generate(s.commit_task(&["a.txt"]), &settings(AiToolChoice::Auto)).await;
+    let out = s
+        .generate(s.commit_task(&["a.txt"]), &settings(AiToolChoice::Auto))
+        .await;
     assert_eq!(
         failure(&out),
         (
@@ -230,10 +244,15 @@ async fn no_tool_says_so() {
             "Neither Claude Code nor Codex was found on this computer.".into()
         )
     );
-    let out = s.generate(s.commit_task(&["a.txt"]), &settings(AiToolChoice::Codex)).await;
+    let out = s
+        .generate(s.commit_task(&["a.txt"]), &settings(AiToolChoice::Codex))
+        .await;
     assert_eq!(
         failure(&out),
-        (AiFailureKind::NoTool, "Codex was not found on this computer.".into())
+        (
+            AiFailureKind::NoTool,
+            "Codex was not found on this computer.".into()
+        )
     );
 }
 
@@ -242,7 +261,10 @@ async fn no_tool_says_so() {
 #[tokio::test]
 async fn a_commit_message_is_written_from_the_ticked_changes() {
     let s = setup(&["claude"]).await;
-    s.repo.write("README.md", "# demo\n\nA fast git graph with $(rm -rf ~) and `ticks`.\n");
+    s.repo.write(
+        "README.md",
+        "# demo\n\nA fast git graph with $(rm -rf ~) and `ticks`.\n",
+    );
     s.repo.write("notes.txt", "not ticked\n");
     s.repo.write("img.bin", [0u8, 1, 2, 0, 255, 254]);
     s.repo.write("latin1.txt", [b'c', b'a', b'f', 0xe9, b'\n']);
@@ -279,18 +301,33 @@ async fn a_commit_message_is_written_from_the_ticked_changes() {
     let calls = s.tools.calls("claude");
     assert_eq!(calls.len(), 1);
     let call = &calls[0];
-    assert_eq!(&call.argv[..5], ["-p", "--output-format", "text", "--model", "haiku"]);
+    assert_eq!(
+        &call.argv[..5],
+        ["-p", "--output-format", "text", "--model", "haiku"]
+    );
     assert!(call.argv.windows(2).any(|w| w == ["--tools", ""]));
     // The git it might run is as protected as gg's own.
     assert!(call.env.contains("GIT_TERMINAL_PROMPT=0"), "{}", call.env);
     let stdin = &call.stdin;
     assert!(stdin.starts_with("You are generating a single git commit message."));
-    assert!(stdin.contains("+A fast git graph with $(rm -rf ~) and `ticks`."), "{stdin}");
-    assert!(stdin.contains("Binary files /dev/null and b/img.bin differ"), "{stdin}");
+    assert!(
+        stdin.contains("+A fast git graph with $(rm -rf ~) and `ticks`."),
+        "{stdin}"
+    );
+    assert!(
+        stdin.contains("Binary files /dev/null and b/img.bin differ"),
+        "{stdin}"
+    );
     assert!(stdin.contains("+caf\u{fffd}"), "{stdin}");
-    assert!(stdin.contains("+++ b/src/new.rs\n@@ -0,0 +1,1 @@\n+fn main() {}"), "{stdin}");
+    assert!(
+        stdin.contains("+++ b/src/new.rs\n@@ -0,0 +1,1 @@\n+fn main() {}"),
+        "{stdin}"
+    );
     assert!(stdin.contains("M\tREADME.md"));
-    assert!(!stdin.contains("not ticked"), "an unticked file is not sent");
+    assert!(
+        !stdin.contains("not ticked"),
+        "an unticked file is not sent"
+    );
     // Run outside the repository, in a folder that is gone afterwards.
     let repo = fs::canonicalize(s.repo.path()).unwrap();
     assert!(!call.cwd.starts_with(&repo), "{:?}", call.cwd);
@@ -331,9 +368,20 @@ async fn codex_answers_in_its_file_and_its_stderr_is_not_logged() {
     };
     assert_eq!(message.as_deref(), Some("Describe the demo"));
     let call = &s.tools.calls("codex")[0];
-    assert_eq!(&call.argv[..3], ["exec", "--ephemeral", "--skip-git-repo-check"]);
-    assert!(call.argv.windows(2).any(|w| w == ["--sandbox", "read-only"]));
-    assert!(call.argv.windows(2).any(|w| w == ["--model", "gpt-5.4-mini"]));
+    assert_eq!(
+        &call.argv[..3],
+        ["exec", "--ephemeral", "--skip-git-repo-check"]
+    );
+    assert!(
+        call.argv
+            .windows(2)
+            .any(|w| w == ["--sandbox", "read-only"])
+    );
+    assert!(
+        call.argv
+            .windows(2)
+            .any(|w| w == ["--model", "gpt-5.4-mini"])
+    );
     assert_eq!(call.argv.last().map(String::as_str), Some("-"));
     let record = s
         .log
@@ -380,7 +428,13 @@ async fn failures_are_told_apart() {
             AiFailureKind::Failed,
             "Claude Code failed: panic: something odd.",
         ),
-        (0, "  \n", "", AiFailureKind::Empty, "Claude Code returned an empty message."),
+        (
+            0,
+            "  \n",
+            "",
+            AiFailureKind::Empty,
+            "Claude Code returned an empty message.",
+        ),
     ];
     for (code, out, err, kind, message) in cases {
         s.tools.reply("claude", code, out, err);
@@ -410,11 +464,15 @@ async fn nothing_to_describe() {
 #[tokio::test]
 async fn a_huge_diff_is_cut_to_the_budget() {
     let s = setup(&["claude"]).await;
-    s.repo.write("big.txt", "a line that repeats\n".repeat(60_000));
+    s.repo
+        .write("big.txt", "a line that repeats\n".repeat(60_000));
     s.repo.write("small.txt", "the change that matters\n");
     s.tools.reply("claude", 0, "Add files\n", "");
     let out = s
-        .generate(s.commit_task(&["big.txt", "small.txt"]), &settings(AiToolChoice::Auto))
+        .generate(
+            s.commit_task(&["big.txt", "small.txt"]),
+            &settings(AiToolChoice::Auto),
+        )
         .await;
     assert!(matches!(out, AiOutcome::Done { .. }), "{out:?}");
     let stdin = &s.tools.calls("claude")[0].stdin;
@@ -446,7 +504,10 @@ async fn cancel_ends_the_tool() {
     assert_eq!(failure(&out).0, AiFailureKind::Cancelled);
     assert!(started.elapsed() < Duration::from_secs(5));
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(!s.tools.calls("claude")[0].done, "the tool was ended, not left to answer");
+    assert!(
+        !s.tools.calls("claude")[0].done,
+        "the tool was ended, not left to answer"
+    );
 }
 
 #[tokio::test]
@@ -472,7 +533,10 @@ async fn a_tool_that_does_not_answer_is_given_up_on() {
         .await;
     assert_eq!(
         failure(&out),
-        (AiFailureKind::TimedOut, "Claude Code did not answer within 1 s.".into())
+        (
+            AiFailureKind::TimedOut,
+            "Claude Code did not answer within 1 s.".into()
+        )
     );
 }
 
@@ -496,7 +560,11 @@ async fn pull_request_details_are_written_from_the_branch() {
     let heads = s
         .repo
         .git(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
-    let main = heads.lines().find(|b| *b != "feature/login").unwrap().to_owned();
+    let main = heads
+        .lines()
+        .find(|b| *b != "feature/login")
+        .unwrap()
+        .to_owned();
     let task = AiTask::Pr {
         branch: "feature/login".into(),
         base: main.clone(),
@@ -523,12 +591,16 @@ async fn pull_request_details_are_written_from_the_branch() {
     assert!(stdin.contains("Head branch: feature/login"));
     assert!(stdin.contains(&format!("Current base: {main}")));
     assert!(stdin.contains("Current title: Login"));
-    assert!(stdin.contains("- Check the password\n- Add login"), "{stdin}");
+    assert!(
+        stdin.contains("- Check the password\n- Add login"),
+        "{stdin}"
+    );
     assert!(stdin.contains("A\tlogin.rs"), "{stdin}");
     assert!(stdin.contains("+fn login() { check() }"));
 
     // An answer that is not the JSON asked for.
-    s.tools.reply("claude", 0, "Sure! Here is a title: Add login", "");
+    s.tools
+        .reply("claude", 0, "Sure! Here is a title: Add login", "");
     let again = AiTask::Pr {
         branch: "feature/login".into(),
         base: main.clone(),

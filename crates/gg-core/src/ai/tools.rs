@@ -4,9 +4,12 @@
 //! [`AiTool`](crate::dto::AiTool)).
 //!
 //! Every command line is fixed words, the model (checked: [`check_model`]) and a path gg made;
-//! the prompt, with the diff in it, goes on standard input. Each tool runs with its tools off
-//! (Claude Code: `--tools ""`) or in its read-only sandbox (Codex), keeps no session, and runs
-//! in a temporary folder of its own, never in the repository.
+//! the prompt, with the diff in it, goes on standard input. The diff is not to be trusted (a
+//! repository's text may ask the model to do things), so neither tool can run a command or
+//! read a file: Claude Code runs with no tools (`--tools ""`), no MCP servers and no settings
+//! files (so none of their hooks); Codex with its shell and image viewer off, no web search,
+//! no MCP servers, in its read-only sandbox. Each keeps no session and runs in a temporary
+//! folder of its own, never in the repository.
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +59,16 @@ pub trait Adapter: Sync {
     /// What of its stderr the command log keeps (Codex repeats the whole prompt there).
     fn log_scrub(&self) -> fn(&str) -> String {
         keep
+    }
+    /// The command line to run again after `run` failed with `exit` because of a setting this
+    /// version of the tool does not take, when that setting can be left out.
+    fn retry(&self, _run: &Invocation, _exit: &Exit) -> Option<Invocation> {
+        None
+    }
+    /// A plain sentence for a failure gg recognises and the user can act on (before
+    /// [`Adapter::classify`]).
+    fn advice(&self, _exit: &Exit) -> Option<String> {
+        None
     }
     /// What a run that did not answer means, when it can tell: not signed in, a limit, a model
     /// it does not know; with the tool's own line about it. `None`: a failure of another kind.
@@ -278,9 +291,13 @@ impl Adapter for Codex {
         if !model.is_empty() {
             args.extend(["--model".to_owned(), model.to_owned()]);
         }
+        for feature in CODEX_NO_COMMANDS.iter().chain(&CODEX_ALSO_OFF) {
+            args.extend(["--disable".to_owned(), (*feature).to_owned()]);
+        }
+        for config in CODEX_CONFIG {
+            args.extend(["-c".to_owned(), config.to_owned()]);
+        }
         args.extend([
-            "-c".to_owned(),
-            "model_reasoning_effort=low".to_owned(),
             "--output-last-message".to_owned(),
             answer.to_string_lossy().into_owned(),
             "-".to_owned(),
@@ -290,6 +307,29 @@ impl Adapter for Codex {
             stdin: prompt.as_bytes().to_vec(),
             answer_file: Some(answer),
         }
+    }
+    fn retry(&self, run: &Invocation, exit: &Exit) -> Option<Invocation> {
+        // A feature this Codex does not know (older, or one it dropped) stops it before it
+        // starts: run again without it, unless it is one that keeps commands off.
+        let name = unknown_feature(&exit.stderr)?;
+        if CODEX_NO_COMMANDS.contains(&name.as_str()) {
+            return None;
+        }
+        let at = run
+            .args
+            .windows(2)
+            .position(|w| w[0] == "--disable" && w[1] == name)?;
+        let mut again = run.clone();
+        again.args.drain(at..at + 2);
+        Some(again)
+    }
+    fn advice(&self, exit: &Exit) -> Option<String> {
+        let name = unknown_feature(&exit.stderr)?;
+        CODEX_NO_COMMANDS.contains(&name.as_str()).then(|| {
+            format!(
+                "This Codex cannot be run with its commands turned off (it does not know \u{201c}{name}\u{201d}), so gg does not run it. Update Codex (codex update), then try again."
+            )
+        })
     }
     fn log_scrub(&self) -> fn(&str) -> String {
         codex_log
@@ -353,6 +393,44 @@ impl Adapter for Codex {
     }
 }
 
+/// The Codex features that would let the model run commands or read files: its shell
+/// (`shell_tool`, and `unified_exec`, the shell it runs now) and `view_image` (reads an image
+/// from disk). Turned off for every run; a Codex that does not know one is not run (its
+/// read-only sandbox still lets commands read any file, and the diff is not to be trusted:
+/// it could ask for a key file to be put in the answer).
+pub const CODEX_NO_COMMANDS: [&str; 3] = ["shell_tool", "unified_exec", "view_image"];
+/// Codex features also turned off, for less to go wrong: connectors and plugins, other agents,
+/// hooks, tool suggestions, goals, the computer, the browser and image generation. One a
+/// Codex does not know is left out.
+const CODEX_ALSO_OFF: [&str; 10] = [
+    "apps",
+    "plugins",
+    "multi_agent",
+    "hooks",
+    "tool_suggest",
+    "goals",
+    "computer_use",
+    "browser_use",
+    "in_app_browser",
+    "image_generation",
+];
+/// Codex settings for every run: no web search, none of the user's MCP servers, low
+/// reasoning effort (an answer in seconds).
+const CODEX_CONFIG: [&str; 3] = [
+    "web_search=disabled",
+    "mcp_servers={}",
+    "model_reasoning_effort=low",
+];
+
+/// The feature Codex said it does not know (`Error: Unknown feature flag: <name>`).
+fn unknown_feature(stderr: &str) -> Option<String> {
+    stderr.lines().find_map(|l| {
+        let (_, name) = l.split_once("Unknown feature flag: ")?;
+        let name = name.trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    })
+}
+
 /// Codex's error lines (`ERROR: …`), without the prefix.
 fn codex_errors(stderr: &str) -> Vec<String> {
     crate::ai::prompt::strip_ansi(stderr)
@@ -406,7 +484,8 @@ fn codex_log(stderr: &str) -> String {
 mod tests {
     use super::*;
 
-    const HOSTILE: &str = "Fix \"quotes\", `backticks`, $(rm -rf ~) and $HOME\n-leading --dash\n@file\n'single'";
+    const HOSTILE: &str =
+        "Fix \"quotes\", `backticks`, $(rm -rf ~) and $HOME\n-leading --dash\n@file\n'single'";
 
     #[test]
     fn the_prompt_goes_on_stdin_and_never_on_the_command_line() {
@@ -449,32 +528,67 @@ mod tests {
         assert!(!own.args.iter().any(|a| a == "--model"));
     }
 
+    /// Codex runs no command and reads no file: its shell (`shell_tool`, `unified_exec`) and
+    /// `view_image` are off (seen with Codex 0.163 against a stand-in model asking for
+    /// `cat /etc/hosts`: "unsupported call"), as are web search and the user's MCP servers;
+    /// its read-only sandbox stays, so `apply_patch` (which it still offers) writes nothing.
     #[test]
-    fn codex_runs_read_only_and_writes_its_answer_to_a_file() {
+    fn codex_runs_no_commands_read_only_and_writes_its_answer_to_a_file() {
         let scratch = Path::new("/tmp/gg-ai-2");
         let run = Codex.invocation("", "p", scratch);
         let answer = scratch.join("answer.txt");
+        let has = |pair: [&str; 2]| run.args.windows(2).any(|w| w == pair);
+        for feature in [
+            "shell_tool",
+            "unified_exec",
+            "view_image",
+            "apps",
+            "plugins",
+            "hooks",
+        ] {
+            assert!(has(["--disable", feature]), "{feature}: {:?}", run.args);
+        }
+        assert!(has(["--sandbox", "read-only"]));
+        assert!(has(["-c", "web_search=disabled"]));
+        assert!(has(["-c", "mcp_servers={}"]));
+        assert!(has(["-c", "model_reasoning_effort=low"]));
         assert_eq!(
-            run.args,
-            [
-                "exec",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--color",
-                "never",
-                "-c",
-                "model_reasoning_effort=low",
-                "--output-last-message",
-                &answer.to_string_lossy(),
-                "-",
-            ]
+            &run.args[..3],
+            ["exec", "--ephemeral", "--skip-git-repo-check"]
         );
+        assert_eq!(
+            &run.args[run.args.len() - 3..],
+            ["--output-last-message", &answer.to_string_lossy(), "-"]
+        );
+        assert!(!run.args.iter().any(|a| a == "--model"));
         assert_eq!(run.answer_file, Some(answer));
         let with = Codex.invocation("gpt-5.4-mini", "p", scratch);
         let at = with.args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(with.args[at + 1], "gpt-5.4-mini");
+    }
+
+    /// A Codex that does not know an optional feature runs without that switch; one that does
+    /// not know a switch keeping commands off is not run at all.
+    #[test]
+    fn codex_without_a_feature_runs_without_it_unless_it_keeps_commands_off() {
+        let run = Codex.invocation("", "p", Path::new("/s"));
+        let said = |name: &str| exit(1, "", &format!("Error: Unknown feature flag: {name}\n"));
+        let again = Codex.retry(&run, &said("goals")).unwrap();
+        assert_eq!(again.args.len(), run.args.len() - 2);
+        assert!(!again.args.iter().any(|a| a == "goals"));
+        assert!(again.args.iter().any(|a| a == "shell_tool"));
+        assert_eq!(Codex.advice(&said("goals")), None);
+        for essential in CODEX_NO_COMMANDS {
+            assert_eq!(Codex.retry(&run, &said(essential)), None);
+            assert!(
+                Codex
+                    .advice(&said(essential))
+                    .unwrap()
+                    .contains("Update Codex")
+            );
+        }
+        assert_eq!(Codex.retry(&run, &exit(1, "", "ERROR: boom")), None);
+        assert_eq!(Claude.retry(&run, &said("goals")), None);
     }
 
     #[test]
@@ -490,7 +604,9 @@ mod tests {
         ] {
             assert_eq!(check_model(good), Ok(()), "{good}");
         }
-        for bad in ["-p", "--model", "@file", "a b", "a;b", "$(x)", "a`b", "\"x\"", "x\ny"] {
+        for bad in [
+            "-p", "--model", "@file", "a b", "a;b", "$(x)", "a`b", "\"x\"", "x\ny",
+        ] {
             assert!(check_model(bad).is_err(), "{bad}");
         }
         assert!(check_model(&"a".repeat(101)).is_err());
@@ -565,14 +681,22 @@ mod tests {
         assert_eq!(
             kind(
                 &Codex,
-                exit(1, "", "ERROR: You've hit your usage limit. Try again later.\n")
+                exit(
+                    1,
+                    "",
+                    "ERROR: You've hit your usage limit. Try again later.\n"
+                )
             ),
             Some(AiFailureKind::Limited)
         );
         assert_eq!(
             kind(
                 &Codex,
-                exit(1, "", "ERROR: The model `gpt-x` does not exist or you do not have access to it.\n")
+                exit(
+                    1,
+                    "",
+                    "ERROR: The model `gpt-x` does not exist or you do not have access to it.\n"
+                )
             ),
             Some(AiFailureKind::BadModel)
         );
@@ -580,7 +704,11 @@ mod tests {
         assert_eq!(
             kind(
                 &Codex,
-                exit(1, "", "user\nrate limit, usage limit, not logged in\nERROR: boom\n")
+                exit(
+                    1,
+                    "",
+                    "user\nrate limit, usage limit, not logged in\nERROR: boom\n"
+                )
             ),
             None
         );

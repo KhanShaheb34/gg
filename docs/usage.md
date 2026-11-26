@@ -104,7 +104,7 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   branch's or a worktree's) showed it; then a line at the top names that branch, with a
   button back to the current one. With an open pull request, it shows its number, state
   (open or draft), title, base ← head, **Open in browser** and **Copy link** (and "as of …"
-  when the list may be out of date; the tab's Refresh loads it again). Below, read-only, what
+  when the list may be out of date; the tab's Refresh loads it again). Below, what
   `gh` says of it now: a status line (Ready to merge, Checks running, Checks failing,
   Conflicts with or Behind its base, Blocked, Draft, Merged; Approved, Changes requested,
   Review required); its **Checks**, summed up ("1 failing · 2 passing"), open while one fails
@@ -120,7 +120,20 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   before "Ready") shows as nothing; one that is all of a link (a bot's button) shows as that
   link, its alt text as its words; one with no alt text (a decorative icon) shows as nothing, or
   as "image" when it is all of a link. A link to an `https://` address opens in your browser (its address
-  in its tooltip), anything else is text; a very long comment is cut, with a way to GitHub. These
+  in its tooltip), anything else is text; a very long comment is cut, with a way to GitHub.
+  You can answer from there too. Under a review thread's replies, a quiet **Reply…** line
+  grows into a box when you click it; **Reply** (or ⌘↩, Ctrl+Enter elsewhere) sends what it
+  holds, and only that does: Enter is a new line, and Reply is off while the box is blank or
+  sending. Beside it, **Resolve** resolves the thread; a resolved thread shows folded (its
+  first lines, its replies behind **Show more**, as on GitHub), with **Unresolve**, and its
+  reply box once shown whole. At the end of the comments, **Add a comment…** comments on the
+  conversation the same way (**Comment**). What GitHub says you may not do is not offered: no
+  reply box on a thread you cannot reply to, no Resolve or Unresolve without the right to,
+  no comment box when the repository is archived or the conversation locked to you. Once
+  `gh` has it, the checks and comments are loaded again (what was shown stays meanwhile), the
+  reply shows in its thread and the box is emptied. If it fails, what you wrote stays in the
+  box and the reason shows under it, with Show log. What you write is kept per thread while gg
+  runs, through the other tabs and other commits, never saved. The checks and comments
   are asked of `gh` when the tab shows the pull request, on Refresh, after the list reloads
   and after a push of the branch, and every 15 s only while a check runs, the tab shows and
   the window is in front (never more than once every 10 s per pull request). A failure keeps
@@ -156,8 +169,13 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   auth token --hostname` whether a host other than github.com is GitHub (its answer never
   read), `gh pr view <number> --json …` for one's
   merge status, checks, comments and reviews, and `gh api graphql` with one read-only query
-  for its review threads; each names the repository. The app never reads or stores a GitHub
-  token. Note that `gh`, by its
+  for its review threads (and what you may do to each); each names the repository. Only when
+  you click Reply, Resolve, Unresolve or Comment: `gh api graphql --input -` for a reply (the
+  query and your text sent to `gh` as JSON on its input), `gh api graphql -f query=… -f
+  thread=<id>` to resolve or unresolve, and `gh pr comment <number> --repo <repo> --body-file
+  -` for a comment (your text on its input), on the repository the pull request is read from
+  (for a fork's, the base repository); each is in the command log. The app never reads or
+  stores a GitHub token. Note that `gh`, by its
   own design, sends a token it finds in your environment (`GH_TOKEN`, `GITHUB_TOKEN`) to
   github.com and to any `*.ghe.com` host (GitHub's own enterprise cloud): a repository whose
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise

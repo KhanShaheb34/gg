@@ -6,7 +6,7 @@
   shell file. Remove takes out the launcher the app wrote, and that line.
 -->
 <script lang="ts">
-  import { conflictWord, launcherPath, lineAddedNote, lineFailed, preferredFolder, turnOffCommand } from "../../cli";
+  import { conflictWord, installedNote, launcherPath, lineFailed, preferredFolder, turnOffCommand } from "../../cli";
   import { shortenPath } from "../../format";
   import { app, notify } from "../../state/app.svelte";
   import { isWindows } from "../../platform";
@@ -57,15 +57,10 @@
     const asked = turningOff;
     void run(async () => {
       const { state: after, shellLineAdded } = await installCli(target, asked);
-      const wrote = short(launcherPath(target));
-      const line = shellLineAdded === null ? undefined : lineAddedNote(shellLineAdded, after, short);
-      const worked = shellLineAdded === null || (shellLineAdded.problem === null && shellLineAdded.checked && after.shadowedBy === null);
-      // What it wrote, then what became of the shell's own gg (or how to use it).
-      const said = [`Wrote ${wrote}.`, line ?? "Run gg in a repository folder to open it here."];
-      if (after.shadowedBy !== null && line === undefined) {
-        said.push(`Your shell already defines gg as ${after.shadowedBy}; that wins over this command until you remove it.`);
-      }
-      notify({ kind: "info", message: "Installed the gg command", note: said.join(" "), persistent: !worked });
+      // What it wrote, then what became of the shell's own gg (or how to use it). One that
+      // did not all go through stays, and is shown whole.
+      const { note, worked } = installedNote(short(launcherPath(target)), shellLineAdded, after, short);
+      notify({ kind: "info", message: "Installed the gg command", note, persistent: !worked });
     });
   }
 

@@ -3,6 +3,7 @@ import {
   conflictWord,
   folderOf,
   installedAt,
+  installedNote,
   launcherPath,
   lineAddedNote,
   lineFailed,
@@ -114,6 +115,24 @@ describe("turning off the shell's own gg", () => {
     expect(lineAddedNote(added(), { shadowedBy: "the program /opt/x/gg", shadowConflict: null }, short)).toBe(
       "Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. But your shell still runs the program /opt/x/gg for gg, which wins over this command until you remove it.",
     );
+  });
+
+  it("says after an install what was written, then what became of the shell's gg; one that did not all go through stays", () => {
+    expect(installedNote("~/bin/gg", null, none, short)).toEqual({
+      note: "Wrote ~/bin/gg. Run gg in a repository folder to open it here.",
+      worked: true,
+    });
+    // The shell's own gg still wins: said instead of how to use the command, and it stays.
+    expect(installedNote("~/bin/gg", null, { shadowedBy: "an alias for git gui citool", shadowConflict: "alias" }, short)).toEqual({
+      note: "Wrote ~/bin/gg. Your shell already defines gg as an alias for git gui citool; that wins over this command until you remove it.",
+      worked: false,
+    });
+    expect(installedNote("~/bin/gg", added(), none, short)).toEqual({
+      note: "Wrote ~/bin/gg. Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. It takes effect in new terminal windows.",
+      worked: true,
+    });
+    expect(installedNote("~/bin/gg", added({ checked: false }), none, short).worked).toBe(false);
+    expect(installedNote("~/bin/gg", added(), { shadowedBy: "an alias for x", shadowConflict: "alias" }, short).worked).toBe(false);
   });
 
   it("says why the line could not be added", () => {

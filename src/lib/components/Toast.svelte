@@ -123,7 +123,7 @@
           <NoticeText line={headline(said.title)} compact={oneLine.title} />
         </p>
         {#if partsOf(said.note).length > 0}
-          <p class="note" class:compact={oneLine.note} aria-hidden="true"><NoticeText line={said.note} compact={oneLine.note} /></p>
+          <p class="note" class:compact={oneLine.note} class:whole={toast.persistent} aria-hidden="true"><NoticeText line={said.note} compact={oneLine.note} /></p>
         {/if}
         {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
@@ -241,7 +241,8 @@
     overflow-wrap: break-word;
   }
 
-  /* The line under it: quieter, at most six lines (all of it is read out). */
+  /* The line under it: quieter, at most four lines (all of it is read out); all of it in a
+     notice that stays until dismissed, which is there to be read. */
   .note {
     display: -webkit-box;
     margin-top: 2px;
@@ -253,6 +254,12 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 4;
     line-clamp: 4;
+  }
+
+  .note.whole:not(.compact) {
+    display: block;
+    -webkit-line-clamp: none;
+    line-clamp: none;
   }
 
   .detail {
@@ -269,10 +276,13 @@
     line-clamp: 6;
   }
 
-  /* A short line of names stays one line: its names give way, cut in the middle, the
-     longest the most; its words never do. */
+  /* A short line of names stays one line: its long names give way, cut in the middle (each
+     from as much of the room as is left, at most its whole length), the longest the most;
+     its words and short names never do. When even those, with the long names cut to a few
+     characters, are wider than the line, it wraps between its parts rather than clip one. */
   .compact {
     display: flex;
+    flex-wrap: wrap;
     align-items: baseline;
     min-width: 0;
     overflow: hidden;
@@ -284,12 +294,15 @@
   }
 
   .compact > :global(.fit) {
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: 1 1 0;
+    min-width: min(6em, 100%);
+    max-width: max-content;
   }
 
   .compact > :global(.fit.short) {
     flex: none;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .row {

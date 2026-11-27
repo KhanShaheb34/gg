@@ -394,10 +394,12 @@ impl RepoManager {
         // What it is written from.
         let gathered = match &task {
             AiTask::Commit { path, paths } => {
-                let worktree = checked_worktree(repo, Path::new(path)).await?;
-                // No filter of the repository's runs while gg reads (see `context`).
-                let filters = context::no_filters(&runner, &worktree).await?;
+                // Every step through the operation's runner, inside the block whose failure is
+                // read below: a Cancel during any of them is the Cancelled outcome.
                 async {
+                    let worktree = checked_worktree(repo, &runner, Path::new(path)).await?;
+                    // No filter of the repository's runs while gg reads (see `context`).
+                    let filters = context::no_filters(&runner, &worktree).await?;
                     let entries =
                         context::ticked_entries(&runner, &worktree, paths, &filters).await?;
                     let entries: Vec<&crate::dto::FileEntry> = entries.iter().collect();
@@ -626,11 +628,16 @@ fn without_prompt(prompt: &str) -> crate::git::runner::StderrFilter {
 }
 
 /// The worktree at `path`, when git lists it as one of `repo`'s with its folder there (not
-/// the bare repository itself), with symbolic links resolved.
-async fn checked_worktree(repo: &crate::repo::Repo, path: &Path) -> Result<PathBuf> {
+/// the bare repository itself), with symbolic links resolved; asked through `runner` (the
+/// generation's, which Cancel stops).
+async fn checked_worktree(
+    repo: &crate::repo::Repo,
+    runner: &crate::git::runner::GitRunner,
+    path: &Path,
+) -> Result<PathBuf> {
     let target = crate::repo::canonical(path);
     let listed = crate::repo::canonical_paths(
-        crate::git::worktrees::read_worktrees(&repo.runner, &repo.root).await?,
+        crate::git::worktrees::read_worktrees(runner, &repo.root).await?,
     );
     match listed.iter().find(|w| Path::new(&w.path) == target) {
         Some(wt) if !wt.bare && !wt.prunable && target.is_dir() => Ok(target),

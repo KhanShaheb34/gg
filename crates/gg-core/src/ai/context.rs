@@ -8,10 +8,13 @@
 //! conversion program (`--no-ext-diff`, `--no-textconv`), and no clean or smudge filter (each
 //! filter driver configured, in any scope, is turned off for these reads: [`no_filters`]),
 //! which git would otherwise run to read a changed file of the working tree. A binary file is
-//! named, never sent: any part of a patch that holds a NUL byte is replaced by a line saying
-//! so, whatever the repository's attributes say ([`withhold_binary`]; `.gitattributes` can
-//! make git print a binary file as text). Cancel ends git at once, also while it is still
-//! working out a patch.
+//! named, never sent, whatever the repository's attributes say: a file they give a `diff`
+//! attribute (git then prints it as text whatever it holds) is read whole on both sides, and
+//! when either holds a NUL byte it is left out of the diff and named ([`diff_forced`],
+//! [`file_is_binary`], [`blob_is_binary`]); any other part of a patch that holds a NUL byte is
+//! replaced by a line saying so ([`withhold_binary`]). Cancel ends git at once, also while it
+//! is still working out a patch, and a Cancel at any step of the reading is the Cancelled
+//! outcome.
 
 use std::io;
 use std::path::Path;
@@ -139,6 +142,63 @@ pub(crate) fn withhold_binary(patch: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Of `paths`, those the repository's attributes give a `diff` attribute (set, or a driver's
+/// name), read where git reads them for a diff in `cwd`: git then prints a file as text
+/// whatever it holds, so whether it is binary is told by gg itself ([`file_is_binary`],
+/// [`blob_is_binary`]).
+async fn diff_forced(runner: &GitRunner, cwd: &Path, paths: &[&str]) -> Result<Vec<String>> {
+    let mut forced = Vec::new();
+    for chunk in path_chunks(paths) {
+        let mut args = vec!["check-attr", "-z", "diff", "--"];
+        args.extend_from_slice(chunk);
+        let out = runner.run(cwd, &args, CmdKind::Read).await?;
+        // path NUL attribute NUL value NUL, for each path.
+        let fields: Vec<&[u8]> = out.stdout.split(|&b| b == 0).collect();
+        for triple in fields.chunks(3) {
+            if let [path, _, value] = triple
+                && !matches!(*value, b"unspecified" | b"unset")
+            {
+                forced.push(String::from_utf8_lossy(path).into_owned());
+            }
+        }
+    }
+    Ok(forced)
+}
+
+/// Whether the file at `path` holds a NUL byte anywhere (read up to [`READ_CAP`]; a larger
+/// one counts as binary: it is not read further to find out).
+fn file_is_binary(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    match std::fs::File::open(path)
+        .and_then(|f| f.take(READ_CAP as u64 + 1).read_to_end(&mut bytes))
+    {
+        Ok(_) => bytes.len() > READ_CAP || bytes.contains(&0),
+        Err(_) => true,
+    }
+}
+
+/// Whether blob `spec` (`<rev>:<path>`) holds a NUL byte anywhere (read up to [`READ_CAP`]; a
+/// larger one counts as binary); false when there is no such blob. Read raw (`cat-file -p`
+/// runs no filter).
+async fn blob_is_binary(runner: &GitRunner, cwd: &Path, spec: &str) -> bool {
+    match read_capped(runner, cwd, &["cat-file", "-p", spec], READ_CAP).await {
+        Ok((bytes, more)) => more || bytes.contains(&0),
+        Err(_) => false,
+    }
+}
+
+/// The part of a patch said for a binary file left out of the diff.
+fn withheld_section(path: &str) -> String {
+    format!("diff --git a/{path} b/{path}\n{BINARY_WITHHELD}")
+}
+
 /// What a commit of `entries` (the ticked files of the worktree at `worktree`) would record;
 /// `filters` turn off the repository's filter drivers ([`no_filters`]).
 pub(crate) async fn commit_context(
@@ -216,6 +276,20 @@ pub(crate) async fn commit_context(
         }
     }
 
+    // A file the repository's attributes would print as text whatever it holds, and that holds
+    // a NUL byte (as it is now, or at HEAD): left out of the diff, named instead.
+    let mut withheld: Vec<String> = Vec::new();
+    for path in diff_forced(runner, worktree, &tracked).await? {
+        let now = file_is_binary(&worktree.join(&path));
+        if now || blob_is_binary(runner, worktree, &format!("{base}:{path}")).await {
+            withheld.push(path);
+        }
+    }
+    let tracked: Vec<&str> = tracked
+        .into_iter()
+        .filter(|p| !withheld.iter().any(|w| w == p))
+        .collect();
+
     let mut patch: Vec<u8> = Vec::new();
     for chunk in path_chunks(&tracked) {
         if patch.len() >= READ_CAP {
@@ -231,6 +305,9 @@ pub(crate) async fn commit_context(
         patch.extend_from_slice(&out);
     }
     let mut patch = String::from_utf8_lossy(&withhold_binary(&patch)).into_owned();
+    for path in &withheld {
+        patch.push_str(&withheld_section(path));
+    }
     for path in untracked {
         if patch.len() >= READ_CAP {
             break;
@@ -408,10 +485,34 @@ pub(crate) async fn pr_context(
             CmdKind::Read,
         )
         .await?;
+    // The files it changes (both names of a rename); those the attributes would print as text
+    // whatever they hold, and that hold a NUL byte on either side, are left out and named.
+    let changed: Vec<String> = names
+        .text()
+        .lines()
+        .flat_map(|l| l.split('\t').skip(1).map(str::to_owned).collect::<Vec<_>>())
+        .collect();
+    let changed: Vec<&str> = changed.iter().map(String::as_str).collect();
+    let mut withheld: Vec<String> = Vec::new();
+    for path in diff_forced(runner, root, &changed).await? {
+        if blob_is_binary(runner, root, &format!("{from}:{path}")).await
+            || blob_is_binary(runner, root, &format!("{head}:{path}")).await
+        {
+            withheld.push(path);
+        }
+    }
+    let excluded: Vec<String> = withheld
+        .iter()
+        .map(|p| format!(":(exclude,literal){p}"))
+        .collect();
     let mut args = vec!["diff"];
     args.extend(DIFF_OPTIONS);
     args.extend([from.as_str(), head.as_str(), "--"]);
-    let (patch, _) = read_capped(runner, root, &args, READ_CAP).await?;
+    args.extend(excluded.iter().map(String::as_str));
+    let (mut patch, _) = read_capped(runner, root, &args, READ_CAP).await?;
+    for path in &withheld {
+        patch.extend_from_slice(withheld_section(path).as_bytes());
+    }
     Ok(Ok(PrContext {
         branch: branch.to_owned(),
         base: base.to_owned(),

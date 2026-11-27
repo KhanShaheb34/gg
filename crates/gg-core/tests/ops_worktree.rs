@@ -615,6 +615,39 @@ async fn a_commit_made_in_a_clean_detached_worktree_during_the_switch_stops_the_
     assert!(wt.is_dir());
 }
 
+/// A repository made inside the active worktree during the switch stops the removal; the
+/// notice keeps its short headline, the refusal and the main worktree's note under it.
+#[tokio::test]
+async fn a_repository_made_inside_during_the_switch_is_refused_under_a_short_headline() {
+    let (repo, _origin, wt) = pushed_worktree();
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+    let deep = wt.join("build/other");
+    let out = remove_during_switch(&h, id, &wt, Vec::new(), || {
+        fs::create_dir_all(&deep).unwrap();
+        git_in(&deep, &["init", "-q"]);
+    })
+    .await;
+    assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
+    assert_eq!(
+        out.notice.title,
+        [gg_core::dto::Part::Text("Nothing was deleted".into())]
+    );
+    assert_eq!(
+        out.message,
+        format!(
+            "Nothing was deleted. {} contains another repository, at {} inside it, which git \
+             would delete with it. Move or delete it first. The main worktree, {}, is active \
+             now.",
+            real(&wt),
+            native("build/other"),
+            real(repo.path())
+        )
+    );
+    assert!(worktree_writes(&h, &out).is_empty(), "no remove ran");
+    assert!(deep.join(".git").exists());
+}
+
 /// Confirmed: HEAD moving during the switch (a commit, an amend, a reset)
 /// is not what was confirmed.
 #[tokio::test]
@@ -1694,12 +1727,12 @@ async fn prune_removes_only_what_git_calls_prunable_and_names_it() {
     assert!(now.contains(&real(&kept)));
     assert!(kept.is_dir());
     assert_eq!(out.snapshot.worktrees.len(), 3);
-    // Nothing left to prune.
+    // Nothing left to prune: the locked one is all that is missing, and is said as that
+    // (not that every worktree has its folder).
     let again = h.run(id, OpRequest::WorktreePrune {}).await;
-    assert!(
-        again.message.starts_with("Nothing to prune"),
-        "{}",
-        again.message
+    assert_eq!(
+        again.message,
+        "Nothing to prune. 1 missing worktree is locked, so git keeps it."
     );
 }
 

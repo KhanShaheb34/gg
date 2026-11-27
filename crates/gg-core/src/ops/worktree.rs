@@ -1649,7 +1649,14 @@ pub(crate) async fn prune(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> {
         .filter(|w| !after.iter().any(|a| a.path == w.path))
         .map(|w| w.path.as_str())
         .collect();
-    let mut message = if pruned.is_empty() {
+    // git never calls a locked worktree prunable, even with its folder gone.
+    let locked = after
+        .iter()
+        .filter(|w| w.locked && !w.is_main && !Path::new(&w.path).is_dir())
+        .count();
+    let mut message = if pruned.is_empty() && locked > 0 {
+        "Nothing to prune".to_owned()
+    } else if pruned.is_empty() {
         said(
             "Nothing to prune",
             "Every worktree git lists has its folder.",
@@ -1666,11 +1673,6 @@ pub(crate) async fn prune(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> {
             format!("{}.", explain::file_list(&gone)),
         )
     };
-    // git never calls a locked worktree prunable, even with its folder gone.
-    let locked = after
-        .iter()
-        .filter(|w| w.locked && !w.is_main && !Path::new(&w.path).is_dir())
-        .count();
     if locked > 0 {
         message = add_note(
             &message,

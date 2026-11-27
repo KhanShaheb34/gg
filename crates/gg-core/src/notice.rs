@@ -69,14 +69,31 @@ pub(crate) fn note_of(message: &str) -> &str {
 }
 
 /// `message` with `more` added to the line under its headline (made the line if it has none).
+/// A message written as plain sentences is shaped first, as [`notice`] shapes it, so its
+/// headline stays short.
 pub(crate) fn add_note(message: &str, more: &str) -> String {
-    let note = note_of(message);
+    let (title, note) = split(message);
     let joined = if note.is_empty() {
         more.to_owned()
     } else {
         format!("{note} {more}")
     };
-    said(title_of(message), joined)
+    said(title, joined)
+}
+
+/// The headline of `message` and the line under it: as marked, else as [`plain_split`] finds
+/// them (the line's first letter in upper case).
+fn split(message: &str) -> (String, String) {
+    if message.contains(NOTE) {
+        (title_of(message).to_owned(), note_of(message).to_owned())
+    } else if let Some((end, start)) = plain_split(message) {
+        (
+            message[..end].to_owned(),
+            capitalized(message.get(start..).unwrap_or("")),
+        )
+    } else {
+        (message.to_owned(), String::new())
+    }
 }
 
 /// `message` as one sentence: the headline, then the line under it (see [`plain`]).
@@ -187,16 +204,7 @@ pub(crate) fn capitalized(text: &str) -> String {
 /// The notice `message` says (see the module comment). A message with no headline marked is
 /// shaped all the same (see [`plain_split`]); a headline's closing full stop goes.
 pub fn notice(message: &str) -> Notice {
-    let (title, note) = if message.contains(NOTE) {
-        (title_of(message).to_owned(), note_of(message).to_owned())
-    } else if let Some((end, start)) = plain_split(message) {
-        (
-            message[..end].to_owned(),
-            capitalized(message.get(start..).unwrap_or("")),
-        )
-    } else {
-        (message.to_owned(), String::new())
-    };
+    let (title, note) = split(message);
     let title = match title.strip_suffix('.') {
         Some(t) if !t.ends_with('.') => t.to_owned(),
         _ => title,
@@ -208,6 +216,7 @@ pub fn notice(message: &str) -> Notice {
 }
 
 /// The text of `parts`, names as they are.
+#[cfg(test)]
 fn text_of(parts: &[Part]) -> String {
     parts
         .iter()
@@ -233,11 +242,19 @@ impl Notice {
 
     /// The notice as one sentence: the headline, a full stop unless it ends with one (or a
     /// colon), then the line under it. A notice's short forms read as words: " → " as " into ",
-    /// " · " as ", ".
+    /// " · " as ", "; in its own text only, a name or path is kept as it is.
     pub fn plain(&self) -> String {
-        let words = |s: String| s.replace(" \u{2192} ", " into ").replace(" \u{b7} ", ", ");
-        let title = words(text_of(&self.title));
-        let note = words(text_of(&self.note));
+        let words = |parts: &[Part]| -> String {
+            parts
+                .iter()
+                .map(|p| match p {
+                    Part::Text(t) => t.replace(" \u{2192} ", " into ").replace(" \u{b7} ", ", "),
+                    Part::Ref(t) | Part::Path(t) => t.clone(),
+                })
+                .collect()
+        };
+        let title = words(&self.title);
+        let note = words(&self.note);
         if note.is_empty() {
             return title;
         }
@@ -424,6 +441,40 @@ mod tests {
             "Done. It said \u{201c}x\u{201d}"
         );
         assert_eq!(notice(&said("Why:", "this")).plain(), "Why: this.");
+        // A message of plain sentences keeps its short headline: what is added goes under it.
+        let refused = add_note(
+            "Nothing was deleted: /w contains another repository. Move it first.",
+            "The main worktree is active now.",
+        );
+        assert_eq!(title_of(&refused), "Nothing was deleted");
+        assert_eq!(
+            note_of(&refused),
+            "/w contains another repository. Move it first. The main worktree is active now."
+        );
+        let one = add_note("Deleted the worktree", "More.");
+        assert_eq!(
+            (title_of(&one), note_of(&one)),
+            ("Deleted the worktree", "More.")
+        );
+    }
+
+    /// The short forms read as words in a notice's own text; a name or path that has them in
+    /// it is kept as it is.
+    #[test]
+    fn a_name_is_kept_as_it_is_in_the_sentence() {
+        let message = said(
+            "Nothing was committed",
+            format!(
+                "{} \u{2192} {} \u{b7} {} is inside a link.",
+                name("a"),
+                name("b"),
+                path("x \u{2192} y \u{b7} z.txt")
+            ),
+        );
+        assert_eq!(
+            notice(&message).plain(),
+            "Nothing was committed. a into b, x \u{2192} y \u{b7} z.txt is inside a link."
+        );
     }
 
     #[test]

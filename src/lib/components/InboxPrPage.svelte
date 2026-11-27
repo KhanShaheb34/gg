@@ -30,6 +30,10 @@
   import MiddleText from "./MiddleText.svelte";
   import PullRequestView from "./PullRequestView.svelte";
   import PrFilesSection from "./PrFilesSection.svelte";
+  import PinIcon from "./PinIcon.svelte";
+  import { isMac } from "../platform";
+
+  const BACK_KEYS = isMac() ? "⌘[ or ⌘←" : "Ctrl+[ or Ctrl+←";
 
   type Props = { pr: InboxPr };
   let { pr }: Props = $props();
@@ -94,26 +98,34 @@
 <div class="pr-page" data-testid="inbox-pr-page">
   <header class="bar">
     <div class="bar-inner">
-    <button class="back" type="button" bind:this={back} onclick={backToList} title="Back to the pull requests (Esc)" data-testid="inbox-back">
-      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+    <button
+      class="back"
+      type="button"
+      bind:this={back}
+      onclick={backToList}
+      aria-label="Back to pull requests"
+      title="Back to pull requests (Esc, {BACK_KEYS})"
+      data-testid="inbox-back"
+    >
+      <svg width="16" height="16" viewBox="0 0 14 14" aria-hidden="true">
         <path d="M8.6 3.2 4.8 7l3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
-      <span>Pull requests</span>
     </button>
     <span class="repo" data-testid="inbox-pr-repo">
       <MiddleText text="{pr.owner}/{pr.name}" keep={10} />
     </span>
     <div class="actions" data-testid="inbox-pr-actions">
       <button
-        class="button"
+        class="icon-btn pin"
         class:on={pr.pinned}
         type="button"
         aria-pressed={pr.pinned}
-        title={pr.pinned ? "Unpin it from the top of the list" : "Pin it to the top of the list, whatever its age"}
+        aria-label={pr.pinned ? "Unpin" : "Pin to top"}
+        title={pr.pinned ? "Unpin" : "Pin to top"}
         data-testid="inbox-pr-pin"
         onclick={() => void setPinned(pr, !pr.pinned)}
       >
-        {pr.pinned ? "Pinned" : "Pin"}
+        <PinIcon on={pr.pinned} size={15} />
       </button>
       {#if match}
         <button class="button" type="button" data-testid="inbox-go-to-repo" title="Show {repoName ?? 'the repository'}'s tab" onclick={() => goToRepo(match!.repoId)}>
@@ -147,7 +159,7 @@
   <div class="scroll" data-testid="inbox-pr-scroll">
     <div class="column">
       {#key pr.key}
-        <PullRequestView {source} pr={shown} {stale}>
+        <PullRequestView {source} pr={shown} {stale} ended={pr.state === "open" ? null : pr.state}>
           {#snippet more()}
             <PrFilesSection {pr} />
           {/snippet}
@@ -183,18 +195,16 @@
   }
 
   .back {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
+    display: grid;
+    place-items: center;
     flex: none;
+    width: 28px;
     height: 28px;
-    padding: 0 10px 0 6px;
+    padding: 0;
     border: 0;
     border-radius: var(--radius);
     background: transparent;
     color: var(--text-muted);
-    font-size: var(--fs-sm);
-    font-weight: 550;
     transition: background-color 80ms linear;
   }
 
@@ -257,10 +267,14 @@
     color: var(--text-faint);
   }
 
-  .button.on {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+  .pin {
+    align-self: center;
+  }
+
+  .pin.on {
     color: var(--accent);
   }
+
 
   .button:focus-visible,
   .back:focus-visible {

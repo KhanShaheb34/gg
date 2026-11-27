@@ -99,6 +99,8 @@ export type InboxPr = {
   activity: "none" | "new" | "updated";
   /** As its details last said (a pinned one may be merged or closed). */
   state: "open" | "merged" | "closed";
+  /** It conflicts with its base (as its details last said). */
+  conflict: boolean;
   /** Its checks, review decision and activity have been read (until then they read as none). */
   details: boolean;
   pinned: boolean;

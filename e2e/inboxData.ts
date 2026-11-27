@@ -24,6 +24,8 @@ export type Node = {
   lean?: boolean;
   /** Its state, in the details' answer. */
   state?: "OPEN" | "MERGED" | "CLOSED";
+  /** It conflicts with its base. */
+  conflict?: boolean;
 };
 
 /** A pull request's node id, as the fixtures make it. */
@@ -33,6 +35,7 @@ export const idOf = (n: Pick<Node, "number" | "repo">) => `PR_${(n.repo ?? "octo
 function detailsOf(n: Node) {
   return {
     state: n.state ?? "OPEN",
+    mergeable: n.conflict ? "CONFLICTING" : "MERGEABLE",
     reviewDecision: n.review === undefined ? "REVIEW_REQUIRED" : n.review,
     comments: { totalCount: n.comments ?? 1, nodes: [{ author: { login: n.lastCommenter ?? "ada" } }] },
     reviews: { totalCount: n.reviews ?? 0, nodes: [] },

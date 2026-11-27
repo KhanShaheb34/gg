@@ -15,7 +15,7 @@
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
   import InboxPage from "./lib/components/InboxPage.svelte";
-  import { closeInbox, refreshInbox, toggleInbox } from "./lib/state/inbox.svelte";
+  import { backToList, closeInbox, forwardToPr, refreshInbox, toggleInbox } from "./lib/state/inbox.svelte";
   import { detailsRoom, panelRoom } from "./lib/detailsLayout";
   import { shortHash, shortenPath } from "./lib/format";
   import MiddleText from "./lib/components/MiddleText.svelte";
@@ -318,6 +318,13 @@
         break;
       case "inbox":
         toggleInbox();
+        break;
+      case "back":
+        // The Pull requests page's history: nothing elsewhere.
+        if (app.inboxOpen) backToList();
+        break;
+      case "forward":
+        if (app.inboxOpen) forwardToPr();
         break;
       case "branches":
         if (view) openBranchPicker(view.repoId);

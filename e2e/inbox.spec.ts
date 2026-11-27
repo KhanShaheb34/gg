@@ -53,7 +53,9 @@ test("the groups come from one gh query, each pull request once, with no reposit
   const typo = row(page, "github.com/octo/cat#31");
   await expect(typo.locator(".repo")).toHaveText("octo/cat");
   await expect(typo.locator(".number")).toHaveText("#31");
-  await expect(typo.getByTestId("inbox-checks")).toHaveAttribute("data-checks", "passing");
+  // Its state in its icon's colour and words: passing checks green.
+  await expect(typo.getByTestId("inbox-state-icon")).toHaveAttribute("data-tone", "success");
+  await expect(typo.getByTestId("inbox-state-icon")).toHaveAttribute("title", "Checks passing");
   await expect(typo.getByTestId("inbox-review")).toHaveAttribute("data-review", "approved");
   // Each row starts with its state: open, or a draft.
   await expect(typo.getByTestId("inbox-state-icon")).toHaveAttribute("data-state", "open");
@@ -63,12 +65,15 @@ test("the groups come from one gh query, each pull request once, with no reposit
   // Titles start at one edge, whatever the row says before them.
   const lefts = await rows(page).locator(".title").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
   expect(new Set(lefts).size).toBe(1);
-  await expect(draft.getByTestId("inbox-checks")).toHaveAttribute("data-checks", "running");
+  await expect(draft.getByTestId("inbox-state-icon")).toHaveAttribute("data-tone", "muted");
   const failing = row(page, "github.com/hub/dog#42");
-  await expect(failing.getByTestId("inbox-checks")).toHaveAttribute("data-checks", "failing");
+  await expect(failing.getByTestId("inbox-state-icon")).toHaveAttribute("data-tone", "danger");
+  await expect(failing.getByTestId("inbox-state-icon")).toHaveAttribute("title", "Checks failing · changes requested");
   await expect(failing.getByTestId("inbox-review")).toContainText("Changes requested");
   await expect(failing.locator(".by")).toHaveText("ada");
-  await expect(row(page, "github.com/hub/owl#7").getByTestId("inbox-checks")).toHaveCount(0);
+  await expect(row(page, "github.com/hub/owl#7").getByTestId("inbox-state-icon")).toHaveAttribute("data-tone", "neutral");
+  // No separate checks badge: the icon says it.
+  await expect(page.getByTestId("inbox-checks")).toHaveCount(0);
   await expect(row(page, "github.com/hub/dog#12").locator(".why")).toHaveText("Mentioned");
   await expect(row(page, "github.com/hub/owl#5").locator(".why")).toHaveText("Assigned");
   // The first load is the starting point: nothing new.

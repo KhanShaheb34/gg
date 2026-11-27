@@ -26,30 +26,64 @@ export function isOld(pr: InboxPr, now: number): boolean {
   return pr.updatedAtMs !== null && now - pr.updatedAtMs > OLD_AFTER_MS;
 }
 
-/** What a pull request needs, by status, in the order they need attention. */
-export type Status = "failing" | "changes" | "review" | "running" | "approved" | "draft" | "quiet" | "unknown";
-export const STATUS_ORDER: Status[] = ["failing", "changes", "review", "running", "approved", "draft", "quiet", "unknown"];
+/**
+ * A pull request's overall state, as its leading icon shows it: its glyph (open, draft, merged,
+ * closed), its tone (danger: something needs attention, checks failing, a conflict or changes
+ * requested; warning: checks running; success: checks passing; neutral: open and nothing known;
+ * muted: a draft; merged; closed) and what the tone says, in words (its tooltip and name: the
+ * colour is never all there is to it).
+ */
+export type PrLook = {
+  glyph: "open" | "draft" | "merged" | "closed";
+  tone: "danger" | "warning" | "success" | "neutral" | "muted" | "merged" | "closed";
+  label: string;
+};
+
+/** What `pr`'s leading icon shows (see PrLook). */
+export function lookOf(pr: InboxPr): PrLook {
+  if (pr.state === "merged") return { glyph: "merged", tone: "merged", label: "Merged" };
+  if (pr.state === "closed") return { glyph: "closed", tone: "closed", label: "Closed" };
+  const red = [
+    pr.checks === "failing" ? "checks failing" : null,
+    pr.conflict ? "merge conflict" : null,
+    pr.review === "changes_requested" ? "changes requested" : null,
+  ].filter((r): r is string => r !== null);
+  const say = (words: string[]) => words.map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(" · ");
+  // A draft stays calm, whatever it says.
+  if (pr.draft) return { glyph: "draft", tone: "muted", label: say(["draft", ...red]) };
+  if (!pr.details) return { glyph: "open", tone: "neutral", label: "Open" };
+  if (red.length > 0) return { glyph: "open", tone: "danger", label: say(red) };
+  if (pr.checks === "running") return { glyph: "open", tone: "warning", label: "Checks running" };
+  if (pr.checks === "passing") return { glyph: "open", tone: "success", label: "Checks passing" };
+  return { glyph: "open", tone: "neutral", label: "Open · no checks" };
+}
+
+/** Where a pull request goes when grouped by status: as its icon's tone says, what needs attention first. */
+export type Status = "attention" | "running" | "passing" | "quiet" | "draft" | "unknown";
+export const STATUS_ORDER: Status[] = ["attention", "running", "passing", "quiet", "draft", "unknown"];
 export const STATUS_TITLES: Record<Status, string> = {
-  failing: "Checks failing",
-  changes: "Changes requested",
-  review: "Review required",
+  attention: "Needs attention",
   running: "Checks running",
-  approved: "Approved",
+  passing: "Checks passing",
+  quiet: "No checks",
   draft: "Drafts",
-  quiet: "No checks or review",
   unknown: "Not read yet",
 };
 
-/** Where `pr` goes when grouped by status: a draft is a draft; else failing checks first, then the review, then running checks. */
+/** Where `pr` goes when grouped by status (the same rules as its icon: lookOf). */
 export function statusOf(pr: InboxPr): Status {
   if (pr.draft) return "draft";
   if (!pr.details) return "unknown";
-  if (pr.checks === "failing") return "failing";
-  if (pr.review === "changes_requested") return "changes";
-  if (pr.review === "review_required") return "review";
-  if (pr.checks === "running") return "running";
-  if (pr.review === "approved") return "approved";
-  return "quiet";
+  switch (lookOf(pr).tone) {
+    case "danger":
+      return "attention";
+    case "warning":
+      return "running";
+    case "success":
+      return "passing";
+    default:
+      return "quiet";
+  }
 }
 
 /** What is unfolded: the old ones (by role or status), each repository's older ones, the repositories with only old ones. */
@@ -68,7 +102,10 @@ export type InboxRow =
 /** The rows that take the keyboard's selection: pull requests and the rows that fold and unfold. */
 export type Item = Extract<InboxRow, { index: number }>;
 
-const repoOf = (pr: InboxPr) => `${pr.owner}/${pr.name}`;
+/** A repository's key: its host, owner and name (the same owner/name on two hosts are two). */
+export const repoKeyOf = (pr: InboxPr) => `${pr.host}/${pr.owner}/${pr.name}`;
+/** How a repository's heading names it: owner/name, and its host when not github.com. */
+const repoTitleOf = (pr: InboxPr) => (pr.host === "github.com" ? `${pr.owner}/${pr.name}` : `${pr.owner}/${pr.name} (${pr.host})`);
 const newestFirst = (a: InboxPr, b: InboxPr) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0);
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -128,9 +165,9 @@ export function layoutOf(
   if (by === "repository") {
     const repos = new Map<string, InboxPr[]>();
     for (const p of [...rest].sort(newestFirst)) {
-      const list = repos.get(repoOf(p)) ?? [];
+      const list = repos.get(repoKeyOf(p)) ?? [];
       list.push(p);
-      repos.set(repoOf(p), list);
+      repos.set(repoKeyOf(p), list);
     }
     const quiet: [string, InboxPr[]][] = [];
     for (const [repo, list] of repos) {
@@ -140,12 +177,13 @@ export function layoutOf(
         quiet.push([repo, list]);
         continue;
       }
-      head(`repo:${repo}`, repo, list.length);
+      head(`repo:${repo}`, repoTitleOf(list[0]), list.length);
       fresh.forEach(pr);
       if (stale.length > 0) {
+        // One id, folded or not: the keyboard's selection stays on it.
         if (unfolded.repos.has(repo)) {
           stale.forEach(pr);
-          more(`less:${repo}`, "Hide the older ones", { kind: "repo", repo });
+          more(`older:${repo}`, "Hide the older ones", { kind: "repo", repo });
         } else {
           more(`older:${repo}`, `Show ${plural(stale.length, "older one", "older ones")}`, { kind: "repo", repo });
         }
@@ -154,7 +192,7 @@ export function layoutOf(
     if (quiet.length > 0) {
       if (unfolded.moreRepos) {
         for (const [repo, list] of quiet) {
-          head(`repo:${repo}`, repo, list.length);
+          head(`repo:${repo}`, repoTitleOf(list[0]), list.length);
           list.forEach(pr);
         }
         more("repos", "Hide the repositories with only older ones", { kind: "repos" });

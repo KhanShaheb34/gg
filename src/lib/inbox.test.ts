@@ -8,6 +8,7 @@ import {
   activityCount,
   isOld,
   layoutOf,
+  lookOf,
   statusOf,
   checksOf,
   hostNotes,
@@ -45,6 +46,7 @@ function pr(number: number, group: InboxPr["group"], o: Partial<InboxPr> = {}): 
     assigned: false,
     activity: "none",
     state: "open",
+    conflict: false,
     details: true,
     pinned: false,
     listed: true,
@@ -95,30 +97,48 @@ describe("the Pull requests page's list", () => {
     expect(folded.items.map((i) => i.kind)).toEqual(["pr", "head"]);
     const open = layoutOf(prs, "role", NOW, { ...FOLDED, older: true });
     expect(words(open.rows)).toEqual(["Your pull requests:1", 1, "Older than a month:2▾", 2, 3]);
-    expect(words(layoutOf(prs, "status", NOW).rows)).toEqual(["No checks or review:1", 1, "Older than a month:2▸"]);
+    expect(words(layoutOf(prs, "status", NOW).rows)).toEqual(["No checks:1", 1, "Older than a month:2▸"]);
   });
 
-  it("by status: what needs attention first, drafts and the unread last", () => {
+  it("a pull request's icon: what needs attention red, running amber, passing green, nothing known neutral; a draft calm; the reasons in words", () => {
+    const at = { updatedAtMs: NOW };
+    const look = (o: Partial<InboxPr>) => lookOf(pr(1, "mine", { ...at, ...o }));
+    expect(look({ checks: "failing" })).toEqual({ glyph: "open", tone: "danger", label: "Checks failing" });
+    expect(look({ conflict: true })).toEqual({ glyph: "open", tone: "danger", label: "Merge conflict" });
+    expect(look({ review: "changes_requested", checks: "passing" })).toEqual({ glyph: "open", tone: "danger", label: "Changes requested" });
+    expect(look({ checks: "failing", conflict: true, review: "changes_requested" }).label).toBe("Checks failing · merge conflict · changes requested");
+    // Red wins over running and passing; running over passing.
+    expect(look({ checks: "running", conflict: true }).tone).toBe("danger");
+    expect(look({ checks: "running", review: "approved" })).toEqual({ glyph: "open", tone: "warning", label: "Checks running" });
+    expect(look({ checks: "passing", review: "review_required" })).toEqual({ glyph: "open", tone: "success", label: "Checks passing" });
+    // Green only for passing checks: approved with none is neutral.
+    expect(look({ review: "approved" })).toEqual({ glyph: "open", tone: "neutral", label: "Open · no checks" });
+    expect(look({ details: false, checks: "failing" })).toEqual({ glyph: "open", tone: "neutral", label: "Open" });
+    expect(look({ draft: true, checks: "failing" })).toEqual({ glyph: "draft", tone: "muted", label: "Draft · checks failing" });
+    expect(look({ draft: true })).toEqual({ glyph: "draft", tone: "muted", label: "Draft" });
+    expect(look({ state: "merged", checks: "failing" })).toEqual({ glyph: "merged", tone: "merged", label: "Merged" });
+    expect(look({ state: "closed" })).toEqual({ glyph: "closed", tone: "closed", label: "Closed" });
+  });
+
+  it("by status: the icon's rules, what needs attention first, drafts and the unread last", () => {
     const at = { updatedAtMs: NOW };
     const prs = [
-      pr(1, "mine", { ...at, review: "approved" }),
+      pr(1, "mine", { ...at, checks: "passing", review: "approved" }),
       pr(2, "mine", { ...at, draft: true, checks: "failing" }),
       pr(3, "review", { ...at, checks: "failing", review: "approved" }),
       pr(4, "review", { ...at, review: "review_required" }),
       pr(5, "review", { ...at, review: "changes_requested", checks: "running" }),
       pr(6, "involved", { ...at, checks: "running" }),
       pr(7, "involved", { ...at, details: false }),
-      pr(8, "involved", at),
+      pr(8, "involved", { ...at, conflict: true, checks: "passing" }),
     ];
-    expect(prs.map(statusOf)).toEqual(["approved", "draft", "failing", "review", "changes", "running", "unknown", "quiet"]);
+    expect(prs.map(statusOf)).toEqual(["passing", "draft", "attention", "quiet", "attention", "running", "unknown", "attention"]);
     expect(words(layoutOf(prs, "status", NOW).rows)).toEqual([
-      "Checks failing:1", 3,
-      "Changes requested:1", 5,
-      "Review required:1", 4,
+      "Needs attention:3", 3, 5, 8,
       "Checks running:1", 6,
-      "Approved:1", 1,
+      "Checks passing:1", 1,
+      "No checks:1", 4,
       "Drafts:1", 2,
-      "No checks or review:1", 8,
       "Not read yet:1", 7,
     ]);
   });
@@ -135,7 +155,7 @@ describe("the Pull requests page's list", () => {
     const folded = layoutOf(prs, "repository", NOW);
     expect(words(folded.rows)).toEqual(["octo/cat:2", 1, "Show 1 older one", "hub/dog:1", 3, "Show 2 more repositories (only older ones)"]);
     expect(folded.rows.at(-1)!.top).toBe(2 * HEAD_H + 2 * ROW_H + MORE_H);
-    const open = layoutOf(prs, "repository", NOW, { older: false, repos: new Set(["octo/cat"]), moreRepos: true });
+    const open = layoutOf(prs, "repository", NOW, { older: false, repos: new Set(["github.com/octo/cat"]), moreRepos: true });
     expect(words(open.rows)).toEqual([
       "octo/cat:2", 1, 2, "Hide the older ones",
       "hub/dog:1", 3,
@@ -144,6 +164,23 @@ describe("the Pull requests page's list", () => {
       "Hide the repositories with only older ones",
     ]);
     expect(open.height).toBe(4 * HEAD_H + 6 * ROW_H + 2 * MORE_H);
+    // The fold's row keeps its id folded or not: the selection stays on it.
+    const ids = (rows: InboxRow[]) => rows.flatMap((r) => (r.kind === "more" ? [r.id] : []));
+    expect(ids(folded.rows)).toEqual(["older:github.com/octo/cat", "repos"]);
+    expect(ids(open.rows)).toEqual(["older:github.com/octo/cat", "repos"]);
+  });
+
+  it("by repository, the same owner and name on another host is another repository, its host named", () => {
+    const prs = [
+      pr(1, "mine", { updatedAtMs: NOW - DAY }),
+      pr(2, "mine", { host: "ghe.example", key: "ghe.example/octo/cat#2", updatedAtMs: NOW - 90 * DAY }),
+    ];
+    expect(words(layoutOf(prs, "repository", NOW).rows)).toEqual(["octo/cat:1", 1, "Show 1 more repository (only older ones)"]);
+    expect(words(layoutOf(prs, "repository", NOW, { ...FOLDED, moreRepos: true }).rows)).toEqual([
+      "octo/cat:1", 1,
+      "octo/cat (ghe.example):1", 2,
+      "Hide the repositories with only older ones",
+    ]);
   });
 
   it("pinned ones come first in every grouping, whatever their age or list, and not again below", () => {

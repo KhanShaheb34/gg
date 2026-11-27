@@ -19,6 +19,8 @@ export type Shortcut =
   | { kind: "commit" }
   | { kind: "pullRequest" }
   | { kind: "inbox" }
+  | { kind: "back" }
+  | { kind: "forward" }
   | { kind: "branches" }
   | { kind: "settings" }
   | { kind: "help" }
@@ -39,6 +41,8 @@ export const SHORTCUT_KINDS = [
   "commit",
   "pullRequest",
   "inbox",
+  "back",
+  "forward",
   "branches",
   "settings",
   "help",
@@ -271,7 +275,29 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   { group: "Pull requests", does: "Open the selected pull request (or fold, unfold)", keys: [["Enter"]], where: "in the list" },
   { group: "Pull requests", does: "Pin the selected pull request to the top, or unpin it", keys: [["P"]], where: "in the list" },
   { group: "Pull requests", does: "The selected pull request's menu", keys: [["Shift", "F10"], ["Menu"]], where: "in the list" },
-  { group: "Pull requests", does: "Back to the list", keys: [["Esc"]], where: "on a pull request's page" },
+  {
+    group: "Pull requests",
+    does: "Back to the list from a pull request's page (Esc too)",
+    keys: [
+      ["Mod", "["],
+      ["Mod", "ArrowLeft"],
+    ],
+    kind: "back",
+    // ⌘← in a text field moves its caret: left to it.
+    match: (e, c) => (c.command && !e.shiftKey && (e.key === "[" || (e.key === "ArrowLeft" && !c.typing)) ? { kind: "back" } : null),
+  },
+  {
+    group: "Pull requests",
+    does: "Forward again to the pull request's page just left",
+    keys: [
+      ["Mod", "]"],
+      ["Mod", "ArrowRight"],
+    ],
+    kind: "forward",
+    match: (e, c) => (c.command && !e.shiftKey && (e.key === "]" || (e.key === "ArrowRight" && !c.typing)) ? { kind: "forward" } : null),
+  },
+  { group: "Pull requests", does: "Open the selected pull request in the browser", keys: [["O"]], where: "in the list" },
+  { group: "Pull requests", does: "Put the selection's highlight away", keys: [["Esc"]], where: "in the list" },
   { group: "Pull requests", does: "Load the pull requests again", keys: [["Mod", "R"]], where: "on the page" },
 ];
 
@@ -297,8 +323,9 @@ export function repeatable(shortcut: Shortcut): boolean {
 
 /** A key token as `isMac` shows it ("⌘", "⇧", "Ctrl"…). */
 export function keyName(token: string, isMac: boolean): string {
-  const mac: Record<string, string> = { Mod: "⌘", Shift: "⇧", Alt: "⌥", Ctrl: "⌃", Enter: "↩", Tab: "⇥", Esc: "Esc" };
-  const other: Record<string, string> = { Mod: "Ctrl", Alt: "Alt", Ctrl: "Ctrl" };
+  const arrows: Record<string, string> = { ArrowLeft: "←", ArrowRight: "→" };
+  const mac: Record<string, string> = { Mod: "⌘", Shift: "⇧", Alt: "⌥", Ctrl: "⌃", Enter: "↩", Tab: "⇥", Esc: "Esc", ...arrows };
+  const other: Record<string, string> = { Mod: "Ctrl", Alt: "Alt", Ctrl: "Ctrl", ...arrows };
   return (isMac ? mac[token] : other[token]) ?? token;
 }
 

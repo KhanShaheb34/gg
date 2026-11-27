@@ -112,7 +112,7 @@
     {/if}
 
     {#if now.kind === "list"}
-      <InboxList {layout} onopen={open} ontoggle={toggle} onpin={(pr, pinned) => void setPinned(pr, pinned)} />
+      <InboxList {layout} byRepo={inbox.groupBy === "repository"} onopen={open} ontoggle={toggle} onpin={(pr, pinned) => void setPinned(pr, pinned)} />
       {#if partial}
         <p class="partial" data-testid="inbox-partial">The newest 100 of each group are shown.</p>
       {/if}

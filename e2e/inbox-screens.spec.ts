@@ -70,6 +70,10 @@ for (const theme of ["light", "dark"] as const) {
     await page.getByTestId("inbox-group-by").getByRole("radio", { name: "Role" }).click();
     await page.locator('[data-testid="inbox-group"][data-group="older"]').click();
 
+    // A row pointed at: Open in browser and the pin at its end.
+    await page.locator('[data-testid="inbox-pr"][data-key="github.com/hub/owl#7"]').hover();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, `inbox-list-hover-${theme}.png`), animations: "disabled" });
     // A row selected from the keyboard.
     await page.getByRole("listbox", { name: "Pull requests" }).focus();
     await page.keyboard.press("ArrowDown");

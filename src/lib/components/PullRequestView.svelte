@@ -32,6 +32,7 @@
   import MiddleText from "./MiddleText.svelte";
   import PrChecks from "./PrChecks.svelte";
   import PrComments from "./PrComments.svelte";
+  import PrIcon from "./PrIcon.svelte";
 
   type Props = {
     /** Where it comes from: a repository's side panel, or the Pull requests page. */
@@ -41,9 +42,11 @@
     stale: string | null;
     /** A section after the checks (the Pull requests page: the files it changes). */
     more?: Snippet;
+    /** Merged or closed, as the list last said (a pinned one): until its details say. */
+    ended?: "merged" | "closed" | null;
   };
 
-  let { source, pr, stale, more }: Props = $props();
+  let { source, pr, stale, more, ended = null }: Props = $props();
   const draft = $derived(pr.state === "draft");
   const key = $derived(source.key);
   /** As values, so only a change of them asks again (not each new snapshot they are read from). */
@@ -55,6 +58,8 @@
   const entry = $derived(detailsOf(key, number));
   const details = $derived(entry?.data ?? null);
   const status = $derived(details ? mergeWording(details, pr.base) : null);
+  /** Merged or closed, as gh says now (else as the list said): its own state label and glyph. */
+  const done = $derived(details?.state === "merged" || details?.state === "closed" ? details.state : ended);
   const review = $derived(details ? reviewWording(details.review) : null);
   /** What the comments can write to this pull request, with the source's drafts. */
   const writes = $derived(writesFor(source.compose, source.target(number), (from) => source.showLog(from)));
@@ -115,15 +120,9 @@
 <div class="pr-view" data-testid="pr-view">
   <section class="head" aria-label="Pull request #{pr.number}">
     <div class="meta">
-      <span class="state" class:draft data-testid="pr-state">
-        <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden="true">
-          <circle cx="2.4" cy="2" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <circle cx="2.4" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <circle cx="7.6" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <path d="M2.4 3.25v3.5M7.6 6.75V4.1c0-.9-.6-1.5-1.5-1.5H4.6" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <path d="M5.7 1.4 4.5 2.6l1.2 1.2" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        {draft ? "Draft" : "Open"}
+      <span class="state" class:draft={draft && !done} class:merged={done === "merged"} class:closed={done === "closed"} data-testid="pr-state" data-state={done ?? (draft ? "draft" : "open")}>
+        <PrIcon kind={done ?? (draft ? "draft" : "open")} size={12} />
+        {done === "merged" ? "Merged" : done === "closed" ? "Closed" : draft ? "Draft" : "Open"}
       </span>
       <span class="number" data-testid="pr-number">#{pr.number}</span>
       {#if stale}
@@ -167,6 +166,10 @@
         <div class="bone-card"><span class="bone w-50"></span><span class="bone w-full"></span><span class="bone w-40"></span></div>
       </div>
       <span class="sr-only" role="status">Loading the checks and comments…</span>
+    {/if}
+    {#if more && entry?.error && !(details && status)}
+      <!-- The details could not be read: the section after the checks has its own read (and Retry). -->
+      {@render more()}
     {/if}
   </div>
 </div>
@@ -217,7 +220,7 @@
     line-height: 18px;
   }
 
-  .state svg {
+  .state :global(svg) {
     display: block;
     flex: none;
     color: color-mix(in srgb, var(--pr) 85%, var(--text));
@@ -230,8 +233,16 @@
     color: var(--text-muted);
   }
 
-  .state.draft svg {
+  .state.draft :global(svg) {
     color: var(--text-faint);
+  }
+
+  .state.merged {
+    --pr: var(--info);
+  }
+
+  .state.closed {
+    --pr: var(--danger);
   }
 
   .number {

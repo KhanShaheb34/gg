@@ -41,6 +41,8 @@ export const inbox = $state({
   cursor: null as string | null,
   /** The pull request whose page shows; null: the list. */
   pr: null as InboxPr | null,
+  /** The pull request's page just left for the list (forward goes back to it). */
+  forward: null as InboxPr | null,
   /** Grows with each Refresh: the open pull request's details load again. */
   refreshTick: 0,
   /** The list's scroll position, kept while a pull request's page shows and the page is away. */
@@ -78,6 +80,8 @@ function take(data: PrInbox): void {
 
 /** Keys whose details are being read. */
 const reading = new Set<string>();
+/** Keys a read was asked again for while one ran (a list reloaded meanwhile): read again once it ends. */
+const again = new Set<string>();
 
 /**
  * Reads the details (state, checks, review decision, activity) of `prs`, or of the rows that
@@ -85,7 +89,12 @@ const reading = new Set<string>();
  * read yet. One request for them all (the core batches them per host).
  */
 export async function fillDetails(prs: InboxPr[] = shownNow(), all = false): Promise<void> {
-  const keys = prs.filter((p) => (all || !p.details) && !reading.has(p.key)).map((p) => p.key);
+  // Only while the page shows; what is left is read when it shows again.
+  if (!app.inboxOpen) return;
+  const wanted = prs.filter((p) => all || !p.details);
+  // One being read already, its read begun before this list: read again once it ends.
+  if (all) wanted.filter((p) => reading.has(p.key)).forEach((p) => again.add(p.key));
+  const keys = wanted.filter((p) => !reading.has(p.key)).map((p) => p.key);
   if (keys.length === 0) return;
   keys.forEach((k) => reading.add(k));
   try {
@@ -95,14 +104,32 @@ export async function fillDetails(prs: InboxPr[] = shownNow(), all = false): Pro
   } finally {
     keys.forEach((k) => reading.delete(k));
   }
+  const rerun = keys.filter((k) => again.delete(k));
+  if (rerun.length > 0 && inbox.data) {
+    void fillDetails(
+      inbox.data.prs.filter((p) => rerun.includes(p.key)),
+      true,
+    );
+  }
 }
 
 /** Groups the list `by` (kept in gg's config); the rows it shows have their details read. */
+let groupSeq = 0;
+
 export function setGroupBy(by: InboxGroupBy): void {
+  const before = { by: inbox.groupBy, chosen: groupChosen };
+  const mine = ++groupSeq;
   groupChosen = true;
   inbox.groupBy = by;
   if (inbox.data) inbox.data.groupBy = by;
-  api.prInboxGroupBy(by).catch(() => {});
+  api.prInboxGroupBy(by).catch((e: unknown) => {
+    // Not kept: said, and (when no later choice was made) the grouping kept before is back.
+    reportError(e, "Could not keep the grouping");
+    if (mine !== groupSeq) return;
+    inbox.groupBy = before.by;
+    groupChosen = before.chosen;
+    if (inbox.data) inbox.data.groupBy = before.by;
+  });
   void fillDetails();
 }
 
@@ -142,6 +169,9 @@ export function openInbox(): void {
         void fillDetails();
       })
       .catch(() => {});
+  } else {
+    // What was left unread while the page was away (it is read only while it shows).
+    void fillDetails();
   }
   void refreshInbox("open");
 }
@@ -189,6 +219,8 @@ export async function refreshInbox(why: "open" | "focus" | "user"): Promise<void
 export function showInboxPr(pr: InboxPr): void {
   inbox.cursor = pr.key;
   inbox.pr = pr;
+  // Another page now: nothing to go forward to.
+  inbox.forward = null;
   if (!pr.details) void fillDetails([pr]);
   if (pr.activity !== "none") {
     const listed = inbox.data?.prs.find((p) => p.key === pr.key);
@@ -197,9 +229,17 @@ export function showInboxPr(pr: InboxPr): void {
   api.prInboxSeen(pr.key).catch(() => {});
 }
 
-/** Back from a pull request's page to the list (Escape). */
+/** Back from a pull request's page to the list (Escape, ⌘[ or ⌘←); ⌘] or ⌘→ goes forward to it again. */
 export function backToList(): void {
+  if (inbox.pr) inbox.forward = inbox.pr;
   inbox.pr = null;
+}
+
+/** Forward again to the pull request's page the list was come back to from, if any. */
+export function forwardToPr(): void {
+  if (inbox.pr || !inbox.forward) return;
+  const to = inbox.data?.prs.find((p) => p.key === inbox.forward!.key) ?? inbox.forward;
+  showInboxPr(to);
 }
 
 /** `pr` as PullRequestView shows one. */

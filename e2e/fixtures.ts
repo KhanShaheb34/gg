@@ -1278,7 +1278,9 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggShellName: str
       await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), ai: fakeAi(root), updates: fakeUpdates(root), relaunch });
     } finally {
       if (server) await stopDevserver(server);
-      rmSync(root, { recursive: true, force: true });
+      // A tool the devserver started may still be writing what it was asked (a fake gh's record
+      // of a call), in a process group of its own: retried until it is done.
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   },
 });

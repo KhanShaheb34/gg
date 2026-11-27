@@ -199,15 +199,20 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   open. It lists, in three groups, your open pull requests, those waiting for your review
   (asked of you or of a team you are in), and those you are mentioned in or assigned to; each
   pull request is in one group only, the first that has it, and one of the third says which of
-  the two it is. Each row: its title, its repository (`owner/name`), its number, who
-  opened it and when it last changed, its checks (passing, failing, running, or nothing when
-  there are none) and its review decision (Approved, Changes requested, Review required). Each
-  row starts with the pull request's state as an icon, in a column of its own: open, in green,
-  or a draft, muted (a pinned one no list has any more: merged or closed; its tooltip says
-  which). A dot on that icon, and a bolder title, say
-  something happened since you last opened that pull request in gg: it showed up since (one of
-  yours never counts as new), or it has more comments or reviews (unless the latest is yours),
-  or, on someone else's, new commits; the icon's tooltip says which of these it is.
+  the two it is. Each row: its title, its repository (`owner/name`; left out when grouped by
+  repository, whose heading names it), its number, who opened it and when it last changed, and
+  its review decision (Approved, Changes requested, Review required). Each row starts with the
+  pull request's state as an icon, in a column of its own, its colour saying what it needs:
+  red when something needs attention (checks failing, a conflict with its base, changes
+  requested), amber while checks run, green when they all pass, grey when there are none to
+  speak of; a draft's is the draft icon, muted; a pinned one merged or closed since has the
+  merged or closed icon. The icon's tooltip says why in words ("Checks failing · merge
+  conflict", "Checks running", "Draft · checks failing"…), so the colour is never all there is
+  to it. A dot on that icon, and a bolder title, say something happened since you last opened
+  that pull request in gg: it showed up since (one of yours never counts as new), or it has
+  more comments or reviews (unless the latest is yours), or, on someone else's, new commits;
+  the icon's tooltip says which of these it is. When you point at a row (or select it), **Open
+  in browser** and the pin show at its end; their room is kept, so nothing beside them moves.
   The first time the page loads, what it lists is the starting point: nothing is marked. A
   dot on the page's button says some row has one. What was seen is kept in gg's own config
   folder (`pr-inbox.json`, with the list as last loaded and the folder you last cloned into),
@@ -217,9 +222,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 
   **Group by** in the page's header arranges the list by **Role** (the three groups above, the
   default), by **Repository** (each repository with its newest first), or by **Status**, what
-  needs attention first: Checks failing, Changes requested, Review required, Checks running,
-  Approved, Drafts, No checks or review (and Not read yet, for a moment, before a row's details
-  come). The choice is kept in gg's config. A pull request not updated for more than a month
+  needs attention first, by the same rules as the icons: Needs attention (checks failing, a
+  conflict, changes requested), Checks running, Checks passing, No checks, Drafts (and Not read
+  yet, for a moment, before a row's details come). The choice is kept in gg's config. A pull request not updated for more than a month
   (by when it was last updated, never when it was opened) is *old*: by role or status, the old
   ones leave their groups for one section at the very end, **Older than a month**, with their
   count, folded until you open it; by repository, each repository's old ones are behind **Show
@@ -257,7 +262,8 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   window each row keeps one line. The list's scroll bar is at the window's edge (the rows are
   centred), as the pull request's page's is. In the list, ↑ ↓, Page Up/Down, Home and End move
   the selection (through the pull requests and the rows that fold and unfold), Enter opens it
-  (or folds), and P pins it.
+  (or folds), O opens it in the browser and P pins it. The selection shows only while the list
+  has the focus: Escape, or a click on no row, puts it away, and the keys go on from it.
 
   A pull request opens on a page of its own, never in a repository's side panel (that
   repository may be on another branch): what the Pull request tab shows (its state, branches,
@@ -268,7 +274,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   removed, the count and totals in the header), read with `gh api --paginate
   repos/<owner>/<name>/pulls/<number>/files` (every page; GitHub lists 3,000 at most, and the
   section says so when there are more). It folds like Checks; closed when there are more than
-  50. Esc, or **Pull requests** at the top, goes back to the list where you were. The page
+  50. Esc, ⌘[ or ⌘← (Ctrl on Windows and Linux; not ⌘← in a text field, where it moves the
+  caret), or the **‹** at the top, goes back to the list where you were; ⌘] or ⌘→ goes forward
+  again to the pull request you just left. Its pin is an icon beside the other buttons. The page
   keeps its place while gg runs: going to the repository (or its worktree) and back to the
   Pull requests page shows the pull request you left, and Esc from there goes back to the list
   as you left it. When its repository is
@@ -467,8 +475,10 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the side panel |
 
 In the command log: ↑/↓, Home/End move between rows, Enter or Space opens one, C copies its
-command line. On the Pull requests page: ↑/↓, Page Up/Down, Home/End select a pull request, P pins it,
-Enter opens it, Esc goes back from it, ⌘R loads the page again.
+command line. On the Pull requests page: ↑/↓, Page Up/Down, Home/End select a pull request,
+Enter opens it, O opens it in the browser, P pins it, Esc puts the selection away; on a pull
+request's page Esc, ⌘[ or ⌘← goes back to the list and ⌘] or ⌘→ forward again; ⌘R loads the
+page again.
 
 ## The `gg` command
 

@@ -50,9 +50,9 @@ test("the list paints before its details, which are read only for the rows that 
   await openPage(gg);
   // The rows, before the details: no checks yet.
   await expect(row(page, "github.com/hub/dog#3")).toBeVisible();
-  await expect(row(page, "github.com/hub/dog#3").getByTestId("inbox-checks")).toHaveCount(0);
+  await expect(row(page, "github.com/hub/dog#3").getByTestId("inbox-state-icon")).toHaveAttribute("data-tone", "neutral");
   // Then the details fill in.
-  await expect(row(page, "github.com/hub/dog#3").getByTestId("inbox-checks")).toHaveAttribute("data-checks", "failing", { timeout: 10_000 });
+  await expect(row(page, "github.com/hub/dog#3").getByTestId("inbox-state-icon")).toHaveAttribute("data-tone", "danger", { timeout: 10_000 });
   await expect(row(page, "github.com/hub/dog#3").getByTestId("inbox-review")).toHaveAttribute("data-review", "changes_requested");
   // Asked for the two recent ones only: the old ones are folded away.
   expect(inboxCalls(gg)).toHaveLength(1);
@@ -110,11 +110,11 @@ test("old pull requests (by their last update) go to one folded section at the e
   await page.getByTestId("inbox-more").first().click();
   await expect(rows(page)).toHaveCount(3);
   await page.locator('[data-testid="inbox-more"][data-id="repos"]').click();
-  await expect(group(page, "repo:hub/owl")).toBeVisible();
+  await expect(group(page, "repo:github.com/hub/owl")).toBeVisible();
   await expect(row(page, "github.com/hub/owl#5")).toBeVisible();
-  // By status: failing checks and changes requested first; old ones folded again.
+  // By status: what needs attention (failing checks, changes requested) first; old ones folded again.
   await groupBy(page, "Status").click();
-  await expect(page.getByTestId("inbox-group").first()).toContainText("Checks failing");
+  await expect(page.getByTestId("inbox-group").first()).toContainText("Needs attention");
   await expect(rows(page).first()).toHaveAttribute("data-key", "github.com/hub/dog#3");
 });
 

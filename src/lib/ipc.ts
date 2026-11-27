@@ -10,15 +10,19 @@ import type {
   BodyHits,
   BranchFiles,
   CliState,
+  Cloned,
   CommandRecord,
   CommitDetails,
   Confirmed,
   CoreErrorDto,
+  InboxRepoMatch,
+  InboxWritten,
   InputField,
   OpOutcome,
   OpenedRepo,
   OpRequest,
   PrDetails,
+  PrInbox,
   PrSuggestion,
   Recent,
   RepoPrefs,
@@ -41,6 +45,7 @@ export type EventName =
   | "op-progress"
   | "cli-changed"
   | "update-changed"
+  | "clone-progress"
   | "menu-install-cli"
   | "menu-settings"
   | "menu-shortcuts";
@@ -357,6 +362,30 @@ export const api = {
   prSuggest: (repoId: number, branch: string) => call<PrSuggestion>("pr_suggest", { repoId, branch }),
   /** Pull request `number`'s merge status, checks and comments (gh is asked at most once every 10 s per pull request). */
   prDetails: (repoId: number, number: number) => call<PrDetails>("pr_details", { repoId, number }),
+  /** The Pull requests page: as gg kept it, or (`refresh`) asked of gh first (at most once every 10 s). */
+  prInbox: (refresh = false) => call<PrInbox>("pr_inbox", refresh ? { refresh } : {}),
+  /** Records the page's pull request `key` as seen now (its page was opened). */
+  async prInboxSeen(key: string): Promise<void> {
+    await call("pr_inbox_seen", { key });
+  },
+  /** A pull request's details by its repository's name (as prDetails, for the Pull requests page). */
+  inboxPrDetails: (host: string, owner: string, name: string, number: number) =>
+    call<PrDetails>("inbox_pr_details", { host, owner, name, number }),
+  /** Sends a reply, a comment or a thread resolved (a pr_reply, pr_comment or pr_resolve request) to a pull request by its repository's name. */
+  inboxPrWrite: (host: string, owner: string, name: string, request: OpRequest) =>
+    call<InboxWritten>("inbox_pr_write", { host, owner, name, request }),
+  /** The open repositories with `owner/name` on `host` as a remote, by id. */
+  inboxRepoMatch: (host: string, owner: string, name: string, headRepo: string | null) =>
+    call<InboxRepoMatch[]>("inbox_repo_match", headRepo ? { host, owner, name, headRepo } : { host, owner, name }),
+  /** Opens an https page in the browser for no repository: `url` only on a GitHub host the page lists, `link` anywhere. */
+  openWeb: (target: "url" | "link", url: string) => call<{ note: string | null }>("open_web", { target, url }),
+  /** The folder the last clone went into, if any. */
+  cloneParent: () => call<string | null>("clone_parent"),
+  /** Clones `owner/name` of `host` into a new folder of `parent`; progress as `clone-progress` events named `cloneId`. */
+  cloneRepo: (cloneId: string, host: string, owner: string, name: string, parent: string) =>
+    call<Cloned>("clone_repo", { cloneId, host, owner, name, parent }),
+  /** Stops clone `cloneId` if it runs. */
+  cloneCancel: (cloneId: string) => call<boolean>("clone_cancel", { cloneId }),
   async setWindowFocused(focused: boolean): Promise<void> {
     await call("set_window_focused", { focused });
   },

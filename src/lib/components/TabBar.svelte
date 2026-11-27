@@ -9,6 +9,8 @@
   import { colorIndex, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
   import { activate, app, closeTab, cycleTheme, openViaPicker } from "../state/app.svelte";
+  import { activityCount } from "../inbox";
+  import { inbox, toggleInbox } from "../state/inbox.svelte";
   import { openSettings } from "../state/settings.svelte";
   import { findRepoView } from "../state/repo.svelte";
 
@@ -16,6 +18,9 @@
   /** Empty space drags the window only where this bar is the title bar (macOS's overlay). */
   const dragRegion = trafficLights ? "" : undefined;
   const openLabel = `Open repository (${isMac() ? "⌘O" : "Ctrl+O"})`;
+  const inboxKeys = isMac() ? "⌘⇧I" : "Ctrl+Shift+I";
+  /** Pull requests with activity since they were last opened in gg: a dot on the page's button. */
+  const fresh = $derived(activityCount(inbox.data));
 
   const themeName = $derived(
     app.settings.theme === "system" ? "System" : app.settings.theme === "light" ? "Light" : "Dark",
@@ -71,10 +76,31 @@
 </script>
 
 <header class="bar" class:traffic-lights={trafficLights} data-tauri-drag-region={dragRegion}>
+  <!-- The Pull requests page: a page of gg's own, not a repository (no colour dot, no close). -->
+  <button
+    class="page-btn"
+    class:current={app.inboxOpen}
+    aria-current={app.inboxOpen ? "page" : undefined}
+    aria-label="Pull requests{fresh > 0 ? `, ${fresh} with activity` : ''}"
+    title="Your pull requests across repositories ({inboxKeys})"
+    data-testid="inbox-button"
+    onclick={toggleInbox}
+  >
+    <svg width="14" height="14" viewBox="0 0 10 10" aria-hidden="true">
+      <circle cx="2.4" cy="2" r="1.25" fill="none" stroke="currentColor" stroke-width="1" />
+      <circle cx="2.4" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1" />
+      <circle cx="7.6" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1" />
+      <path d="M2.4 3.25v3.5M7.6 6.75V4.1c0-.9-.6-1.5-1.5-1.5H4.6" fill="none" stroke="currentColor" stroke-width="1" />
+      <path d="M5.7 1.4 4.5 2.6l1.2 1.2" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+    <span class="page-label">Pull requests</span>
+    {#if fresh > 0}<span class="page-dot" aria-hidden="true" data-testid="inbox-button-dot"></span>{/if}
+  </button>
   {#if app.tabs.length > 0}
+    <span class="divider" aria-hidden="true"></span>
     <div class="tabs" role="tablist" aria-label="Open repositories" bind:this={list}>
       {#each app.tabs as tab, i (tab.repoId)}
-        {@const selected = tab.repoId === app.activeRepoId}
+        {@const selected = tab.repoId === app.activeRepoId && !app.inboxOpen}
         <!-- The list holds only tabs: the close button is for the mouse (keys: Delete, ⌘W). -->
         <div class="tab" class:selected role="presentation" title={shortenPath(worktreeOf(tab), app.homeDir)}>
           <button
@@ -85,7 +111,7 @@
             aria-selected={selected}
             aria-controls="repo-panel"
             aria-keyshortcuts="Delete"
-            tabindex={selected ? 0 : -1}
+            tabindex={tab.repoId === app.activeRepoId ? 0 : -1}
             onclick={() => activate(tab.repoId)}
             onkeydown={(e) => onTabKeydown(e, i)}
             onauxclick={(e) => onAuxClick(e, tab.repoId)}
@@ -181,6 +207,77 @@
 
   .bar.traffic-lights {
     padding-left: 78px;
+  }
+
+  /* The Pull requests page's button: a page of gg's, shaped like a tab but quieter, with its
+     icon where a repository's colour dot would be. Its label goes in a narrow window. */
+  .page-btn {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    height: 28px;
+    padding: 0 10px 0 9px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-muted);
+    font-weight: 500;
+    white-space: nowrap;
+    transition:
+      background-color 80ms linear,
+      color 80ms linear;
+  }
+
+  .page-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+
+  .page-btn:active {
+    background: var(--bg-pressed);
+  }
+
+  .page-btn.current {
+    background: var(--bg-elevated);
+    border-color: var(--tab-border);
+    box-shadow: var(--shadow-tab);
+    color: var(--text);
+  }
+
+  .page-btn svg {
+    display: block;
+    flex: none;
+  }
+
+  .page-dot {
+    position: absolute;
+    top: 5px;
+    left: 18px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1.5px var(--bg-chrome);
+  }
+
+  .divider {
+    flex: none;
+    width: 1px;
+    height: 16px;
+    margin: 0 4px;
+    background: var(--border-strong);
+  }
+
+  @media (max-width: 640px) {
+    .page-label {
+      display: none;
+    }
+
+    .page-btn {
+      padding: 0 7px;
+    }
   }
 
   .tabs {

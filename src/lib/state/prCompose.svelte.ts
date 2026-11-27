@@ -22,8 +22,28 @@ function messageOf(e: unknown): string {
   return text.split("\n")[0] || "It could not be sent.";
 }
 
-/** Where a write goes: the repository (its id and folder) and the pull request. */
-export type PrTarget = { repoId: number; root: string; number: number };
+/**
+ * Where a write goes: a pull request, how a request is sent to it (resolves to null when done,
+ * else why not and the log's first record of it; 0: none to show) and how its details are
+ * loaded again once one is.
+ */
+export type PrTarget = {
+  number: number;
+  send(request: OpRequest): Promise<{ error: string; logFrom: number } | null>;
+  reload(): Promise<void>;
+};
+
+/** Pull request `number` of open repository `repoId` (at `root`): its writes run as operations there. */
+export function repoTarget(repoId: number, root: string, number: number): PrTarget {
+  return {
+    number,
+    async send(request) {
+      const outcome = await runOp(repoId, request, { ownErrors: ["bad_request"], ownOutcome: true });
+      return outcome.status === "done" ? null : { error: outcome.message, logFrom: outcome.logFrom };
+    },
+    reload: () => loadDetails(repoId, root, number),
+  };
+}
 
 /**
  * Runs `request` for `target`; once done, loads the pull request's details again (the core
@@ -32,12 +52,12 @@ export type PrTarget = { repoId: number; root: string; number: number };
  */
 async function write(target: PrTarget, request: OpRequest): Promise<{ error: string; logFrom: number } | null> {
   try {
-    const outcome = await runOp(target.repoId, request, { ownErrors: ["bad_request"], ownOutcome: true });
-    if (outcome.status !== "done") return { error: outcome.message, logFrom: outcome.logFrom };
+    const failed = await target.send(request);
+    if (failed) return failed;
   } catch (e) {
     return { error: messageOf(e), logFrom: 0 };
   }
-  await loadDetails(target.repoId, target.root, target.number);
+  await target.reload();
   return null;
 }
 
@@ -100,7 +120,7 @@ export type PrWrites = {
   showLog(from: number): void;
 };
 
-/** The writes of `target`'s comments, with the drafts of `compose`. */
+/** The writes of `target`'s comments, with the drafts of `compose`; `showLog` opens the command log (Show log beside a failure that has a record). */
 export function writesFor(compose: PrCompose, target: PrTarget, showLog: (from: number) => void): PrWrites {
   return {
     draft: (thread) => compose.draft(target.number, thread),

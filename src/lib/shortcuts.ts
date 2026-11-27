@@ -18,6 +18,7 @@ export type Shortcut =
   | { kind: "sidePanel" }
   | { kind: "commit" }
   | { kind: "pullRequest" }
+  | { kind: "inbox" }
   | { kind: "branches" }
   | { kind: "settings" }
   | { kind: "help" }
@@ -37,6 +38,7 @@ export const SHORTCUT_KINDS = [
   "sidePanel",
   "commit",
   "pullRequest",
+  "inbox",
   "branches",
   "settings",
   "help",
@@ -55,8 +57,8 @@ type Context = {
   typing: boolean;
 };
 
-export type ShortcutGroup = "Repositories" | "Graph" | "Actions" | "Panels" | "Worktrees";
-export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ["Repositories", "Graph", "Actions", "Panels", "Worktrees"];
+export type ShortcutGroup = "Repositories" | "Graph" | "Actions" | "Panels" | "Worktrees" | "Pull requests";
+export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ["Repositories", "Graph", "Actions", "Panels", "Worktrees", "Pull requests"];
 
 /**
  * A row of the table. `keys`: the keys as the sheet shows them, one alternative per entry,
@@ -256,6 +258,19 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
       return keysDown ? { kind: "worktree", index: n - 1 } : null;
     },
   },
+
+  // --- Pull requests --------------------------------------------------------------------
+  {
+    group: "Pull requests",
+    does: "The Pull requests page: yours, waiting for your review, mentioning you; back from it",
+    keys: [["Mod", "Shift", "I"]],
+    kind: "inbox",
+    match: (e, c) => (c.command && e.shiftKey && key(e) === "i" ? { kind: "inbox" } : null),
+  },
+  { group: "Pull requests", does: "Select the next or previous pull request; the first or last", keys: [["↓"], ["↑"], ["Home"], ["End"]], where: "in the list" },
+  { group: "Pull requests", does: "Open the selected pull request", keys: [["Enter"]], where: "in the list" },
+  { group: "Pull requests", does: "Back to the list", keys: [["Esc"]], where: "on a pull request's page" },
+  { group: "Pull requests", does: "Load the pull requests again", keys: [["Mod", "R"]], where: "on the page" },
 ];
 
 /**

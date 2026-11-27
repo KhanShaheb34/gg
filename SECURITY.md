@@ -55,9 +55,12 @@ sign-in and sends the prompt to its provider (Anthropic, OpenAI) as it does in a
   with the branch's name, the list of files, and their diff (for a commit, only the files the
   user ticked; for a pull request, the branch's commits, files and diff since its base, and
   the title and description the form holds), cut to about 200 KB. A binary file is named,
-  never sent: any part of the diff that holds a NUL byte is replaced by a line saying so,
-  whatever the repository's `.gitattributes` say (a `diff` attribute makes git print a binary
-  file as text). Nothing of the repository's configuration runs while gg reads: no external
+  never sent, whatever the repository's `.gitattributes` say: a file they give a `diff`
+  attribute (which makes git print it as text whatever it holds) is read whole by gg on both
+  sides (as it is now and at the base, raw), and when either holds a NUL byte it is left out
+  of the diff and named; and any other part of the diff that holds a NUL byte is replaced by a
+  line saying so. (Without such an attribute, git itself tells a binary file by a NUL byte in
+  its first 8000 bytes and prints only its name.) Nothing of the repository's configuration runs while gg reads: no external
   diff or text conversion program (`--no-ext-diff`, `--no-textconv`), and no clean or smudge
   filter (each filter driver configured is turned off for those reads with `-c
   filter.<name>.clean=` and the like; git would otherwise run one to read a changed file of the

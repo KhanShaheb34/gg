@@ -11,6 +11,7 @@
   import { activate, app, closeTab, cycleTheme, openViaPicker } from "../state/app.svelte";
   import { activityCount } from "../inbox";
   import { inbox, toggleInbox } from "../state/inbox.svelte";
+  import PrIcon from "./PrIcon.svelte";
   import { openSettings } from "../state/settings.svelte";
   import { findRepoView } from "../state/repo.svelte";
 
@@ -76,24 +77,18 @@
 </script>
 
 <header class="bar" class:traffic-lights={trafficLights} data-tauri-drag-region={dragRegion}>
-  <!-- The Pull requests page: a page of gg's own, not a repository (no colour dot, no close). -->
+  <!-- The Pull requests page: a page of gg's own, not a repository: an icon alone, fixed before
+       the tabs (no colour dot, no close), its dot when a pull request has news. -->
   <button
     class="page-btn"
     class:current={app.inboxOpen}
     aria-current={app.inboxOpen ? "page" : undefined}
-    aria-label="Pull requests{fresh > 0 ? `, ${fresh} with activity` : ''}"
-    title="Your pull requests across repositories ({inboxKeys})"
+    aria-label={fresh > 0 ? `Pull requests, ${fresh} with something new` : "Pull requests"}
+    title="Pull requests ({inboxKeys})"
     data-testid="inbox-button"
     onclick={toggleInbox}
   >
-    <svg width="14" height="14" viewBox="0 0 10 10" aria-hidden="true">
-      <circle cx="2.4" cy="2" r="1.25" fill="none" stroke="currentColor" stroke-width="1" />
-      <circle cx="2.4" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1" />
-      <circle cx="7.6" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1" />
-      <path d="M2.4 3.25v3.5M7.6 6.75V4.1c0-.9-.6-1.5-1.5-1.5H4.6" fill="none" stroke="currentColor" stroke-width="1" />
-      <path d="M5.7 1.4 4.5 2.6l1.2 1.2" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
-    <span class="page-label">Pull requests</span>
+    <PrIcon size={16} />
     {#if fresh > 0}<span class="page-dot" aria-hidden="true" data-testid="inbox-button-dot"></span>{/if}
   </button>
   {#if app.tabs.length > 0}
@@ -209,22 +204,20 @@
     padding-left: 78px;
   }
 
-  /* The Pull requests page's button: a page of gg's, shaped like a tab but quieter, with its
-     icon where a repository's colour dot would be. Its label goes in a narrow window. */
+  /* The Pull requests page's button: an icon alone, square, quieter than a tab; open, it
+     takes the selected tab's surface and the accent, so where you are is plain. */
   .page-btn {
     position: relative;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    display: grid;
+    place-items: center;
     flex: none;
+    width: 30px;
     height: 28px;
-    padding: 0 10px 0 9px;
+    padding: 0;
     border: 1px solid transparent;
     border-radius: var(--radius);
     background: transparent;
     color: var(--text-muted);
-    font-weight: 500;
-    white-space: nowrap;
     transition:
       background-color 80ms linear,
       color 80ms linear;
@@ -243,23 +236,27 @@
     background: var(--bg-elevated);
     border-color: var(--tab-border);
     box-shadow: var(--shadow-tab);
-    color: var(--text);
+    color: var(--accent);
   }
 
-  .page-btn svg {
-    display: block;
-    flex: none;
+  .page-btn:focus-visible {
+    outline-offset: -1px;
   }
 
+  /* Something new on the page: a small dot on the icon's corner. */
   .page-dot {
     position: absolute;
-    top: 5px;
-    left: 18px;
-    width: 6px;
-    height: 6px;
+    top: 4px;
+    right: 5px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--accent);
     box-shadow: 0 0 0 1.5px var(--bg-chrome);
+  }
+
+  .page-btn.current .page-dot {
+    box-shadow: 0 0 0 1.5px var(--bg-elevated);
   }
 
   .divider {
@@ -268,16 +265,6 @@
     height: 16px;
     margin: 0 4px;
     background: var(--border-strong);
-  }
-
-  @media (max-width: 640px) {
-    .page-label {
-      display: none;
-    }
-
-    .page-btn {
-      padding: 0 7px;
-    }
   }
 
   .tabs {

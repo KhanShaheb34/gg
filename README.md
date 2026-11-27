@@ -229,13 +229,14 @@ page instead. gg never reads or stores a GitHub token.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/inbox-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screens/inbox-light.png">
-  <img alt="The Pull requests page: Your pull requests, Waiting for your review, and Mentioned or assigned, each row a pull request's title, repository, number, author and age, its checks and its review decision, two of them marked as new since last looked at" src="docs/screens/inbox-light.png" width="640">
+  <img alt="The Pull requests page: Your pull requests, Waiting for your review, and Mentioned or assigned, each row a pull request's open or draft icon, title, repository, number, author and age, its checks and its review decision, two of them with a dot for something new since last looked at" src="docs/screens/inbox-light.png" width="640">
 </picture>
 
-The **Pull requests** button at the left of the tab bar (⌘⇧I) shows a page of your own pull
+The pull request icon at the left of the tab bar (⌘⇧I) shows a page of your own pull
 requests, those waiting for your review, and those you are mentioned in or assigned to,
 across every repository on GitHub, open in gg or not: each with its repository, draft,
-checks, review decision, and a dot when something happened since you last opened it in gg.
+checks, review decision, and a dot on its open or draft icon when something happened since you
+last opened it in gg.
 It shows what it last loaded at once and asks `gh` again behind it, only while you look at
 it. A pull request opens on its own page, as the Pull request tab shows one, with reply and
 resolve; from there **Go to repository** and **Check out** its branch in the repository open

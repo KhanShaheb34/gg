@@ -194,21 +194,25 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
   token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
   than github.com, but leaves these two to gh.
-- **The Pull requests page** (its button at the left of the tab bar, or ⌘⇧I; Ctrl+Shift+I
+- **The Pull requests page** (its icon at the left of the tab bar, or ⌘⇧I; Ctrl+Shift+I
   on Windows and Linux) is about you rather than one repository, and works with no repository
   open. It lists, in three groups, your open pull requests, those waiting for your review
   (asked of you or of a team you are in), and those you are mentioned in or assigned to; each
   pull request is in one group only, the first that has it, and one of the third says which of
   the two it is. Each row: its title, its repository (`owner/name`), its number, Draft, who
   opened it and when it last changed, its checks (passing, failing, running, or nothing when
-  there are none) and its review decision (Approved, Changes requested, Review required). A
-  dot before a row says something happened since you last opened that pull request in gg: a
-  filled dot, a pull request that showed up since (one of yours never counts as new); a ring,
-  more comments or reviews (unless the latest is yours), or, on someone else's, new commits.
+  there are none) and its review decision (Approved, Changes requested, Review required). Each
+  row starts with the pull request's state as an icon, in a column of its own: open, in green,
+  or a draft, muted (its tooltip says which). A dot on that icon, and a bolder title, say
+  something happened since you last opened that pull request in gg: it showed up since (one of
+  yours never counts as new), or it has more comments or reviews (unless the latest is yours),
+  or, on someone else's, new commits; the icon's tooltip says which of these it is.
   The first time the page loads, what it lists is the starting point: nothing is marked. A
   dot on the page's button says some row has one. What was seen is kept in gg's own config
   folder (`pr-inbox.json`, with the list as last loaded and the folder you last cloned into),
-  never in a repository.
+  never in a repository. The page's button is the pull request icon alone, at the left of the
+  tab bar, before the repositories' tabs; while the page shows it is highlighted, and a dot on
+  it says some pull request has something new.
 
   The list as last loaded shows at once, even after a restart; `gh` is asked again behind it,
   the Refresh button turning meanwhile, and only while the page shows: when it opens (unless

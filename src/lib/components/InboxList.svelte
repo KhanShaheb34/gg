@@ -1,9 +1,10 @@
 <!--
   The Pull requests page's list: a heading per group (yours, waiting for your review,
-  mentioned or assigned), then its pull requests, each one row: a dot for activity since it
-  was last opened in gg, its title, its repository and number, draft, who opened it and when it
-  changed, its checks and its review decision. Rows are fixed in height and only those in view
-  (and a few screens around) are drawn, so hundreds scroll as smoothly as ten.
+  mentioned or assigned), then its pull requests, each one row: its state (open, or a draft,
+  muted) as an icon in a column of its own, with a dot on it when something happened since it was
+  last opened in gg (its title then bolder); its title, its repository and number, who opened it
+  and when it changed, its checks and its review decision. Rows are fixed in height and only
+  those in view (and a few screens around) are drawn, so hundreds scroll as smoothly as ten.
 
   One focus stop: ↑ ↓, Page Up/Down, Home and End move the selection (aria-activedescendant),
   Enter or a click opens the pull request. The selection and the scroll position are kept while
@@ -16,6 +17,7 @@
   import { clock } from "../state/prs.svelte";
   import { inbox } from "../state/inbox.svelte";
   import type { InboxPr } from "../types";
+  import PrIcon from "./PrIcon.svelte";
 
   type Props = {
     prs: InboxPr[];
@@ -150,19 +152,29 @@
             onopen(pr);
           }}
         >
+          <!-- Its state, as GitHub's lists show it, in a column of its own so every title starts at
+               one edge; something new since it was last opened: a dot on it (and the title bolder). -->
           <span
-            class="mark"
-            class:new={pr.activity === "new"}
-            class:updated={pr.activity === "updated"}
-            title={pr.activity === "new" ? "New since you last looked" : pr.activity === "updated" ? "New comments, reviews or commits since you last looked" : undefined}
-            aria-hidden="true"
-          ></span>
+            class="state"
+            class:draft={pr.draft}
+            title={pr.activity === "new"
+              ? `${pr.draft ? "Draft" : "Open"} · new since you last looked`
+              : pr.activity === "updated"
+                ? `${pr.draft ? "Draft" : "Open"} · new comments, reviews or commits since you last looked`
+                : pr.draft
+                  ? "Draft"
+                  : "Open"}
+            data-testid="inbox-state-icon"
+            data-state={pr.draft ? "draft" : "open"}
+          >
+            <PrIcon kind={pr.draft ? "draft" : "open"} />
+            {#if pr.activity !== "none"}<span class="unread" aria-hidden="true" data-testid="inbox-unread"></span>{/if}
+          </span>
           <div class="main">
             <span class="title" title={pr.title}>{pr.title}</span>
             <span class="meta">
               <span class="repo">{pr.owner}/{pr.name}</span>
               <span class="number">#{pr.number}</span>
-              {#if pr.draft}<span class="draft">Draft</span>{/if}
               {#if pr.author && pr.group !== "mine"}<span class="sep" aria-hidden="true">·</span><span class="by">{pr.author}</span>{/if}
               {#if changed}<span class="sep" aria-hidden="true">·</span><span class="when">{changed}</span>{/if}
               {#if why}<span class="sep" aria-hidden="true">·</span><span class="why">{why}</span>{/if}
@@ -248,7 +260,7 @@
     align-items: center;
     gap: 10px;
     height: 56px;
-    padding: 0 14px 0 8px;
+    padding: 0 14px 0 10px;
     border-radius: var(--radius);
     cursor: default;
     transition: background-color 80ms linear;
@@ -262,22 +274,39 @@
     background: var(--bg-selected);
   }
 
-  /* Activity since it was last opened: a dot before it, and its title a little heavier. */
-  .mark {
+  /* Its state: open in the open colour, a draft muted; the unread dot on its corner, ringed in
+     the row's colour so it reads on any background. */
+  .state {
+    position: relative;
+    display: grid;
+    place-items: center;
     flex: none;
+    width: 20px;
+    height: 20px;
+    color: var(--success);
+  }
+
+  .state.draft {
+    color: var(--text-faint);
+  }
+
+  .unread {
+    position: absolute;
+    top: -3px;
+    right: -4px;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-  }
-
-  .mark.new,
-  .mark.updated {
     background: var(--accent);
+    box-shadow: 0 0 0 2px var(--bg);
   }
 
-  .mark.updated {
-    background: transparent;
-    box-shadow: inset 0 0 0 2px var(--accent);
+  .row:hover .unread {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 5.5%, var(--bg));
+  }
+
+  .row.selected .unread {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 11%, var(--bg));
   }
 
   .main {
@@ -325,16 +354,6 @@
   .number {
     color: var(--text-faint);
     font-variant-numeric: tabular-nums;
-  }
-
-  .draft {
-    height: 16px;
-    padding: 0 5px;
-    border: 1px dashed var(--border-strong);
-    border-radius: 8px;
-    color: var(--text-muted);
-    font-size: var(--fs-xs);
-    line-height: 14px;
   }
 
   .sep {

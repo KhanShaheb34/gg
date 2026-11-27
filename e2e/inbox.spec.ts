@@ -55,8 +55,14 @@ test("the groups come from one gh query, each pull request once, with no reposit
   await expect(typo.locator(".number")).toHaveText("#31");
   await expect(typo.getByTestId("inbox-checks")).toHaveAttribute("data-checks", "passing");
   await expect(typo.getByTestId("inbox-review")).toHaveAttribute("data-review", "approved");
+  // Each row starts with its state: open, or a draft.
+  await expect(typo.getByTestId("inbox-state-icon")).toHaveAttribute("data-state", "open");
   const draft = row(page, "github.com/octo/cat#29");
-  await expect(draft.locator(".draft")).toHaveText("Draft");
+  await expect(draft.getByTestId("inbox-state-icon")).toHaveAttribute("data-state", "draft");
+  await expect(draft.getByTestId("inbox-state-icon")).toHaveAttribute("title", "Draft");
+  // Titles start at one edge, whatever the row says before them.
+  const lefts = await rows(page).locator(".title").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
+  expect(new Set(lefts).size).toBe(1);
   await expect(draft.getByTestId("inbox-checks")).toHaveAttribute("data-checks", "running");
   const failing = row(page, "github.com/hub/dog#42");
   await expect(failing.getByTestId("inbox-checks")).toHaveAttribute("data-checks", "failing");
@@ -67,6 +73,7 @@ test("the groups come from one gh query, each pull request once, with no reposit
   await expect(row(page, "github.com/hub/owl#5").locator(".why")).toHaveText("Assigned");
   // The first load is the starting point: nothing new.
   await expect(page.locator('[data-testid="inbox-pr"][data-activity="none"]')).toHaveCount(7);
+  await expect(page.getByTestId("inbox-unread")).toHaveCount(0);
   await expect(page.getByTestId("inbox-accounts")).toHaveText("@octo");
   // One query, for github.com, nothing else of gh.
   const calls = inboxCalls(gg);
@@ -75,6 +82,10 @@ test("the groups come from one gh query, each pull request once, with no reposit
   expect(gg.gh.calls()).toHaveLength(1);
   // The page reads as a page: no repository tab is selected, the welcome page is behind it.
   await expect(button(page)).toHaveAttribute("aria-current", "page");
+  // An icon alone, named by its label and tooltip.
+  await expect(button(page)).toHaveText("");
+  await expect(button(page)).toHaveAttribute("aria-label", "Pull requests");
+  await expect(button(page)).toHaveAttribute("title", /^Pull requests \((⌘⇧I|Ctrl\+Shift\+I)\)$/);
   await expect(page.getByTestId("welcome")).toHaveCount(0);
   await button(page).click();
   await expect(page.getByTestId("welcome")).toBeVisible();
@@ -137,10 +148,15 @@ test("new and updated since last opened; opening one in gg clears its mark", asy
   await expect(row(page, "github.com/hub/dog#42")).toHaveAttribute("data-activity", "updated");
   await expect(row(page, "github.com/hub/dog#43")).toHaveAttribute("data-activity", "new");
   await expect(page.getByTestId("inbox-button-dot")).toBeVisible();
+  await expect(button(page)).toHaveAttribute("aria-label", "Pull requests, 2 with something new");
+  // One dot for either, on the state icon; the title bolder.
+  await expect(row(page, "github.com/hub/dog#42").getByTestId("inbox-unread")).toBeVisible();
+  await expect(row(page, "github.com/hub/dog#43").getByTestId("inbox-unread")).toBeVisible();
   await row(page, "github.com/hub/dog#42").click();
   await expect(page.getByTestId("inbox-pr-page")).toBeVisible();
   await page.getByTestId("inbox-back").click();
   await expect(row(page, "github.com/hub/dog#42")).toHaveAttribute("data-activity", "none");
+  await expect(row(page, "github.com/hub/dog#42").getByTestId("inbox-unread")).toHaveCount(0);
   // Kept: the next load agrees.
   await page.getByTestId("inbox-refresh").click();
   await expect(page.getByTestId("inbox-refresh")).toHaveAttribute("aria-busy", "false");
@@ -291,13 +307,13 @@ test("clone and open: into a new folder of the folder chosen, from a local remot
   await expect(dialog.getByTestId("clone-hint")).toContainText("already");
 });
 
-test("a narrow window keeps each row on one line, and the page's button its icon", async ({ gg }) => {
+test("a narrow window keeps each row on one line", async ({ gg }) => {
   const { page } = gg;
   await page.setViewportSize({ width: 520, height: 700 });
   replyInbox(gg, MIX);
   await openPage(gg);
   await expect(rows(page)).toHaveCount(7);
-  await expect(button(page).locator(".page-label")).toBeHidden();
+  await expect(button(page)).toHaveText("");
   const box = await row(page, "github.com/hub/dog#42").boundingBox();
   expect(box!.height).toBe(56);
   expect(box!.x + box!.width).toBeLessThanOrEqual(520);

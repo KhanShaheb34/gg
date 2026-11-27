@@ -725,7 +725,9 @@ export function cliFolders(home: string, extra = 0): string[] {
  * for that kind of call (`pr-list`, `pr-list-head` with `--head`, `repo-view`, `pr-create`,
  * `auth-token`, `pr-view`, `api-graphql`; a pull request's own `pr-view-<n>` and
  * `api-graphql-<n>` first, when set; the Pull request tab's writes: `gql-reply`, `gql-resolve`,
- * `gql-unresolve` (`gh api graphql` with that mutation) and `pr-comment`), else prints nothing.
+ * `gql-unresolve` (`gh api graphql` with that mutation) and `pr-comment`; the Pull requests
+ * page's query, `gql-inbox`, or `gql-inbox-<host>` for `GH_HOST` `<host>`, its dots as `_`),
+ * else prints nothing.
  * A call that exits 0 then puts the answers set for it with `then` in place (what GitHub
  * answers once it has the write). `ssh -G` says the host it is asked about is itself.
  */
@@ -740,8 +742,12 @@ cat > "$d/calls/$i/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
 if [ "$key" = api-graphql ]; then
-  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; esac; done
+  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInbox*) key=gql-inbox;; esac; done
   if grep -q addPullRequestReviewThreadReply "$d/calls/$i/stdin"; then key=gql-reply; fi
+fi
+if [ "$key" = gql-inbox ] && [ -n "$GH_HOST" ]; then
+  h="$(printf '%s' "$GH_HOST" | tr . _)"
+  if [ -f "$d/replies/gql-inbox-$h.code" ]; then key="gql-inbox-$h"; fi
 fi
 n=""
 if [ "$key" = pr-view ]; then n="$3"; fi
@@ -1023,6 +1029,9 @@ export function startDevserver(
       fakeTools(home),
       // Updating gg: the stand-in only, answering from files (see FakeUpdates); nothing is downloaded.
       ...(binary === DEVSERVER ? ["--fake-updates", updatesDir(home)] : []),
+      // The Pull requests page: no floor between its loads, and clones from local folders
+      // (`<home>/remotes/<owner>/<name>.git`), never the network.
+      ...(binary === DEVSERVER ? ["--inbox-every-ms", "0", "--clone-source", path.join(home, "remotes")] : []),
       ...extraArgs,
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays

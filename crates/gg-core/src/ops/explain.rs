@@ -579,7 +579,7 @@ mod tests {
         else {
             panic!("not failed");
         };
-        assert_eq!(message, said("git commit failed", "Something odd"));
+        assert_eq!(message, said("git commit failed", "something odd"));
         assert_eq!(detail, "something odd\n");
         let Step::Failed { message, .. } = explain(&["commit"], &failed("", "")) else {
             panic!("not failed");

@@ -61,6 +61,9 @@ pub(crate) struct InboxState {
     /// Stops asked for clones not running yet (the request may reach the core after its
     /// Stop): such a clone, when it comes, never starts git. The newest few only.
     stopped_early: Mutex<std::collections::VecDeque<String>>,
+    /// Clones that ended, the newest few: a Stop for one of them is too late, and is not kept
+    /// for a later clone of that id.
+    ended: Mutex<std::collections::VecDeque<String>>,
     /// Tests and the devserver only: least time between two loads, instead of 10 s.
     #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
     every: Mutex<Option<Duration>>,
@@ -435,6 +438,7 @@ impl RepoManager {
     /// keeps what was read before (its rows say nothing new until the next).
     pub async fn pr_inbox_details(self: &Arc<Self>, keys: &[String]) -> Result<PrInbox> {
         let store = self.inbox_store()?;
+        let asked_at = unix_ms();
         let data = store.data();
         let wanted = data.ids_of(keys);
         let cwd = neutral_dir();
@@ -476,7 +480,8 @@ impl RepoManager {
                 found.push((host, details));
             }
         }
-        let now = unix_ms();
+        // As of when it was asked: an answer to an older request is never taken over this one's.
+        let now = asked_at;
         let page = tokio::task::spawn_blocking(move || {
             store.change(|d| {
                 for (host, details) in found {
@@ -755,6 +760,10 @@ impl RepoManager {
             cancel.notify_one();
             return true;
         }
+        // Ended already: nothing to stop, and the Stop must not touch a later clone.
+        if lock(&self.inbox.ended).iter().any(|id| id == clone_id) {
+            return false;
+        }
         // Not running (yet): kept, so one that comes after its Stop never starts.
         let mut early = lock(&self.inbox.stopped_early);
         if !early.iter().any(|id| id == clone_id) {
@@ -950,6 +959,12 @@ struct Registered<'a> {
 
 impl Drop for Registered<'_> {
     fn drop(&mut self) {
-        lock(&self.manager.inbox.clones).remove(self.id);
+        let mut clones = lock(&self.manager.inbox.clones);
+        clones.remove(self.id);
+        let mut ended = lock(&self.manager.inbox.ended);
+        ended.push_back(self.id.to_owned());
+        while ended.len() > 16 {
+            ended.pop_front();
+        }
     }
 }

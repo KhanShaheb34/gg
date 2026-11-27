@@ -507,6 +507,17 @@ async fn clone_into_a_new_folder() {
             .unwrap_err();
     assert_eq!(e.code, ErrorCode::PathMissing);
     assert!(!s.h.m.clone_cancel("nothing-running"));
+    // A Stop after a clone ended (its answer still on its way) is too late, and not kept: a
+    // later clone of that id runs.
+    assert!(!s.h.m.clone_cancel("c1"));
+    let again = parent_path.join("again");
+    std::fs::create_dir(&again).unwrap();
+    let retried =
+        s.h.m
+            .clone_repo("c1", "github.com", "octo", "cat", &again)
+            .await
+            .unwrap();
+    assert_eq!(retried.status, "done", "{retried:?}");
     // A Stop that reaches the core before its clone: that clone never starts git.
     assert!(!s.h.m.clone_cancel("c6"));
     let early =
@@ -528,7 +539,7 @@ async fn clone_into_a_new_folder() {
             .filter(|r| r.args.first().is_some_and(|a| a == "clone"))
             .count()
     };
-    assert_eq!(clones(&s.h.log), 2, "no git for the stopped one");
+    assert_eq!(clones(&s.h.log), 3, "no git for the stopped one");
     // One id, one clone: a second with the id of one running is refused at once.
     s.gh.reply("auth-token", 0, "", "");
     s.gh.slow("auth-token", 2);

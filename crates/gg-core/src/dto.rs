@@ -242,6 +242,9 @@ pub struct InboxPr {
     /// lists).
     #[serde(default)]
     pub state: InboxState,
+    /// It conflicts with its base (its details say GitHub cannot merge it as it is).
+    #[serde(default)]
+    pub conflict: bool,
     /// Its checks, review decision and activity have been read (`pr_inbox_details`); until
     /// then they read as none.
     #[serde(default)]

@@ -46,11 +46,12 @@ fragment P on PullRequest{id number title url isDraft updatedAt headRefName base
 isCrossRepository repository{owner{login} name} headRepository{owner{login} name} author{login}}";
 
 /// The details' query (`GgInboxDetails`): for pull requests by node id (`$ids`, at most
-/// [`DETAILS_BATCH`]), their state, draft, review decision, checks on their head commit, and
+/// [`DETAILS_BATCH`]), their state, draft, whether they conflict with their base, review
+/// decision, checks on their head commit, and
 /// what their activity is told by (the latest comment's and review's author, the counts, the
 /// head commit).
 pub(crate) const DETAILS_QUERY: &str = "query GgInboxDetails($ids:[ID!]!){nodes(ids:$ids){\
-... on PullRequest{id state isDraft reviewDecision \
+... on PullRequest{id state isDraft mergeable reviewDecision \
 comments(last:1){totalCount nodes{author{login}}} reviews(last:1){totalCount nodes{author{login}}} \
 commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}}}";
 
@@ -85,6 +86,7 @@ pub(crate) struct Entry {
 pub(crate) struct Details {
     pub state: InboxState,
     pub draft: bool,
+    pub conflict: bool,
     pub checks: InboxChecks,
     pub review: ReviewDecision,
     pub seen: Seen,
@@ -220,6 +222,7 @@ fn entry_of(node: &Value, host: &str, group: InboxGroup, viewer: Option<&str>) -
         assigned: false,
         activity: InboxActivity::None,
         state: InboxState::Open,
+        conflict: false,
         details: false,
         pinned: false,
         listed: true,
@@ -267,6 +270,7 @@ fn details_of(node: &Value, viewer: Option<&str>) -> Option<Details> {
     };
     Some(Details {
         state,
+        conflict: text(node, "mergeable").is_some_and(|m| m.eq_ignore_ascii_case("CONFLICTING")),
         draft: node
             .get("isDraft")
             .and_then(Value::as_bool)
@@ -324,6 +328,7 @@ impl Entry {
     pub(crate) fn take_details(&mut self, d: Details, now: i64) {
         self.pr.state = d.state;
         self.pr.draft = d.draft;
+        self.pr.conflict = d.conflict;
         self.pr.checks = d.checks;
         self.pr.review = d.review;
         self.pr.details = true;
@@ -341,6 +346,7 @@ impl Entry {
             return;
         }
         self.pr.state = old.pr.state;
+        self.pr.conflict = old.pr.conflict;
         self.pr.checks = old.pr.checks;
         self.pr.review = old.pr.review;
         self.pr.details = true;
@@ -524,6 +530,13 @@ impl InboxData {
                 }
             }
         }
+        // A pinned one back in the list (it was past the newest 100, say): what was read of it
+        // while pinned.
+        for e in &mut answer.entries {
+            if let Some(o) = self.pinned.get(&e.pr.key) {
+                e.keep_details_of(o);
+            }
+        }
         for e in &answer.entries {
             if (first || e.own) && !self.seen.contains_key(&e.pr.key) {
                 self.seen.insert(e.pr.key.clone(), Self::seen_now(e, now));
@@ -610,8 +623,10 @@ impl InboxData {
         self.hosts.get(host).and_then(|h| h.login.clone())
     }
 
-    /// Takes host `host`'s details, read at `now`, into its pull requests (listed and pinned);
-    /// what was recorded as seen before they were read is filled in with them.
+    /// Takes host `host`'s details, asked for at `now`, into its pull requests (listed and
+    /// pinned); what was recorded as seen before they were read is filled in with them. An
+    /// answer to a request older than the one a pull request's details came from is left out
+    /// for it: two requests answering out of order never put the older back.
     pub(crate) fn take_details(&mut self, host: &str, found: Vec<(String, Details)>, now: i64) {
         let by_id: std::collections::HashMap<String, Details> = found.into_iter().collect();
         let entries = self
@@ -623,7 +638,9 @@ impl InboxData {
             .chain(self.pinned.values_mut().filter(|e| e.pr.host == host));
         let mut read = Vec::new();
         for e in entries {
-            if let Some(d) = by_id.get(&e.id) {
+            if let Some(d) = by_id.get(&e.id)
+                && e.details_at.is_none_or(|t| t <= now)
+            {
                 e.take_details(d.clone(), now);
                 read.push((e.pr.key.clone(), e.seen.clone()));
             }
@@ -1343,6 +1360,7 @@ mod tests {
     fn details_node(number: u32, state: &str, checks: &str, comments: u32, last: &str) -> Value {
         serde_json::json!({
             "id": format!("PR_{number}"), "state": state, "isDraft": false,
+            "mergeable": if checks == "FAILURE" { "CONFLICTING" } else { "MERGEABLE" },
             "reviewDecision": "APPROVED",
             "comments": {"totalCount": comments, "nodes": [{"author": {"login": last}}]},
             "reviews": {"totalCount": 0, "nodes": []},
@@ -1384,6 +1402,7 @@ mod tests {
         assert!(pr.details);
         assert_eq!(pr.checks, InboxChecks::Failing);
         assert_eq!(pr.review, ReviewDecision::Approved);
+        assert!(pr.conflict, "mergeable CONFLICTING");
         // The pending record took what was read: no activity from it.
         assert!(!data.seen["github.com/octo/cat#1"].pending);
         assert_eq!(data.seen["github.com/octo/cat#1"].comments, 3);
@@ -1407,6 +1426,51 @@ mod tests {
         );
         assert_eq!(data.page(false).prs[0].activity, InboxActivity::Updated);
         assert!(parse_details(br#"{"errors":[{"message":"nope"}]}"#, None).is_err());
+    }
+
+    #[test]
+    fn an_older_answer_never_overwrites_a_newer_one_and_a_pin_keeps_its_details() {
+        let mut data = InboxData::default();
+        let list = |numbers: &[u32]| {
+            parse_answer(
+                &answer(&[(
+                    "review",
+                    numbers
+                        .iter()
+                        .map(|n| lean(*n, "octo/cat", "ada", "2026-03-01T10:00:00Z"))
+                        .collect(),
+                )]),
+                "github.com",
+            )
+            .unwrap()
+        };
+        data.take_answer("github.com", list(&[1]), 1, true);
+        let read = |checks: &str| {
+            parse_details(
+                &details_answer(vec![details_node(1, "OPEN", checks, 1, "ada")]),
+                None,
+            )
+            .unwrap()
+        };
+        // Asked at 20 (passing) answers first; asked at 10 (running) after: the newer stays.
+        data.take_details("github.com", read("SUCCESS"), 20);
+        data.take_details("github.com", read("PENDING"), 10);
+        assert_eq!(data.page(false).prs[0].checks, InboxChecks::Passing);
+        data.take_details("github.com", read("FAILURE"), 30);
+        assert_eq!(data.page(false).prs[0].checks, InboxChecks::Failing);
+
+        // Pinned, gone from the list, back again: still as read.
+        assert!(data.set_pin("github.com/octo/cat#1", true));
+        data.take_answer("github.com", list(&[2]), 40, false);
+        data.take_answer("github.com", list(&[1, 2]), 50, false);
+        let one = data
+            .page(true)
+            .prs
+            .into_iter()
+            .find(|p| p.number == 1)
+            .unwrap();
+        assert!(one.details && one.listed);
+        assert_eq!(one.checks, InboxChecks::Failing);
     }
 
     #[test]
@@ -1536,7 +1600,13 @@ mod tests {
         }
         assert!(QUERY.starts_with("query GgInbox($first:Int!)"));
         // The list is lean: what a row's text needs, nothing that makes GitHub look further.
-        for slow in ["statusCheckRollup", "reviewDecision", "comments", "reviews"] {
+        for slow in [
+            "statusCheckRollup",
+            "reviewDecision",
+            "comments",
+            "reviews",
+            "mergeable",
+        ] {
             assert!(!QUERY.contains(slow), "{slow}");
             assert!(DETAILS_QUERY.contains(slow), "{slow}");
         }

@@ -122,7 +122,8 @@ export type InboxHost = {
   loadedAtMs: number | null;
 };
 /** The Pull requests page; `fresh`: gh was asked for it (else what gg kept). */
-export type PrInbox = { prs: InboxPr[]; hosts: InboxHost[]; fresh: boolean; pins: string[]; groupBy: InboxGroupBy };
+/** `version` grows with each change in the core: an answer with a lower one is older than one shown. */
+export type PrInbox = { prs: InboxPr[]; hosts: InboxHost[]; fresh: boolean; pins: string[]; groupBy: InboxGroupBy; version: number };
 /** The files a pull request changes (GitHub lists 3000 at most: `truncated`). */
 export type PrFiles = { files: FileChange[]; truncated: boolean };
 /** An open repository that has a pull request's repository as a remote; `headRemote`: the remote its head branch is on, if any. */

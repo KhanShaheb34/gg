@@ -497,6 +497,10 @@ pub(crate) struct InboxData {
     pub pinned: BTreeMap<String, Entry>,
     /// How the page groups its list.
     pub group_by: InboxGroupBy,
+    /// Grows with each change: the page says which state it shows, so the UI never takes an
+    /// answer built before one it has already shown. Not kept between runs.
+    #[serde(skip)]
+    pub version: u64,
 }
 
 /// One host's pull requests as last loaded, and how its last load ended.
@@ -756,6 +760,7 @@ impl InboxData {
             fresh,
             pins: self.pins.clone(),
             group_by: self.group_by,
+            version: self.version,
         }
     }
 }
@@ -821,6 +826,7 @@ impl InboxStore {
     /// change in memory for this run.
     pub(crate) fn change<T>(&self, change: impl FnOnce(&mut InboxData) -> T) -> T {
         let mut data = crate::lock_ignoring_poison(&self.data);
+        data.version += 1;
         let out = change(&mut data);
         let _ = self.write(&data);
         out
@@ -1330,7 +1336,16 @@ mod tests {
             d.clone_parent = Some("/work".into());
         });
         let again = InboxStore::load(dir.path());
-        assert_eq!(again.data(), store.data());
+        // The version is the run's own.
+        assert_eq!(store.data().version, 1);
+        assert_eq!(again.data().version, 0);
+        assert_eq!(
+            InboxData {
+                version: 1,
+                ..again.data()
+            },
+            store.data()
+        );
         assert_eq!(again.data().page(false).prs.len(), 1);
         fs::write(dir.path().join(FILE_NAME), b"{ not json").unwrap();
         assert_eq!(InboxStore::load(dir.path()).data(), InboxData::default());

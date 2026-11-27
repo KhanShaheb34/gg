@@ -59,7 +59,7 @@
   const details = $derived(entry?.data ?? null);
   const status = $derived(details ? mergeWording(details, pr.base) : null);
   /** Merged or closed, as gh says now (else as the list said): its own state label and glyph. */
-  const done = $derived(details?.state === "merged" || details?.state === "closed" ? details.state : ended);
+  const done = $derived(details ? (details.state === "merged" || details.state === "closed" ? details.state : null) : ended);
   const review = $derived(details ? reviewWording(details.review) : null);
   /** What the comments can write to this pull request, with the source's drafts. */
   const writes = $derived(writesFor(source.compose, source.target(number), (from) => source.showLog(from)));

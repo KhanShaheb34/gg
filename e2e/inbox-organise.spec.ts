@@ -190,6 +190,8 @@ test("pins: from the row, the keyboard, the menu and the pull request's page; fi
   for (const by of ["Repository", "Status", "Role"]) {
     await groupBy(page, by).click();
     await expect(page.getByTestId("inbox-group").first()).toHaveAttribute("data-group", "pinned");
+    // Pinned is no repository: its rows keep theirs, whatever the grouping.
+    await expect(row(page, "github.com/octo/cat#2").locator(".repo")).toHaveText("octo/cat");
   }
   // Kept across runs; #2 merged since and no list has it: still pinned, as merged.
   const { mine, ...rest } = AGED;

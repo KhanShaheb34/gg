@@ -310,8 +310,8 @@
           <div class="main">
             <span class="title" title={pr.title}>{pr.title}</span>
             <span class="meta">
-              <!-- Grouped by repository, its heading names it. -->
-              {#if !byRepo}<span class="repo">{pr.owner}/{pr.name}</span>{/if}
+              <!-- Grouped by repository, its heading names it (not a pinned one's: Pinned is no repository). -->
+              {#if !byRepo || pr.pinned}<span class="repo">{pr.owner}/{pr.name}</span>{/if}
               <span class="number">#{pr.number}</span>
               {#if pr.author && pr.group !== "mine"}<span class="sep" aria-hidden="true">·</span><span class="by">{pr.author}</span>{/if}
               {#if changed}<span class="sep" aria-hidden="true">·</span><span class="when">{changed}</span>{/if}

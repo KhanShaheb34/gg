@@ -70,7 +70,7 @@ const host = (o: Partial<InboxHost> = {}): InboxHost => ({
   loadedAtMs: 1_000,
   ...o,
 });
-const page = (prs: InboxPr[], hosts: InboxHost[] = [host()]): PrInbox => ({ prs, hosts, fresh: true, pins: [], groupBy: "role" });
+const page = (prs: InboxPr[], hosts: InboxHost[] = [host()]): PrInbox => ({ prs, hosts, fresh: true, pins: [], groupBy: "role", version: 0 });
 
 describe("the Pull requests page's list", () => {
   it("by role: a heading per group that has pull requests, then its rows, at fixed heights", () => {

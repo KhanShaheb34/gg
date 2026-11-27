@@ -329,6 +329,9 @@ pub struct PrInbox {
     pub pins: Vec<String>,
     /// How the page groups its list, as the user last chose.
     pub group_by: InboxGroupBy,
+    /// Which state of the page this is: it grows with each change, so an answer older than
+    /// one already shown can be told and left out.
+    pub version: u64,
 }
 
 /// One file a pull request changes (`inbox_pr_files`), as the Commit tab's "Committed on

@@ -70,7 +70,13 @@ function shownNow(): InboxPr[] {
 /** The user chose a grouping in this run: answers asked for before it do not undo it. */
 let groupChosen = false;
 
+/** The version of the page last shown: an answer built before it is older, and left out. */
+let shownVersion = -1;
+
 function take(data: PrInbox): void {
+  // Answers may come back in another order than asked (a pin's, a load's, the details').
+  if (data.version < shownVersion) return;
+  shownVersion = data.version;
   inbox.data = data;
   if (groupChosen) data.groupBy = inbox.groupBy;
   else inbox.groupBy = data.groupBy ?? "role";

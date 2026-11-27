@@ -62,7 +62,7 @@ test("the path's menu copies the path and shows the folder in the file manager",
     (await bar(page).boundingBox())!.y,
   );
   await menu(page).getByRole("menuitem", { name: "Copy path" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Copied the path." })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Copied the path" })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(small);
 
   // From the keyboard too; the file manager is asked to show the folder (nothing starts in tests).

@@ -178,8 +178,17 @@ test("create: the menu shows the Pull request tab for the branch at once, sugges
   await expect(view.getByTestId("pr-state")).toHaveText("Draft");
   await expect(view.getByTestId("pr-view-title")).toHaveText("Fix a typo in the README");
   await expect(tab(page, "pr")).toHaveAttribute("title", /^Pull request · #21 draft/);
-  const done = notice(page, "Opened draft pull request #21 of fix/typo into main");
+  // A headline, and under it the branch into its base and the push, names set off; never the
+  // address itself, which its buttons open and copy.
+  const done = notice(page, "Draft pull request #21 opened");
   await expect(done).toBeVisible();
+  await expect(done.locator(".message")).toHaveText("Draft pull request #21 opened");
+  await expect(done.locator(".note")).toHaveText("fix/typo → main · pushed to origin");
+  await expect(done.locator(".note .name")).toHaveText(["fix/typo", "main"]);
+  await expect(done).not.toContainText("https://");
+  await expect(done).not.toContainText("github.com");
+  await expect(done).toHaveAttribute("role", "status");
+  await expect(done.locator(".spoken")).toHaveText("Draft pull request #21 opened. fix/typo into main, pushed to origin.");
   await expect(done.getByRole("button", { name: "Open", exact: true })).toBeVisible();
   await expect(done.getByRole("button", { name: "Copy link" })).toBeVisible();
   // Pushed to its namesake first, then gh with the description on stdin.
@@ -293,7 +302,7 @@ test("gh not installed: the tab says so and how to fix it, pushes and then opens
   const go = button(page, "Push and open the compare page");
   await expect(go).toBeEnabled();
   await go.click();
-  await expect(notice(page, "Pushed fix/typo to origin/fix/typo. Finish on GitHub:")).toBeVisible();
+  await expect(notice(page, "Pushed fix/typo to origin. Finish the pull request on GitHub.")).toBeVisible();
   await expect
     .poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/compare/main...fix/typo?expand=1")))
     .toBe(true);
@@ -333,7 +342,7 @@ test("the compare page the tab promised is what happens, even if gh is installed
   gg.gh.install();
   gg.gh.reply("pr-create", 0, "https://github.com/octo/cat/pull/99\n");
   await go.click();
-  await expect(notice(page, "Pushed fix/typo to origin/fix/typo. Finish on GitHub:")).toBeVisible();
+  await expect(notice(page, "Pushed fix/typo to origin. Finish the pull request on GitHub.")).toBeVisible();
   expect(gg.gh.calls().filter((c) => c[1] === "create")).toEqual([]);
 });
 
@@ -606,7 +615,7 @@ test("a pull request's view: state, number, the title in full, base ← head, Op
   await view.getByRole("button", { name: "Open in browser" }).click();
   await expect.poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/pull/31"))).toBe(true);
   await view.getByRole("button", { name: "Copy link" }).click();
-  await expect(notice(page, "Copied the link.")).toBeVisible();
+  await expect(notice(page, "Copied the link")).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("https://github.com/octo/cat/pull/31");
 
   // Refresh: the toolbar's refresh of the pull requests, busy while it runs.
@@ -897,7 +906,7 @@ test("without gh, a commit made since the suggestion is pushed before the compar
   const go = button(page, "Push and open the compare page");
   await expect(go).toBeEnabled();
   await go.click();
-  await expect(notice(page, "Pushed docs/readme to origin/docs/readme. Finish on GitHub:")).toBeVisible();
+  await expect(notice(page, "Pushed docs/readme to origin. Finish the pull request on GitHub.")).toBeVisible();
   expect(gg.git("prs", "rev-parse", "refs/remotes/origin/docs/readme").trim()).toBe(ahead);
   await expect
     .poll(() => gg.launches().some((l) => l.includes("https://github.com/octo/cat/compare/main...docs/readme?expand=1")))

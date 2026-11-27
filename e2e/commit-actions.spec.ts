@@ -63,7 +63,7 @@ test("check out a commit: HEAD moves there, detached, and reset then names HEAD"
   const hash = gg.git("small", "rev-parse", "HEAD~3").trim(); // "Add part 17"
   await pickOnRow(page, "Add part 17", "Check out this commit");
 
-  await expect(notice(page, `Checked out ${short(hash)}: HEAD is detached`)).toBeVisible();
+  await expect(notice(page, `Checked out ${short(hash)}. HEAD is detached`)).toBeVisible();
   expect(gg.git("small", "rev-parse", "HEAD").trim()).toBe(hash);
   const row = rowOf(page, "Add part 17");
   await expect(row.locator('[data-ref="HEAD"]')).toBeVisible();
@@ -92,7 +92,7 @@ test("create a branch here: checked out by default, or not", async ({ gg }) => {
   await page.keyboard.press("Enter");
 
   await expect(d).toHaveCount(0);
-  await expect(notice(page, "Created branch topic/new and checked it out.")).toBeVisible();
+  await expect(notice(page, "Created and checked out topic/new")).toBeVisible();
   const row = rowOf(page, "Add part 3");
   await expect(row.locator('[data-ref="topic/new"]')).toHaveClass(/current/);
   await expect(row).toHaveAttribute("aria-selected", "true");
@@ -102,7 +102,7 @@ test("create a branch here: checked out by default, or not", async ({ gg }) => {
   await d.getByRole("textbox", { name: "Branch name" }).fill("later");
   await d.getByRole("checkbox", { name: "Check out after creating" }).uncheck();
   await d.getByRole("button", { name: "Create branch" }).click();
-  await expect(notice(page, "Created branch later.")).toBeVisible();
+  await expect(notice(page, "Created branch later")).toBeVisible();
   await expect(rowOf(page, "Add part 5").locator('[data-ref="later"]')).toBeVisible();
   await expect(rowOf(page, "Add part 5")).toHaveAttribute("aria-selected", "true");
   expect(gg.git("small", "branch", "--show-current").trim()).toBe("topic/new");
@@ -119,7 +119,7 @@ test("create a tag: lightweight without a message, annotated with one", async ({
   await page.keyboard.type("v2");
   await page.keyboard.press("Enter");
   const hash = gg.git("small", "rev-parse", "HEAD~1").trim();
-  await expect(notice(page, `Created tag v2 at ${short(hash)}.`)).toBeVisible();
+  await expect(notice(page, `Created tag v2 at ${short(hash)}`)).toBeVisible();
   await expect(rowOf(page, "Add part 18").locator('[data-ref="v2"]')).toBeVisible();
   await expect(rowOf(page, "Add part 18")).toHaveAttribute("aria-selected", "true");
   expect(gg.git("small", "cat-file", "-t", "refs/tags/v2").trim()).toBe("commit");
@@ -131,7 +131,7 @@ test("create a tag: lightweight without a message, annotated with one", async ({
   await expect(d.getByText("Annotated: it records the message, who made it and when")).toBeVisible();
   // Enter in the message is a new line; Cmd/Ctrl+Enter creates.
   await d.getByRole("textbox", { name: "Message" }).press("ControlOrMeta+Enter");
-  await expect(notice(page, /Created tag v3 at [0-9a-f]{8}\./)).toBeVisible();
+  await expect(notice(page, /Created tag v3 at [0-9a-f]{8}/)).toBeVisible();
   await expect(rowOf(page, "Add part 19").locator('[data-ref="v3"]')).toBeVisible();
   expect(gg.git("small", "cat-file", "-t", "refs/tags/v3").trim()).toBe("tag");
   expect(gg.git("small", "tag", "-l", "--format=%(contents)", "v3").trim()).toBe("Release three\n\nWith notes.");
@@ -209,7 +209,7 @@ test("cherry-pick a commit: a new commit on top, or its changes staged only", as
   await expect(d.getByRole("radio")).toHaveCount(0); // not a merge: no parent to choose
   await page.keyboard.press("Enter");
 
-  await expect(notice(page, `Cherry-picked ${short(hash)} onto main.`)).toBeVisible();
+  await expect(notice(page, `Cherry-picked ${short(hash)} onto main`)).toBeVisible();
   await expect(topSubject(page)).toHaveText("Add topic notes");
   await expect(grid(page).locator('[data-index="0"] [data-ref="main"]')).toBeVisible();
   expect(gg.git("picks", "log", "-1", "--format=%s").trim()).toBe("Add topic notes");
@@ -218,7 +218,7 @@ test("cherry-pick a commit: a new commit on top, or its changes staged only", as
   await pickOnRow(page, "Build the feature", "Cherry-pick…");
   await d.getByRole("checkbox", { name: "Apply the changes without committing" }).check();
   await d.getByRole("button", { name: "Cherry-pick" }).click();
-  await expect(notice(page, /without committing: they are staged\./)).toBeVisible();
+  await expect(notice(page, /, not committed\. Its changes are staged\./)).toBeVisible();
   expect(gg.git("picks", "status", "--porcelain").trim()).toBe("A  feature.txt");
   expect(gg.git("picks", "log", "-1", "--format=%s").trim()).toBe("Add topic notes");
 });
@@ -250,7 +250,7 @@ test("cherry-pick a merge commit: the parent is chosen, each shown by short hash
   expect(asked).not.toContain(second);
   await d.getByRole("button", { name: "Cherry-pick" }).click();
 
-  await expect(notice(page, /Cherry-picked [0-9a-f]{8} onto main\./)).toBeVisible();
+  await expect(notice(page, /Cherry-picked [0-9a-f]{8} onto main/)).toBeVisible();
   await expect(topSubject(page)).toHaveText("Merge branch 'feature' into integration");
   expect(gg.git("picks", "show", "--name-only", "--format=", "HEAD").trim()).toBe("feature.txt");
 });
@@ -265,7 +265,7 @@ test("cherry-pick a merge commit relative to its second parent", async ({ gg }) 
   await d.getByRole("radio", { name: new RegExp(second.slice(0, 8)) }).check();
   await d.getByRole("button", { name: "Cherry-pick" }).click();
 
-  await expect(notice(page, /Cherry-picked [0-9a-f]{8} onto main\./)).toBeVisible();
+  await expect(notice(page, /Cherry-picked [0-9a-f]{8} onto main/)).toBeVisible();
   // Relative to the feature side, the merge brought in integration's own change.
   expect(gg.git("picks", "show", "--name-only", "--format=", "HEAD").trim()).toBe("integration.txt");
 });
@@ -295,7 +295,7 @@ test("revert a commit: a one-line confirmation, then a new commit on top", async
   await expect(d.getByRole("radio")).toHaveCount(0);
   await page.keyboard.press("Enter");
 
-  await expect(notice(page, `Reverted ${short(hash)}: a new commit undoes its changes.`)).toBeVisible();
+  await expect(notice(page, `Reverted ${short(hash)}. A new commit undoes its changes.`)).toBeVisible();
   await expect(topSubject(page)).toHaveText('Revert "Add part 18"');
   expect(gg.git("small", "ls-files", "src/part18.txt").trim()).toBe("");
 });
@@ -315,7 +315,7 @@ test("revert a merge commit asks whose side to keep", async ({ gg }) => {
   await expect(d.locator("label.choice", { hasText: mainSide.slice(0, 8) })).toContainText("Add part 17");
   await d.getByRole("button", { name: "Revert" }).click();
 
-  await expect(notice(page, `Reverted ${short(merge)}: a new commit undoes its changes.`)).toBeVisible();
+  await expect(notice(page, `Reverted ${short(merge)}. A new commit undoes its changes.`)).toBeVisible();
   await expect(topSubject(page)).toHaveText(`Revert "Merge branch 'feature/login'"`);
   expect(gg.git("small", "ls-files", "login").trim()).toBe("");
 });
@@ -332,7 +332,7 @@ test("revert a merge commit keeping the second parent's side", async ({ gg }) =>
   await d.getByRole("radio", { name: new RegExp(loginSide.slice(0, 8)) }).check();
   await d.getByRole("button", { name: "Revert" }).click();
 
-  await expect(notice(page, `Reverted ${short(merge)}: a new commit undoes its changes.`)).toBeVisible();
+  await expect(notice(page, `Reverted ${short(merge)}. A new commit undoes its changes.`)).toBeVisible();
   // Relative to feature/login, the merge brought in main's parts 13 to 17: those go; login stays.
   expect(gg.git("small", "ls-files", "login").trim()).not.toBe("");
   expect(gg.git("small", "ls-files", "src/part13.txt", "src/part17.txt").trim()).toBe("");
@@ -354,7 +354,7 @@ test("reset soft and mixed move the branch and keep the changes", async ({ gg })
   await expect(d.getByRole("button", { name: "Reset" })).not.toHaveClass(/danger/);
   await page.keyboard.press("Enter");
 
-  await expect(notice(page, `Reset main to ${short(target)}: the changes since are staged.`)).toBeVisible();
+  await expect(notice(page, `Reset main to ${short(target)}. The changes since are staged.`)).toBeVisible();
   expect(gg.git("small", "rev-parse", "HEAD").trim()).toBe(target);
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("A  src/part19.txt");
   await expect(rowOf(page, "Add part 18").locator('[data-ref="main"]')).toBeVisible();
@@ -365,7 +365,7 @@ test("reset soft and mixed move the branch and keep the changes", async ({ gg })
   await pickOnRow(page, "Merge branch 'feature/login'", "Soft: keep changes, staged", "Reset main to here");
   await d.getByRole("radio", { name: /^Mixed/ }).check();
   await d.getByRole("button", { name: "Reset" }).click();
-  await expect(notice(page, `Reset main to ${short(before)}: the changes since are in the working tree, unstaged.`)).toBeVisible();
+  await expect(notice(page, `Reset main to ${short(before)}. The changes since are in the working tree, unstaged.`)).toBeVisible();
   expect(gg.git("small", "status", "--porcelain").trim().split("\n").sort()).toEqual([
     "?? src/part18.txt",
     "?? src/part19.txt",
@@ -434,7 +434,7 @@ test("hard_reset_asks_twice_and_cancel_changes_nothing", async ({ gg }) => {
   await expect(d.getByTestId("dangers")).toBeVisible();
   await armed(page);
   await d.getByRole("button", { name: "Reset and discard" }).click();
-  await expect(notice(page, `Reset main to ${short(target)}: uncommitted changes were discarded.`)).toBeVisible();
+  await expect(notice(page, `Reset main to ${short(target)}. Uncommitted changes were discarded.`)).toBeVisible();
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("");
   await expect(topSubject(page)).toHaveText("Add part 18");
 });
@@ -457,7 +457,7 @@ test("delete a tag here, or here and on the remote", async ({ gg }) => {
   await expect(d.getByRole("button", { name: "Delete tag" })).toHaveClass(/danger/);
   await armed(page);
   await d.getByRole("button", { name: "Delete tag" }).click();
-  await expect(notice(page, "Deleted tag v2.")).toBeVisible();
+  await expect(notice(page, "Deleted tag v2")).toBeVisible();
   await expect(grid(page).locator('[data-ref="v2"]')).toHaveCount(0);
   expect(remoteTags()).toContain("refs/tags/v2");
 
@@ -467,7 +467,7 @@ test("delete a tag here, or here and on the remote", async ({ gg }) => {
   await also.check();
   await armed(page);
   await d.getByRole("button", { name: "Delete tag" }).click();
-  await expect(notice(page, "Deleted tag v1, here and on origin.")).toBeVisible();
+  await expect(notice(page, "Deleted tag v1. Here and on origin.")).toBeVisible();
   await expect(grid(page).locator('[data-ref="v1"]')).toHaveCount(0);
   expect(remoteTags()).not.toContain("refs/tags/v1");
 });
@@ -482,7 +482,7 @@ test("push a tag: the only remote is chosen already", async ({ gg }) => {
   await expect(d.getByRole("heading")).toHaveText("Push tag v1");
   await expect(d.getByRole("combobox", { name: "Remote" })).toHaveValue("origin");
   await page.keyboard.press("Enter");
-  await expect(notice(page, "Pushed tag v1 to origin.")).toBeVisible();
+  await expect(notice(page, "Pushed tag v1 to origin")).toBeVisible();
   expect(gg.git("small", "ls-remote", "--tags", "origin").trim()).toContain("refs/tags/v1");
 });
 
@@ -499,7 +499,7 @@ test("push a tag with several remotes: origin is chosen, another can be", async 
   await expect(remote).toHaveValue("origin");
   await remote.selectOption("backup");
   await dialog(page).getByRole("button", { name: "Push tag" }).click();
-  await expect(notice(page, "Pushed tag v1 to backup.")).toBeVisible();
+  await expect(notice(page, "Pushed tag v1 to backup")).toBeVisible();
   expect(gg.git("small", "ls-remote", "--tags", "backup").trim()).toContain("refs/tags/v1");
 });
 
@@ -554,7 +554,7 @@ test("delete a tag in a repository without remotes: no remote to choose", async 
   await expect(d.getByRole("combobox")).toHaveCount(0);
   await armed(page);
   await d.getByRole("button", { name: "Delete tag" }).click();
-  await expect(notice(page, "Deleted tag solo.")).toBeVisible();
+  await expect(notice(page, "Deleted tag solo")).toBeVisible();
   expect(gg.git("picks", "tag", "--list", "solo").trim()).toBe("");
 });
 
@@ -594,7 +594,7 @@ test("a dialog whose request waits behind another: a name dialog says so and can
   await page.keyboard.press("Escape");
   await expect(d).toBeVisible();
   await expect(d).toHaveCount(0, { timeout: 10_000 });
-  await expect(notice(page, "Created branch queued and checked it out.")).toBeVisible();
+  await expect(notice(page, "Created and checked out queued")).toBeVisible();
   expect(gg.git("small", "branch", "--show-current").trim()).toBe("queued");
 
   // A dialog whose request cannot come back to it closes at once; the toolbar shows the queue.
@@ -607,7 +607,7 @@ test("a dialog whose request waits behind another: a name dialog says so and can
   // The revert was asked for on queued; the checkout before it moved HEAD to main, so it does
   // not run there, and says so.
   await expect(
-    failure(page, "Nothing was done: it was asked for on queued, but main is checked out now."),
+    failure(page, "Nothing was done. It was asked for on queued, but main is checked out now."),
   ).toBeVisible({ timeout: 10_000 });
   expect(gg.git("small", "log", "-1", "--format=%s", "main").trim()).not.toMatch(/^Revert/);
 });
@@ -628,7 +628,7 @@ test("an operation that hangs (a hook that sleeps) offers Stop after 5 s; Stop e
   await expect(stop).toBeVisible({ timeout: 10_000 });
   expect(Date.now() - started).toBeGreaterThanOrEqual(4_500);
   await stop.click();
-  await expect(failure(page, "Stopped.")).toBeVisible({ timeout: 10_000 });
+  await expect(failure(page, "Stopped")).toBeVisible({ timeout: 10_000 });
   await expect(busy).toHaveCount(0);
   await expect(stop).toHaveCount(0);
   expect(Date.now() - started).toBeLessThan(30_000);

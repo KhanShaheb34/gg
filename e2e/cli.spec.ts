@@ -35,7 +35,7 @@ test("installs the command from the welcome screen and removes it again", async 
   await expect(box.getByTestId("cli-written")).toContainText("Writes one small script, ~/bin/gg, and changes nothing else.");
   await box.getByRole("button", { name: "Install", exact: true }).click();
   await expect(box).toHaveCount(0);
-  await expect(page.getByText("Installed the gg command: wrote ~/bin/gg.")).toBeVisible();
+  await expect(page.getByText("Installed the gg command. Wrote ~/bin/gg.")).toBeVisible();
   expect(readFileSync(launcher, "utf8")).toContain("# gg launcher, installed by gg ");
   await expect(hint).toHaveText("gg command installed in ~/bin · Remove");
 
@@ -44,7 +44,7 @@ test("installs the command from the welcome screen and removes it again", async 
   await expect(box.getByRole("radio", { name: "~/bin" })).toBeChecked();
   await box.getByRole("button", { name: "Remove" }).click();
   await expect(box).toHaveCount(0);
-  await expect(page.getByText("Removed the gg command: ~/bin/gg.")).toBeVisible();
+  await expect(page.getByText("Removed the gg command. ~/bin/gg.")).toBeVisible();
   expect(existsSync(launcher)).toBe(false);
   await expect(hint).toContainText("Install the command…");
 });
@@ -57,7 +57,7 @@ test("the welcome screen removes an installed command (Linux and Windows have no
   await dialog(page).getByRole("button", { name: "Install", exact: true }).click();
   await expect(hint).toHaveText("gg command installed in ~/.local/bin · Remove");
   await hint.getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByText("Removed the gg command: ~/.local/bin/gg.")).toBeVisible();
+  await expect(page.getByText("Removed the gg command. ~/.local/bin/gg.")).toBeVisible();
   expect(existsSync(path.join(home, ".local", "bin", "gg"))).toBe(false);
   await expect(hint).toContainText("Open a repository from a terminal with gg.");
   // Still installed when the page loads again.
@@ -187,7 +187,7 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     await expect(tick).not.toBeChecked();
     await box.getByRole("button", { name: "Install", exact: true }).click();
     await expect(box).toHaveCount(0);
-    await expect(page.getByText("Installed the gg command: wrote ~/.local/bin/gg.")).toBeVisible();
+    await expect(page.getByText("Installed the gg command. Wrote ~/.local/bin/gg.")).toBeVisible();
     expect(readFileSync(rc)).toEqual(ZSHRC);
     await page.keyboard.press("ControlOrMeta+,");
     const settings = page.getByTestId("settings");
@@ -217,7 +217,7 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     );
     await box.getByRole("button", { name: "Install", exact: true }).click();
     await expect(box).toHaveCount(0);
-    const notice = page.locator(".toast").filter({ hasText: "Installed the gg command: wrote ~/.local/bin/gg." });
+    const notice = page.locator(".toast").filter({ hasText: "Installed the gg command. Wrote ~/.local/bin/gg." });
     await expect(notice).toContainText(
       "Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. It takes effect in new terminal windows.",
     );
@@ -232,7 +232,7 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     await expect(settings.getByTestId("settings-cli-shadowed")).toHaveCount(0);
     await expect(settings.getByTestId("settings-cli-turn-off")).toHaveCount(0);
     await settings.getByRole("button", { name: "Take the line out" }).click();
-    await expect(page.getByText("Took gg’s line out of ~/.zshrc; new terminal windows no longer run it.")).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Took gg’s line out of ~/.zshrc; new terminal windows no longer run it" })).toBeVisible();
     expect(readFileSync(rc)).toEqual(ZSHRC);
     await expect(settings.getByTestId("settings-cli-line")).toHaveCount(0);
     await expect(settings.getByTestId("settings-cli-shadowed")).toContainText(
@@ -244,7 +244,7 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     await expect(settings.getByTestId("settings-cli-line")).toBeVisible();
     expect(readFileSync(rc)).toEqual(withLine);
     await settings.getByTestId("settings-cli-remove").click();
-    const removed = page.locator(".toast").filter({ hasText: "Removed the gg command: ~/.local/bin/gg." });
+    const removed = page.locator(".toast").filter({ hasText: "Removed the gg command. ~/.local/bin/gg." });
     await expect(removed).toContainText("Took gg’s line out of ~/.zshrc; new terminal windows no longer run it.");
     expect(readFileSync(rc)).toEqual(ZSHRC);
     await expect(settings.getByTestId("settings-cli-state")).toHaveText("Not installed");
@@ -274,7 +274,7 @@ test.describe("with zsh and an alias called gg (Oh My Zsh's)", () => {
     );
     await settings.getByRole("button", { name: "Turn off that alias for me" }).click();
     await expect(
-      page.getByText("Turned off your shell’s gg alias: added one line to the end of ~/.zshrc. It takes effect in new terminal windows."),
+      page.getByText("Turned off your shell’s gg alias. Added one line to the end of ~/.zshrc. It takes effect in new terminal windows."),
     ).toBeVisible();
     expect(readFileSync(rc)).toEqual(Buffer.concat([ZSHRC, Buffer.from(LINE)]));
     await settings.getByRole("button", { name: "Take the line out" }).click();
@@ -321,7 +321,7 @@ test.describe("with zsh and an alias made again after ~/.zshrc (a .zlogin, say)"
     await box.getByRole("checkbox", { name: "Turn off that alias for me" }).check();
     await box.getByRole("button", { name: "Install", exact: true }).click();
     await expect(box).toHaveCount(0);
-    const notice = page.locator(".toast").filter({ hasText: "Installed the gg command: wrote ~/.local/bin/gg." });
+    const notice = page.locator(".toast").filter({ hasText: "Installed the gg command. Wrote ~/.local/bin/gg." });
     await expect(notice).toContainText(
       "Added one line to the end of ~/.zshrc, but your shell still defines gg as an alias for git gui citool: something that runs after that line defines it again.",
     );

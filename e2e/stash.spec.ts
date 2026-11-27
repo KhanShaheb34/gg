@@ -165,7 +165,7 @@ test("a stale index.lock is named, and removed only through a red confirmation",
   await row(page, 1).click({ button: "right" });
   await item(page, "Check out this commit").click();
   const failed = page.getByRole("alert").filter({ hasText: "index.lock" });
-  await expect(failed).toContainText("made 2 h ago");
+  await expect(failed).toContainText("A lock file from 2 h ago is in the way");
   await failed.getByRole("button", { name: "Remove the lock file…" }).click();
   const confirm = page.getByRole("alertdialog");
   await expect(confirm.getByTestId("dangers")).toContainText("another git process or an editor");

@@ -198,7 +198,7 @@ test("a failure keeps the draft and says why beside it, with Show log; sent agai
   gg.gh.reply("gql-reply", 1, "", "gh: Resource not accessible by personal access token\n");
   await b.field.fill("Done.");
   await b.send.click();
-  await expect(b.error).toContainText("gh could not post the reply: gh: Resource not accessible by personal access token");
+  await expect(b.error).toContainText("gh could not post the reply. gh: Resource not accessible by personal access token.");
   await expect(b.field).toHaveValue("Done.");
   await expect(t.getByTestId("pr-reply")).toHaveCount(1);
   await expect(page.locator("[data-notices] .toast")).toHaveCount(0);

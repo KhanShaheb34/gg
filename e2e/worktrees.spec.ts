@@ -122,7 +122,7 @@ test("a click shows the worktree's HEAD in the graph; making it active moves the
 
   // A worktree whose folder is gone cannot be made active, and says why.
   await row(page, "old-spike").dblclick();
-  await expect(notice(page, "old-spike cannot be made active: its folder is missing.")).toBeVisible();
+  await expect(notice(page, "old-spike cannot be made active. Its folder is missing.")).toBeVisible();
   await expect(activeRow(page)).toHaveAttribute("data-path", repo);
 });
 
@@ -323,7 +323,7 @@ test("a branch checked out in another worktree: the notice offers to make that o
     const snap = findRepoView(id)!.snapshot;
     await ops.runOp(id, { op: "checkout_branch", branch: "fix/typo", fastForward: false, expectWorktree: snap.activeWorktree }).catch(() => {});
   });
-  const offer = page.getByRole("button", { name: "Make ~/repos/worktrees.worktrees/fix-typo active" });
+  const offer = page.getByRole("button", { name: "Make that worktree active" });
   await expect(offer).toBeVisible();
   await offer.click();
   await expect(activeRow(page)).toHaveAttribute("data-path", path.join(linked(repo), "fix-typo"));
@@ -446,7 +446,7 @@ test("the delete dialog says up front what is stopped there, and the create dial
   await expect(dialog.getByTestId("worktree-location")).toHaveValue("~/repos/worktrees.worktrees/patch");
   gg.git("worktrees", "branch", "-D", "patch");
   await dialog.getByRole("button", { name: "Create worktree" }).click();
-  await expect(dialog.getByTestId("create-error")).toHaveText("Nothing was created: there is no local branch named “patch”.");
+  await expect(dialog.getByTestId("create-error")).toHaveText("Nothing was created. There is no local branch named “patch”.");
   await expect(dialog.locator(".field-hint.problem")).toHaveCount(0);
 });
 

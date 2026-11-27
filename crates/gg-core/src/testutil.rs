@@ -503,11 +503,12 @@ if (: < /dev/tty) 2>/dev/null; then echo yes > "$c/tty"; fi
 cat > "$c/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
-if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in *GgInbox*) key=gql-inbox;; esac; done; fi
-if [ "$key" = gql-inbox ] && [ -n "$GH_HOST" ]; then
+if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; esac; done; fi
+case "$key" in gql-inbox*) if [ -n "$GH_HOST" ]; then
   h="$(printf '%s' "$GH_HOST" | tr . _)"
-  if [ -f "$d/replies/gql-inbox-$h.code" ]; then key="gql-inbox-$h"; fi
-fi
+  if [ -f "$d/replies/$key-$h.code" ]; then key="$key-$h"; fi
+fi;; esac
+if [ "$1" = api ] && [ "$2" = --hostname ]; then case "$5" in repos/*/files*) key=api-files;; esac; fi
 r="$d/replies/$key"
 if [ -f "$r.run" ]; then sh "$r.run" > "$c/ran" 2>&1; fi
 if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi

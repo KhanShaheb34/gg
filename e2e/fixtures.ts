@@ -742,13 +742,14 @@ cat > "$d/calls/$i/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
 if [ "$key" = api-graphql ]; then
-  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInbox*) key=gql-inbox;; esac; done
+  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; esac; done
   if grep -q addPullRequestReviewThreadReply "$d/calls/$i/stdin"; then key=gql-reply; fi
 fi
-if [ "$key" = gql-inbox ] && [ -n "$GH_HOST" ]; then
+case "$key" in gql-inbox*) if [ -n "$GH_HOST" ]; then
   h="$(printf '%s' "$GH_HOST" | tr . _)"
-  if [ -f "$d/replies/gql-inbox-$h.code" ]; then key="gql-inbox-$h"; fi
-fi
+  if [ -f "$d/replies/$key-$h.code" ]; then key="$key-$h"; fi
+fi;; esac
+if [ "$1" = api ] && [ "$2" = --hostname ]; then case "$5" in repos/*/files*) key=api-files; n="$(printf '%s' "$5" | sed 's#.*/pulls/\([0-9]*\)/files.*#\1#')"; if [ -f "$d/replies/api-files-$n.code" ]; then key="api-files-$n"; fi;; esac; fi
 n=""
 if [ "$key" = pr-view ]; then n="$3"; fi
 if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in n=*) n="\${a#n=}";; esac; done; fi

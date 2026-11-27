@@ -588,3 +588,106 @@ fn other_parent(parent: &Path) -> std::path::PathBuf {
     let _ = std::fs::create_dir(&dir);
     dir
 }
+
+/// The list first (lean), then the details of the rows asked for, in one batched query by
+/// node id; pins kept; a pull request's files through the REST API, every page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn details_by_id_pins_and_files() {
+    let s = setup().await;
+    let lean = |number: u32| {
+        let mut n = node(number, "octo/cat", "ada", json!({}));
+        for k in ["comments", "reviews", "commits", "reviewDecision"] {
+            n.as_object_mut().unwrap().remove(k);
+        }
+        n["id"] = format!("PR_{number}").into();
+        n
+    };
+    s.gh.reply(
+        "gql-inbox",
+        0,
+        &answer(vec![], vec![lean(1), lean(2)], vec![]),
+        "",
+    );
+    let page = s.h.m.pr_inbox(true).await.unwrap();
+    assert!(page.prs.iter().all(|p| !p.details));
+    s.gh.reply(
+        "gql-inbox-details",
+        0,
+        &json!({"data": {"nodes": [{
+            "id": "PR_2", "state": "OPEN", "isDraft": false, "reviewDecision": "APPROVED",
+            "comments": {"totalCount": 0, "nodes": []}, "reviews": {"totalCount": 1, "nodes": []},
+            "commits": {"nodes": [{"commit": {"oid": "b", "statusCheckRollup": {"state": "SUCCESS"}}}]}
+        }]}})
+        .to_string(),
+        "",
+    );
+    let page =
+        s.h.m
+            .pr_inbox_details(&["github.com/octo/cat#2".into()])
+            .await
+            .unwrap();
+    let two = page.prs.iter().find(|p| p.number == 2).unwrap();
+    assert!(two.details);
+    assert_eq!(two.checks, InboxChecks::Passing);
+    assert_eq!(two.review, ReviewDecision::Approved);
+    assert!(!page.prs.iter().find(|p| p.number == 1).unwrap().details);
+    let asked = s.gh.calls_of(&["api", "graphql"]).pop().unwrap();
+    assert_eq!(asked.argv[2..4], ["--hostname", "github.com"]);
+    assert!(asked.argv[5].starts_with("query=query GgInboxDetails"));
+    assert_eq!(asked.argv[6..], ["-f", "ids[]=PR_2"]);
+
+    let page =
+        s.h.m
+            .pr_inbox_pin("github.com/octo/cat#1", true)
+            .await
+            .unwrap();
+    assert_eq!(page.pins, ["github.com/octo/cat#1"]);
+    assert!(
+        s.h.m
+            .pr_inbox_pin("github.com/no/such#1", true)
+            .await
+            .is_err()
+    );
+    s.h.m
+        .pr_inbox_group_by(gg_core::dto::InboxGroupBy::Status)
+        .await
+        .unwrap();
+    // As the next run reads them.
+    s.h.m
+        .set_inbox_store(Arc::new(InboxStore::load(s.config.path())));
+    let kept = s.h.m.pr_inbox(false).await.unwrap();
+    assert_eq!(kept.pins, ["github.com/octo/cat#1"]);
+    assert_eq!(kept.group_by, gg_core::dto::InboxGroupBy::Status);
+
+    s.gh.reply(
+        "api-files",
+        0,
+        r#"[{"filename":"a.ts","status":"modified","additions":1,"deletions":0,"changes":1,"patch":"@@"}][{"filename":"b.md","previous_filename":"c.md","status":"renamed","changes":0}]"#,
+        "",
+    );
+    let files =
+        s.h.m
+            .inbox_pr_files("github.com", "octo", "cat", 2)
+            .await
+            .unwrap();
+    assert_eq!(files.files.len(), 2);
+    assert_eq!(files.files[1].old_path.as_deref(), Some("c.md"));
+    let call = s.gh.calls_of(&["api", "--hostname"]).pop().unwrap();
+    assert_eq!(
+        call.argv,
+        [
+            "api",
+            "--hostname",
+            "github.com",
+            "--paginate",
+            "repos/octo/cat/pulls/2/files?per_page=100"
+        ]
+    );
+    s.gh.reply("api-files", 1, "", "HTTP 404: Not Found");
+    let e =
+        s.h.m
+            .inbox_pr_files("github.com", "octo", "cat", 2)
+            .await
+            .unwrap_err();
+    assert!(e.message.contains("HTTP 404"), "{}", e.message);
+}

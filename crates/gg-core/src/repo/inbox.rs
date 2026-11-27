@@ -29,7 +29,8 @@ use crate::gh::{Gh, GhFailure};
 use crate::git::runner::{CmdKind, Expired, StdinPolicy, TimeLimit};
 use crate::hosts::{RemoteRepo, is_known_github, is_plain_host};
 use crate::inbox::{
-    InboxStore, PER_SEARCH, QUERY, key_of, plain_repo, problem_of, problem_of_text,
+    DETAILS_BATCH, DETAILS_QUERY, Details, InboxStore, PER_SEARCH, QUERY, key_of, plain_repo,
+    problem_of, problem_of_text,
 };
 use crate::notice::as_sentence;
 use crate::ops::Step;
@@ -428,6 +429,126 @@ impl RepoManager {
         })
     }
 
+    /// Reads the details (state, checks, review decision, activity) of the page's pull
+    /// requests `keys` (listed or pinned): one batched `gh api graphql` per host and
+    /// [`DETAILS_BATCH`] of them, all at once; the page as it is after. A host that fails
+    /// keeps what was read before (its rows say nothing new until the next).
+    pub async fn pr_inbox_details(self: &Arc<Self>, keys: &[String]) -> Result<PrInbox> {
+        let store = self.inbox_store()?;
+        let data = store.data();
+        let wanted = data.ids_of(keys);
+        let cwd = neutral_dir();
+        let Some((program, tool_path)) = self.tool_program_at(None, gh_name()) else {
+            return Ok(data.page(false));
+        };
+        let mut asked = tokio::task::JoinSet::new();
+        for (host, ids) in wanted {
+            let on = RemoteRepo {
+                host: host.clone(),
+                web: host.clone(),
+                owner: String::new(),
+                name: String::new(),
+            };
+            let Some(gh) = Gh::new(
+                &self.runner,
+                program.clone(),
+                tool_path.clone(),
+                &cwd,
+                &on,
+                self.gh_limit(),
+            ) else {
+                continue;
+            };
+            let gh = Arc::new(gh);
+            let viewer = data.login_of(&host);
+            for batch in ids.chunks(DETAILS_BATCH) {
+                let (gh, host, viewer, batch) =
+                    (gh.clone(), host.clone(), viewer.clone(), batch.to_vec());
+                asked.spawn(async move {
+                    let found = ask_details(&gh, &host, &batch, viewer.as_deref()).await;
+                    (host, found)
+                });
+            }
+        }
+        let mut found = Vec::new();
+        while let Some(done) = asked.join_next().await {
+            if let Ok((host, Some(details))) = done {
+                found.push((host, details));
+            }
+        }
+        let now = unix_ms();
+        let page = tokio::task::spawn_blocking(move || {
+            store.change(|d| {
+                for (host, details) in found {
+                    d.take_details(&host, details, now);
+                }
+                d.page(false)
+            })
+        })
+        .await
+        .map_err(|e| {
+            CoreError::new(ErrorCode::Io, "Could not keep the details").with_detail(e.to_string())
+        })?;
+        Ok(page)
+    }
+
+    /// Pins pull request `key` to the top of the page (or, `pinned` false, unpins it); the
+    /// page after. Kept in the page's file.
+    pub async fn pr_inbox_pin(&self, key: &str, pinned: bool) -> Result<PrInbox> {
+        let store = self.inbox_store()?;
+        let key = key.to_owned();
+        tokio::task::spawn_blocking(move || {
+            store.change(|d| {
+                if d.set_pin(&key, pinned) {
+                    Ok(d.page(false))
+                } else {
+                    Err(bad("That pull request is not on the page."))
+                }
+            })
+        })
+        .await
+        .map_err(|e| {
+            CoreError::new(ErrorCode::Io, "Could not keep the pin").with_detail(e.to_string())
+        })?
+    }
+
+    /// How the page groups its list, from now on (kept in the page's file).
+    pub async fn pr_inbox_group_by(&self, by: crate::dto::InboxGroupBy) -> Result<()> {
+        let store = self.inbox_store()?;
+        let _ = tokio::task::spawn_blocking(move || store.change(|d| d.group_by = by)).await;
+        Ok(())
+    }
+
+    /// The files pull request `number` of `owner/name` on `host` changes: `gh api --paginate
+    /// repos/<owner>/<name>/pulls/<number>/files?per_page=100` (GitHub lists at most 3000).
+    pub async fn inbox_pr_files(
+        &self,
+        host: &str,
+        owner: &str,
+        name: &str,
+        number: u32,
+    ) -> Result<crate::dto::PrFiles> {
+        check_pr(host, owner, name, number)?;
+        let gh = self.inbox_gh(host, owner, name).await?;
+        let path = format!("repos/{owner}/{name}/pulls/{number}/files?per_page=100");
+        let args = ["api", "--hostname", gh.host(), "--paginate", &path];
+        match gh.run(&args, CmdKind::Read, StdinPolicy::Null).await? {
+            Ok(out) => crate::inbox::parse_files(&out.stdout).map_err(|why| {
+                CoreError::new(
+                    ErrorCode::Io,
+                    "Could not read the files: gh's answer could not be read.",
+                )
+                .with_detail(why)
+            }),
+            Err(GhFailure::Failed { message, detail }) => Err(CoreError::new(
+                ErrorCode::Io,
+                format!("Could not read the files: {message}"),
+            )
+            .with_detail(detail)),
+            Err(failure) => Err(unloaded(failure.reason(), Some(&failure))),
+        }
+    }
+
     /// The open repositories that have `owner/name` on `host` as a remote (by their remotes'
     /// addresses, ssh aliases resolved as for the Pull request tab), each with the remote that
     /// names `head_repo` (`owner/name` of the pull request's head), if one does. By id.
@@ -757,6 +878,35 @@ async fn ask_inbox(
             format!("Could not load them: {}", e.message),
             e.detail,
         )),
+    }
+}
+
+/// The details of pull requests `ids` on `host`, asked as `viewer`; `None` when `gh` could not
+/// give them (the page keeps what it had).
+async fn ask_details(
+    gh: &Gh,
+    host: &str,
+    ids: &[String],
+    viewer: Option<&str>,
+) -> Option<Vec<(String, Details)>> {
+    let query = format!("query={DETAILS_QUERY}");
+    let mut args: Vec<String> = vec![
+        "api".into(),
+        "graphql".into(),
+        "--hostname".into(),
+        host.into(),
+        "-f".into(),
+        query,
+    ];
+    for id in ids {
+        // `-f`: a string as it is; `ids[]=`: one element of the list each.
+        args.push("-f".into());
+        args.push(format!("ids[]={id}"));
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match gh.run(&args, CmdKind::Read, StdinPolicy::Null).await {
+        Ok(Ok(out)) => crate::inbox::parse_details(&out.stdout, viewer).ok(),
+        _ => None,
     }
 }
 

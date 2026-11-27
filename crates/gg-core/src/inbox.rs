@@ -1,6 +1,8 @@
-//! The Pull requests page across repositories: what `gh` is asked (one GraphQL query per
-//! GitHub host: the user's own open pull requests, those waiting for their review, and those
-//! they are mentioned in or assigned to, 100 of each, newest first), how its answer is read
+//! The Pull requests page across repositories: what `gh` is asked (per GitHub host, one lean
+//! GraphQL query listing the user's own open pull requests, those waiting for their review, and
+//! those they are mentioned in or assigned to, 100 of each, newest first; then, for the rows
+//! the page shows, one batched query by node id for their state, checks, review decision and
+//! activity: the list paints before those come), how its answers are read
 //! (leniently: a field it does not know reads as unknown), how the groups are told apart (each
 //! pull request in one group only), what "new since you last looked" means, and what gg keeps
 //! of it between runs (`pr-inbox.json` in gg's own config folder, never in a repository).
@@ -21,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::dto::{
-    InboxActivity, InboxChecks, InboxGroup, InboxHost, InboxPr, InboxProblem, PrInbox,
-    ReviewDecision,
+    InboxActivity, InboxChecks, InboxGroup, InboxGroupBy, InboxHost, InboxPr, InboxProblem,
+    InboxState, PrInbox, ReviewDecision,
 };
 use crate::gh::GhFailure;
 use crate::hosts::{is_plain_host, is_plain_word};
@@ -31,18 +33,29 @@ use crate::pr_details::{https_url, parse_time};
 /// How many pull requests each search asks for (GitHub's most per page).
 pub(crate) const PER_SEARCH: u32 = 100;
 
-/// The query, by name (`GgInbox`, which the tests' fake `gh` knows it by): the signed-in
-/// account and four searches of open pull requests in repositories that are not archived,
-/// newest first. `$first` is [`PER_SEARCH`].
+/// The list's query, by name (`GgInbox`, which the tests' fake `gh` knows it by): the
+/// signed-in account and four searches of open pull requests in repositories that are not
+/// archived, newest first, each pull request's lean fields only (what a row's text needs; the
+/// rest is [`DETAILS_QUERY`]'s). `$first` is [`PER_SEARCH`].
 pub(crate) const QUERY: &str = "query GgInbox($first:Int!){viewer{login}\
 mine:search(query:\"is:pr is:open archived:false author:@me sort:updated-desc\",type:ISSUE,first:$first){issueCount nodes{...P}}\
 review:search(query:\"is:pr is:open archived:false review-requested:@me sort:updated-desc\",type:ISSUE,first:$first){issueCount nodes{...P}}\
 mentioned:search(query:\"is:pr is:open archived:false mentions:@me sort:updated-desc\",type:ISSUE,first:$first){issueCount nodes{...P}}\
 assigned:search(query:\"is:pr is:open archived:false assignee:@me sort:updated-desc\",type:ISSUE,first:$first){issueCount nodes{...P}}}\
-fragment P on PullRequest{number title url isDraft updatedAt headRefName baseRefName isCrossRepository \
-repository{owner{login} name} headRepository{owner{login} name} author{login} reviewDecision \
+fragment P on PullRequest{id number title url isDraft updatedAt headRefName baseRefName \
+isCrossRepository repository{owner{login} name} headRepository{owner{login} name} author{login}}";
+
+/// The details' query (`GgInboxDetails`): for pull requests by node id (`$ids`, at most
+/// [`DETAILS_BATCH`]), their state, draft, review decision, checks on their head commit, and
+/// what their activity is told by (the latest comment's and review's author, the counts, the
+/// head commit).
+pub(crate) const DETAILS_QUERY: &str = "query GgInboxDetails($ids:[ID!]!){nodes(ids:$ids){\
+... on PullRequest{id state isDraft reviewDecision \
 comments(last:1){totalCount nodes{author{login}}} reviews(last:1){totalCount nodes{author{login}}} \
-commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}";
+commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}}}";
+
+/// Most pull requests one details query asks about (GitHub's most per `nodes`).
+pub(crate) const DETAILS_BATCH: usize = 100;
 
 /// Most pull requests remembered as seen that are not on the page any more.
 const MAX_SEEN_GONE: usize = 500;
@@ -59,6 +72,24 @@ pub(crate) struct Entry {
     pub own_last_review: bool,
     /// The user opened it.
     pub own: bool,
+    /// Its GraphQL node id (what the details' query names it by).
+    #[serde(default)]
+    pub id: String,
+    /// When its details were last read (unix ms); `None`: not yet.
+    #[serde(default)]
+    pub details_at: Option<i64>,
+}
+
+/// What the details' query says of one pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Details {
+    pub state: InboxState,
+    pub draft: bool,
+    pub checks: InboxChecks,
+    pub review: ReviewDecision,
+    pub seen: Seen,
+    pub own_last_comment: bool,
+    pub own_last_review: bool,
 }
 
 /// What a pull request had: its comments, its reviews and its head commit.
@@ -71,6 +102,10 @@ pub(crate) struct Seen {
     /// When it was recorded (unix ms), for forgetting the oldest.
     #[serde(default)]
     pub at_ms: i64,
+    /// Recorded before its details were read: the counts are filled in when they are, and
+    /// until then nothing is said of its activity.
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// A host's answer, read.
@@ -152,22 +187,10 @@ fn entry_of(node: &Value, host: &str, group: InboxGroup, viewer: Option<&str>) -
         .get("author")
         .and_then(|a| text(a, "login"))
         .map(str::to_owned);
-    let mine = |login: Option<&str>| {
-        login
-            .zip(viewer)
-            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
-    };
-    let own = mine(author.as_deref());
-    let commit = node
-        .get("commits")
-        .and_then(|c| c.get("nodes"))
-        .and_then(Value::as_array)
-        .and_then(|n| n.last())
-        .and_then(|n| n.get("commit"));
-    let head_oid = commit.and_then(|c| text(c, "oid")).map(str::to_owned);
-    let rollup = commit
-        .and_then(|c| c.get("statusCheckRollup"))
-        .and_then(|r| text(r, "state"));
+    let own = author
+        .as_deref()
+        .zip(viewer)
+        .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
     let head_repo = repo_of(node.get("headRepository")).map(|(o, n)| format!("{o}/{n}"));
     let pr = InboxPr {
         key: key_of(host, &owner, &name, number),
@@ -191,24 +214,141 @@ fn entry_of(node: &Value, host: &str, group: InboxGroup, viewer: Option<&str>) -
             .unwrap_or(false),
         author,
         updated_at_ms: text(node, "updatedAt").and_then(parse_time),
-        checks: checks_of(rollup),
-        review: review_of(text(node, "reviewDecision")),
+        checks: InboxChecks::None,
+        review: ReviewDecision::None,
         mentioned: false,
         assigned: false,
         activity: InboxActivity::None,
+        state: InboxState::Open,
+        details: false,
+        pinned: false,
+        listed: true,
     };
-    Some(Entry {
+    let mut entry = Entry {
         pr,
+        seen: Seen::default(),
+        own_last_comment: false,
+        own_last_review: false,
+        own,
+        id: text(node, "id").unwrap_or_default().to_owned(),
+        details_at: None,
+    };
+    // A node with its details already (an answer of the full fields): taken as read.
+    if node.get("commits").is_some()
+        && let Some(d) = details_of(node, viewer)
+    {
+        entry.take_details(d, 0);
+    }
+    Some(entry)
+}
+
+/// The details in node `node` of the details' query (or of a list answer that has them):
+/// `None` for a node that is not a pull request.
+fn details_of(node: &Value, viewer: Option<&str>) -> Option<Details> {
+    node.as_object().filter(|o| !o.is_empty())?;
+    let mine = |login: Option<&str>| {
+        login
+            .zip(viewer)
+            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+    };
+    let commit = node
+        .get("commits")
+        .and_then(|c| c.get("nodes"))
+        .and_then(Value::as_array)
+        .and_then(|n| n.last())
+        .and_then(|n| n.get("commit"));
+    let rollup = commit
+        .and_then(|c| c.get("statusCheckRollup"))
+        .and_then(|r| text(r, "state"));
+    let state = match text(node, "state").map(str::to_ascii_uppercase).as_deref() {
+        Some("MERGED") => InboxState::Merged,
+        Some("CLOSED") => InboxState::Closed,
+        _ => InboxState::Open,
+    };
+    Some(Details {
+        state,
+        draft: node
+            .get("isDraft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        checks: checks_of(rollup),
+        review: review_of(text(node, "reviewDecision")),
         seen: Seen {
             comments: count(node, "comments"),
             reviews: count(node, "reviews"),
-            head: head_oid,
+            head: commit.and_then(|c| text(c, "oid")).map(str::to_owned),
             at_ms: 0,
+            pending: false,
         },
         own_last_comment: mine(last_author(node, "comments")),
         own_last_review: mine(last_author(node, "reviews")),
-        own,
     })
+}
+
+/// The details' answer: each pull request's by its node id. `Err` when it is not an answer,
+/// or GitHub answered only errors (their first message). `viewer`: the account asked as.
+pub(crate) fn parse_details(
+    json: &[u8],
+    viewer: Option<&str>,
+) -> std::result::Result<Vec<(String, Details)>, String> {
+    let v: Value = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+    let Some(nodes) = v
+        .get("data")
+        .and_then(|d| d.get("nodes"))
+        .and_then(Value::as_array)
+    else {
+        return Err(first_error(&v)
+            .unwrap_or("GitHub's answer has no data.")
+            .to_owned());
+    };
+    Ok(nodes
+        .iter()
+        .filter_map(|n| {
+            let id = text(n, "id")?.to_owned();
+            Some((id, details_of(n, viewer)?))
+        })
+        .collect())
+}
+
+/// The first error message of a GraphQL answer, if any.
+fn first_error(v: &Value) -> Option<&str> {
+    v.get("errors")
+        .and_then(Value::as_array)
+        .and_then(|e| e.iter().find_map(|e| text(e, "message")))
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+}
+
+impl Entry {
+    /// Takes `d` as its details, read at `now`.
+    pub(crate) fn take_details(&mut self, d: Details, now: i64) {
+        self.pr.state = d.state;
+        self.pr.draft = d.draft;
+        self.pr.checks = d.checks;
+        self.pr.review = d.review;
+        self.pr.details = true;
+        self.seen = d.seen;
+        self.own_last_comment = d.own_last_comment;
+        self.own_last_review = d.own_last_review;
+        self.details_at = Some(now);
+    }
+
+    /// Takes the details `old` had (the same pull request as listed before), until they are
+    /// read again: the list's own fields (its title, draft, …) stay this answer's.
+    fn keep_details_of(&mut self, old: &Entry) {
+        // An answer with its own details (the full fields) is newer.
+        if self.details_at.is_some() || old.details_at.is_none() {
+            return;
+        }
+        self.pr.state = old.pr.state;
+        self.pr.checks = old.pr.checks;
+        self.pr.review = old.pr.review;
+        self.pr.details = true;
+        self.seen = old.seen.clone();
+        self.own_last_comment = old.own_last_comment;
+        self.own_last_review = old.own_last_review;
+        self.details_at = old.details_at;
+    }
 }
 
 /// Host `host`'s answer to [`QUERY`]: each pull request once, in the first group that has it
@@ -220,13 +360,9 @@ pub(crate) fn parse_answer(json: &[u8], host: &str) -> std::result::Result<Answe
     let data = match v.get("data") {
         Some(d) if d.is_object() => d,
         _ => {
-            let first = v
-                .get("errors")
-                .and_then(Value::as_array)
-                .and_then(|e| e.iter().find_map(|e| text(e, "message")))
-                .map(str::trim)
-                .filter(|m| !m.is_empty());
-            return Err(first.unwrap_or("GitHub's answer has no data.").to_owned());
+            return Err(first_error(&v)
+                .unwrap_or("GitHub's answer has no data.")
+                .to_owned());
         }
     };
     let viewer = data.get("viewer").and_then(|v| text(v, "login"));
@@ -348,6 +484,13 @@ pub(crate) struct InboxData {
     pub hosts: BTreeMap<String, CachedHost>,
     /// The folder the last clone went into.
     pub clone_parent: Option<String>,
+    /// The pinned pull requests' keys, in the order they were pinned.
+    pub pins: Vec<String>,
+    /// Each pinned pull request as last listed or read: shown while no list has it (merged,
+    /// closed, or past the newest 100).
+    pub pinned: BTreeMap<String, Entry>,
+    /// How the page groups its list.
+    pub group_by: InboxGroupBy,
 }
 
 /// One host's pull requests as last loaded, and how its last load ended.
@@ -367,16 +510,26 @@ impl InboxData {
     /// Takes host `host`'s answer, loaded at `now`, as part of a load that is the page's first
     /// (`first`: what it lists counts as seen, whichever host answers first) or not: its list
     /// replaces the last one; the user's own pull requests are seen as they first show.
-    pub(crate) fn take_answer(&mut self, host: &str, answer: Answer, now: i64, first: bool) {
+    pub(crate) fn take_answer(&mut self, host: &str, mut answer: Answer, now: i64, first: bool) {
+        // What was read of each before stays until it is read again.
+        if let Some(before) = self.hosts.get(host) {
+            let old: std::collections::HashMap<&str, &Entry> = before
+                .entries
+                .iter()
+                .map(|e| (e.pr.key.as_str(), e))
+                .collect();
+            for e in &mut answer.entries {
+                if let Some(o) = old.get(e.pr.key.as_str()) {
+                    e.keep_details_of(o);
+                }
+            }
+        }
         for e in &answer.entries {
             if (first || e.own) && !self.seen.contains_key(&e.pr.key) {
-                self.seen.insert(
-                    e.pr.key.clone(),
-                    Seen {
-                        at_ms: now,
-                        ..e.seen.clone()
-                    },
-                );
+                self.seen.insert(e.pr.key.clone(), Self::seen_now(e, now));
+            }
+            if self.pins.contains(&e.pr.key) {
+                self.pinned.insert(e.pr.key.clone(), e.clone());
             }
         }
         self.started = true;
@@ -409,22 +562,99 @@ impl InboxData {
         cached.detail = detail.filter(|d| !d.trim().is_empty());
     }
 
-    /// Records pull request `key` as seen now with what it has as last listed. False when it
-    /// is not listed.
-    pub(crate) fn mark_seen(&mut self, key: &str, now: i64) -> bool {
-        let Some(entry) = self
-            .hosts
+    /// What `e` has, recorded as seen at `now` (pending while its details are not read).
+    fn seen_now(e: &Entry, now: i64) -> Seen {
+        Seen {
+            at_ms: now,
+            pending: e.details_at.is_none(),
+            ..e.seen.clone()
+        }
+    }
+
+    /// Pull request `key`, listed or pinned.
+    fn entry(&self, key: &str) -> Option<&Entry> {
+        self.hosts
             .values()
             .flat_map(|h| &h.entries)
             .find(|e| e.pr.key == key)
-        else {
+            .or_else(|| self.pinned.get(key))
+    }
+
+    /// Records pull request `key` as seen now with what it has as last read. False when it is
+    /// neither listed nor pinned.
+    pub(crate) fn mark_seen(&mut self, key: &str, now: i64) -> bool {
+        let Some(seen) = self.entry(key).map(|e| Self::seen_now(e, now)) else {
             return false;
         };
-        let seen = Seen {
-            at_ms: now,
-            ..entry.seen.clone()
-        };
         self.seen.insert(key.to_owned(), seen);
+        true
+    }
+
+    /// The node ids, by host, of the pull requests `keys` names (listed or pinned): what the
+    /// details' query is asked about.
+    pub(crate) fn ids_of(&self, keys: &[String]) -> BTreeMap<String, Vec<String>> {
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for key in keys {
+            if let Some(e) = self.entry(key).filter(|e| !e.id.is_empty()) {
+                let ids = out.entry(e.pr.host.clone()).or_default();
+                if !ids.contains(&e.id) {
+                    ids.push(e.id.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The account host `host` answered as, if known.
+    pub(crate) fn login_of(&self, host: &str) -> Option<String> {
+        self.hosts.get(host).and_then(|h| h.login.clone())
+    }
+
+    /// Takes host `host`'s details, read at `now`, into its pull requests (listed and pinned);
+    /// what was recorded as seen before they were read is filled in with them.
+    pub(crate) fn take_details(&mut self, host: &str, found: Vec<(String, Details)>, now: i64) {
+        let by_id: std::collections::HashMap<String, Details> = found.into_iter().collect();
+        let entries = self
+            .hosts
+            .get_mut(host)
+            .map(|h| h.entries.iter_mut())
+            .into_iter()
+            .flatten()
+            .chain(self.pinned.values_mut().filter(|e| e.pr.host == host));
+        let mut read = Vec::new();
+        for e in entries {
+            if let Some(d) = by_id.get(&e.id) {
+                e.take_details(d.clone(), now);
+                read.push((e.pr.key.clone(), e.seen.clone()));
+            }
+        }
+        for (key, now_has) in read {
+            if let Some(seen) = self.seen.get_mut(&key)
+                && seen.pending
+            {
+                *seen = Seen {
+                    at_ms: seen.at_ms,
+                    ..now_has
+                };
+            }
+        }
+    }
+
+    /// Pins pull request `key` (or, `pinned` false, unpins it). False when it is neither
+    /// listed nor pinned.
+    pub(crate) fn set_pin(&mut self, key: &str, pinned: bool) -> bool {
+        if !pinned {
+            self.pins.retain(|k| k != key);
+            self.pinned.remove(key);
+            return true;
+        }
+        let Some(e) = self.entry(key).cloned() else {
+            return false;
+        };
+        if !self.pins.iter().any(|k| k == key) {
+            self.pins.push(key.to_owned());
+        }
+        self.pinned.insert(key.to_owned(), e);
         true
     }
 
@@ -440,7 +670,7 @@ impl InboxData {
         let mut gone: Vec<(i64, String)> = self
             .seen
             .iter()
-            .filter(|(k, _)| !listed.contains(k.as_str()))
+            .filter(|(k, _)| !listed.contains(k.as_str()) && !self.pins.contains(*k))
             .map(|(k, s)| (s.at_ms, k.clone()))
             .collect();
         if gone.len() <= MAX_SEEN_GONE {
@@ -461,15 +691,27 @@ impl InboxData {
     /// The page as it stands: each host's pull requests with their activity, grouped (the
     /// user's, review requested, the rest; each newest first), github.com's host first.
     pub(crate) fn page(&self, fresh: bool) -> PrInbox {
+        let shown = |e: &Entry, listed: bool| InboxPr {
+            activity: activity(e, self.seen.get(&e.pr.key)),
+            pinned: self.pins.contains(&e.pr.key),
+            listed,
+            ..e.pr.clone()
+        };
         let mut prs: Vec<InboxPr> = self
             .hosts
             .values()
             .flat_map(|h| &h.entries)
-            .map(|e| InboxPr {
-                activity: activity(e, self.seen.get(&e.pr.key)),
-                ..e.pr.clone()
-            })
+            .map(|e| shown(e, true))
             .collect();
+        // A pinned one no list has any more: as last read.
+        let listed: HashSet<String> = prs.iter().map(|p| p.key.clone()).collect();
+        prs.extend(
+            self.pins
+                .iter()
+                .filter(|k| !listed.contains(*k))
+                .filter_map(|k| self.pinned.get(k))
+                .map(|e| shown(e, false)),
+        );
         // Stable: within a group, each host's answer is newest first already; across hosts,
         // by time.
         prs.sort_by(|a, b| {
@@ -491,7 +733,13 @@ impl InboxData {
             })
             .collect();
         hosts.sort_by_key(|h| h.host != "github.com");
-        PrInbox { prs, hosts, fresh }
+        PrInbox {
+            prs,
+            hosts,
+            fresh,
+            pins: self.pins.clone(),
+            group_by: self.group_by,
+        }
     }
 }
 
@@ -504,6 +752,10 @@ pub(crate) fn activity(e: &Entry, seen: Option<&Seen>) -> InboxActivity {
             InboxActivity::New
         };
     };
+    // Nothing to compare yet: what was seen, or what it has now, is still to be read.
+    if seen.pending || e.details_at.is_none() {
+        return InboxActivity::None;
+    }
     let comments = e.seen.comments > seen.comments && !e.own_last_comment;
     let reviews = e.seen.reviews > seen.reviews && !e.own_last_review;
     // A change seen both times: a commit missing from one answer is no news.
@@ -573,6 +825,49 @@ impl InboxStore {
         }
         written
     }
+}
+
+/// Most files GitHub lists for a pull request.
+pub(crate) const MAX_FILES: usize = 3000;
+
+/// The files in `gh api --paginate repos/<o>/<r>/pulls/<n>/files` output `json`: one JSON
+/// array per page, one after the other. A renamed or copied file keeps its old path; a file
+/// with no count of lines (no patch, nothing counted: binary, or only renamed) has none.
+pub(crate) fn parse_files(json: &[u8]) -> std::result::Result<crate::dto::PrFiles, String> {
+    let mut files = Vec::new();
+    for page in serde_json::Deserializer::from_slice(json).into_iter::<Vec<Value>>() {
+        for f in page.map_err(|e| e.to_string())? {
+            let Some(path) = text(&f, "filename").filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            let status = match text(&f, "status").unwrap_or_default() {
+                "added" => 'A',
+                "removed" => 'D',
+                "renamed" => 'R',
+                "copied" => 'C',
+                "changed" => 'T',
+                _ => 'M',
+            };
+            let num = |k: &str| {
+                f.get(k)
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+            };
+            let counted = f.get("patch").is_some() || num("changes").unwrap_or(0) > 0;
+            files.push(crate::dto::PrFile {
+                path: path.to_owned(),
+                old_path: text(&f, "previous_filename")
+                    .filter(|p| !p.is_empty() && matches!(status, 'R' | 'C'))
+                    .map(str::to_owned),
+                status,
+                additions: counted.then(|| num("additions").unwrap_or(0)),
+                deletions: counted.then(|| num("deletions").unwrap_or(0)),
+            });
+        }
+    }
+    let truncated = files.len() >= MAX_FILES;
+    files.truncate(MAX_FILES);
+    Ok(crate::dto::PrFiles { files, truncated })
 }
 
 /// Whether `host`, `owner` and `name` can name a pull request's repository to `gh`: a plain
@@ -815,6 +1110,7 @@ mod tests {
             reviews: 1,
             head: Some("a1".into()),
             at_ms: 1,
+            pending: false,
         };
         let k = "github.com/octo/cat#1";
         // Never seen: new, unless it is the user's own.
@@ -1029,6 +1325,205 @@ mod tests {
         assert_eq!(names, [FILE_NAME]);
     }
 
+    /// The list as the lean query gives it: no details until they are read, by node id.
+    fn lean(number: u32, repo: &str, author: &str, updated: &str) -> Value {
+        let mut n = node(number, repo, author);
+        for k in ["comments", "reviews", "commits", "reviewDecision"] {
+            n.as_object_mut().unwrap().remove(k);
+        }
+        n["id"] = format!("PR_{number}").into();
+        n["updatedAt"] = updated.into();
+        n
+    }
+
+    fn details_answer(nodes: Vec<Value>) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"data": {"nodes": nodes}})).unwrap()
+    }
+
+    fn details_node(number: u32, state: &str, checks: &str, comments: u32, last: &str) -> Value {
+        serde_json::json!({
+            "id": format!("PR_{number}"), "state": state, "isDraft": false,
+            "reviewDecision": "APPROVED",
+            "comments": {"totalCount": comments, "nodes": [{"author": {"login": last}}]},
+            "reviews": {"totalCount": 0, "nodes": []},
+            "commits": {"nodes": [{"commit": {"oid": "c1", "statusCheckRollup": {"state": checks}}}]}
+        })
+    }
+
+    #[test]
+    fn the_list_comes_first_and_details_by_id_after() {
+        let json = answer(&[(
+            "review",
+            vec![lean(1, "octo/cat", "ada", "2026-03-01T10:00:00Z")],
+        )]);
+        let a = parse_answer(&json, "github.com").unwrap();
+        let e = &a.entries[0];
+        assert_eq!(e.id, "PR_1");
+        assert!(!e.pr.details && e.details_at.is_none());
+        assert_eq!(e.pr.checks, InboxChecks::None);
+
+        let mut data = InboxData::default();
+        data.take_answer("github.com", a, 100, true);
+        // On the first load, what it has is to be read: pending, and nothing said of it.
+        assert!(data.seen["github.com/octo/cat#1"].pending);
+        assert_eq!(data.page(true).prs[0].activity, InboxActivity::None);
+        let ids = data.ids_of(&["github.com/octo/cat#1".into(), "github.com/x/y#9".into()]);
+        assert_eq!(ids["github.com"], ["PR_1"]);
+
+        let found = parse_details(
+            &details_answer(vec![
+                details_node(1, "OPEN", "FAILURE", 3, "ada"),
+                serde_json::json!({}),
+            ]),
+            Some("octo"),
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        data.take_details("github.com", found, 200);
+        let pr = &data.page(false).prs[0];
+        assert!(pr.details);
+        assert_eq!(pr.checks, InboxChecks::Failing);
+        assert_eq!(pr.review, ReviewDecision::Approved);
+        // The pending record took what was read: no activity from it.
+        assert!(!data.seen["github.com/octo/cat#1"].pending);
+        assert_eq!(data.seen["github.com/octo/cat#1"].comments, 3);
+        assert_eq!(pr.activity, InboxActivity::None);
+
+        // Listed again (lean): what was read stays until it is read again.
+        let again = parse_answer(&json, "github.com").unwrap();
+        data.take_answer("github.com", again, 300, false);
+        let pr = &data.page(true).prs[0];
+        assert!(pr.details);
+        assert_eq!(pr.checks, InboxChecks::Failing);
+        // A comment more, someone else's: updated.
+        data.take_details(
+            "github.com",
+            parse_details(
+                &details_answer(vec![details_node(1, "OPEN", "SUCCESS", 4, "grace")]),
+                Some("octo"),
+            )
+            .unwrap(),
+            400,
+        );
+        assert_eq!(data.page(false).prs[0].activity, InboxActivity::Updated);
+        assert!(parse_details(br#"{"errors":[{"message":"nope"}]}"#, None).is_err());
+    }
+
+    #[test]
+    fn pins_stay_with_their_last_state_and_group_by_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = InboxStore::load(dir.path());
+        store.change(|d| {
+            let a = parse_answer(
+                &answer(&[(
+                    "review",
+                    vec![
+                        lean(1, "octo/cat", "ada", "2026-03-01T10:00:00Z"),
+                        lean(2, "octo/cat", "ada", "2026-03-01T10:00:00Z"),
+                    ],
+                )]),
+                "github.com",
+            )
+            .unwrap();
+            d.take_answer("github.com", a, 1, true);
+            assert!(d.set_pin("github.com/octo/cat#2", true));
+            assert!(
+                !d.set_pin("github.com/octo/cat#99", true),
+                "not on the page"
+            );
+            d.group_by = InboxGroupBy::Repository;
+        });
+        let d = InboxStore::load(dir.path()).data();
+        assert_eq!(d.pins, ["github.com/octo/cat#2"]);
+        assert_eq!(d.group_by, InboxGroupBy::Repository);
+        let page = d.page(false);
+        assert_eq!(page.group_by, InboxGroupBy::Repository);
+        assert!(
+            page.prs
+                .iter()
+                .any(|p| p.number == 2 && p.pinned && p.listed)
+        );
+
+        // Merged since: no list has it, it stays pinned with its state.
+        let mut d = d;
+        d.take_details(
+            "github.com",
+            parse_details(
+                &details_answer(vec![details_node(2, "MERGED", "SUCCESS", 1, "ada")]),
+                None,
+            )
+            .unwrap(),
+            5,
+        );
+        let a = parse_answer(
+            &answer(&[(
+                "review",
+                vec![lean(1, "octo/cat", "ada", "2026-03-01T10:00:00Z")],
+            )]),
+            "github.com",
+        )
+        .unwrap();
+        d.take_answer("github.com", a, 6, false);
+        let page = d.page(true);
+        let gone = page.prs.iter().find(|p| p.number == 2).unwrap();
+        assert!(gone.pinned && !gone.listed);
+        assert_eq!(gone.state, InboxState::Merged);
+        // Its details are still asked by key.
+        assert_eq!(
+            d.ids_of(&["github.com/octo/cat#2".into()])["github.com"],
+            ["PR_2"]
+        );
+        assert!(d.set_pin("github.com/octo/cat#2", false));
+        assert!(d.page(true).prs.iter().all(|p| p.number != 2));
+    }
+
+    #[test]
+    fn files_read_across_pages_with_renames_and_without_counts() {
+        let pages = br#"[
+          {"filename":"src/a.ts","status":"modified","additions":3,"deletions":1,"changes":4,"patch":"@@"},
+          {"filename":"docs/new.md","previous_filename":"docs/old.md","status":"renamed","additions":0,"deletions":0,"changes":0}
+        ]
+        [
+          {"filename":"logo.png","status":"added","additions":0,"deletions":0,"changes":0},
+          {"filename":"gone.txt","status":"removed","additions":0,"deletions":2,"changes":2,"patch":"@@"},
+          {"filename":"x","status":"copied","previous_filename":"y","additions":1,"deletions":0,"changes":1,"patch":"@@"},
+          {"status":"modified"}
+        ]"#;
+        let f = parse_files(pages).unwrap();
+        assert!(!f.truncated);
+        let got: Vec<(&str, char, Option<&str>, Option<u32>)> = f
+            .files
+            .iter()
+            .map(|x| {
+                (
+                    x.path.as_str(),
+                    x.status,
+                    x.old_path.as_deref(),
+                    x.additions,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("src/a.ts", 'M', None, Some(3)),
+                ("docs/new.md", 'R', Some("docs/old.md"), None),
+                ("logo.png", 'A', None, None),
+                ("gone.txt", 'D', None, Some(0)),
+                ("x", 'C', Some("y"), Some(1)),
+            ]
+        );
+        assert_eq!(parse_files(b"").unwrap().files.len(), 0);
+        assert!(parse_files(b"{not json").is_err());
+        // GitHub's most: said to be cut.
+        let many: Vec<Value> = (0..MAX_FILES)
+            .map(|i| serde_json::json!({"filename": format!("f{i}"), "status": "added"}))
+            .collect();
+        let f = parse_files(&serde_json::to_vec(&many).unwrap()).unwrap();
+        assert!(f.truncated);
+        assert_eq!(f.files.len(), MAX_FILES);
+    }
+
     #[test]
     fn the_query_asks_four_searches_once() {
         for alias in [
@@ -1040,6 +1535,12 @@ mod tests {
             assert_eq!(QUERY.matches(alias).count(), 1, "{alias}");
         }
         assert!(QUERY.starts_with("query GgInbox($first:Int!)"));
+        // The list is lean: what a row's text needs, nothing that makes GitHub look further.
+        for slow in ["statusCheckRollup", "reviewDecision", "comments", "reviews"] {
+            assert!(!QUERY.contains(slow), "{slow}");
+            assert!(DETAILS_QUERY.contains(slow), "{slow}");
+        }
+        assert!(DETAILS_QUERY.starts_with("query GgInboxDetails($ids:[ID!]!)"));
         assert!(QUERY.contains("review-requested:@me"));
         assert!(plain_repo("github.com", "octo", "cat"));
         assert!(!plain_repo("github.com", "-octo", "cat"));

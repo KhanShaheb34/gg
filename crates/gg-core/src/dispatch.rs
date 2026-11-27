@@ -320,6 +320,25 @@ struct InboxKeyArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxKeysArgs {
+    keys: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxPinArgs {
+    key: String,
+    pinned: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxGroupByArgs {
+    group_by: crate::dto::InboxGroupBy,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InboxPrArgs {
     host: String,
     owner: String,
@@ -535,6 +554,27 @@ impl Core {
                 let a: InboxKeyArgs = parse(cmd, args)?;
                 self.repos()?.pr_inbox_seen(&a.key).await?;
                 Ok(Value::Null)
+            }
+            "pr_inbox_details" => {
+                let a: InboxKeysArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_inbox_details(&a.keys).await?)
+            }
+            "pr_inbox_pin" => {
+                let a: InboxPinArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_inbox_pin(&a.key, a.pinned).await?)
+            }
+            "pr_inbox_group_by" => {
+                let a: InboxGroupByArgs = parse(cmd, args)?;
+                self.repos()?.pr_inbox_group_by(a.group_by).await?;
+                Ok(Value::Null)
+            }
+            "inbox_pr_files" => {
+                let a: InboxPrArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .inbox_pr_files(&a.host, &a.owner, &a.name, a.number)
+                        .await?,
+                )
             }
             "inbox_pr_details" => {
                 let a: InboxPrArgs = parse(cmd, args)?;

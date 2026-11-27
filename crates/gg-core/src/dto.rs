@@ -238,6 +238,43 @@ pub struct InboxPr {
     pub mentioned: bool,
     pub assigned: bool,
     pub activity: InboxActivity,
+    /// Open, merged or closed, as its details last said (a pinned one may be gone from the
+    /// lists).
+    #[serde(default)]
+    pub state: InboxState,
+    /// Its checks, review decision and activity have been read (`pr_inbox_details`); until
+    /// then they read as none.
+    #[serde(default)]
+    pub details: bool,
+    /// The user pinned it to the top.
+    #[serde(default)]
+    pub pinned: bool,
+    /// It is in one of the lists now (false: a pinned one no list has any more).
+    #[serde(default = "yes")]
+    pub listed: bool,
+}
+
+/// A pull request's state, as its details say. Serialized lowercase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxState {
+    #[default]
+    Open,
+    Merged,
+    Closed,
+}
+
+/// How the Pull requests page groups its list. Serialized lowercase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxGroupBy {
+    /// Yours, waiting for your review, mentioned or assigned.
+    #[default]
+    Role,
+    /// By repository.
+    Repository,
+    /// By what needs attention first (failing checks, changes requested, …).
+    Status,
 }
 
 /// Why a host's pull requests could not be loaded. Serialized snake_case.
@@ -285,6 +322,34 @@ pub struct PrInbox {
     pub hosts: Vec<InboxHost>,
     /// `gh` was asked for this answer (false: from what gg kept of the last one).
     pub fresh: bool,
+    /// The pinned pull requests' keys, in the order they were pinned.
+    pub pins: Vec<String>,
+    /// How the page groups its list, as the user last chose.
+    pub group_by: InboxGroupBy,
+}
+
+/// One file a pull request changes (`inbox_pr_files`), as the Commit tab's "Committed on
+/// branch" lists one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFile {
+    pub path: String,
+    /// Its path before, for a rename or a copy.
+    pub old_path: Option<String>,
+    /// `A`, `M`, `D`, `R`, `C` or `T`.
+    pub status: char,
+    /// Lines added and removed (`None` both: GitHub gave no count, as for a binary file).
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+}
+
+/// The files a pull request changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFiles {
+    pub files: Vec<PrFile>,
+    /// More than GitHub lists (it lists at most 3000): `files` is the first of them.
+    pub truncated: bool,
 }
 
 /// An open repository that has a pull request's repository as a remote (`inbox_repo_match`).

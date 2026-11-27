@@ -166,6 +166,8 @@ pub(crate) struct Gh {
     /// `--repo`: the query names them).
     owner: String,
     name: String,
+    /// Its host (what `gh api --hostname` names).
+    host: String,
 }
 
 impl Gh {
@@ -209,7 +211,13 @@ impl Gh {
             repo,
             owner: on.owner.clone(),
             name: on.name.clone(),
+            host: on.host.clone(),
         })
+    }
+
+    /// The host every command is for.
+    pub(crate) fn host(&self) -> &str {
+        &self.host
     }
 
     /// The repository every command names (`--repo <this>`).

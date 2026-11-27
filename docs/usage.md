@@ -154,7 +154,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   says it is looking for one ("Looking for a pull request…", under the branch's name) rather
   than offering to make one; a pull request found then shows at once, its checks and comments
   following. What you typed in the form is kept meanwhile. Without one, it shows
-  the form: a title and description suggested from the branch's commits, the branch it goes
+  the form: a title made from the branch's name, as Orca makes it (its part after the last
+  `/`, `-` and `_` read as spaces, the first letter capitalised: `sam/fix-login-error-wording`
+  gives "Fix login error wording"), a description listing its commits, the branch it goes
   into, and **Create as draft**. The branch it goes into is, by default, the branch's own
   base on the repository pull requests go to: the one its last pull request went into (kept
   per branch), else the branch it was created from (git's own records of it, read only: the

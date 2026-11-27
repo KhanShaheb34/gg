@@ -194,6 +194,59 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
   token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
   than github.com, but leaves these two to gh.
+- **The Pull requests page** (its button at the left of the tab bar, or ⌘⇧I; Ctrl+Shift+I
+  on Windows and Linux) is about you rather than one repository, and works with no repository
+  open. It lists, in three groups, your open pull requests, those waiting for your review
+  (asked of you or of a team you are in), and those you are mentioned in or assigned to; each
+  pull request is in one group only, the first that has it, and one of the third says which of
+  the two it is. Each row: its title, its repository (`owner/name`), its number, Draft, who
+  opened it and when it last changed, its checks (passing, failing, running, or nothing when
+  there are none) and its review decision (Approved, Changes requested, Review required). A
+  dot before a row says something happened since you last opened that pull request in gg: a
+  filled dot, a pull request that showed up since (one of yours never counts as new); a ring,
+  more comments or reviews (unless the latest is yours), or, on someone else's, new commits.
+  The first time the page loads, what it lists is the starting point: nothing is marked. A
+  dot on the page's button says some row has one. What was seen is kept in gg's own config
+  folder (`pr-inbox.json`, with the list as last loaded and the folder you last cloned into),
+  never in a repository.
+
+  The list as last loaded shows at once, even after a restart; `gh` is asked again behind it,
+  the Refresh button turning meanwhile, and only while the page shows: when it opens (unless
+  it was asked in the last 30 seconds), when the window comes back to the front (unless in the
+  last 2 minutes), and on Refresh (or ⌘R on the page); the core never asks more than once
+  every 10 seconds. What gg asks: one `gh api graphql` per GitHub host, with one read-only
+  query of four searches (`author:@me`, `review-requested:@me`, `mentions:@me`,
+  `assignee:@me`, open pull requests in repositories that are not archived, the newest 100 of
+  each; when a group has more, the page says the newest 100 are shown). The hosts are
+  github.com and the GitHub hosts of the open repositories' remotes, as the Pull request tab
+  tells them (github.com and `*.ghe.com` by name, another host only when `gh` has credentials
+  stored for it), and those of the last load while they still are; each is asked as the
+  account `gh` has active there, and the page names it ("@octo"). Without a list it says why
+  in one box, with Refresh: `gh` not installed (with a link to get it), not signed in, GitHub's
+  rate limit reached, GitHub not reachable, an empty list, or `gh`'s own words. A list loaded
+  before stays when a reload fails, "as of 14:05", with a quiet line naming the host and why.
+  Rows are drawn only where you look, so hundreds scroll as smoothly as ten; in a narrow
+  window each row keeps one line. In the list, ↑ ↓, Page Up/Down, Home and End move the
+  selection and Enter opens it.
+
+  A pull request opens on a page of its own, never in a repository's side panel (that
+  repository may be on another branch): what the Pull request tab shows (its state, branches,
+  checks, comments and reviews, with reply, resolve and comment, Open in browser and Copy
+  link), read and written with the same `gh` commands, naming its repository. Esc, or
+  **Pull requests** at the top, goes back to the list where you were. When its repository is
+  open in gg (a remote of a tab's repository names it, by its address), **Go to repository**
+  shows that tab, and a second button checks out its branch there, only when you click it,
+  with gg's own checkout and its confirmations (uncommitted changes, a merge in progress):
+  **Check out** a local branch of that name, or the remote's branch as a new local one that
+  tracks it; **Fetch and check out** when the branch is not fetched yet (it is fetched into a
+  local branch of that name, then checked out); **Go to its worktree** when another worktree
+  has it checked out; **Checked out** when it is the current branch. A fork's branch is
+  offered only when a remote names the fork (and a local branch of that name only when it
+  follows that remote's). When the repository is not open, **Clone and open…** asks for the
+  folder to clone into (the last one used, else the folder of your most recent repository),
+  clones it with git into a new folder named after the repository (`https://` or `ssh`, as
+  `gh config get git_protocol` says for the host), shows git's progress with Stop, and opens
+  it in a tab. A folder of that name already there is refused, never touched.
 - **Generate with AI**: the sparkle beside the commit message (⌘G in it) writes a commit
   message from the ticked files; beside a pull request's title (⌘G in the title or the
   description) it writes the title and description, and whether it looks like a draft, from
@@ -366,6 +419,7 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘P | The branch picker: switch branch, or create one |
 | ⌘K | The side panel's Commit tab, its message focused |
 | ⌘⇧P | The side panel's Pull request tab, for the current branch |
+| ⌘⇧I (Ctrl+Shift+I) | The Pull requests page, across repositories; again, back from it |
 | ⌘Enter | Commit what is ticked (in the commit message) |
 | ⌘G, ⌘Z | Generate with AI; undo what it wrote (in the commit message, a pull request's title or description) |
 | Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |
@@ -375,7 +429,8 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the side panel |
 
 In the command log: ↑/↓, Home/End move between rows, Enter or Space opens one, C copies its
-command line.
+command line. On the Pull requests page: ↑/↓, Page Up/Down, Home/End select a pull request,
+Enter opens it, Esc goes back from it, ⌘R loads the page again.
 
 ## The `gg` command
 

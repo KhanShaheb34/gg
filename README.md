@@ -224,6 +224,23 @@ page instead. gg never reads or stores a GitHub token.
   <img alt="Pull request markers such as #1284 and #1295 beside branch labels in the graph and beside a worktree in the side panel's Worktrees tab" src="docs/screens/pull-requests-light.png" width="640">
 </picture>
 
+**Your pull requests across repositories**
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/inbox-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/inbox-light.png">
+  <img alt="The Pull requests page: Your pull requests, Waiting for your review, and Mentioned or assigned, each row a pull request's title, repository, number, author and age, its checks and its review decision, two of them marked as new since last looked at" src="docs/screens/inbox-light.png" width="640">
+</picture>
+
+The **Pull requests** button at the left of the tab bar (⌘⇧I) shows a page of your own pull
+requests, those waiting for your review, and those you are mentioned in or assigned to,
+across every repository on GitHub, open in gg or not: each with its repository, draft,
+checks, review decision, and a dot when something happened since you last opened it in gg.
+It shows what it last loaded at once and asks `gh` again behind it, only while you look at
+it. A pull request opens on its own page, as the Pull request tab shows one, with reply and
+resolve; from there **Go to repository** and **Check out** its branch in the repository open
+in gg, or **Clone and open** one that is not.
+
 **Right-click actions**
 
 <picture>
@@ -301,6 +318,7 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 | ⌘P | Switch branch, or create one (the branch picker) |
 | ⌘K | Commit (the side panel's Commit tab, its message focused); ⌘Enter commits |
 | ⌘⇧P | The side panel's Pull request tab, for the current branch |
+| ⌘⇧I | The Pull requests page, across repositories |
 | ⌘B | Show or hide the side panel, on the tab last used (Commit, Pull request or Worktrees) |
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active |
 | ⌘⇧L | Show or hide the command log |

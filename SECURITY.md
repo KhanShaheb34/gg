@@ -37,6 +37,15 @@ gg runs git on repositories that may come from anyone, so these matter most:
 - **Updates.** Any way to make gg install something that is not a release signed with gg's
   key, an older release, or to make it fetch updates from anywhere but the release on
   GitHub (see below).
+- **The Pull requests page.** gg asks `gh` only read-only questions for it (one GraphQL
+  query of four searches per GitHub host, and a pull request's details as the Pull request
+  tab reads them), only while the page shows, never in the background; it writes to a pull
+  request (a reply, resolving a thread, a comment) and clones a repository only on the
+  user's click, and keeps what it shows and what was seen only in its own config folder
+  (`pr-inbox.json`), never in a repository. Any way for it to ask a host that is not GitHub
+  (github.com, `*.ghe.com`, or a host `gh` has credentials stored for), to send a token
+  anywhere, to open a page off a GitHub host as a pull request's page, to clone into a folder
+  that is already there, or to write to a repository without the user asking, is in scope.
 - **Generate with AI.** Any way for gg to run an AI tool without the user's click, to send it
   more than is said below, to put a repository's text on its command line or in the command
   log, or to let the tool run a command, read a file or change the repository (see below).

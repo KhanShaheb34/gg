@@ -26,9 +26,12 @@
   import { runOp } from "../state/ops.svelte";
   import { copyLink } from "../state/prs.svelte";
   import { untrack } from "svelte";
-  import { applySuggestion, defaultBranch, dropPrDraft, prDraft, prNumberOf, rememberMade } from "../state/pullRequest.svelte";
+  import { applySuggestion, defaultBranch, dropPrDraft, prDraft, prNumberOf, rememberMade, type PrFields } from "../state/pullRequest.svelte";
   import type { RepoView } from "../state/repo.svelte";
+  import { cancelGeneration, generate, newRequestId } from "../state/ai.svelte";
   import type { OpOutcome, OpProgress, PrSuggestion } from "../types";
+  import AiGenerate from "./AiGenerate.svelte";
+  import AiProblem from "./AiProblem.svelte";
   import MiddleText from "./MiddleText.svelte";
 
   type Props = {
@@ -148,7 +151,9 @@
     if (d.base === "") return "Choose the branch it goes into.";
     return null;
   });
-  const valid = $derived(!d.pending && !loading && suggestFailed === null && reason === null);
+  /** A "Generate with AI" under way (its request, kept with the draft), or null: the form waits for it. */
+  const writing = $derived(d.ai.request);
+  const valid = $derived(!d.pending && !loading && suggestFailed === null && reason === null && writing === null);
 
   function openUrl(url: string) {
     void openExternal(repoId, { target: "url", url });
@@ -257,8 +262,95 @@
     void create();
   }
 
+  // --- Generate with AI -------------------------------------------------------------------
+
+  // How it failed and what it replaced are the draft's too (see `PrDraft.ai`).
+  const aiFailure = $derived(d.ai.failure);
+  const undo = $derived(d.ai.undo);
+  let aiControl: AiGenerate | undefined = $state();
+
+  /** Why there is nothing to write from now, or null. */
+  const aiBlocked = $derived.by((): string | null => {
+    if (d.pending) return "Creating the pull request…";
+    if (loading) return "Reading the branch…";
+    if (d.base === "") return "Choose the branch it goes into.";
+    // The suggestion lists the branch's commits not on its base: none, nothing to describe.
+    if (suggestion !== null && suggestion.base === d.base && suggestion.body === "")
+      return `Nothing to describe: ${shown(branch)} has no commits that are not on ${shown(d.base)}.`;
+    return null;
+  });
+
+  async function writeDetails() {
+    if (writing !== null || aiBlocked !== null) return;
+    const id = newRequestId();
+    // The draft, not this form: shown again meanwhile, the form there sees it, and the
+    // answer lands in it.
+    const draft = d;
+    draft.ai.request = id;
+    draft.ai.failure = null;
+    const before: PrFields = { title: draft.title, body: draft.body, draft: draft.draft };
+    const outcome = await generate(repoId, id, {
+      kind: "pr",
+      branch,
+      base: draft.base,
+      baseRemote,
+      title: before.title,
+      body: before.body,
+      draft: before.draft,
+    });
+    // Cancelled, or another took its place: nothing of it lands.
+    if (draft.ai.request !== id) return;
+    draft.ai.request = null;
+    if (outcome.status === "done" && outcome.title !== null) {
+      const got: PrFields = { title: outcome.title, body: outcome.body ?? before.body, draft: outcome.draft ?? before.draft };
+      const had = before.title.trim() !== "" || before.body.trim() !== "";
+      draft.ai.undo = had ? { previous: before, generated: got } : null;
+      draft.title = got.title;
+      draft.body = got.body;
+      draft.draft = got.draft;
+      draft.titleTouched = true;
+      draft.bodyTouched = true;
+    } else if (outcome.status === "failed" && outcome.kind !== "cancelled") {
+      draft.ai.failure = outcome;
+    }
+  }
+
+  function stopWriting() {
+    const id = d.ai.request;
+    if (id === null) return;
+    // Back to the form as it was at once; the tool is ended.
+    d.ai.request = null;
+    void cancelGeneration(id);
+  }
+
+  function undoGenerated() {
+    if (undo === null) return;
+    d.title = undo.previous.title;
+    d.body = undo.previous.body;
+    d.draft = undo.previous.draft;
+    d.ai.undo = null;
+  }
+
+  // Edited since: what was generated is the user's now, and there is no undo.
+  $effect(() => {
+    if (undo !== null && (d.title !== undo.generated.title || d.body !== undo.generated.body)) d.ai.undo = null;
+  });
+
   function onKeydown(e: KeyboardEvent) {
+    const mod = isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    const field = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
     if (e.key === "Enter" && (isMac() ? e.metaKey : e.ctrlKey) && !e.isComposing) submit(e);
+    else if (field && mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "g" && !e.isComposing) {
+      e.preventDefault();
+      void aiControl?.activate();
+    } else if (field && mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "z" && undo !== null) {
+      e.preventDefault();
+      undoGenerated();
+    } else if (e.key === "Escape" && writing !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      stopWriting();
+    }
   }
 
   const failureUrl = $derived.by(() => {
@@ -305,14 +397,43 @@
   {:else}
     <div class="fields">
       <div class="pf-field">
-        <label class="field-label" for="pr-title-{uid}">Title</label>
+        <div class="label-row">
+          <label class="field-label" for="pr-title-{uid}">Title</label>
+          <span class="row-end">
+            {#if writing !== null}
+              <button type="button" class="mini-link" data-testid="pr-ai-cancel" onclick={stopWriting}>Cancel</button>
+            {:else if undo !== null}
+              <button
+                type="button"
+                class="mini-link"
+                title="Put back the title and description it replaced ({isMac() ? '⌘Z' : 'Ctrl+Z'} in a field)"
+                data-testid="pr-ai-undo"
+                onclick={undoGenerated}>Undo</button
+              >
+            {/if}
+            <AiGenerate
+              bind:this={aiControl}
+              kind="pr"
+              blocked={aiBlocked}
+              running={writing !== null}
+              onrun={() => void writeDetails()}
+              oncancel={stopWriting}
+              testid="pr-ai"
+            />
+          </span>
+        </div>
         <input
           id="pr-title-{uid}"
           class="text-input"
+          class:writing={writing !== null}
           type="text"
           bind:value={d.title}
-          oninput={() => (d.titleTouched = true)}
-          readonly={d.pending}
+          oninput={() => {
+            d.titleTouched = true;
+            d.ai.failure = null;
+          }}
+          readonly={d.pending || writing !== null}
+          aria-busy={writing !== null}
           placeholder={loading ? "Suggested from the branch’s commits…" : ""}
           autocomplete="off"
           spellcheck="true"
@@ -326,14 +447,26 @@
         <textarea
           id="pr-body-{uid}"
           class="text-input body"
+          class:writing={writing !== null}
           bind:value={d.body}
-          oninput={() => (d.bodyTouched = true)}
-          readonly={d.pending}
+          oninput={() => {
+            d.bodyTouched = true;
+            d.ai.failure = null;
+          }}
+          readonly={d.pending || writing !== null}
+          aria-busy={writing !== null}
           spellcheck="true"
-          placeholder={loading ? "Listing the branch’s commits…" : "What it changes, and why."}
+          placeholder={writing !== null
+            ? "Writing the title and description…"
+            : loading
+              ? "Listing the branch’s commits…"
+              : "What it changes, and why."}
           data-testid="pr-body"
         ></textarea>
       </div>
+      {#if aiFailure !== null && writing === null}
+        <AiProblem failure={aiFailure} {repoId} onretry={() => void writeDetails()} testid="pr-ai-problem" />
+      {/if}
     </div>
   {/if}
 
@@ -461,6 +594,46 @@
 
   .field-label {
     margin: 0;
+  }
+
+  /* The Title's label, and Generate with AI at its end: one line, as tall as the button. */
+  .label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .row-end {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    margin: -4px -4px -4px 0;
+  }
+
+  .mini-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-size: var(--fs-xs);
+    font-weight: 550;
+  }
+
+  .mini-link:hover {
+    text-decoration: underline;
+  }
+
+  .mini-link:focus-visible {
+    border-radius: 3px;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  .writing {
+    color: var(--text-muted);
+    cursor: progress;
   }
 
   .text-input,

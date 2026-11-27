@@ -192,9 +192,39 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
   token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
   than github.com, but leaves these two to gh.
+- **Generate with AI**: the sparkle beside the commit message (⌘G in it) writes a commit
+  message from the ticked files; beside a pull request's title (⌘G in the title or the
+  description) it writes the title and description, and whether it looks like a draft, from
+  the branch's commits and diff since the base you chose (the base stays yours). It runs the
+  AI command-line tool you installed and signed in to, Claude Code or Codex (Automatic takes
+  Claude Code when both are there), with your own account; its tooltip names the tool and the
+  model ("Generate with Claude Code (haiku)"). While it writes, the button is a spinner and
+  the field is locked; Cancel (or the spinner, or Esc in the field) stops the tool. The text
+  replaces what the field held: **Undo** beside it, or ⌘Z in the field, puts that back until
+  you edit the new text. Nothing is committed or created by it. With nothing ticked, or a
+  branch with no commits ahead of its base, the button says so in its tooltip. Without either
+  tool, the button stays, quieter, and says so when clicked, with links to install one and
+  **Check again** (which reads your shell's `PATH` again, so a tool installed since gg started
+  is found). Before a tool's first use, a small notice says what is sent and to whom; it is
+  asked once per tool. When the tool fails, the field says why with the next step: not signed
+  in (run `claude`, or `codex login`, in a terminal: **Open terminal**), a usage limit reached
+  (the tool's own words), a model it does not know (**Settings**), no answer within 90 s, or
+  anything else in the tool's words, with **Try again** and **Show log** (the generation is an
+  operation in the command log: the git it read with, and the tool's command line and answer;
+  never the prompt or the diff). The prompt (gg's default, from Orca) has the branch's name,
+  the files and their diff, cut to about 200 KB with a note of what was left out; binary files
+  are named, never read. The tool runs in a temporary folder, never in the repository, with
+  no tools (Claude Code) or with its commands, web search and your `config.toml` (its MCP
+  servers, profiles and model) off in its
+  read-only sandbox (Codex), and keeps no session.
 - **Settings** (⌘,): theme (system, light or dark), date format, background fetch, the
   editor and terminal the worktree menu opens, the worktree location pattern, whether a push
-  shows the Pull request tab, and the `gg` command. **?** lists the keyboard shortcuts.
+  shows the Pull request tab, Generate with AI (the tool: Automatic, Claude Code or Codex,
+  each shown with its version or Not installed and a link to install it; each tool's model,
+  by default `haiku` for Claude Code and Codex's own for Codex (gg runs Codex without your
+  `config.toml`, so a model set there is not used: set it here), from a short list or typed;
+  the two prompts, with their variables and Reset to default), and the `gg` command. **?**
+  lists the keyboard shortcuts.
 
 ## Switching branches
 
@@ -335,6 +365,7 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘K | The side panel's Commit tab, its message focused |
 | ⌘⇧P | The side panel's Pull request tab, for the current branch |
 | ⌘Enter | Commit what is ticked (in the commit message) |
+| ⌘G, ⌘Z | Generate with AI; undo what it wrote (in the commit message, a pull request's title or description) |
 | Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |
 | ⌘B | Show or hide the side panel, on the tab last used (Commit, Pull request or Worktrees) |
 | ⌘⇧L | Show or hide the command log |

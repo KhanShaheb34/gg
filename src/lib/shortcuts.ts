@@ -195,6 +195,15 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
   { group: "Actions", does: "Commit what is ticked", keys: [["Mod", "Enter"]], where: "in the commit message" },
   {
     group: "Actions",
+    does: "Generate with AI: the commit message, or the pull request’s title and description; undo it",
+    keys: [
+      ["Mod", "G"],
+      ["Mod", "Z"],
+    ],
+    where: "in the commit message, the pull request’s title or description",
+  },
+  {
+    group: "Actions",
     does: "Pull request: the side panel's Pull request tab, for the current branch",
     keys: [["Mod", "Shift", "P"]],
     kind: "pullRequest",

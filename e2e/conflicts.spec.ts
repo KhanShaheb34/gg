@@ -105,7 +105,7 @@ test("continue_disabled_until_resolved_then_finishes", async ({ gg }) => {
   await expect(confirm.getByRole("listitem")).toHaveText(["app.txt", "style.css"]);
   await confirm.getByRole("button", { name: "Stage and continue" }).click();
 
-  await expect(notice(page, "Finished the merge: it is committed.")).toBeVisible();
+  await expect(notice(page, "Finished the merge. It is committed.")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "log", "-1", "--format=%s").trim()).toBe("Merge branch 'feature/x'");
   expect(gg.git("conflicts", "show", "HEAD:app.txt")).toBe("resolved\n");
@@ -129,7 +129,7 @@ test("abort_returns_to_before", async ({ gg }) => {
   await armed(page);
   await confirm.getByRole("button", { name: "Abort", exact: true }).click();
 
-  await expect(notice(page, "Aborted the merge: main is back as it was before it.")).toBeVisible();
+  await expect(notice(page, "Aborted the merge. main is back as it was before it.")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(before);
   expect(gg.git("conflicts", "status", "--porcelain").trim()).toBe("");
@@ -171,7 +171,7 @@ test("rebase_banner_shows_steps_and_continues_through_two_stops", async ({ gg })
   await continueButton(page).click();
   await dialog(page).getByRole("button", { name: "Stage and continue" }).click();
 
-  await expect(notice(page, "Finished rebasing topic.")).toBeVisible();
+  await expect(notice(page, "Finished rebasing topic")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "log", "--format=%s", "-6").trim().split("\n")).toEqual([
     "Topic five",
@@ -306,7 +306,7 @@ test("continue_anyway_names_what_is_not_resolved_and_goes_ahead", async ({ gg })
   await armed(page);
   await confirm.getByRole("button", { name: "Continue anyway" }).click();
 
-  await expect(notice(page, "Finished the merge: it is committed.")).toBeVisible();
+  await expect(notice(page, "Finished the merge. It is committed.")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "show", "HEAD:style.css")).toContain("<<<<<<< HEAD");
   expect(gg.git("conflicts", "show", "HEAD:app.txt")).toBe("Title\n=======\n");
@@ -339,7 +339,7 @@ test("a cherry-pick that comes out empty is skipped from its notice", async ({ g
   expect(failed.status).toBe("failed");
   const alert = page.getByRole("alert").filter({ hasText: "skip this commit, or abort the cherry-pick" });
   await alert.getByRole("button", { name: "Skip this commit" }).click();
-  await expect(notice(page, "Skipped the commit; the cherry-pick is finished.")).toBeVisible();
+  await expect(notice(page, "Skipped the commit. The cherry-pick is finished.")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(head);
 });
@@ -379,7 +379,7 @@ test("a commit with no changes left: the banner says so and offers Skip; the not
   gg.git("conflicts", "add", "app.txt", "style.css");
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await banner(page).getByRole("button", { name: "Skip this commit" }).click();
-  await expect(notice(page, "Skipped the commit; the cherry-pick is finished.")).toBeVisible();
+  await expect(notice(page, "Skipped the commit. The cherry-pick is finished.")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);
   expect(gg.git("conflicts", "rev-parse", "HEAD").trim()).toBe(head);
 });

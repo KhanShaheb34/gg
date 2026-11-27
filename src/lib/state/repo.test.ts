@@ -474,7 +474,7 @@ describe("RepoView.applySnapshot", () => {
     });
     await view.applySnapshot(snapshot());
     await vi.waitFor(() => expect(notice).toHaveBeenCalledTimes(1));
-    expect(notice).toHaveBeenCalledWith("Could not load the commits", "Could not read the history\nfatal: bad object");
+    expect(notice).toHaveBeenCalledWith("Could not load the commits", "Could not read the history", "fatal: bad object");
     expect(view.snapshot.generation).toBe(2);
 
     // git works again: the next event (or a refresh) loads the rows.
@@ -700,10 +700,10 @@ describe("RepoView view options", () => {
     await view.setViewOptions({ showTags: false, showStashes: true });
     expect(view.viewOptions).toEqual(ALL);
     expect(localStorage.getItem("gg.view.v1:/r")).toBeNull(); // the defaults are not stored
-    expect(notice).toHaveBeenCalledWith("Could not change the view", "boom");
+    expect(notice).toHaveBeenCalledWith("Could not change the view", "boom", undefined);
   });
 
-  it("a notice carries the core's detail below its message", async () => {
+  it("a notice carries the core's message under its headline, and its detail below", async () => {
     const view = await openView(0);
     const notice = vi.fn();
     view.onNotice = notice;
@@ -711,7 +711,7 @@ describe("RepoView view options", () => {
       new ipc.CoreError({ code: "git_failed", message: "git failed", detail: "fatal: bad object" }),
     );
     await view.setViewOptions({ showTags: false, showStashes: true });
-    expect(notice).toHaveBeenCalledWith("Could not change the view", "git failed\nfatal: bad object");
+    expect(notice).toHaveBeenCalledWith("Could not change the view", "git failed", "fatal: bad object");
   });
 
   it("applies the answer to a change only if no event came meanwhile; else asks again", async () => {
@@ -970,7 +970,7 @@ describe("RepoView fetch and refresh", () => {
     vi.mocked(ipc.api.fetch).mockRejectedValue(new ipc.CoreError({ code: "io", message: "boom", detail: "x" }));
     await view.fetch();
     expect(view.fetching).toBe(false);
-    expect(notice).toHaveBeenCalledWith("Fetch failed", "boom\nx");
+    expect(notice).toHaveBeenCalledWith("Fetch failed", "boom", "x");
   });
 
   it("refresh shows progress and applies the snapshot it returns", async () => {
@@ -1009,7 +1009,8 @@ describe("RepoView fetch and refresh", () => {
     await settle();
     expect(view.fetching).toBe(false);
     expect(notice).toHaveBeenCalledWith(
-      "Fetch failed: fatal: no such remote",
+      "Fetch failed",
+      "fatal: no such remote",
       "From /o\n   a..b  main -> origin/main\nfatal: no such remote\n",
     );
   });

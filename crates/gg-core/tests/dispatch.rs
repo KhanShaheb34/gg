@@ -2210,7 +2210,7 @@ async fn worktree_files_and_commit_via_dispatch() {
         out["message"]
             .as_str()
             .unwrap()
-            .starts_with("Committed 1 file to main ("),
+            .starts_with("Committed 1 file. "),
         "{out:#}"
     );
     assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "add it");

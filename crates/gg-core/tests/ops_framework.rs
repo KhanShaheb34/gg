@@ -202,11 +202,10 @@ async fn index_lock_held_fails_with_an_explanation() {
             detail,
             hints,
         } => {
+            let said = gg_core::notice::notice(&message).plain();
             assert!(
-                message
-                    .to_lowercase()
-                    .contains("another git process is working in this repository"),
-                "{message}"
+                said.starts_with("Another git process is working here. git found its lock file"),
+                "{said}"
             );
             assert!(detail.contains("index.lock"), "{detail}");
             assert!(hints.is_empty());
@@ -674,7 +673,7 @@ async fn a_queued_operation_is_titled_with_the_branch_it_runs_on() {
     assert_eq!(merge.status, OpStatus::Failed, "{merge:?}");
     assert_eq!(
         merge.message,
-        "Nothing was done: it was asked for on main, but feature is checked out now. Look at \
+        "Nothing was done. It was asked for on main, but feature is checked out now. Look at \
          it again, and ask again if it still applies."
     );
     assert_eq!((merge.log_from, merge.log_to), (0, 0));
@@ -1171,7 +1170,7 @@ async fn a_hook_that_hangs_is_stopped() {
         "not the hook's 60 s"
     );
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
-    assert_eq!(out.message, "Stopped.");
+    assert_eq!(out.message, "Stopped");
     assert_eq!(out.op_id, op_id);
     assert_eq!(out.snapshot.op, None);
     // The hook went with git (its process group).

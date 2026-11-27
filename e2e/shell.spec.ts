@@ -160,3 +160,39 @@ test("the theme toggle switches and persists the theme; system follows the OS", 
   await expect(html).toHaveAttribute("data-theme", "light");
   await expect(html).toHaveCSS("color-scheme", "light");
 });
+
+test("a notice's line of names wraps rather than clip one, and a lasting notice's line is shown whole", async ({ gg }) => {
+  const { page } = gg;
+  await page.goto("/");
+  await expect(page.getByTestId("welcome")).toBeVisible();
+  await page.evaluate(async () => {
+    const { notify } = await import("/src/lib/state/app.svelte.ts");
+    const flow = (from: string, to: string) => [{ ref: from }, { text: " → " }, { ref: to }, { text: " · pushed to origin" }];
+    // Two names a compact line never cuts (16 characters each), with its words: wider than the line.
+    notify({ kind: "success", message: "Pull request #21 opened", note: flow("feature/abcdefgh", "release/abcdefgh"), persistent: true });
+    // A long name gives way: one line.
+    notify({ kind: "success", message: "Pull request #22 opened", note: flow("feature/a-very-long-branch-name-that-goes-on", "main"), persistent: true });
+    const long = Array.from({ length: 8 }, (_, i) => `Sentence ${i + 1} of what went wrong, all of which is worth reading.`).join(" ");
+    notify({ kind: "info", message: "Lasting", note: long, persistent: true });
+    notify({ kind: "info", message: "Passing", note: long });
+  });
+  // Held while measured: a passing notice goes after a few seconds.
+  await page.locator("[data-notices] .toast", { hasText: "Passing" }).hover();
+  const note = (headline: string) => page.locator("[data-notices] .toast", { hasText: headline }).locator(".note");
+  const box = (headline: string) =>
+    note(headline).evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, sh: el.scrollHeight, ch: el.clientHeight, line: parseFloat(getComputedStyle(el).lineHeight) }));
+  const wrapped = await box("#21");
+  expect(wrapped.sw).toBeLessThanOrEqual(wrapped.cw);
+  expect(wrapped.ch).toBeGreaterThan(1.5 * wrapped.line);
+  await expect(note("#21").locator(".cut")).toHaveCount(0);
+  const cut = await box("#22");
+  expect(cut.sw).toBeLessThanOrEqual(cut.cw);
+  expect(cut.ch).toBeLessThan(1.5 * cut.line);
+  await expect(note("#22").locator(".cut")).toHaveCount(1);
+  const lasting = await box("Lasting");
+  expect(lasting.sh).toBeLessThanOrEqual(lasting.ch);
+  expect(lasting.ch).toBeGreaterThan(4 * lasting.line);
+  const passing = await box("Passing");
+  expect(passing.ch).toBeLessThanOrEqual(4 * passing.line);
+  expect(passing.sh).toBeGreaterThan(passing.ch);
+});

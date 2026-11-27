@@ -60,7 +60,7 @@ async fn a_hard_reset_confirmed_for_main_does_not_run_on_the_branch_checked_out_
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert_eq!(
         out.message,
-        "Nothing was done: it was asked for on main, but feature is checked out now. Look at \
+        "Nothing was done. It was asked for on main, but feature is checked out now. Look at \
          it again, and ask again if it still applies."
     );
     assert!(
@@ -186,7 +186,7 @@ async fn a_reset_does_not_run_once_the_branch_has_moved() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message
-            .starts_with("Nothing was done: main has moved since"),
+            .starts_with("Nothing was done. main has moved since"),
         "{}",
         out.message
     );

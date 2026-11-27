@@ -14,8 +14,8 @@
   import { DEFAULT_SPLIT, DETAILS_MIN_H, infoWidth, panelHeight, splitFor } from "../detailsLayout";
   import { formatDateLong, groupDigits, shortHash } from "../format";
   import { clock } from "../state/prs.svelte";
-  import { api, CoreError } from "../ipc";
-  import { app, toast } from "../state/app.svelte";
+  import { api } from "../ipc";
+  import { app, reportError, toast } from "../state/app.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import ChangedFiles from "./ChangedFiles.svelte";
   import Splitter from "./Splitter.svelte";
@@ -204,8 +204,7 @@
       try {
         index = await api.findRow(view.repoId, target);
       } catch (e) {
-        const text = e instanceof Error ? e.message : String(e);
-        toast("error", `Could not go to that commit: ${text}`, e instanceof CoreError ? (e.detail ?? undefined) : undefined);
+        reportError(e, "Could not go to that commit");
         return;
       }
       if (view.snapshot.generation !== generation) continue;

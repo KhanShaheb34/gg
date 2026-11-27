@@ -173,7 +173,7 @@ async fn apply_keeps_and_pop_removes() {
         assert_eq!(out.status, OpStatus::Failed, "{out:?}");
         assert!(out.message.contains("notes.txt"), "{}", out.message);
         assert!(
-            out.message.contains("would be overwritten"),
+            out.message.contains("The stash would overwrite notes.txt"),
             "{}",
             out.message
         );
@@ -414,7 +414,8 @@ async fn pop_with_conflict_keeps_the_stash_and_explains() {
     let out = h.run(id, pop(&w)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
-        out.message.contains("conflicts in notes.txt"),
+        out.message
+            .starts_with("Popping the stash ran into conflicts. In notes.txt, left"),
         "{}",
         out.message
     );
@@ -518,9 +519,8 @@ async fn branch_from_stash_that_does_not_apply_says_the_branch_is_there() {
     assert_eq!(current_branch(&repo).as_deref(), Some("rescue"));
     assert_eq!(stashes(&repo)[0].0, w, "the stash is kept");
     assert!(
-        out.message.starts_with(
-            "Created branch rescue and checked it out, but the stash could not be applied"
-        ),
+        out.message
+            .starts_with("Created rescue, but the stash could not be applied."),
         "{}",
         out.message
     );

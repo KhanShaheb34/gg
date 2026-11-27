@@ -31,6 +31,7 @@ use crate::git::progress::read_kind;
 use crate::git::runner::{CmdKind, GitOutput, GitRunner};
 use crate::git::status::{STATUS_ARGS, parse_files, read_files};
 use crate::git::worktrees::read_worktrees;
+use crate::notice::{as_sentence, name, note_of, path, said, said_const, telling_line, title_of};
 use crate::ops::explain::{file_list, recognised};
 use crate::ops::local::{current_branch, head_commit, kind_name, short};
 use crate::ops::{OpCtx, Step, network};
@@ -41,25 +42,39 @@ const MERGE_NEEDS_ALL: &str = "A merge is concluded with all its changed files (
                                does not track yet may stay out).";
 
 /// Said when git does not know the user's name or email.
-const NO_IDENTITY: &str = "Nothing was committed: git does not know who you are. Set your \
-                           name and email (git config --global user.name \"Your Name\", and \
-                           user.email), then commit again.";
+const NO_IDENTITY: &str = said_const!(
+    "Nothing was committed: git does not know who you are",
+    "Set your name and email (git config --global user.name \"Your Name\", and user.email), \
+     then commit again."
+);
 
 /// Said when the signing program failed: without a terminal, a passphrase prompt
 /// fails at once.
-const SIGNING_FAILED: &str = "Nothing was committed: the commit could not be signed. gg runs \
-                              git without a terminal, so a signing program that asks for a \
-                              passphrase there fails at once. Use an agent or a graphical \
-                              passphrase prompt (see \u{201c}Actions\u{201d} in the README), \
-                              or commit in a terminal.";
+const SIGNING_FAILED: &str = said_const!(
+    "Nothing was committed: the commit could not be signed",
+    "gg runs git without a terminal, so a signing program that asks for a passphrase there \
+     fails at once. Use an agent or a graphical passphrase prompt (see \u{201c}Actions\u{201d} \
+     in the README), or commit in a terminal."
+);
 
 /// Said when the message is empty once git has removed its comment lines.
-const EMPTY_MESSAGE: &str = "Nothing was committed: the message is empty once git removes \
-                             comment lines (lines starting with #).";
+const EMPTY_MESSAGE: &str = said_const!(
+    "Nothing was committed: the message is empty",
+    "It is, once git removes its comment lines (lines starting with #)."
+);
 
-/// Said when git, or a hook, refused the commit for a reason the core does not recognise.
-const REFUSED: &str = "Nothing was committed: git or one of the repository's hooks \
-                       (pre-commit, commit-msg) refused the commit. What it said is below.";
+/// Said when git, or a hook, refused the commit for a reason the core does not recognise,
+/// with the line of its output that says most (`said`), if any.
+fn refused_commit(said_line: Option<String>) -> String {
+    let title = "Nothing was committed: git or a hook refused the commit";
+    match said_line {
+        Some(line) => said(title, line),
+        None => said(
+            title,
+            "A hook (pre-commit, commit-msg) or git said why: see the log.",
+        ),
+    }
+}
 
 /// Most paths given to one command, so the command line stays short on any platform.
 const CHUNK: usize = 100;
@@ -203,13 +218,19 @@ fn transition_refused(
         if entry.status == EntryStatus::D {
             continue;
         }
-        let path = entry.path.as_str();
-        if let Some(link) = link_above(cwd, path) {
-            return Some(format!(
-                "Nothing was committed: {path} is inside {link}, which is a link to another \
-                 folder now; git does not look inside it."
+        let file = entry.path.as_str();
+        if let Some(link) = link_above(cwd, file) {
+            return Some(said(
+                "Nothing was committed",
+                format!(
+                    "{} is inside {}, which is a link to another folder now; git does not look \
+                     inside it.",
+                    path(file),
+                    path(&link)
+                ),
             ));
         }
+        let path = file;
         let is_file = fs::symlink_metadata(cwd.join(path)).is_ok_and(|m| !m.is_dir());
         let under = format!("{path}/");
         let below = deleted_unticked
@@ -271,18 +292,23 @@ pub(crate) async fn refused(
         .iter()
         .find(|e| !e.committable && is_ticked(e, &ticked))
     {
-        return Ok(Some(format!(
-            "Nothing was committed: the name of {} is not valid UTF-8, which gg cannot hand \
-             back to git exactly; commit it in a terminal.",
-            odd.path
+        return Ok(Some(said(
+            "Nothing was committed",
+            format!(
+                "The name of {} is not valid UTF-8, which gg cannot hand back to git exactly; \
+                 commit it in a terminal.",
+                path(&odd.path)
+            ),
         )));
     }
     if in_progress == Some(InProgressKind::Merge) {
         let left = unmerged(&entries, None);
         if !left.is_empty() {
-            return Ok(Some(format!(
-                "The merge still has conflicts in {}: resolve them, then commit.",
-                file_list(&left)
+            let named: Vec<String> = left.iter().map(path).collect();
+            let named: Vec<&str> = named.iter().map(String::as_str).collect();
+            return Ok(Some(said(
+                format!("The merge still has conflicts in {}", file_list(&named)),
+                "Resolve them, then commit.",
             )));
         }
         // Every tracked change: git commits the whole index then.
@@ -297,10 +323,15 @@ pub(crate) async fn refused(
         let conflicted = unmerged(&entries, Some(&ticked));
         if !conflicted.is_empty() {
             let verb = if conflicted.len() == 1 { "has" } else { "have" };
-            return Ok(Some(format!(
-                "Nothing was committed: {} still {verb} conflicts. Resolve them first: a file \
-                 with conflicts cannot be committed.",
-                file_list(&conflicted)
+            let named: Vec<String> = conflicted.iter().map(path).collect();
+            let named: Vec<&str> = named.iter().map(String::as_str).collect();
+            return Ok(Some(said(
+                "Nothing was committed",
+                format!(
+                    "{} still {verb} conflicts. Resolve them first: a file with conflicts cannot \
+                     be committed.",
+                    file_list(&named)
+                ),
             )));
         }
     }
@@ -426,7 +457,7 @@ impl Scratch {
                 detail,
                 hints,
             } => Step::Failed {
-                message: format!("{message} {}", not_put_back(&e)),
+                message: crate::notice::add_note(&message, &not_put_back(&e)),
                 detail,
                 hints,
             },
@@ -537,12 +568,10 @@ fn output(out: &GitOutput) -> String {
 fn step_failed(args: &[&str], out: &GitOutput) -> Step {
     let detail = output(out);
     let message = recognised(args, &detail).unwrap_or_else(|| {
-        let first = detail
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or("git failed");
-        format!("Nothing was committed: {first}")
+        said(
+            "Nothing was committed",
+            telling_line(&detail).unwrap_or_else(|| "git failed.".to_owned()),
+        )
     });
     Step::Failed {
         message,
@@ -576,7 +605,7 @@ fn commit_failed(args: &[&str], out: &GitOutput) -> Result<Step> {
     } else if has("Aborting commit due to empty commit message") {
         EMPTY_MESSAGE.to_owned()
     } else {
-        recognised(args, &detail).unwrap_or_else(|| REFUSED.to_owned())
+        recognised(args, &detail).unwrap_or_else(|| refused_commit(telling_line(&detail)))
     };
     Ok(Step::Failed {
         message,
@@ -965,9 +994,12 @@ pub(crate) async fn commit(
             (None, None) => unreachable!("they differ"),
         };
         return Ok(Step::Failed {
-            message: format!(
-                "Nothing was committed: {what} while gg was getting ready. Look at the files \
-                 again, then commit."
+            message: said(
+                "Nothing was committed",
+                format!(
+                    "{} while gg was getting ready. Look at the files again, then commit.",
+                    crate::notice::capitalized(&what)
+                ),
             ),
             detail: String::new(),
             hints: Vec::new(),
@@ -1062,9 +1094,9 @@ pub(crate) async fn commit(
                     &out,
                 ));
             }
-            return Ok(Step::Done(format!(
-                "Nothing to commit; removed {}.",
-                stale_said(stale.len())
+            return Ok(Step::Done(said(
+                "Nothing to commit",
+                format!("Removed {}.", stale_said(stale.len())),
             )));
         }
     }
@@ -1092,7 +1124,7 @@ pub(crate) async fn commit(
                 .map(|step| scratch.put_back(saved.as_deref(), step));
         }
         Ok(out) => Some((
-            "git reported a problem after the commit was made (below).".to_owned(),
+            "git reported a problem after the commit was made: see the log.".to_owned(),
             output(&out),
         )),
         Err(e) if !made => {
@@ -1107,7 +1139,7 @@ pub(crate) async fn commit(
             return Err(e);
         }
         Err(e) if ctx.runner.is_stopped() => Some((
-            "Stopped while git finished it (a post-commit hook, say).".to_owned(),
+            "It was stopped while git finished it (a post-commit hook, say).".to_owned(),
             e.detail.unwrap_or_default(),
         )),
         Err(e) => Some((e.message, e.detail.unwrap_or_default())),
@@ -1136,24 +1168,19 @@ pub(crate) async fn commit(
 
     let count = changed_count(ctx, &after, parent.as_deref(), &new).await?;
     let branch = branch_of(ctx, &after).await?;
-    let on = match &branch {
-        Some(branch) => format!("to {branch}"),
-        None => "on the detached HEAD".to_owned(),
+    let at = match &branch {
+        Some(branch) => format!("{} on {}", name(short(&new)), name(branch)),
+        None => format!("{} on the detached HEAD", name(short(&new))),
     };
     let committed = if empty {
-        let on = match &branch {
-            Some(branch) => format!("on {branch}"),
-            None => "on the detached HEAD".to_owned(),
-        };
-        format!("Made an empty commit {on} ({}).", short(&new))
+        said("Made an empty commit", at)
     } else if in_merge {
-        format!(
-            "Concluded the merge: committed {} {on} ({}).",
-            files(count),
-            short(&new)
+        said(
+            "Concluded the merge",
+            format!("{at} \u{b7} {}", files(count)),
         )
     } else {
-        format!("Committed {} {on} ({}).", files(count), short(&new))
+        said(format!("Committed {}", files(count)), at)
     };
     let retry: Vec<OpHint> = push_to
         .iter()
@@ -1164,12 +1191,22 @@ pub(crate) async fn commit(
         .collect();
     if let Some((why, detail)) = trouble {
         let stopped = ctx.runner.is_stopped();
+        let title = title_of(&committed);
         let message = if stopped && push {
-            format!("{committed} Stopped before the push.")
+            said(
+                format!("{title}, stopped before the push"),
+                note_of(&committed),
+            )
         } else if push {
-            format!("{committed} {why} The push did not run.")
+            said(
+                format!("{title}, but the push did not run"),
+                as_sentence(&why),
+            )
         } else {
-            format!("{committed} {why}")
+            said(
+                format!("{title}, but git reported a problem"),
+                as_sentence(&why),
+            )
         };
         let detail = match note {
             Some(note) => format!("{detail}\n{note}"),
@@ -1194,20 +1231,27 @@ pub(crate) async fn commit(
         paths.extend(stale.iter().cloned());
         let hint = reset_hint(&paths);
         let fix = match &hint {
-            ResetHint::Paths(_) => "Run the command below in the worktree to update it.",
+            ResetHint::Paths(_) => "Run the command under Details in the worktree to update it.",
             ResetHint::All => {
                 "Run `git reset -q` in the worktree to make the staging area match the last \
                  commit; your files are not changed."
             }
         };
-        let mut message = format!(
-            "{committed} gg could not update the staging area ({}), so the committed files may \
-             show as staged changes. {fix}",
+        let mut why = format!(
+            "gg could not update it ({}), so the committed files may show as staged changes. \
+             {fix}",
             index_trouble(&output)
         );
         if push {
-            message.push_str(" The push did not run.");
+            why.push_str(" The push did not run.");
         }
+        let message = said(
+            format!(
+                "{}, but the staging area was not updated",
+                title_of(&committed)
+            ),
+            why,
+        );
         return Ok(Step::DoneWith {
             message,
             detail: Some(format!("{}\n\n{output}", hint.command())),
@@ -1237,18 +1281,21 @@ async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) 
             hints.insert(0, retry);
         }
         Step::Failed {
-            message: format!("Committed. The push failed: {why}"),
+            message: said(
+                format!("{}, but the push failed", title_of(&committed)),
+                as_sentence(why),
+            ),
             detail: if detail.is_empty() {
-                committed.clone()
+                as_sentence(&committed)
             } else {
-                format!("{committed}\n{detail}")
+                format!("{}\n{detail}", as_sentence(&committed))
             },
             hints,
         }
     };
     let Some(branch) = branch else {
         return failed(
-            "HEAD is detached, so there is no branch to push.",
+            "HEAD is detached: there is no branch to push.",
             String::new(),
             Vec::new(),
             None,
@@ -1258,7 +1305,7 @@ async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) 
         Ok(Some(remote)) => remote,
         Ok(None) => {
             return failed(
-                "there is no remote to push it to.",
+                "There is no remote to push it to.",
                 String::new(),
                 Vec::new(),
                 None,
@@ -1274,8 +1321,9 @@ async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) 
     if ctx.runner.is_stopped() {
         // The commit stands; the push did not go (or not to its end).
         return Step::Failed {
-            message: format!(
-                "{committed} Stopped during the push; it may not have reached {remote}."
+            message: said(
+                format!("{}, stopped during the push", title_of(&committed)),
+                format!("It may not have reached {remote}."),
             ),
             detail: match &pushed {
                 Ok(Step::Failed { detail, .. } | Step::Stopped { detail, .. }) => detail.clone(),
@@ -1286,13 +1334,13 @@ async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) 
         };
     }
     match pushed {
-        Ok(Step::Done(pushed)) => Step::Done(format!("{committed} {pushed}")),
+        Ok(Step::Done(pushed)) => Step::Done(and_pushed(&committed, &pushed, &remote)),
         Ok(Step::DoneWith {
             message,
             detail,
             hints,
         }) => Step::DoneWith {
-            message: format!("{committed} {message}"),
+            message: and_pushed(&committed, &message, &remote),
             detail,
             hints,
         },
@@ -1304,6 +1352,27 @@ async fn push_after(ctx: &OpCtx<'_>, branch: Option<String>, committed: String) 
         Ok(Step::Stopped { message, detail }) => failed(&message, detail, Vec::new(), retry),
         Err(e) => failed(&e.message, e.detail.unwrap_or_default(), Vec::new(), retry),
     }
+}
+
+/// The notice of a commit (`committed`) and its push that went through (`pushed`, to
+/// `remote`): "Committed 2 files and pushed", the commit and where it went under it.
+fn and_pushed(committed: &str, pushed: &str, remote: &str) -> String {
+    let push_note = note_of(pushed);
+    let went = if title_of(pushed).starts_with("Nothing to push") {
+        format!("{remote} had it already")
+    } else if push_note.is_empty() {
+        format!("pushed to {remote}")
+    } else {
+        // "Upstream set."
+        format!(
+            "pushed to {remote}, {}",
+            push_note.trim_end_matches('.').to_lowercase()
+        )
+    };
+    said(
+        format!("{} and pushed", title_of(committed)),
+        format!("{} \u{b7} {went}", note_of(committed)),
+    )
 }
 
 impl RepoManager {

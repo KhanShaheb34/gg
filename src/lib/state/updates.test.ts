@@ -100,7 +100,7 @@ describe("the update notice", () => {
     send({ state: "ready", version: "0.4.1" });
     expect(app.toasts).toHaveLength(1);
     const [notice] = app.toasts;
-    expect(notice.message).toBe("gg 0.4.1 is ready.");
+    expect(notice.message).toBe("gg 0.4.1 is ready");
     expect(notice.persistent).toBe(true);
     expect(notice.actions?.map((a) => a.label)).toEqual(["Restart to update"]);
     // Dismissed: not again this run for that version, though a later check says it again.
@@ -109,7 +109,7 @@ describe("the update notice", () => {
     expect(app.toasts).toEqual([]);
     // A newer one is said again.
     send({ state: "ready", version: "0.4.2" });
-    expect(app.toasts.map((t) => t.message)).toEqual(["gg 0.4.2 is ready."]);
+    expect(app.toasts.map((t) => t.message)).toEqual(["gg 0.4.2 is ready"]);
     stop();
   });
 
@@ -126,7 +126,7 @@ describe("the update notice", () => {
     const stop = u.initUpdates();
     send({ state: "available", version: "0.5.0", reason: "gg is running from its disk image, so it cannot update itself." });
     const [notice] = app.toasts;
-    expect(notice.message).toBe("gg 0.5.0 is available.");
+    expect(notice.message).toBe("gg 0.5.0 is available");
     expect(notice.note).toBe("gg is running from its disk image, so it cannot update itself.");
     expect(notice.actions?.map((a) => a.label)).toEqual(["Download page"]);
     await notice.actions![0].run();
@@ -157,7 +157,7 @@ describe("the update notice", () => {
     );
     await app.toasts[0].actions![0].run();
     expect(app.toasts.map((t) => [t.kind, t.message])).toEqual([
-      ["info", "gg 0.4.1 is ready."],
+      ["info", "gg 0.4.1 is ready"],
       ["info", "gg cannot restart while git is working in app. Restart once it is done."],
     ]);
     stop();

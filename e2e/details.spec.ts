@@ -155,7 +155,7 @@ test("the hash is copied when clicked", async ({ gg, context }) => {
   await open(page, gg.repoPath("details"));
   await rowWith(page, "Main work").click();
   await panel(page).getByTestId("details-hash").click();
-  await expect(page.getByText("Copied the hash.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Copied the hash" })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(hashOf(gg, "Main work"));
 });
 
@@ -511,7 +511,7 @@ test("a parent's hash in the merge note goes to it; failures to go are told", as
     await route.fulfill({ json: { err: { code: "git_failed", message: "index is locked", detail: null } } });
   });
   await panel(page).getByTestId("details-parents").getByRole("button").first().click();
-  await expect(page.getByText(/Could not go to that commit: index is locked/)).toBeVisible();
+  await expect(page.getByText(/Could not go to that commit\. Index is locked/)).toBeVisible();
   await expect(page.getByText("That commit is not shown in the graph")).toHaveCount(0);
 
   await page.unroute("**/invoke");
@@ -521,7 +521,7 @@ test("a parent's hash in the merge note goes to it; failures to go are told", as
     await route.fulfill({ json: { ok: null } });
   });
   await panel(page).getByTestId("details-parents").getByRole("button").first().click();
-  await expect(page.getByText("That commit is not shown in the graph")).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "That commit is not shown in the graph" })).toBeVisible();
 });
 
 test("when the selected commit goes away with the focus in the panel, the focus goes to the graph", async ({ gg }) => {

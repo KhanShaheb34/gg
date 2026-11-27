@@ -107,6 +107,28 @@ export function lineAddedNote(
 }
 
 /**
+ * What the notice after an install says under its headline, and whether all of it went
+ * through (else the notice stays until dismissed): what was written (`wrote`), then what adding
+ * gg's line did (`added`, see `lineAddedNote`), or that the shell's own `gg` still wins over the
+ * command, or else how to use it.
+ */
+export function installedNote(
+  wrote: string,
+  added: ShellLineAdded | null,
+  after: Pick<CliState, "shadowedBy" | "shadowConflict">,
+  short: (path: string) => string,
+): { note: string; worked: boolean } {
+  const worked = after.shadowedBy === null && (added === null || (added.problem === null && added.checked));
+  const then =
+    added !== null
+      ? lineAddedNote(added, after, short)
+      : after.shadowedBy !== null
+        ? `Your shell already defines gg as ${after.shadowedBy}; that wins over this command until you remove it.`
+        : "Run gg in a repository folder to open it here.";
+  return { note: `Wrote ${wrote}. ${then}`, worked };
+}
+
+/**
  * Whether gg's line is in a start-up file and the shell still has an alias or function called
  * `gg` that no other line would turn off: something that runs after the line makes it again
  * (another `gg`, a program, is not the line's to turn off).

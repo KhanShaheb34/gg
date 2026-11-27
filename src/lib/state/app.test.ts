@@ -116,8 +116,8 @@ describe("openPath", () => {
       expect.objectContaining({
         kind: "info",
         persistent: true,
-        message:
-          "/r/a-hotfix could not be made the active worktree of a while an operation runs there: the tab still works in /r/a.",
+        message: "/r/a-hotfix could not be made active",
+        note: "An operation runs in a: the tab still works in /r/a.",
       }),
     ]);
   });
@@ -416,7 +416,7 @@ describe("init", () => {
     expect(call).toBeDefined();
     const handler = call![1] as (p: { repoId: number; error: CoreErrorDto }) => void;
     handler({ repoId: 2, error: { code: "git_failed", message: "fetch failed", detail: "boom" } });
-    expect(s.app.toasts).toMatchObject([{ kind: "error", message: "b: fetch failed", detail: "boom" }]);
+    expect(s.app.toasts).toMatchObject([{ kind: "error", message: "fetch failed", note: "In b.", detail: "boom", foldDetail: true }]);
   });
 
   it("takes the gg command's state at start, and what the shell says of gg when that comes", async () => {
@@ -494,7 +494,7 @@ describe("repo-error before the tab exists", () => {
     });
     await s.openPath("/r/c");
     expect(s.app.toasts).toMatchObject([
-      { kind: "error", message: "c: Could not read the history", detail: "fatal: x" },
+      { kind: "error", message: "Could not read the history", note: "In c.", detail: "fatal: x" },
     ]);
   });
 });
@@ -513,7 +513,8 @@ describe("pull requests unavailable (said once by the core)", () => {
     expect(s.app.toasts).toHaveLength(1);
     expect(s.app.toasts[0]).toMatchObject({
       kind: "info",
-      message: "b: Pull requests need the GitHub CLI (gh), which was not found.",
+      message: "Pull requests are not shown for b",
+      note: "Pull requests need the GitHub CLI (gh), which was not found.",
       persistent: true,
     });
     expect(s.app.toasts[0].actions ?? []).toEqual([]);
@@ -528,7 +529,9 @@ describe("pull requests unavailable (said once by the core)", () => {
       return fakeOpenRepo(path);
     });
     await s.openPath("/r/c");
-    expect(s.app.toasts).toMatchObject([{ kind: "info", message: "c: The GitHub CLI (gh) is not signed in.", detail: "x" }]);
+    expect(s.app.toasts).toMatchObject([
+      { kind: "info", message: "Pull requests are not shown for c", note: "The GitHub CLI (gh) is not signed in.", detail: "x" },
+    ]);
   });
 });
 
@@ -552,7 +555,7 @@ describe("settings that cannot be saved", () => {
     await s.init();
     await s.app.toasts[0].actions![0].run();
     expect(ipc.api.resetSettings).toHaveBeenCalledTimes(1);
-    expect(s.app.toasts.map((t) => t.message)).toEqual(["Settings reset: saving again."]);
+    expect(s.app.toasts.map((t) => [t.message, t.note])).toEqual([["Settings reset", "They are being saved again."]]);
   });
 
   it("a reset that fails keeps the notice and says why", async () => {
@@ -562,7 +565,7 @@ describe("settings that cannot be saved", () => {
     await s.app.toasts[0].actions![0].run();
     expect(s.app.toasts).toHaveLength(2);
     expect(s.app.toasts[0].persistent).toBe(true);
-    expect(s.app.toasts[1]).toMatchObject({ kind: "error", message: "Could not reset settings: Could not move /c/state.json aside" });
+    expect(s.app.toasts[1]).toMatchObject({ kind: "error", message: "Could not reset settings", note: "Could not move /c/state.json aside" });
   });
 });
 
@@ -614,7 +617,7 @@ describe("toasts", () => {
     s.toast("error", "two", "why");
     const [a, b] = s.app.toasts;
     expect(a.id).not.toBe(b.id);
-    expect(b).toMatchObject({ kind: "error", message: "two", detail: "why" });
+    expect(b).toMatchObject({ kind: "error", message: "two", note: "why" });
     s.dismissToast(a.id);
     expect(s.app.toasts.map((t) => t.message)).toEqual(["two"]);
   });

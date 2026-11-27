@@ -893,7 +893,13 @@ fn said(slot: &Said) -> Option<String> {
 fn after_commit(hash: &str, e: CoreError) -> Step {
     let short = hash.get(..8).unwrap_or(hash);
     Step::DoneWith {
-        message: format!("Committed {short}. Then: {}", e.message),
+        message: crate::notice::said(
+            format!(
+                "Committed {}, then something went wrong",
+                crate::notice::name(short)
+            ),
+            e.message,
+        ),
         detail: e.detail,
         hints: Vec::new(),
     }
@@ -1072,6 +1078,7 @@ impl RepoManager {
             status: OpStatus::Done,
             title,
             message: String::new(),
+            notice: crate::dto::Notice::default(),
             detail: None,
             log_from,
             log_to,
@@ -1127,6 +1134,10 @@ impl RepoManager {
                 outcome.dangers = dangers;
             }
         }
+        // The message as the operation wrote it, its parts marked: the notice, and the plain
+        // sentence.
+        outcome.notice = crate::notice::notice(&outcome.message);
+        outcome.message = outcome.notice.plain();
         // Making the active worktree active is no follow-up.
         let active = std::path::Path::new(&outcome.snapshot.active_worktree).to_path_buf();
         outcome.hints.retain(|hint| {
@@ -1405,23 +1416,29 @@ fn expected_head<'r>(request: &'r OpRequest, head: Option<&str>) -> Option<(&'r 
 /// must not: another branch is checked out (or HEAD is detached, or a branch is checked out
 /// where it was detached), or, while detached or with `strict`, HEAD is at another commit.
 fn head_moved(expected: &HeadInfo, now: &HeadInfo, strict: bool) -> Option<String> {
+    use crate::notice::name;
     let at = |h: &HeadInfo| {
         h.hash
             .as_deref()
-            .map_or("no commit", local::short)
-            .to_owned()
+            .map_or_else(|| "no commit".to_owned(), |h| name(local::short(h)))
     };
     let why = match (expected.branch.as_deref(), now.branch.as_deref()) {
         (Some(was), Some(is)) if was != is => {
-            format!("it was asked for on {was}, but {is} is checked out now")
+            format!(
+                "it was asked for on {}, but {} is checked out now",
+                name(was),
+                name(is)
+            )
         }
         (Some(was), None) => format!(
-            "it was asked for on {was}, but HEAD is detached now (at {})",
+            "it was asked for on {}, but HEAD is detached now (at {})",
+            name(was),
             at(now)
         ),
         (None, Some(is)) => format!(
-            "it was asked for on the detached HEAD at {}, but {is} is checked out now",
-            at(expected)
+            "it was asked for on the detached HEAD at {}, but {} is checked out now",
+            at(expected),
+            name(is)
         ),
         (None, None) if expected.hash != now.hash => format!(
             "HEAD has moved since it was asked for (from {} to {})",
@@ -1429,14 +1446,20 @@ fn head_moved(expected: &HeadInfo, now: &HeadInfo, strict: bool) -> Option<Strin
             at(now)
         ),
         (Some(was), Some(_)) if strict && expected.hash != now.hash => format!(
-            "{was} has moved since it was asked for (from {} to {})",
+            "{} has moved since it was asked for (from {} to {})",
+            name(was),
             at(expected),
             at(now)
         ),
         _ => return None,
     };
-    Some(format!(
-        "Nothing was done: {why}. Look at it again, and ask again if it still applies."
+    let mut why = why;
+    if let Some(first) = why.get(..1) {
+        why.replace_range(..1, &first.to_uppercase());
+    }
+    Some(crate::notice::said(
+        "Nothing was done",
+        format!("{why}. Look at it again, and ask again if it still applies."),
     ))
 }
 
@@ -1445,9 +1468,13 @@ fn head_moved(expected: &HeadInfo, now: &HeadInfo, strict: bool) -> Option<Strin
 fn worktree_moved(expected: &str, active: &std::path::Path) -> Option<String> {
     let same = crate::platform::same_path(std::path::Path::new(expected), active);
     (!same).then(|| {
-        format!(
-            "That was asked for in {expected}, but {} is the active worktree now.",
-            active.display()
+        crate::notice::said(
+            "Nothing was done",
+            format!(
+                "It was asked for in {}, but {} is the active worktree now.",
+                crate::notice::path(expected),
+                crate::notice::path(active.display().to_string())
+            ),
         )
     })
 }
@@ -1465,9 +1492,13 @@ async fn no_longer_a_worktree(ctx: &OpCtx<'_>, expected: &str) -> Option<String>
     let same =
         top.is_some_and(|top| crate::platform::same_path(std::path::Path::new(&top), &ctx.cwd));
     (!same).then(|| {
-        format!(
-            "That was asked for in {expected}, but {} is no longer a worktree.",
-            ctx.cwd.display()
+        crate::notice::said(
+            "Nothing was done",
+            format!(
+                "It was asked for in {}, but {} is no longer a worktree.",
+                crate::notice::path(expected),
+                crate::notice::path(ctx.cwd.display().to_string())
+            ),
         )
     })
 }
@@ -1608,8 +1639,8 @@ mod tests {
         // Another branch: never.
         let why = head_moved(&main_a, &head(Some("feature"), "a"), false).unwrap();
         assert_eq!(
-            why,
-            "Nothing was done: it was asked for on main, but feature is checked out now. Look \
+            crate::notice::as_sentence(&why),
+            "Nothing was done. It was asked for on main, but feature is checked out now. Look \
              at it again, and ask again if it still applies."
         );
         assert!(head_moved(&main_a, &head(None, "a"), false).is_some());
@@ -1617,6 +1648,7 @@ mod tests {
         // The same branch moved on: only where the commit matters (strict).
         assert_eq!(head_moved(&main_a, &head(Some("main"), "b"), false), None);
         let why = head_moved(&main_a, &head(Some("main"), "b"), true).unwrap();
+        let why = crate::notice::as_sentence(&why);
         assert!(why.contains("main has moved since"), "{why}");
         // Detached: the commit is what it is about.
         assert!(head_moved(&head(None, "a"), &head(None, "b"), false).is_some());

@@ -121,7 +121,7 @@ async fn a_reply_goes_to_gh_as_data_on_stdin() {
         s.h.run(s.id, reply(22, "PRRT_kwDOVsODgM67XTTJ", NASTY))
             .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    assert_eq!(out.message, "Replied on pull request #22.");
+    assert_eq!(out.message, "Replied on pull request #22");
     assert_eq!(out.title, "Reply on pull request #22");
 
     let call = the_one(&s.gh, &["api", "graphql"]);
@@ -162,13 +162,10 @@ async fn resolving_and_unresolving_name_the_thread_as_a_string() {
     );
     let out = s.h.run(s.id, resolve(22, "PRRT_a", true)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    assert_eq!(out.message, "Resolved a conversation on pull request #22.");
+    assert_eq!(out.message, "Resolved a conversation on pull request #22");
     let out = s.h.run(s.id, resolve(22, "PRRT_a", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    assert_eq!(
-        out.message,
-        "Unresolved a conversation on pull request #22."
-    );
+    assert_eq!(out.message, "Unresolved a conversation on pull request #22");
     assert_eq!(out.title, "Unresolve a conversation on pull request #22");
 
     let calls = s.gh.calls_of(&["api", "graphql"]);
@@ -205,7 +202,7 @@ async fn a_comment_goes_to_gh_pr_comment_on_stdin() {
     );
     let out = s.h.run(s.id, comment(22, NASTY)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    assert_eq!(out.message, "Commented on pull request #22.");
+    assert_eq!(out.message, "Commented on pull request #22");
     let call = the_one(&s.gh, &["pr", "comment"]);
     assert_eq!(
         call.argv,
@@ -363,7 +360,7 @@ async fn failures_are_said() {
     assert_eq!(out.status, OpStatus::Failed);
     assert_eq!(
         out.message,
-        "gh could not post the reply: gh: Could not resolve to a node with the global id of \
+        "gh could not post the reply. gh: Could not resolve to a node with the global id of \
          'PRRT_gone'."
     );
     assert!(out.detail.unwrap().contains("PRRT_gone"));
@@ -379,7 +376,7 @@ async fn failures_are_said() {
     assert_eq!(out.status, OpStatus::Failed);
     assert_eq!(
         out.message,
-        "gh could not resolve the conversation: Resource not accessible by integration"
+        "gh could not resolve the conversation. Resource not accessible by integration."
     );
 
     s.gh.reply(
@@ -392,7 +389,7 @@ async fn failures_are_said() {
     assert_eq!(out.status, OpStatus::Failed);
     assert!(
         out.message
-            .starts_with("Nothing was sent: The GitHub CLI (gh) is not signed in."),
+            .starts_with("Nothing was sent. The GitHub CLI (gh) is not signed in."),
         "{}",
         out.message
     );
@@ -405,7 +402,7 @@ async fn failures_are_said() {
     assert_eq!(out.status, OpStatus::Failed);
     assert_eq!(
         out.message,
-        "gh could not post the comment: gh did not answer within 1 s."
+        "gh could not post the comment. gh did not answer within 1 s."
     );
     s.gh.fast("pr-comment");
 
@@ -433,7 +430,7 @@ async fn not_on_github_nothing_is_sent() {
     let out = s.h.run(s.id, reply(3, "PRRT_a", "Hi")).await;
     assert_eq!(out.status, OpStatus::Failed);
     assert!(
-        out.message.starts_with("Nothing was sent: ")
+        out.message.starts_with("Nothing was sent. ")
             && out.message.contains("GitHub repositories only"),
         "{}",
         out.message

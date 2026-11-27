@@ -145,7 +145,7 @@ test("choosing a local branch checks it out as the graph does; the current one o
   await field(page).fill("feature/l");
   await page.keyboard.press("Enter");
   await expect(picker(page)).toHaveCount(0);
-  await expect(notice(page, "Checked out feature/login.")).toBeVisible();
+  await expect(notice(page, "Checked out feature/login")).toBeVisible();
   expect(current(gg)).toBe("feature/login");
   await expect(page.getByTestId("active-worktree")).toContainText("feature/login");
 
@@ -155,7 +155,7 @@ test("choosing a local branch checks it out as the graph does; the current one o
   const ask = page.getByRole("dialog").filter({ hasText: "Fast-forward" });
   await expect(ask.getByRole("heading")).toHaveText("Fast-forward 2 commits first?");
   await ask.getByRole("button", { name: "No", exact: true }).click();
-  await expect(notice(page, "Checked out staging.")).toBeVisible();
+  await expect(notice(page, "Checked out staging")).toBeVisible();
   expect(current(gg)).toBe("staging");
 });
 
@@ -168,7 +168,7 @@ test("a remote branch checks out its local branch when there is one, else makes 
   await field(page).fill("origin/feature");
   await expect(activeOption(page)).toHaveAttribute("data-name", "origin/feature/login");
   await page.keyboard.press("Enter");
-  await expect(notice(page, "Checked out feature/login.")).toBeVisible();
+  await expect(notice(page, "Checked out feature/login")).toBeVisible();
   expect(current(gg)).toBe("feature/login");
   expect(gg.git("routine", "branch", "--list", "login*").trim()).toBe("");
 
@@ -179,7 +179,7 @@ test("a remote branch checks out its local branch when there is one, else makes 
   expect((await shownNames(page)).filter((n) => n.startsWith("origin/"))[0]).toBe("origin/topic");
   await option(page, "origin/topic").click();
   await expect(picker(page)).toHaveCount(0);
-  await expect(notice(page, "Checked out origin/topic as topic, which tracks it.")).toBeVisible();
+  await expect(notice(page, "Checked out topic. A new branch tracking origin/topic.")).toBeVisible();
   expect(current(gg)).toBe("topic");
   expect(gg.git("routine", "rev-parse", "--abbrev-ref", "topic@{upstream}").trim()).toBe("origin/topic");
 });
@@ -198,7 +198,7 @@ test("a name no branch has: Enter makes it at HEAD and checks it out, in one git
   await expect(createRow(page).locator(".line.two")).toHaveText(`At HEAD (${head.slice(0, 8)}), then checked out`);
   await page.keyboard.press("Enter");
   await expect(picker(page)).toHaveCount(0);
-  await expect(notice(page, "Created branch brand-new and checked it out.")).toBeVisible();
+  await expect(notice(page, "Created and checked out brand-new")).toBeVisible();
   expect(current(gg)).toBe("brand-new");
   expect(gg.git("routine", "rev-parse", "brand-new").trim()).toBe(head);
 
@@ -234,7 +234,7 @@ test("Create new branch from…: HEAD and the branches to start from; the name t
   await field(page).fill("origin/sta");
   await expect(activeOption(page)).toHaveAttribute("data-name", "origin/staging");
   await page.keyboard.press("Enter");
-  await expect(notice(page, "Created branch from-staging and checked it out.")).toBeVisible();
+  await expect(notice(page, "Created and checked out from-staging")).toBeVisible();
   expect(current(gg)).toBe("from-staging");
   expect(gg.git("routine", "rev-parse", "from-staging").trim()).toBe(gg.git("routine", "rev-parse", "origin/staging").trim());
 
@@ -253,7 +253,7 @@ test("Create new branch from…: HEAD and the branches to start from; the name t
   await expect(createRow(page).locator(".line.one")).toHaveText("Create new branch ‘named-after’");
   await expect(createRow(page).locator(".line.two")).toHaveText("At feature/login, then checked out");
   await page.keyboard.press("Enter");
-  await expect(notice(page, "Created branch named-after and checked it out.")).toBeVisible();
+  await expect(notice(page, "Created and checked out named-after")).toBeVisible();
   expect(gg.git("routine", "rev-parse", "named-after").trim()).toBe(gg.git("routine", "rev-parse", "feature/login").trim());
 });
 
@@ -354,7 +354,7 @@ test("keyboard only: arrows, pages, Home and End move one active row with the po
   await page.keyboard.press("Enter");
   await page.keyboard.type("staging");
   await page.keyboard.press("Enter");
-  await expect(notice(page, "Created branch kb-only and checked it out.")).toBeVisible();
+  await expect(notice(page, "Created and checked out kb-only")).toBeVisible();
   expect(current(gg)).toBe("kb-only");
   expect(gg.git("routine", "rev-parse", "kb-only").trim()).toBe(gg.git("routine", "rev-parse", "staging").trim());
 });

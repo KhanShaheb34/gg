@@ -222,7 +222,7 @@ async fn only_the_ticked_files_are_committed_and_staged_unticked_ones_stay_stage
     assert_eq!(repo.git(&["rev-parse", "HEAD^"]), before);
     assert_eq!(
         out.message,
-        format!("Committed 3 files to main ({}).", &new[..8])
+        format!("Committed 3 files. {} on main.", &new[..8])
     );
     assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert_eq!(
@@ -279,12 +279,7 @@ async fn ticking_either_side_of_a_rename_commits_both() {
         let id = h.open(repo.path()).await.repo_id;
         let out = h.run(id, commit(&[side], "rename", false)).await;
         assert_eq!(out.status, OpStatus::Done, "{side}: {out:#?}");
-        assert_eq!(
-            out.message[..24],
-            *"Committed 1 file to main",
-            "{}",
-            out.message
-        );
+        assert_eq!(out.message[..18], *"Committed 1 file. ", "{}", out.message);
         let new = repo.git(&["rev-parse", "HEAD"]);
         assert_eq!(
             changed_by(repo.path(), &new),
@@ -442,7 +437,7 @@ async fn a_failing_hook_commits_nothing_and_its_output_is_shown() {
         assert_eq!(out.committed, None, "nothing was committed");
         assert!(
             out.message
-                .starts_with("Nothing was committed: git or one of the repository's hooks"),
+                .starts_with("Nothing was committed: git or a hook refused the commit."),
             "{}",
             out.message
         );
@@ -593,7 +588,7 @@ async fn the_first_commit_takes_only_the_ticked_files() {
     let new = repo.git(&["rev-parse", "HEAD"]);
     assert_eq!(
         out.message,
-        format!("Committed 1 file to main ({}).", &new[..8])
+        format!("Committed 1 file. {} on main.", &new[..8])
     );
     assert_eq!(changed_by(repo.path(), &new), set(&["a.txt"]));
     assert!(writes(&h, &out).iter().all(|w| w[0] != "read-tree"));
@@ -623,7 +618,7 @@ async fn a_conflicted_file_cannot_be_committed() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert_eq!(
         out.message,
-        "Nothing was committed: notes still has conflicts. Resolve them first: a file with \
+        "Nothing was committed. notes still has conflicts. Resolve them first: a file with \
          conflicts cannot be committed."
     );
     assert!(h.writes_since(mark).is_empty());
@@ -656,7 +651,7 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert_eq!(
         out.message,
-        "The merge still has conflicts in clash.txt: resolve them, then commit."
+        "The merge still has conflicts in clash.txt. Resolve them, then commit."
     );
     repo.write("clash.txt", "both\n");
     repo.git(&["add", "clash.txt"]);
@@ -665,7 +660,7 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
     assert_eq!(
         out.message,
         "A merge is concluded with all its changed files (new files git does not track yet \
-         may stay out)."
+         may stay out)"
     );
     assert!(h.writes_since(mark).is_empty(), "nothing ran");
     assert!(in_git_dir(&repo, "MERGE_HEAD"));
@@ -683,8 +678,8 @@ async fn a_merge_is_concluded_only_whole_and_without_conflicts() {
         .await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert!(
-        out.message
-            .starts_with("Concluded the merge: committed 2 files to main ("),
+        out.message.starts_with("Concluded the merge. ")
+            && out.message.ends_with(" on main, 2 files."),
         "{}",
         out.message
     );
@@ -720,7 +715,7 @@ async fn a_commit_is_refused_while_a_rebase_is_stopped() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .starts_with("A rebase is in progress: Continue commits its changes and goes on"),
+            .starts_with("A rebase is in progress. Continue commits its changes and goes on"),
         "{}",
         out.message
     );
@@ -787,7 +782,7 @@ async fn a_linked_worktree_commits_with_an_index_beside_its_own() {
     h.m.set_active_worktree(id, &wt).await.unwrap();
     let out = h.run(id, commit(&["a.txt"], "in feature", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
-    assert!(out.message.contains("to feature"), "{}", out.message);
+    assert!(out.message.contains(" on feature."), "{}", out.message);
     assert_eq!(git_in(&wt, &["show", "HEAD:a.txt"]), "in the worktree");
     assert_eq!(repo.git(&["show", "main:a.txt"]), "a.txt");
     assert_eq!(index_state(repo.path()), main_index);
@@ -845,7 +840,7 @@ async fn a_stopped_commit_leaves_no_temporary_files_and_the_index_as_it_was() {
         .unwrap()
         .unwrap();
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
-    assert_eq!(out.message, "Stopped.");
+    assert_eq!(out.message, "Stopped");
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
     assert_eq!(index_state(repo.path()), index);
     assert!(scratch_left(&repo.path().join(".git")).is_empty());
@@ -870,8 +865,7 @@ async fn commit_and_push_sends_the_branch_to_its_namesake() {
     assert_eq!(
         out.message,
         format!(
-            "Committed 1 file to topic ({}). Pushed topic to origin/topic, and set it as its \
-             upstream.",
+            "Committed 1 file and pushed. {} on topic, pushed to origin, upstream set.",
             &new[..8]
         )
     );
@@ -935,8 +929,9 @@ async fn a_failed_push_is_said_after_the_commit() {
     let out = h.run(id, commit(&["a.txt"], "mine", true)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
-        out.message
-            .starts_with("Committed. The push failed: The remote has commits"),
+        out.message.starts_with(
+            "Committed 1 file, but the push failed. Push rejected: the remote has new commits."
+        ),
         "{}",
         out.message
     );
@@ -956,7 +951,7 @@ async fn a_failed_push_is_said_after_the_commit() {
         out.detail
             .as_deref()
             .unwrap()
-            .starts_with("Committed 1 file to main (")
+            .starts_with("Committed 1 file. ")
     );
 }
 
@@ -972,7 +967,7 @@ async fn a_push_that_cannot_go_anywhere_is_refused_before_committing() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert_eq!(
         out.message,
-        "Nothing was committed: this repository has no remote to push to. Commit without \
+        "Nothing was committed. This repository has no remote to push to. Commit without \
          pushing."
     );
     repo.git(&["checkout", "-q", "--detach"]);
@@ -1207,7 +1202,7 @@ async fn a_folder_replaced_by_a_file_needs_its_files_ticked_too() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert_eq!(
         out.message,
-        "Committing sub also removes 2 files under it; tick them too."
+        "Committing sub also removes 2 files under it; tick them too"
     );
     assert!(h.writes_since(mark).is_empty(), "nothing ran");
     let out = h
@@ -1308,7 +1303,7 @@ async fn a_staged_file_deleted_since_is_listed_and_its_entry_dropped() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(
         out.message,
-        "Nothing to commit; removed the staged entry for a deleted file."
+        "Nothing to commit. Removed the staged entry for a deleted file."
     );
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), before);
     assert!(
@@ -1401,10 +1396,9 @@ async fn a_stop_after_the_commit_is_made_says_it_was_made() {
     assert_ne!(new, before, "committed");
     assert!(
         out.message
-            .starts_with(&format!("Committed 1 file to main ({}).", &new[..8])),
+            .starts_with("Committed 1 file, but git reported a problem. It was stopped"),
         "{out:#?}"
     );
-    assert!(out.message.contains("Stopped"), "{}", out.message);
     assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert_eq!(porcelain(repo.path()), ["M  b.txt"]);
     assert!(scratch_left(&repo.path().join(".git")).is_empty());
@@ -1431,12 +1425,11 @@ async fn a_stop_during_the_push_keeps_the_commit_and_offers_the_push() {
     assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert!(
         out.message
-            .starts_with(&format!("Committed 1 file to main ({}).", &new[..8])),
+            .starts_with("Committed 1 file, stopped during the push"),
         "{out:#?}"
     );
     assert!(
-        out.message
-            .ends_with("Stopped during the push; it may not have reached origin."),
+        out.message.ends_with("It may not have reached origin."),
         "{}",
         out.message
     );
@@ -1516,12 +1509,14 @@ async fn a_name_that_is_not_utf8_is_listed_but_not_committable() {
         )
         .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
-    assert!(
-        out.message.starts_with("Nothing was committed:"),
-        "{}",
-        out.message
+    assert_eq!(
+        out.message,
+        format!(
+            "Nothing was committed. The name of {} is not valid UTF-8, which gg cannot hand \
+             back to git exactly; commit it in a terminal.",
+            bad.path
+        )
     );
-    assert!(out.message.contains("not valid UTF-8"), "{}", out.message);
     assert!(h.writes_since(mark).is_empty());
 }
 
@@ -1631,13 +1626,10 @@ async fn a_held_index_lock_after_the_commit_is_waited_for_once_then_explained() 
     let new = repo.git(&["rev-parse", "HEAD"]);
     assert_eq!(
         out.message,
-        format!(
-            "Committed 2 files to main ({}). gg could not update the staging area (another \
-             program holds its lock, index.lock), so the committed files may show as staged \
-             changes. Run `git reset -q` in the worktree to make the staging area match the \
-             last commit; your files are not changed.",
-            &new[..8]
-        )
+        "Committed 2 files, but the staging area was not updated. gg could not update it \
+         (another program holds its lock, index.lock), so the committed files may show as \
+         staged changes. Run `git reset -q` in the worktree to make the staging area match the \
+         last commit; your files are not changed."
     );
     assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     // A name a shell could read as more than a name (`it's`) is never listed for pasting.
@@ -1661,15 +1653,12 @@ async fn a_push_does_not_run_after_git_failed_once_the_commit_was_made() {
     let out = h.run(id, commit(&["a.txt"], "m", true)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
-        out.message.starts_with("Committed 1 file to main ("),
+        out.message
+            .starts_with("Committed 1 file, but the push did not run. "),
         "{}",
         out.message
     );
-    assert!(
-        out.message.ends_with("The push did not run."),
-        "{}",
-        out.message
-    );
+    assert!(out.message.ends_with("See the log."), "{}", out.message);
     assert_eq!(origin.git(&["rev-parse", "main"]), before, "not pushed");
     assert_eq!(
         out.hints.first(),
@@ -1733,8 +1722,10 @@ async fn trouble_after_the_commit_is_made_is_said_with_the_commit() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert!(
-        out.message
-            .starts_with(&format!("Committed {}.", &new[..8])),
+        out.message.starts_with(&format!(
+            "Committed {}, then something went wrong.",
+            &new[..8]
+        )),
         "{}",
         out.message
     );
@@ -1865,7 +1856,7 @@ async fn a_merge_started_after_the_turn_stops_the_commit() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert!(
         out.message
-            .starts_with("Nothing was committed: a merge started"),
+            .starts_with("Nothing was committed. A merge started"),
         "{}",
         out.message
     );
@@ -1896,7 +1887,7 @@ async fn commit_and_push_goes_where_git_pushes_the_branch() {
     assert_eq!(out.status, OpStatus::Done, "{out:#?}");
     let new = repo.git(&["rev-parse", "HEAD"]);
     assert!(
-        out.message.contains("Pushed main to fork/main"),
+        out.message.ends_with(" on main, pushed to fork."),
         "{}",
         out.message
     );
@@ -1936,7 +1927,7 @@ async fn an_empty_commit_takes_nothing_staged_or_changed() {
     let new = repo.git(&["rev-parse", "HEAD"]);
     assert_eq!(
         out.message,
-        format!("Made an empty commit on main ({}).", &new[..8])
+        format!("Made an empty commit. {} on main.", &new[..8])
     );
     assert_eq!(out.committed.as_deref(), Some(new.as_str()));
     assert_eq!(repo.git(&["rev-parse", "HEAD^"]), parent);
@@ -2005,7 +1996,7 @@ async fn an_empty_commit_is_refused_while_a_merge_is_in_progress() {
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
     assert_eq!(
         out.message,
-        "Nothing was committed: a merge is in progress, and an empty commit cannot conclude \
+        "Nothing was committed. A merge is in progress, and an empty commit cannot conclude \
          it. Commit the merge's files, or abort it."
     );
     assert!(h.writes_since(mark).is_empty());
@@ -2026,7 +2017,7 @@ async fn an_empty_commit_can_be_pushed() {
     assert_eq!(out.title, "Make an empty commit on topic and push");
     let new = repo.git(&["rev-parse", "HEAD"]);
     assert!(
-        out.message.starts_with("Made an empty commit on topic ("),
+        out.message.starts_with("Made an empty commit and pushed. "),
         "{}",
         out.message
     );

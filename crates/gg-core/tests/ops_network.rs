@@ -184,7 +184,7 @@ async fn push_sets_upstream_when_missing() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
         out.message
-            .contains("\u{201c}nope\u{201d} is not a remote of this repository"),
+            .starts_with("nope is not a remote of this repository. Its remotes: origin."),
         "{}",
         out.message
     );
@@ -220,7 +220,7 @@ async fn push_rejected_explains_and_hints() {
         assert_eq!(out.status, OpStatus::Failed, "{out:?}");
         assert!(
             out.message
-                .starts_with("The remote has commits you don't have"),
+                .starts_with("Push rejected: the remote has new commits. Pull to bring them in"),
             "{}",
             out.message
         );
@@ -494,7 +494,8 @@ async fn push_goes_to_the_same_named_branch_whatever_the_upstream() {
     let out = h.run(id, push("feature", "origin", false)).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.title, "Push feature to origin/feature");
-    assert_eq!(out.message, "Pushed feature to origin/feature.");
+    assert_eq!(out.message, "Pushed feature to origin");
+    assert_eq!(names(&out), ["feature"]);
     assert!(
         ran(
             &h,
@@ -526,7 +527,7 @@ async fn push_goes_to_the_same_named_branch_whatever_the_upstream() {
     let out = h.run(id, push_to("feature", "origin", "main")).await;
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(out.title, "Push feature to origin/main");
-    assert_eq!(out.message, "Pushed feature to origin/main.");
+    assert_eq!(out.message, "Pushed feature to origin/main");
     assert!(ran(
         &h,
         &out,
@@ -636,6 +637,43 @@ async fn pull_current_fast_forwards() {
     let out = h.run(id, pull("main", PullMode::Default)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(out.message.contains("no upstream"), "{}", out.message);
+}
+
+/// A fast-forward to a merge commit the upstream already had makes no merge: the notice says
+/// where it came from, not that it merged; a pull that makes a merge commit says so.
+#[tokio::test]
+async fn pull_says_merged_only_when_it_made_a_merge() {
+    let (repo, _origin, other) = with_remote();
+    other.branch("side");
+    other.checkout("side");
+    other.commit("on the side");
+    other.checkout("main");
+    other.commit("on main");
+    other.git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    other.git(&["push", "-q", "origin", "main"]);
+    let theirs = rev(&other, "HEAD");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, pull("main", PullMode::Default)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(rev(&repo, "HEAD"), theirs, "fast-forwarded to their merge");
+    assert!(
+        out.message.starts_with("Pulled main. From "),
+        "{}",
+        out.message
+    );
+
+    other.commit("more of theirs");
+    other.git(&["push", "-q", "origin", "main"]);
+    repo.commit("mine");
+    let out = h.run(id, pull("main", PullMode::Merge)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        out.message.starts_with("Pulled main. Merged from "),
+        "{}",
+        out.message
+    );
 }
 
 /// Diverged with no pull mode configured: git asks for one, so the outcome offers the
@@ -866,7 +904,7 @@ async fn pull_other_branch_updates_it_without_checkout() {
     let out = h.run(id, pull("topic", PullMode::Default)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
-        out.message.contains("\u{201c}topic\u{201d}") && out.message.contains("fast-forward"),
+        names(&out) == ["topic"] && out.message.contains("fast-forward"),
         "{}",
         out.message
     );
@@ -946,7 +984,7 @@ async fn fetch_into_local_creates_or_fast_forwards() {
     let out = h.run(id, fetch_into_local("origin/feature", "main")).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
-        out.message.contains("\u{201c}main\u{201d}") && out.message.contains("checked out"),
+        names(&out) == ["main"] && out.message.contains("checked out"),
         "{}",
         out.message
     );
@@ -1052,9 +1090,8 @@ async fn deleting_a_remote_branch_that_moved_since_the_fetch_is_refused() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert_eq!(
         out.message,
-        "Branch \u{201c}topic\u{201d} on origin has changed since your last fetch, so it was \
-         not deleted (that would have deleted commits you have not seen). Fetch, look at what \
-         is new, then decide again."
+        "topic on origin was not deleted. It changed since your last fetch, and deleting it \
+         would delete commits you have not seen. Fetch, look at what is new, then decide again."
     );
     assert!(out.detail.unwrap_or_default().contains("stale info"));
     assert_eq!(out.hints, [OpHint::Fetch]);
@@ -1091,7 +1128,12 @@ async fn push_and_delete_tag_on_remote() {
     };
     let out = h.run(id, request).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
-    assert!(out.message.contains("already has a tag"), "{}", out.message);
+    assert!(
+        out.message
+            .starts_with("The remote has that tag on another commit."),
+        "{}",
+        out.message
+    );
 
     let request = OpRequest::DeleteTag {
         name: "v1".into(),
@@ -1150,7 +1192,7 @@ async fn checkout_with_fast_forward() {
     assert_eq!(out.status, OpStatus::Done, "{out:?}");
     assert_eq!(current_branch(&repo).as_deref(), Some("topic"));
     assert_eq!(rev(&repo, "HEAD"), theirs);
-    assert!(out.message.contains("fast-forwarded"), "{}", out.message);
+    assert_eq!(out.message, "Checked out topic. Fast-forwarded to origin.");
     assert!(ran(&h, &out, &["merge", "--ff-only", "@{upstream}"]));
 
     // Diverged: checked out all the same, and the message says it could not move.
@@ -1166,7 +1208,8 @@ async fn checkout_with_fast_forward() {
     assert_eq!(current_branch(&repo).as_deref(), Some("topic"));
     assert_eq!(rev(&repo, "HEAD"), mine);
     assert!(
-        out.message.contains("could not be fast-forwarded"),
+        out.message
+            .starts_with("Checked out topic. Not fast-forwarded to origin: "),
         "{}",
         out.message
     );
@@ -1215,7 +1258,8 @@ async fn checkout_with_fast_forward_and_a_change_in_the_way_loses_nothing() {
     assert_eq!(current_branch(&repo).as_deref(), Some("topic"));
     assert_eq!(rev(&repo, "HEAD"), before, "not moved");
     assert!(
-        out.message.contains("could not be fast-forwarded"),
+        out.message
+            .starts_with("Checked out topic. Not fast-forwarded to origin: "),
         "{}",
         out.message
     );
@@ -1267,7 +1311,7 @@ async fn push_to_unreachable_remote_fails_fast_and_queue_continues() {
     );
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert!(
-        out.message.starts_with("The remote could not be reached"),
+        out.message.starts_with("Could not reach the remote."),
         "{}",
         out.message
     );
@@ -1366,7 +1410,12 @@ async fn authentication_failures_explain() {
 
     let out = h.run(id, push("main", "wrongcreds", false)).await;
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
-    assert!(out.message.contains("refused the"), "{}", out.message);
+    assert!(
+        out.message
+            .starts_with("The remote refused your credentials."),
+        "{}",
+        out.message
+    );
     assert!(out.detail.unwrap().contains("Authentication failed"));
     assert!(started.elapsed() < Duration::from_secs(10));
     drop(server);
@@ -1969,7 +2018,7 @@ async fn pulling_the_branch_being_rebased_here_says_a_rebase_is_in_progress() {
         "{}",
         out.message
     );
-    assert!(out.message.contains("this worktree"), "{}", out.message);
+    assert!(out.message.contains("checked out here"), "{}", out.message);
     assert!(
         !out.message.contains("Switch to that worktree"),
         "{}",
@@ -1997,8 +2046,8 @@ async fn fetching_into_the_branch_checked_out_here_with_nothing_stopped_says_why
     // Checked out in this very worktree: not "switch to that worktree", but to pull it.
     assert_eq!(
         out.message,
-        "Branch \u{201c}main\u{201d} is checked out here, and git does not move a \
-         checked-out branch by fetching into it: use Pull to update it."
+        "main is checked out here. git does not move a checked-out branch by fetching into it: \
+         use Pull to update it."
     );
 }
 
@@ -2061,9 +2110,8 @@ async fn deleting_a_remote_branch_never_fetched_says_so() {
     assert_eq!(out.status, OpStatus::Failed, "{out:?}");
     assert_eq!(
         out.message,
-        "Branch \u{201c}theirs\u{201d} on origin has not been fetched here, so it was not \
-         deleted (that would delete commits you have not seen). Fetch, look at what is on it, \
-         then decide again."
+        "theirs on origin was not deleted. It has not been fetched here, and deleting it would \
+         delete commits you have not seen. Fetch, look at what is on it, then decide again."
     );
     assert_eq!(out.hints, [OpHint::Fetch]);
     assert_eq!(rev(&origin, "refs/heads/theirs"), theirs, "nothing deleted");

@@ -71,7 +71,7 @@ test("checkout_staging_offers_fast_forward_then_merge_then_push", async ({ gg })
   await expect(ask.getByRole("button", { name: "No", exact: true })).toBeVisible();
   await expect(ask.getByRole("button", { name: "Cancel" })).toBeVisible();
   await ask.getByRole("button", { name: "Yes", exact: true }).click();
-  await expect(notice(page, "Checked out staging. It was fast-forwarded to origin/staging.")).toBeVisible();
+  await expect(notice(page, "Checked out staging. Fast-forwarded to origin.")).toBeVisible();
   await expect(label(page, "staging")).toHaveClass(/current/);
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
   expect(gg.git("routine", "rev-parse", "staging").trim()).toBe(remoteRef(gg, "staging"));
@@ -82,13 +82,13 @@ test("checkout_staging_offers_fast_forward_then_merge_then_push", async ({ gg })
   await expect(merge.getByRole("heading")).toHaveText("Merge feature/login into staging");
   await expect(merge.getByRole("checkbox", { name: /Create a merge commit even if fast-forward is possible/ })).toBeChecked();
   await merge.getByRole("button", { name: "Merge", exact: true }).click();
-  const merged = notice(page, "Merged feature/login into staging.");
+  const merged = notice(page, "Merged feature/login into staging");
   await expect(merged).toBeVisible();
   await expect(grid(page).locator('[data-index="0"] .subject')).toHaveText("Merge branch 'feature/login' into staging");
   await expect(label(page, "staging").locator(".ab")).toHaveText("↑3");
 
-  await merged.getByRole("button", { name: "Push staging to origin/staging", exact: true }).click();
-  await expect(notice(page, "Pushed staging to origin/staging.")).toBeVisible();
+  await merged.getByRole("button", { name: "Push to origin", exact: true }).click();
+  await expect(notice(page, "Pushed staging to origin")).toBeVisible();
   // The counts follow without a refresh.
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
   expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
@@ -106,8 +106,8 @@ test("the merge notice's push waits for the user, is reached from the keyboard, 
   await expect(label(page, "staging")).toHaveClass(/current/);
   await pickOnLabel(page, "feature/login", "Merge feature/login into staging…");
   await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
-  const merged = notice(page, "Merged feature/login into staging.");
-  const push = merged.getByRole("button", { name: "Push staging to origin/staging", exact: true });
+  const merged = notice(page, "Merged feature/login into staging");
+  const push = merged.getByRole("button", { name: "Push to origin", exact: true });
   await expect(push).toBeVisible();
 
   // Long after other notices have gone, it is still there.
@@ -124,7 +124,7 @@ test("the merge notice's push waits for the user, is reached from the keyboard, 
   await page.keyboard.press("F6");
   await expect(push).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(notice(page, "Pushed staging to origin/staging.")).toBeVisible();
+  await expect(notice(page, "Pushed staging to origin")).toBeVisible();
   await expect(merged).toHaveCount(0);
   expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
 
@@ -139,7 +139,7 @@ test("the merge notice's push waits for the user, is reached from the keyboard, 
   await expect(label(page, "staging").locator(".ab")).toHaveText("↑1 ↓1");
   await pickOnLabel(page, "staging", "Push 1 commit…");
   await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
-  const rejected = failure(page, "The remote has commits you don't have");
+  const rejected = failure(page, "Push rejected: the remote has new commits");
   await expect(rejected).toBeVisible();
   await page.clock.fastForward(12_000);
   await expect(rejected).toBeVisible();
@@ -159,23 +159,23 @@ test("push_rejected_then_pull_then_push", async ({ gg }) => {
   await pickOnLabel(page, "staging", "Push 1 commit…");
   await expect(dialog(page).getByText("origin/staging", { exact: true })).toBeVisible();
   await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
-  const rejected = failure(page, "The remote has commits you don't have");
+  const rejected = failure(page, "Push rejected: the remote has new commits");
   await expect(rejected).toBeVisible();
-  await expect(rejected.getByRole("button")).toContainText(["Fetch", "Pull staging", "Force push staging to origin/staging…"]);
+  await expect(rejected.getByRole("button")).toContainText(["Fetch", "Pull", "Force push…"]);
 
   // Pull: the branches have diverged and git's config does not say how to reconcile them.
-  await rejected.getByRole("button", { name: "Pull staging", exact: true }).click();
+  await rejected.getByRole("button", { name: "Pull", exact: true }).click();
   const choose = dialog(page);
   await expect(choose.getByRole("heading")).toHaveText("Pull origin/staging into staging");
-  await expect(choose.getByText("This branch and its upstream have diverged")).toBeVisible();
+  await expect(choose.getByText("The branch and its upstream have diverged")).toBeVisible();
   await expect(choose.getByRole("radio", { name: /Merge/ })).toBeChecked();
   await choose.getByRole("button", { name: "Pull", exact: true }).click();
-  await expect(notice(page, "Pulled origin/staging into staging.")).toBeVisible();
+  await expect(notice(page, "Pulled staging")).toBeVisible();
   await expect(label(page, "staging").locator(".ab")).toHaveText("↑2");
 
   await pickOnLabel(page, "staging", "Push 2 commits…");
   await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
-  await expect(notice(page, "Pushed staging to origin/staging.")).toBeVisible();
+  await expect(notice(page, "Pushed staging to origin")).toBeVisible();
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
   expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
   expect(gg.git("routine", "log", "-1", "--format=%s", "staging").trim()).toMatch(/^Merge branch 'staging'/);
@@ -226,7 +226,7 @@ test("force_push_needs_the_second_confirmation", async ({ gg }) => {
   await expect(confirm.getByTestId("confirm-again")).toHaveText("This changed since you confirmed it. Here it is as it is now.");
   await armed(page);
   await confirm.getByRole("button", { name: "Force push" }).click();
-  await expect(notice(page, "Force-pushed staging to origin/staging.")).toBeVisible();
+  await expect(notice(page, "Force-pushed staging to origin")).toBeVisible();
   expect(remoteRef(gg, "staging")).toBe(gg.git("routine", "rev-parse", "staging").trim());
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
 });
@@ -325,7 +325,7 @@ test("the merge dialog never writes the default over a stored choice it has not 
     return route.continue();
   });
   await dialog(page).getByRole("button", { name: "Merge", exact: true }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "That is not a branch." })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "That is not a branch" })).toBeVisible();
   await page.unrouteAll({ behavior: "wait" });
   expect(await prefs()).toBe(false);
 });
@@ -339,7 +339,7 @@ test("delete_unmerged_branch_double_confirm", async ({ gg }) => {
   await pickOnLabel(page, "feature/login", "Delete…");
   await expect(dialog(page).getByRole("heading")).toHaveText("Delete branch feature/login");
   await dialog(page).getByRole("button", { name: "Delete branch" }).click();
-  await expect(notice(page, "Deleted branch feature/login.")).toBeVisible();
+  await expect(notice(page, "Deleted branch feature/login")).toBeVisible();
   await expect(alertDialog(page)).toHaveCount(0);
   expect(gg.git("routine", "branch", "--list", "feature/login").trim()).toBe("");
 
@@ -356,7 +356,7 @@ test("delete_unmerged_branch_double_confirm", async ({ gg }) => {
   );
   await armed(page);
   await confirm.getByRole("button", { name: "Delete branch" }).click();
-  await expect(notice(page, "Deleted branch spike.")).toBeVisible();
+  await expect(notice(page, "Deleted branch spike")).toBeVisible();
   expect(gg.git("routine", "branch", "--list", "spike").trim()).toBe("");
   await expect(grid(page).locator('[data-ref="spike"]')).toHaveCount(0);
 });
@@ -391,7 +391,7 @@ test("actions_queue_while_one_runs", async ({ gg }) => {
   expect(first.status).toBe("done");
   expect(second.status).toBe("done");
   expect(second.opId).toBeGreaterThan(first.opId);
-  expect(second.message).toBe("Checked out staging. It was fast-forwarded to origin/staging.");
+  expect(second.message).toBe("Checked out staging. Fast-forwarded to origin.");
   // The repository's own record of what happened, newest first.
   expect(gg.git("routine", "reflog", "-n", "3", "--format=%gs", "HEAD").trim().split("\n")).toEqual([
     "merge @{upstream}: Fast-forward",

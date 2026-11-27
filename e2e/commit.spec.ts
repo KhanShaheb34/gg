@@ -91,7 +91,7 @@ test("a subset is committed: exactly the ticked files, the rest stay; the notice
   await expect(reason(page)).toHaveCount(0);
   await page.keyboard.press("ControlOrMeta+Enter");
 
-  await expect(notice(page, /Committed 4 files to main \(/)).toBeVisible();
+  await expect(notice(page, /Committed 4 files\. [0-9a-f]{8} on main\./)).toBeVisible();
   expect(changed(gg)).toEqual(["a file with spaces.txt", DEEP, "notes/plan.md", "notes/roadmap.md", "old.txt"].sort());
   expect(gg.git("commit", "log", "-1", "--format=%s").trim()).toBe("Tidy the notes");
   // The rest stay, unticked, and the message is cleared; the panel stays open.
@@ -100,7 +100,7 @@ test("a subset is committed: exactly the ticked files, the rest stay; the notice
   await expect(message(page)).toHaveValue("");
   expect(gg.git("commit", "status", "--porcelain").split("\n").filter((l) => l !== "").sort()).toEqual([" M src/app.ts", "?? todo.md"]);
   // Not pushed: the notice offers it, naming where it goes.
-  const push = notice(page, /Committed 4 files/).getByRole("button", { name: "Push main to origin/main" });
+  const push = notice(page, /Committed 4 files/).getByRole("button", { name: "Push to origin" });
   await push.click();
   await expect.poll(() => gg.gitAt(path.join(path.dirname(repo), "commit-origin.git"), "rev-parse", "main").trim()).toBe(
     gg.git("commit", "rev-parse", "HEAD").trim(),
@@ -116,7 +116,7 @@ test("Commit & Push names where it goes and sends the branch there; with nothing
   await expect(pushButton(page)).toHaveText("Commit & Push to origin/main");
   await message(page).fill("Everything");
   await pushButton(page).click();
-  await expect(notice(page, /Committed 6 files to main \(.*\)\. Pushed main to origin\/main/)).toBeVisible();
+  await expect(notice(page, /Committed 6 files and pushed\. [0-9a-f]{8} on main, pushed to origin/)).toBeVisible();
   const origin = path.join(path.dirname(repo), "commit-origin.git");
   expect(gg.gitAt(origin, "rev-parse", "main").trim()).toBe(gg.git("commit", "rev-parse", "HEAD").trim());
   // Nothing left: back to the worktree list.
@@ -160,7 +160,7 @@ test("with nothing ticked, Commit with no changes makes an empty commit, pushed 
   const before = gg.git("commit", "rev-parse", "HEAD").trim();
   const status = gg.git("commit", "status", "--porcelain");
   await commitButton(page).click();
-  await expect(notice(page, /Made an empty commit on main \(/)).toBeVisible();
+  await expect(notice(page, /Made an empty commit\. [0-9a-f]{8} on main\./)).toBeVisible();
   expect(gg.git("commit", "rev-parse", "HEAD^").trim()).toBe(before);
   expect(gg.git("commit", "rev-parse", "HEAD^{tree}").trim()).toBe(gg.git("commit", "rev-parse", "HEAD^^{tree}").trim());
   expect(gg.git("commit", "log", "-1", "--format=%s").trim()).toBe("Run CI again");
@@ -181,7 +181,7 @@ test("with nothing ticked, Commit with no changes makes an empty commit, pushed 
   await expect(pushButton(page)).toBeDisabled();
   await empty.check();
   await pushButton(page).click();
-  await expect(notice(page, /Made an empty commit on main \(.*\)\. Pushed main to origin\/main/)).toBeVisible();
+  await expect(notice(page, /Made an empty commit and pushed\. [0-9a-f]{8} on main, pushed to origin/)).toBeVisible();
   const origin = path.join(path.dirname(repo), "commit-origin.git");
   expect(gg.gitAt(origin, "rev-parse", "main").trim()).toBe(gg.git("commit", "rev-parse", "HEAD").trim());
   expect(gg.git("commit", "log", "-1", "--format=%s").trim()).toBe("Deploy again");
@@ -200,7 +200,7 @@ test("Commit & Push goes where git pushes the branch, as Create pull request doe
   await expect(pushButton(page)).toHaveText("Commit & Push to fork/main");
   await message(page).fill("Everything");
   await pushButton(page).click();
-  await expect(notice(page, /Pushed main to fork\/main/)).toBeVisible();
+  await expect(notice(page, /on main, pushed to fork/)).toBeVisible();
   expect(gg.gitAt(fork, "rev-parse", "main").trim()).toBe(gg.git("commit", "rev-parse", "HEAD").trim());
 });
 
@@ -243,8 +243,8 @@ test("a failing hook: nothing committed, its output in the notice with Show log,
   await commitButton(page).click();
   const failed = notice(page, /refused the commit/);
   await expect(failed).toBeVisible();
-  await failed.getByRole("button", { name: "Git output" }).click();
-  await expect(failed).toContainText("lint: src/app.ts: missing semicolon");
+  // The hook's own line says why; all its output is in the log.
+  await expect(failed.locator(".note")).toContainText("lint: src/app.ts: missing semicolon");
   await expect(failed.getByRole("button", { name: "Show log" })).toBeVisible();
   expect(gg.git("commit", "rev-parse", "HEAD").trim()).toBe(before);
   await expect(message(page)).toHaveValue("Will not pass");
@@ -309,7 +309,7 @@ test("the ways in: the menu, the row's changes, the uncommitted row; another wor
   // No upstream yet: Commit & Push sends it to origin's namesake.
   await expect(pushButton(page)).toHaveText("Commit & Push to origin/topic");
   await commitButton(page).click();
-  await expect(notice(page, /Committed 1 file to topic/)).toBeVisible();
+  await expect(notice(page, /Committed 1 file\. [0-9a-f]{8} on topic/)).toBeVisible();
   expect(gg.gitAt(topic, "log", "-1", "--format=%s").trim()).toBe("Topic work");
 
   // Back to the list; the main worktree's row: its changes are a button to its commit panel.
@@ -541,7 +541,7 @@ test("concluding a merge: tracked files ticked and kept so, new files up to the 
   await expect(file(page, "topic.txt")).toHaveAttribute("aria-selected", "false");
   await expect(message(page)).toHaveValue("Merge branch 'other' into topic");
   await commitButton(page).click();
-  await expect(notice(page, /Concluded the merge: committed 2 files to topic/)).toBeVisible();
+  await expect(notice(page, /Concluded the merge\. [0-9a-f]{8} on topic, 2 files/)).toBeVisible();
   expect(at("log", "-1", "--format=%P").trim().split(" ")).toHaveLength(2);
   expect(at("log", "-1", "--format=%s").trim()).toBe("Merge branch 'other' into topic");
   expect(at("status", "--porcelain").trim()).toBe("?? topic.txt");
@@ -941,7 +941,7 @@ test("the Commit tab's dot: the worktree it would show has files to commit", asy
   await page.keyboard.press("ControlOrMeta+k");
   await message(page).fill("Notes");
   await commitButton(page).click();
-  await expect(notice(page, /Committed 1 file to main/)).toBeVisible();
+  await expect(notice(page, /Committed 1 file\. [0-9a-f]{8} on main/)).toBeVisible();
   await expect(dot).toHaveCount(0);
 });
 
@@ -1004,7 +1004,7 @@ test("the side panel button counts the active worktree's uncommitted files, with
   await expect(message(page)).toBeFocused();
   await message(page).fill("Both");
   await commitButton(page).click();
-  await expect(notice(page, /Committed 2 files to main/)).toBeVisible();
+  await expect(notice(page, /Committed 2 files\. [0-9a-f]{8} on main/)).toBeVisible();
   await expect(badge).toHaveCount(0);
   await expect(tab(page, "commit").getByTestId("side-tab-dot")).toHaveCount(0);
   await expect(toggle).toHaveAttribute("title", /^(Show|Hide) the side panel \((⌘|Ctrl\+)B\)$/);

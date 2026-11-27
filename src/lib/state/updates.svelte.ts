@@ -116,7 +116,7 @@ function apply(status: UpdateStatus): void {
       key,
       id: notify({
         kind: "info",
-        message: `gg ${status.version} is ready.`,
+        message: `gg ${status.version} is ready`,
         persistent: true,
         actions: [{ label: "Restart to update", keepOpen: true, run: restartToUpdate }],
       }),
@@ -127,7 +127,7 @@ function apply(status: UpdateStatus): void {
       key,
       id: notify({
         kind: "info",
-        message: `gg ${status.version} is available.`,
+        message: `gg ${status.version} is available`,
         note: brew ? `${status.reason} Or update it with Homebrew: ${brew}` : status.reason,
         persistent: true,
         actions: [{ label: "Download page", run: () => openDownloadPage() }],

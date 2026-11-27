@@ -463,7 +463,7 @@ test("a quick second click does not confirm the confirmation the core asks for n
   expect(gg.git("small", "status", "--porcelain").trim()).toBe("");
 });
 
-test("a failed operation shows git's text folded below its message, with a link to the log", async ({ gg }) => {
+test("a failed operation says what is in the way and what to do, git's text in the log it links to", async ({ gg }) => {
   const { page } = gg;
   await page.goto("/");
   const dir = gg.repoPath("small");
@@ -476,9 +476,12 @@ test("a failed operation shows git's text folded below its message, with a link 
   expect(outcome.status).toBe("failed");
   const notice = page.getByRole("alert").filter({ hasText: outcome.message });
   await expect(notice).toBeVisible();
+  await expect(notice.locator(".message")).toHaveText("Your uncommitted changes are in the way");
+  await expect(notice.locator(".note")).toHaveText("The checkout would overwrite docs/typo1.md. Commit or stash them first.");
+  // git's own lines are not in the notice.
   await expect(notice.locator(".output")).toHaveCount(0);
-  await notice.getByRole("button", { name: "Git output" }).click();
-  await expect(notice.locator(".output")).toContainText("docs/typo1.md");
+  await expect(notice.getByRole("button", { name: "Details" })).toHaveCount(0);
+  await expect(notice).not.toContainText("error:");
   await expect(notice.getByRole("button", { name: "Show log" })).toBeVisible();
   // Showing the log keeps the notice: it is what the log is read against.
   await notice.getByRole("button", { name: "Show log" }).click();

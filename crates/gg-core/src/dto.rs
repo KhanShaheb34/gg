@@ -1742,6 +1742,28 @@ pub enum OpStatus {
     NeedsConfirmation,
 }
 
+/// A piece of a notice's line: text, or a name the UI sets off (a branch, a remote branch, a
+/// tag, a commit, a stash) or a path (shown from the home folder, `~/…`). Serialized as
+/// `{"text": …}`, `{"ref": …}` or `{"path": …}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Part {
+    Text(String),
+    Ref(String),
+    Path(String),
+}
+
+/// What an outcome's notice says: a short headline (what happened) and, when there is one, a
+/// quieter line under it (the one detail worth having, or what to do next). Built by
+/// [`crate::notice`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notice {
+    pub title: Vec<Part>,
+    /// Empty when there is nothing more to say.
+    pub note: Vec<Part>,
+}
+
 /// The result of `run_op`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1750,8 +1772,11 @@ pub struct OpOutcome {
     pub status: OpStatus,
     /// What the operation is, for people: "Create branch feature/x".
     pub title: String,
-    /// One plain line for the notice.
+    /// The notice as one plain sentence (headline, then the line under it): for a dialog or a
+    /// panel that shows it in place, and for what is read out.
     pub message: String,
+    /// The notice, its names set off.
+    pub notice: Notice,
     /// git's own output, on failure.
     pub detail: Option<String>,
     /// Command-log ids of the operation's first and last write (0, 0 if none ran).
@@ -2143,6 +2168,7 @@ mod tests {
             status: OpStatus::NeedsConfirmation,
             title: "Delete branch x".into(),
             message: "m".into(),
+            notice: Notice::text("m"),
             detail: None,
             log_from: 0,
             log_to: 0,
@@ -2212,6 +2238,15 @@ mod tests {
         assert_eq!(v["logFrom"], 0);
         assert_eq!(v["logTo"], 0);
         assert_eq!(v["detail"], Value::Null);
+        assert_eq!(v["notice"], json!({"title": [{"text": "m"}], "note": []}));
+        let named = Notice {
+            title: vec![Part::Text("Pushed ".into()), Part::Ref("b".into())],
+            note: vec![Part::Path("/w".into())],
+        };
+        assert_eq!(
+            serde_json::to_value(&named).unwrap(),
+            json!({"title": [{"text": "Pushed "}, {"ref": "b"}], "note": [{"path": "/w"}]})
+        );
         assert_eq!(
             v["dangers"],
             json!([{"kind": "delete_unmerged_branch", "message": "x has 2 commits", "detail": null,

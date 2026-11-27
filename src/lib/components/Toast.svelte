@@ -1,17 +1,22 @@
 <!--
-  The toast stack, bottom right. Info toasts leave after 4 s and errors after 10 s (10 s too
-  for any with buttons); hovering the stack, or keyboard focus inside it, holds them all. A
-  persistent one stays until dismissed or one of its buttons is used; one that offers what to
-  do next after an operation (`until`) also goes once a later operation runs there. Its
-  buttons follow the message; a folded detail (git's own text) opens below. F6 moves the focus
-  to the newest one; Tab reaches the stack after the page.
+  The toast stack, bottom right, above the status bar. Each notice is a headline (what
+  happened, in a few words) and, when there is one, a quieter line under it (the one detail
+  worth having, or what to do next), names set off as chips and cut in the middle when long;
+  what is read out is the two as one sentence. Success and info toasts leave after 4 s and
+  errors after 10 s (10 s too for any with buttons); hovering the stack, or keyboard focus
+  inside it, holds them all. A persistent one stays until dismissed or one of its buttons is
+  used; one that offers what to do next after an operation (`until`) also goes once a later
+  operation runs there. Its buttons follow the text; a folded detail (git's own text) opens
+  below. F6 moves the focus to the newest one; Tab reaches the stack after the page.
 -->
 <script lang="ts">
   import { homeInText, visibleText } from "../format";
+  import { compact, headline, partsOf, shape, spoken } from "../notice";
   import { app, dismissToast, type Toast, type ToastAction } from "../state/app.svelte";
   import { findRepoView } from "../state/repo.svelte";
+  import NoticeText from "./NoticeText.svelte";
 
-  const LIFETIME_MS = { info: 4_000, error: 10_000 } as const;
+  const LIFETIME_MS = { success: 4_000, info: 4_000, error: 10_000 } as const;
   const WITH_BUTTONS_MS = 10_000;
 
   let hovered = $state(false);
@@ -88,6 +93,8 @@
   onfocusout={(e) => (focused = e.currentTarget.contains(e.relatedTarget as Node | null))}
 >
   {#each app.toasts as toast (toast.id)}
+    {@const said = shape(toast.message, toast.note)}
+    {@const oneLine = { title: compact(said.title, "title"), note: compact(said.note, "note") }}
     <div class="toast {toast.kind}" role={toast.kind === "error" ? "alert" : "status"} use:expire={toast}>
       <span class="icon" aria-hidden="true">
         {#if toast.kind === "error"}
@@ -95,6 +102,11 @@
             <circle cx="8" cy="8" r="6.5" fill="currentColor" />
             <path d="M8 4.6v4.2" stroke="var(--bg-elevated)" stroke-width="1.6" stroke-linecap="round" />
             <circle cx="8" cy="11.2" r="0.95" fill="var(--bg-elevated)" />
+          </svg>
+        {:else if toast.kind === "success"}
+          <svg width="16" height="16" viewBox="0 0 16 16">
+            <circle cx="8" cy="8" r="6.5" fill="currentColor" />
+            <path d="m5.2 8.2 1.9 1.9 3.8-4" fill="none" stroke="var(--bg-elevated)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         {:else}
           <svg width="16" height="16" viewBox="0 0 16 16">
@@ -105,11 +117,13 @@
         {/if}
       </span>
       <div class="body selectable">
-        <!-- Messages carry git's text (paths, branch names): isolated, so it cannot reorder
-             what is around it. -->
-        <p class="message"><bdi>{visibleText(homeInText(toast.message, app.homeDir))}</bdi></p>
-        {#if toast.note}
-          <p class="note">{toast.note}</p>
+        <!-- Read out as one sentence; the chips (whose cut names are painted) are for the eye. -->
+        <p class="spoken">{visibleText(homeInText(spoken(said.title, said.note), app.homeDir))}</p>
+        <p class="message" class:compact={oneLine.title} aria-hidden="true">
+          <NoticeText line={headline(said.title)} compact={oneLine.title} />
+        </p>
+        {#if partsOf(said.note).length > 0}
+          <p class="note" class:compact={oneLine.note} class:whole={toast.persistent} aria-hidden="true"><NoticeText line={said.note} compact={oneLine.note} /></p>
         {/if}
         {#if toast.detail && !toast.foldDetail}
           <p class="detail mono"><bdi>{toast.detail}</bdi></p>
@@ -137,7 +151,7 @@
                 <svg class="chevron" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
                   <path d="M2.5 1.5 5.5 4l-3 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
-                Git output
+                Details
               </button>
             {/if}
             {#if toast.link}
@@ -166,8 +180,9 @@
     position: fixed;
     /* Beside the docked side panel (it sets --side-w), never over its buttons (Commit). */
     right: calc(16px + var(--side-w, 0px));
-    /* Above the command log while it is open (it sets --log-h), so it never hides the entry a notice's Show log went to. */
-    bottom: calc(16px + var(--log-h, 0px));
+    /* Above the status bar (it sets --status-h), and above the command log while it is open
+       (it sets --log-h), so it never hides the entry a notice's Show log went to. */
+    bottom: calc(12px + var(--status-h, 0px) + var(--log-h, 0px));
     z-index: 50;
     display: flex;
     flex-direction: column;
@@ -183,7 +198,7 @@
     align-items: start;
     gap: 10px;
     width: 100%;
-    padding: 10px 10px 10px 12px;
+    padding: 11px 10px 11px 12px;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-lg);
     background: var(--bg-elevated);
@@ -201,21 +216,50 @@
     color: var(--danger);
   }
 
+  .success .icon {
+    color: var(--success);
+  }
+
   .icon svg {
     display: block;
   }
 
-  .message {
-    overflow-wrap: anywhere;
-    line-height: 18px;
+  /* What is read out: there for screen readers, not drawn. */
+  .spoken {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
+  /* The headline: a few words, the one line that is read at a glance. */
+  .message {
+    font-weight: 600;
+    line-height: 18px;
+    overflow-wrap: break-word;
+  }
+
+  /* The line under it: quieter, at most four lines (all of it is read out); all of it in a
+     notice that stays until dismissed, which is there to be read. */
   .note {
-    margin-top: 3px;
+    display: -webkit-box;
+    margin-top: 2px;
+    overflow: hidden;
     color: var(--text-muted);
     font-size: var(--fs-sm);
-    line-height: 1.45;
-    overflow-wrap: anywhere;
+    line-height: 18px;
+    overflow-wrap: break-word;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+  }
+
+  .note.whole:not(.compact) {
+    display: block;
+    -webkit-line-clamp: none;
+    line-clamp: none;
   }
 
   .detail {
@@ -228,8 +272,37 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 4;
-    line-clamp: 4;
+    -webkit-line-clamp: 6;
+    line-clamp: 6;
+  }
+
+  /* A short line of names stays one line: its long names give way, cut in the middle (each
+     from as much of the room as is left, at most its whole length), the longest the most;
+     its words and short names never do. When even those, with the long names cut to a few
+     characters, are wider than the line, it wraps between its parts rather than clip one. */
+  .compact {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    min-width: 0;
+    overflow: hidden;
+    white-space: pre;
+  }
+
+  .compact > :global(*) {
+    flex: none;
+  }
+
+  .compact > :global(.fit) {
+    flex: 1 1 0;
+    min-width: min(6em, 100%);
+    max-width: max-content;
+  }
+
+  .compact > :global(.fit.short) {
+    flex: none;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .row {
@@ -237,18 +310,23 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px 10px;
-    margin-top: 8px;
+    margin-top: 9px;
   }
 
   .group {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
   }
 
+  /* A button's label is never broken over lines: the row wraps instead. */
   .action {
+    max-width: 100%;
+    overflow: hidden;
     padding: 3px 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
     background: var(--bg);
@@ -276,6 +354,7 @@
   /* Quieter than a button: text in the accent colour. */
   .link {
     display: inline-flex;
+    white-space: nowrap;
     align-items: center;
     gap: 4px;
     padding: 3px 4px;

@@ -416,7 +416,7 @@ async fn a_request_asked_for_in_another_worktree_is_refused() {
     assert_eq!(
         out.message,
         format!(
-            "That was asked for in {}, but {} is the active worktree now.",
+            "Nothing was done. It was asked for in {}, but {} is the active worktree now.",
             repo.path().display(),
             real(&feature)
         )
@@ -935,7 +935,7 @@ async fn a_request_for_a_folder_that_is_no_longer_a_worktree_is_refused() {
     assert!(
         out.message
             == format!(
-                "That was asked for in {}, but {} is no longer a worktree.",
+                "Nothing was done. It was asked for in {}, but {} is no longer a worktree.",
                 feature.display(),
                 real(&feature)
             )

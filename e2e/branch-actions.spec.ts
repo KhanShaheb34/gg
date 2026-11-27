@@ -70,7 +70,7 @@ test("check out: a level branch directly; double-clicking a label does the same,
   await open(page, gg.repoPath("routine"));
 
   await pickOnLabel(page, "feature/login", "Check out");
-  await expect(notice(page, "Checked out feature/login.")).toBeVisible();
+  await expect(notice(page, "Checked out feature/login")).toBeVisible();
   await expect(dialog(page)).toHaveCount(0);
   await expect(label(page, "feature/login")).toHaveClass(/current/);
   expect(current(gg)).toBe("feature/login");
@@ -82,7 +82,7 @@ test("check out: a level branch directly; double-clicking a label does the same,
   expect(current(gg)).toBe("feature/login");
   // A double click checks it out.
   await label(page, "main").locator(".name").dblclick();
-  await expect(notice(page, "Checked out main.")).toBeVisible();
+  await expect(notice(page, "Checked out main")).toBeVisible();
   await expect(label(page, "main")).toHaveClass(/current/);
   await expect(rowOf(page, "Initial commit")).toHaveAttribute("aria-selected", "true");
   expect(current(gg)).toBe("main");
@@ -110,7 +110,7 @@ test("the fast-forward question: Cancel does nothing, No checks out as is; a fas
 
   await pickOnLabel(page, "staging", "Check out");
   await ask.getByRole("button", { name: "No", exact: true }).click();
-  await expect(notice(page, "Checked out staging.")).toBeVisible();
+  await expect(notice(page, "Checked out staging")).toBeVisible();
   await expect(label(page, "staging").locator(".ab")).toHaveText("↓2");
   expect(current(gg)).toBe("staging");
 
@@ -125,7 +125,7 @@ test("the fast-forward question: Cancel does nothing, No checks out as is; a fas
   gg.git("routine", "update-ref", "refs/heads/staging", own);
   await ask.getByRole("button", { name: "Yes", exact: true }).click();
   await expect(
-    notice(page, "It could not be fast-forwarded to origin/staging: staging has commits of its own"),
+    notice(page, "Checked out staging. Not fast-forwarded to origin: it has commits origin does not have."),
   ).toBeVisible();
   expect(current(gg)).toBe("staging");
 });
@@ -147,7 +147,7 @@ test("rename a branch: the name is checked as it is typed", async ({ gg }) => {
   await expect(d.getByRole("button", { name: "Rename" })).toBeDisabled();
   await field.fill("feature/sign-in");
   await page.keyboard.press("Enter");
-  await expect(notice(page, "Renamed branch feature/login to feature/sign-in.")).toBeVisible();
+  await expect(notice(page, "Renamed feature/login to feature/sign-in")).toBeVisible();
   await expect(label(page, "feature/sign-in")).toBeVisible();
   expect(gg.git("routine", "branch", "--list", "feature/login").trim()).toBe("");
 });
@@ -164,14 +164,14 @@ test("merge: squash stages the changes; no commit stops before committing; from 
   await expect(d.getByRole("heading")).toHaveText("Merge origin/staging into main");
   await d.getByRole("checkbox", { name: /Squash/ }).check();
   await d.getByRole("button", { name: "Merge", exact: true }).click();
-  await expect(notice(page, "Squashed origin/staging into staged changes on main: commit them to finish.")).toBeVisible();
+  await expect(notice(page, "Squashed origin/staging into main. The changes are staged: commit them to finish.")).toBeVisible();
   expect(gg.git("routine", "diff", "--cached", "--name-only").trim().split("\n")).toContain("staging.txt");
   gg.git("routine", "reset", "-q", "--hard");
 
   await pickOnLabel(page, "feature/login", "Merge feature/login into main…");
   await d.getByRole("checkbox", { name: /No commit/ }).check();
   await d.getByRole("button", { name: "Merge", exact: true }).click();
-  await expect(notice(page, /Merged feature\/login into main without committing/)).toBeVisible();
+  await expect(notice(page, /Merged feature\/login into main, not committed/)).toBeVisible();
   expect(gg.git("routine", "rev-parse", "-q", "--verify", "MERGE_HEAD").trim()).not.toBe("");
 });
 
@@ -189,7 +189,7 @@ test("rebase the current branch onto another: a one-line confirmation", async ({
   await expect(d.getByRole("heading")).toHaveText("Rebase feature/login onto main");
   await expect(d).toContainText("new hashes");
   await d.getByRole("button", { name: "Rebase", exact: true }).click();
-  await expect(notice(page, "Rebased feature/login onto main.")).toBeVisible();
+  await expect(notice(page, "Rebased feature/login onto main")).toBeVisible();
   expect(gg.git("routine", "merge-base", "--is-ancestor", "main", "feature/login").trim()).toBe("");
   await expect(label(page, "feature/login").locator(".ab")).toHaveText(/↑\d+ ↓\d+/);
 });
@@ -210,7 +210,7 @@ test("push a branch without an upstream: it gets one; the target is said plainly
   await expect(d.getByTestId("upstream-note")).toHaveText("origin/topic becomes its upstream: it has none yet.");
   await expect(d.getByRole("checkbox", { name: /Force push/ })).not.toBeChecked();
   await d.getByRole("button", { name: "Push", exact: true }).click();
-  await expect(notice(page, "Pushed topic to origin/topic, and set it as its upstream.")).toBeVisible();
+  await expect(notice(page, "Pushed topic to origin. Upstream set.")).toBeVisible();
   await expect(label(page, "topic")).toContainText("origin");
   expect(gg.git("routine", "rev-parse", "--abbrev-ref", "topic@{upstream}").trim()).toBe("origin/topic");
 });
@@ -234,7 +234,7 @@ test("push a branch whose upstream has another name: the branch of the same name
   await expect(upstream).not.toBeChecked();
   await expect(d.getByTestId("upstream-note")).toHaveText("Its upstream stays origin/main.");
   await d.getByRole("button", { name: "Push", exact: true }).click();
-  await expect(notice(page, "Pushed topic to origin/topic.")).toBeVisible();
+  await expect(notice(page, "Pushed topic to origin")).toBeVisible();
   expect(gg.git("routine", "rev-parse", "origin/main").trim()).toBe(mainThere);
   expect(gg.git("routine", "rev-parse", "--abbrev-ref", "topic@{upstream}").trim()).toBe("origin/main");
 
@@ -243,7 +243,7 @@ test("push a branch whose upstream has another name: the branch of the same name
   await d.getByRole("radio", { name: /origin\/main/ }).check();
   await expect(d.getByText(/Replaces origin\/main with this branch/)).toBeVisible();
   await d.getByRole("button", { name: "Push", exact: true }).click();
-  await expect(notice(page, "Pushed topic to origin/main.")).toBeVisible();
+  await expect(notice(page, "Pushed topic to origin/main")).toBeVisible();
   expect(gg.git("routine", "rev-parse", "origin/main").trim()).toBe(gg.git("routine", "rev-parse", "topic").trim());
 });
 
@@ -253,7 +253,7 @@ test("pull: another branch is fast-forwarded without being checked out; the curr
   await open(page, gg.repoPath("routine"));
 
   await pickOnLabel(page, "staging", "Pull 2 commits");
-  await expect(notice(page, /Fast-forwarded staging to origin\/staging \([0-9a-f]+\), without checking it out\./)).toBeVisible();
+  await expect(notice(page, /Fast-forwarded staging\. To [0-9a-f]{8} from origin, without checking it out\./)).toBeVisible();
   await expect(label(page, "staging").locator(".ab")).toHaveText("");
   expect(current(gg)).toBe("main");
 
@@ -265,7 +265,7 @@ test("pull: another branch is fast-forwarded without being checked out; the curr
   gg.git("routine", "fetch", "-q", "origin");
   await expect(label(page, "main").locator(".ab")).toHaveText("↓1");
   await pickOnLabel(page, "main", "Pull 1 commit");
-  await expect(notice(page, "Pulled origin/main into main.")).toBeVisible();
+  await expect(notice(page, "Pulled main")).toBeVisible();
   await expect(label(page, "main").locator(".ab")).toHaveText("");
   expect(gg.git("routine", "log", "-1", "--format=%s").trim()).toBe("Main elsewhere");
 });
@@ -283,7 +283,7 @@ test("check out a remote branch as a local one; an existing local name offers to
   await expect(field).toHaveValue("feature/login");
   await expect(d.getByText("A branch named feature/login exists here: check it out instead, or choose another name.")).toBeVisible();
   await d.getByRole("button", { name: "Check out feature/login" }).click();
-  await expect(notice(page, "Checked out feature/login.")).toBeVisible();
+  await expect(notice(page, "Checked out feature/login")).toBeVisible();
   expect(current(gg)).toBe("feature/login");
 
   // A new one tracks the remote branch.
@@ -292,7 +292,7 @@ test("check out a remote branch as a local one; an existing local name offers to
   await pickOnLabel(page, "origin/release", "Check out as a local branch…");
   await expect(field).toHaveValue("release");
   await d.getByRole("button", { name: "Check out", exact: true }).click();
-  await expect(notice(page, "Checked out origin/release as release, which tracks it.")).toBeVisible();
+  await expect(notice(page, "Checked out release. A new branch tracking origin/release.")).toBeVisible();
   await expect(label(page, "release")).toHaveClass(/current/);
   expect(gg.git("routine", "rev-parse", "--abbrev-ref", "release@{upstream}").trim()).toBe("origin/release");
 });
@@ -309,7 +309,7 @@ test("fetch a remote branch into a local one, prefilled with its name", async ({
   await expect(d.getByRole("heading")).toHaveText("Fetch origin/release into a local branch");
   await expect(d.getByRole("textbox", { name: "Local branch name" })).toHaveValue("release");
   await d.getByRole("button", { name: "Fetch", exact: true }).click();
-  await expect(notice(page, /Created branch release at origin\/release/)).toBeVisible();
+  await expect(notice(page, /Created branch release\. At [0-9a-f]{8} from origin\./)).toBeVisible();
   await expect(label(page, "release")).toBeVisible();
   expect(current(gg)).toBe("main");
   expect(gg.git("routine", "rev-parse", "release").trim()).toBe(gg.git("routine", "rev-parse", "origin/release").trim());
@@ -328,7 +328,7 @@ test("delete a remote branch: the core's confirmation only", async ({ gg }) => {
   await expect(confirm.getByTestId("dangers")).toContainText("release");
   await armed(page);
   await confirm.getByRole("button", { name: "Delete remote branch" }).click();
-  await expect(notice(page, "Deleted branch release on origin.")).toBeVisible();
+  await expect(notice(page, "Deleted release on origin")).toBeVisible();
   await expect(grid(page).locator('[data-ref="origin/release"]')).toHaveCount(0);
   expect(gg.git("routine", "ls-remote", "--heads", "origin", "release").trim()).toBe("");
 });
@@ -379,7 +379,7 @@ test("a menu's Pull is for the branch the menu was built on: checked out meanwhi
   await expect(label(page, "staging")).toHaveClass(/current/);
   await item(page, "Pull 2 commits").click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "Nothing was done: it was asked for on main, but staging is checked out now." }),
+    page.getByRole("alert").filter({ hasText: "Nothing was done. It was asked for on main, but staging is checked out now." }),
   ).toBeVisible();
   expect(gg.git("routine", "rev-parse", "staging").trim()).toBe(before);
 });

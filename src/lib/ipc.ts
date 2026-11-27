@@ -378,7 +378,7 @@ export const api = {
     call<OpOutcome>("run_op", { repoId, request, confirmed, clientId, clientSeq: nextClientSeq(repoId) }),
   /**
    * Stops operation `opId` of repository `repoId` if it still runs: the git command it
-   * runs is ended with what it started, and its `runOp` resolves as failed, "Stopped.".
+   * runs is ended with what it started, and its `runOp` resolves as failed, "Stopped".
    * Resolves to whether it was running.
    */
   stopOp: (repoId: number, opId: number) => call<boolean>("stop_op", { repoId, opId }),

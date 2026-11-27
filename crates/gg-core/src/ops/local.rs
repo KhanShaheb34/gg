@@ -8,6 +8,7 @@ use crate::dto::{
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::progress::{incoming_commit, read_kind};
 use crate::git::runner::GitOutput;
+use crate::notice::{self, add_note, name, said, said_const};
 use crate::ops::explain::{NO_BRANCH, nothing_to_do};
 use crate::ops::progress::unmerged_paths;
 use crate::ops::{OpCtx, Step, explain, network};
@@ -49,7 +50,7 @@ pub(crate) async fn checkout_branch(
     let step = run(
         ctx,
         &["checkout", "--no-guess", branch, "--"],
-        format!("Checked out {branch}."),
+        format!("Checked out {}", name(branch)),
     )
     .await?;
     match step {
@@ -70,7 +71,10 @@ pub(crate) async fn checkout_remote(
     run(
         ctx,
         &["checkout", "-b", local, "--track", &start],
-        format!("Checked out {remote_branch} as {local}, which tracks it."),
+        said(
+            format!("Checked out {}", name(local)),
+            format!("A new branch tracking {}.", name(remote_branch)),
+        ),
     )
     .await
 }
@@ -81,9 +85,9 @@ pub(crate) async fn checkout_commit(ctx: &OpCtx<'_>, hash: &str) -> Result<Step>
     run(
         ctx,
         &["checkout", "--detach", "--end-of-options", hash, "--"],
-        format!(
-            "Checked out {}: HEAD is detached (no branch is checked out).",
-            short(hash)
+        said(
+            format!("Checked out {}", name(short(hash))),
+            "HEAD is detached: no branch is checked out.",
         ),
     )
     .await
@@ -111,12 +115,12 @@ pub(crate) async fn create_branch(
     let (args, done): (&[&str], _) = if checkout {
         (
             &["checkout", "-b", name, at],
-            format!("Created branch {name} and checked it out."),
+            format!("Created and checked out {}", notice::name(name)),
         )
     } else {
         (
             &["branch", "--", name, at],
-            format!("Created branch {name}."),
+            format!("Created branch {}", notice::name(name)),
         )
     };
     let out = ctx.git(args).await?;
@@ -142,7 +146,7 @@ pub(crate) async fn rename_branch(ctx: &OpCtx<'_>, old: &str, new: &str) -> Resu
     run(
         ctx,
         &["branch", "-m", "--", old, new],
-        format!("Renamed branch {old} to {new}."),
+        format!("Renamed {} to {}", name(old), name(new)),
     )
     .await
 }
@@ -157,7 +161,7 @@ pub(crate) async fn delete_branch(ctx: &OpCtx<'_>, dangers: &[Danger], name: &st
     run(
         ctx,
         &["branch", flag, "--", name],
-        format!("Deleted branch {name}."),
+        format!("Deleted branch {}", notice::name(name)),
     )
     .await
 }
@@ -236,21 +240,26 @@ pub(crate) fn kind_name(kind: InProgressKind) -> &'static str {
 /// The plain line for git having stopped a `kind` on conflicts.
 pub(crate) fn stopped_message(kind: InProgressKind) -> String {
     let what = kind_name(kind);
-    format!("The {what} stopped on conflicts. Resolve them, then continue the {what}, or abort it.")
+    said(
+        format!("The {what} stopped on conflicts"),
+        format!("Resolve them, then continue the {what}, or abort it."),
+    )
 }
 
 /// The plain line for git having failed with a `kind` left in progress but no conflicts:
 /// a hook refused the commit, or something else git says below went wrong.
 pub(crate) fn stopped_without_conflicts(kind: InProgressKind) -> String {
     match kind {
-        InProgressKind::Merge => {
-            "A hook stopped the merge commit; the merge is staged and not committed.".to_owned()
-        }
+        InProgressKind::Merge => said(
+            "A hook stopped the merge commit",
+            "The merge is staged, not committed. What the hook said is in the log.",
+        ),
         _ => {
             let what = kind_name(kind);
-            format!(
-                "The {what} stopped without conflicts (git says why below). It is still in \
-                 progress: continue it, or abort it."
+            said(
+                format!("The {what} stopped without conflicts"),
+                "It is still in progress: continue it, or abort it. Why git stopped is in the \
+                 log.",
             )
         }
     }
@@ -333,6 +342,7 @@ pub(crate) async fn merge(
         MergeTargetKind::Commit => short(&target.name),
         _ => target.name.as_str(),
     };
+    let merged = notice::name(shown);
     let mut args = vec!["merge", "--no-edit"];
     // Without committing, a fast-forward would still move the branch: always a merge then.
     args.push(if (no_ff || no_commit) && !squash {
@@ -365,17 +375,21 @@ pub(crate) async fn merge(
     if let Some(message) = nothing_to_do(&args, &out) {
         return Ok(Step::Done(message));
     }
-    let into = branch.as_deref().unwrap_or("detached HEAD");
+    let into = branch
+        .as_deref()
+        .map_or_else(|| "the detached HEAD".to_owned(), notice::name);
     let stash_before = stash_before.as_deref();
     if squash {
-        let done =
-            format!("Squashed {shown} into staged changes on {into}: commit them to finish.");
+        let done = said(
+            format!("Squashed {merged} into {into}"),
+            "The changes are staged: commit them to finish.",
+        );
         return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
     if stopped_kind(ctx).await == Some(InProgressKind::Merge) {
-        let done = format!(
-            "Merged {shown} into {into} without committing: the result is staged; commit it \
-             to finish the merge."
+        let done = said(
+            format!("Merged {merged} into {into}, not committed"),
+            "The result is staged: commit it to finish the merge.",
         );
         return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
@@ -385,7 +399,7 @@ pub(crate) async fn merge(
         }
         _ => Vec::new(),
     };
-    let message = format!("Merged {shown} into {into}.");
+    let message = format!("Merged {merged} into {into}");
     let step = if hints.is_empty() {
         Step::Done(message)
     } else {
@@ -399,9 +413,10 @@ pub(crate) async fn merge(
 }
 
 /// Said when a squash merge conflicts.
-const SQUASH_CONFLICTS: &str = "This squash merge has conflicts. A squash can't be continued \
-                                here, so nothing was changed. Merge normally, or squash in a \
-                                terminal.";
+const SQUASH_CONFLICTS: &str = said_const!(
+    "The squash merge has conflicts: nothing was changed",
+    "A squash can't be continued here. Merge normally, or squash in a terminal."
+);
 
 /// `step`, how a squash merge failed, when no file was unmerged before it started. One that
 /// left conflicts (git leaves no MERGE_HEAD for a squash, so it could be neither continued
@@ -499,9 +514,10 @@ pub(crate) async fn autostash_note(
         other => return Ok(other),
     };
     Ok(Step::DoneWith {
-        message: format!(
-            "{message} Your uncommitted changes could not be put back cleanly: they are kept \
-             in the stash, and git left its attempt, with conflicts, in the working tree."
+        message: add_note(
+            &message,
+            "Your uncommitted changes conflicted as they were put back: they are kept in the \
+             stash, and the attempt, with conflicts, is in the working tree.",
         ),
         detail: Some(all.trim().to_owned()),
         hints,
@@ -572,8 +588,8 @@ pub(crate) async fn rebase(ctx: &OpCtx<'_>, onto: &str) -> Result<Step> {
         Ok(out) => out,
         Err(step) => return Ok(step),
     };
-    let done =
-        nothing_to_do(&args, &out).unwrap_or_else(|| format!("Rebased {branch} onto {onto}."));
+    let done = nothing_to_do(&args, &out)
+        .unwrap_or_else(|| format!("Rebased {} onto {}", name(&branch), name(onto)));
     autostash_note(ctx, Step::Done(done), &out, stash_before.as_deref()).await
 }
 
@@ -594,17 +610,20 @@ pub(crate) async fn cherry_pick(
     }
     args.extend(["--end-of-options", hash]);
     let into = current_branch(ctx).await?;
-    let into = into.as_deref().unwrap_or("detached HEAD");
+    let into = into
+        .as_deref()
+        .map_or_else(|| "the detached HEAD".to_owned(), name);
     if let Err(step) = git_may_stop(ctx, &args, false).await? {
         return Ok(step);
     }
+    let picked = name(short(hash));
     Ok(Step::Done(if no_commit {
-        format!(
-            "Applied the changes of {} to {into} without committing: they are staged.",
-            short(hash)
+        said(
+            format!("Applied {picked} to {into}, not committed"),
+            "Its changes are staged.",
         )
     } else {
-        format!("Cherry-picked {} onto {into}.", short(hash))
+        format!("Cherry-picked {picked} onto {into}")
     }))
 }
 
@@ -619,9 +638,9 @@ pub(crate) async fn revert(ctx: &OpCtx<'_>, hash: &str, mainline: Option<u32>) -
     if let Err(step) = git_may_stop(ctx, &args, false).await? {
         return Ok(step);
     }
-    Ok(Step::Done(format!(
-        "Reverted {}: a new commit undoes its changes.",
-        short(hash)
+    Ok(Step::Done(said(
+        format!("Reverted {}", name(short(hash))),
+        "A new commit undoes its changes.",
     )))
 }
 
@@ -630,19 +649,19 @@ pub(crate) async fn revert(ctx: &OpCtx<'_>, hash: &str, mainline: Option<u32>) -
 /// make git refuse it as ambiguous.
 pub(crate) async fn reset(ctx: &OpCtx<'_>, hash: &str, mode: ResetMode) -> Result<Step> {
     let (flag, kept) = match mode {
-        ResetMode::Soft => ("--soft", "the changes since are staged"),
+        ResetMode::Soft => ("--soft", "The changes since are staged."),
         ResetMode::Mixed => (
             "--mixed",
-            "the changes since are in the working tree, unstaged",
+            "The changes since are in the working tree, unstaged.",
         ),
-        ResetMode::Hard => ("--hard", "uncommitted changes were discarded"),
+        ResetMode::Hard => ("--hard", "Uncommitted changes were discarded."),
     };
     let branch = current_branch(ctx).await?;
-    let what = branch.as_deref().unwrap_or("HEAD");
+    let what = branch.as_deref().map_or_else(|| "HEAD".to_owned(), name);
     run(
         ctx,
         &["reset", flag, "--end-of-options", hash, "--"],
-        format!("Reset {what} to {}: {kept}.", short(hash)),
+        said(format!("Reset {what} to {}", name(short(hash))), kept),
     )
     .await
 }
@@ -674,7 +693,11 @@ pub(crate) async fn create_tag(
     run(
         ctx,
         &args,
-        format!("Created tag {name} at {}.", short(hash)),
+        format!(
+            "Created tag {} at {}",
+            notice::name(name),
+            notice::name(short(hash))
+        ),
     )
     .await
 }
@@ -684,7 +707,7 @@ pub(crate) async fn delete_tag(ctx: &OpCtx<'_>, name: &str) -> Result<Step> {
     run(
         ctx,
         &["tag", "-d", "--", name],
-        format!("Deleted tag {name}."),
+        format!("Deleted tag {}", notice::name(name)),
     )
     .await
 }

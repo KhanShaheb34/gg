@@ -325,14 +325,14 @@ for (const [prefix, width, height] of SIZES)
     await shot("dialog-confirm");
     await page.keyboard.press("Escape");
 
-    // A failed checkout (a changed file it would overwrite): the notice with git's output unfolded.
+    // A failed checkout (a changed file it would overwrite): what is in the way, and the log.
     gg.git("branchy", "checkout", "--", ".");
     const differing = gg.git("branchy", "diff", "--name-only", "main", "develop").trim().split("\n")[0];
     writeFileSync(path.join(dir, differing), "in the way\n");
     const failed = await runOp(page, { op: "checkout_branch", branch: "develop", fastForward: false });
     expect(failed.status).toBe("failed");
     const alert = page.getByRole("alert").filter({ hasText: failed.message });
-    await alert.getByRole("button", { name: "Git output" }).click();
+    await expect(alert.getByRole("button", { name: "Show log" })).toBeVisible();
     await park(page);
     await shot("notice-failed");
     await alert.getByRole("button", { name: "Dismiss notification" }).click();
@@ -511,7 +511,7 @@ for (const [prefix, width, height] of SIZES)
     await expect(grid.locator('[data-ref="staging"]').first()).toHaveClass(/current/);
     await pick("feature/login", "Merge feature/login into staging…");
     await dialog.getByRole("button", { name: "Merge", exact: true }).click();
-    const merged = page.getByRole("status").filter({ hasText: "Merged feature/login into staging." });
+    const merged = page.getByRole("status").filter({ hasText: "Merged feature/login into staging" });
     await merged.hover();
     await snap("notice-merge-push");
     await merged.getByRole("button", { name: "Dismiss notification" }).click();
@@ -523,13 +523,13 @@ for (const [prefix, width, height] of SIZES)
     gg.gitAt(other, "push", "-q", "origin", "staging");
     await pick("staging", "Push 3 commits…");
     await dialog.getByRole("button", { name: "Push", exact: true }).click();
-    const rejected = page.getByRole("alert").filter({ hasText: "The remote has commits you don't have" });
+    const rejected = page.getByRole("alert").filter({ hasText: "Push rejected: the remote has new commits" });
     await expect(rejected).toBeVisible();
     await rejected.hover();
     await snap("notice-push-rejected");
 
     // Pull: diverged, and git is not told how: the choice.
-    await rejected.getByRole("button", { name: "Pull staging", exact: true }).click();
+    await rejected.getByRole("button", { name: "Pull", exact: true }).click();
     await expect(dialog).toBeVisible();
     await shot("dialog-pull");
   });
@@ -1159,7 +1159,7 @@ for (const [prefix, width, height] of SIZES)
       await page.getByTestId("commit-message").fill("Rework the checkout summary");
       await page.getByTestId("commit-button").click();
       const failed = page.locator("[data-notices] .toast", { hasText: "refused the commit" });
-      await failed.getByRole("button", { name: "Git output" }).click();
+      await expect(failed.getByRole("button", { name: "Show log" })).toBeVisible();
       await park(page);
       await shot("commit-hook-failed");
       await failed.getByRole("button", { name: /Dismiss/ }).click();

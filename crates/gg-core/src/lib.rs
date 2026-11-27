@@ -14,6 +14,7 @@ pub mod graph;
 pub mod hosts;
 pub mod launch;
 mod mask;
+pub mod notice;
 pub mod ops;
 mod platform;
 pub mod pr_details;

@@ -54,7 +54,7 @@ test("a newer version is downloaded in the background, then a notice offers the 
   await page.keyboard.press("Escape");
 
   // The notice: quiet (a status, not an alert), with the restart and a way to dismiss it.
-  const ready = notice(page, "gg 0.9.0 is ready.");
+  const ready = notice(page, "gg 0.9.0 is ready");
   await expect(ready).toHaveAttribute("role", "status");
   await expect(ready.getByRole("button", { name: "Restart to update" })).toBeVisible();
   await expect(ready.getByRole("button", { name: "Dismiss notification" })).toBeVisible();
@@ -74,7 +74,7 @@ test("dismissed, the notice comes back at the next start; Settings keeps the res
   gg.updates.offer("0.9.0");
   await page.goto("/");
   await open(page, gg.repoPath("small"));
-  const ready = notice(page, "gg 0.9.0 is ready.");
+  const ready = notice(page, "gg 0.9.0 is ready");
   await expect(ready).toBeVisible(CHECKED);
   // From the keyboard: F6 goes to the newest notice, its first button the restart.
   await page.getByRole("grid", { name: "Commits" }).focus();
@@ -95,7 +95,7 @@ test("dismissed, the notice comes back at the next start; Settings keeps the res
   // The next start: the tab is back, and so is the notice.
   await gg.relaunch();
   await expect(page.getByRole("tab", { name: "small" })).toHaveAttribute("aria-selected", "true");
-  await expect(notice(page, "gg 0.9.0 is ready.")).toBeVisible(CHECKED);
+  await expect(notice(page, "gg 0.9.0 is ready")).toBeVisible(CHECKED);
 });
 
 test("a failed check is quiet: Settings says what happened, and Check now tries again", async ({ gg }) => {
@@ -136,7 +136,7 @@ test("a copy that cannot update itself says a version is available, why, and whe
   gg.updates.blocker("translocated");
   await page.goto("/");
   await open(page, gg.repoPath("small"));
-  const available = notice(page, "gg 0.9.0 is available.");
+  const available = notice(page, "gg 0.9.0 is available");
   await expect(available).toBeVisible(CHECKED);
   await expect(available).toContainText("Move gg to the Applications folder and open it from there.");
   const before = gg.launches().length;
@@ -179,7 +179,7 @@ test("with automatic checks off nothing is asked at start; Check now still works
   await expect(again.getByTestId("settings-update-status")).toHaveText("Automatic checks are off.");
   await again.getByTestId("settings-update-check").click();
   await expect(again.getByTestId("settings-update-status")).toHaveText("gg 0.9.0 is ready. Restart to update.", CHECKED);
-  await expect(notice(page, "gg 0.9.0 is ready.")).toBeVisible();
+  await expect(notice(page, "gg 0.9.0 is ready")).toBeVisible();
 });
 
 test("turning automatic checks off stops the download they started; Check now is the user's own", async ({ gg }) => {

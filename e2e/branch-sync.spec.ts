@@ -58,7 +58,7 @@ test("behind its upstream: a fetch shows ↓N in the toolbar, and one click pull
   await expect(label(page, "main").locator(".ab")).toHaveText("↓2");
 
   await pull(page).click();
-  await expect(notice(page, "Pulled origin/main into main.")).toBeVisible();
+  await expect(notice(page, "Pulled main")).toBeVisible();
   await expect(sync(page)).toHaveCount(0);
   expect(rev(gg, "main")).toBe(rev(gg, "origin/main"));
   expect(gg.git("routine", "log", "-1", "--format=%s").trim()).toBe("Remote two");
@@ -76,7 +76,7 @@ test("ahead of its upstream: ↑N, and one click pushes it there", async ({ gg }
   await expect(pull(page)).toHaveCount(0);
 
   await push(page).click();
-  await expect(notice(page, "Pushed main to origin/main.")).toBeVisible();
+  await expect(notice(page, "Pushed main to origin")).toBeVisible();
   await expect(sync(page)).toHaveCount(0);
   expect(gg.git("routine", "ls-remote", "origin", "refs/heads/main").split("\t")[0]).toBe(rev(gg, "main"));
 });
@@ -95,16 +95,16 @@ test("diverged: both counts, each its own button; the pull asks to merge or reba
 
   // Pushing first: refused by the remote, with what to do next on its notice.
   await push(page).click();
-  const refused = page.getByRole("alert").filter({ hasText: "The remote has commits you don't have" });
+  const refused = page.getByRole("alert").filter({ hasText: "Push rejected: the remote has new commits" });
   await expect(refused).toBeVisible();
-  await expect(refused.getByRole("button", { name: "Pull main", exact: true })).toBeVisible();
+  await expect(refused.getByRole("button", { name: "Pull", exact: true })).toBeVisible();
 
   // The pull: git's config here says nothing, so the app asks.
   await pull(page).click();
   const asked = page.getByRole("dialog", { name: "Pull origin/main into main" });
   await expect(asked).toBeVisible();
   await asked.getByRole("button", { name: "Pull", exact: true }).click();
-  await expect(notice(page, "Pulled origin/main into main.")).toBeVisible();
+  await expect(notice(page, "Pulled main")).toBeVisible();
   // Merged: only the merge and the local commit are left to push.
   await expect(pull(page)).toHaveCount(0);
   await expect(push(page)).toHaveText("2");

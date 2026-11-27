@@ -276,9 +276,9 @@ on the selected row) for its menu. Items that cannot run say why when you point 
 - **Check out** a branch that is behind its upstream asks whether to fast-forward it first.
   Double-clicking a local branch's label checks it out too.
 - **Merge** offers "Create a merge commit even if fast-forward is possible" (remembered per
-  repository), "Squash the commits" and "No commit". After a merge, the notice offers
-  **Push** *branch* **to** *remote/branch*; a push the remote rejects offers Fetch, Pull and
-  a separate Force push…. So the staging routine is: check out `staging`, merge your branch
+  repository), "Squash the commits" and "No commit". After a merge, the notice
+  (**Merged** *branch* **into** *branch*) offers **Push to** *remote*; a push the remote
+  rejects offers Fetch, Pull and a separate Force push…. So the staging routine is: check out `staging`, merge your branch
   into it, push — three clicks from the graph.
 - **Push** goes to the branch of the same name on the remote, like git's own default
   (`push.default=simple`). A branch whose upstream has another name (made with
@@ -462,7 +462,7 @@ describing the latest release (`latest.json`; GitHub answers through a redirect 
 host). The request carries nothing about you, what is on your machine or your repositories
 beyond what any web request does: your IP address, and a user agent naming the updater. When a
 newer version is there it is downloaded in the background and its signature checked against
-the key built into gg; then a notice says **gg X.Y.Z is ready.** with **Restart to update**.
+the key built into gg; then a notice says **gg X.Y.Z is ready** with **Restart to update**.
 
 - gg never restarts by itself. Dismiss the notice and it comes back the next time gg starts;
   **Settings → About** keeps saying it meanwhile, with its own **Restart to update**.
@@ -479,7 +479,7 @@ the key built into gg; then a notice says **gg X.Y.Z is ready.** with **Restart 
 - **Settings → About → Check for updates automatically** turns the checks off (a download
   they started stops too); **Check now** looks at once, whatever the setting.
 
-Where gg cannot replace itself, a notice says **gg X.Y.Z is available.**, why, and links the
+Where gg cannot replace itself, a notice says **gg X.Y.Z is available**, why, and links the
 download page (gg.shakirul.com):
 
 - on macOS, when gg runs from its disk image, or from where it was downloaded (macOS then

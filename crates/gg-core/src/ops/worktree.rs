@@ -20,6 +20,7 @@ use crate::git::names::branch_slug;
 use crate::git::progress::read_kind;
 use crate::git::runner::CmdKind;
 use crate::git::worktrees::read_worktrees;
+use crate::notice::{add_note, name, said};
 use crate::ops::danger::{MAX_LOST_LISTED, fnv1a, stat_hash, unmerged_branch};
 use crate::ops::local::{kind_name, short};
 use crate::ops::{OpCtx, Step, explain};
@@ -259,18 +260,21 @@ pub(crate) async fn add(ctx: &OpCtx<'_>, path: &str, branch: &WorktreeBranch) ->
     };
     if out.code == 0 {
         note_created(ctx);
-        let what = match branch {
-            WorktreeBranch::Existing { existing } => format!("on branch {existing}"),
-            WorktreeBranch::Create { create, at: commit } => {
-                format!("on a new branch {create}, at {}", short(commit))
-            }
-            WorktreeBranch::Detach { detach } => {
-                format!("at {}, detached (no branch checked out)", short(detach))
-            }
-        };
-        return Ok(Step::Done(format!(
-            "Created a worktree at {shown}, {what}."
-        )));
+        let at = crate::notice::path(&shown);
+        return Ok(Step::Done(match branch {
+            WorktreeBranch::Existing { existing } => said(
+                format!("Created a worktree for {}", name(existing)),
+                format!("At {at}."),
+            ),
+            WorktreeBranch::Create { create, at: commit } => said(
+                format!("Created a worktree for {}", name(create)),
+                format!("A new branch at {}, in {at}.", name(short(commit))),
+            ),
+            WorktreeBranch::Detach { detach } => said(
+                format!("Created a worktree at {}", name(short(detach))),
+                format!("Detached (no branch checked out), in {at}."),
+            ),
+        }));
     }
     let Step::Failed {
         message,
@@ -289,12 +293,21 @@ pub(crate) async fn add(ctx: &OpCtx<'_>, path: &str, branch: &WorktreeBranch) ->
         note_created(ctx);
     }
     let message = if made {
-        format!(
-            "The worktree at {shown} was created, but git reported a failure after making it \
-             (a hook that failed, most likely; git's output is below)."
+        said(
+            "Created the worktree, but git reported a failure",
+            format!(
+                "At {}, after making it: a hook that failed, most likely (see the log).",
+                crate::notice::path(&shown)
+            ),
         )
     } else if !existed && resolved.exists() {
-        format!("{message} git left the folder {shown} behind; gg has not deleted it.")
+        add_note(
+            &message,
+            &format!(
+                "git left the folder {} behind; gg has not deleted it.",
+                crate::notice::path(&shown)
+            ),
+        )
     } else {
         message
     };
@@ -1280,8 +1293,8 @@ pub(crate) async fn remove(
         ctx.manager.make_main_active(ctx.repo).await?;
     }
     let main_now = format!(
-        " The main worktree, {}, is active now.",
-        ctx.repo.root.display()
+        "The main worktree, {}, is active now.",
+        crate::notice::path(ctx.repo.root.display().to_string())
     );
     let confirmed = dangers.iter().find(|d| {
         matches!(
@@ -1292,7 +1305,7 @@ pub(crate) async fn remove(
     let refuse = |why: String| {
         let mut message = why;
         if left {
-            message.push_str(&main_now);
+            message = add_note(&message, &main_now);
         }
         Ok(Step::Failed {
             message,
@@ -1328,9 +1341,15 @@ pub(crate) async fn remove(
         };
     if changed {
         return refuse(if confirmed.is_some() {
-            "It changed since you confirmed; nothing was deleted.".to_owned()
+            said(
+                "Nothing was deleted",
+                "The worktree changed since you confirmed.",
+            )
         } else {
-            "It changed while gg was getting ready; nothing was deleted.".to_owned()
+            said(
+                "Nothing was deleted",
+                "The worktree changed while gg was getting ready.",
+            )
         });
     }
     // `--force` only for what git would otherwise refuse: changed or untracked files the user
@@ -1361,7 +1380,7 @@ pub(crate) async fn remove(
             message
         };
         if left {
-            message.push_str(&main_now);
+            message = add_note(&message, &main_now);
         }
         return Ok(Step::Failed {
             message,
@@ -1369,19 +1388,22 @@ pub(crate) async fn remove(
             hints,
         });
     }
-    let mut message = format!("Deleted the worktree at {shown}.");
+    let mut message = format!("Deleted the worktree at {}", crate::notice::path(&shown));
     if left {
-        message.push_str(&main_now);
+        message = add_note(&message, &main_now);
     }
     let (true, Some(branch)) = (delete_branch, wt.branch.as_deref()) else {
         return Ok(Step::Done(message));
     };
     if let Some(other) = holder(&list, &wt, branch) {
         return Ok(Step::DoneWith {
-            message: format!(
-                "{message} Branch \u{201c}{branch}\u{201d} was not deleted: it is checked out \
-                 in the worktree at {} too.",
-                other.path
+            message: add_note(
+                &message,
+                &format!(
+                    "{} was not deleted: it is checked out at {} too.",
+                    name(branch),
+                    crate::notice::path(&other.path)
+                ),
             ),
             detail: None,
             hints: vec![OpHint::MakeActive {
@@ -1395,7 +1417,10 @@ pub(crate) async fn remove(
     let args = ["branch", if unmerged { "-D" } else { "-d" }, "--", branch];
     let out = ctx.git(&args).await?;
     if out.code == 0 {
-        return Ok(Step::Done(format!("{message} Deleted branch {branch}.")));
+        return Ok(Step::Done(add_note(
+            &message,
+            &format!("Branch {} deleted too.", name(branch)),
+        )));
     }
     Ok(match explain(&args, &out) {
         Step::Failed {
@@ -1404,7 +1429,14 @@ pub(crate) async fn remove(
             hints,
         } => Step::DoneWith {
             // The worktree is gone all the same: done, with what became of the branch.
-            message: format!("{message} Branch \u{201c}{branch}\u{201d} was not deleted: {why}"),
+            message: add_note(
+                &message,
+                &format!(
+                    "{} was not deleted: {}",
+                    name(branch),
+                    crate::notice::as_sentence(&why)
+                ),
+            ),
             detail: Some(detail),
             hints,
         },
@@ -1600,7 +1632,7 @@ pub(crate) async fn prune(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> {
     let now = prune_dangers(ctx).await?;
     if now.as_ref().map(|d| (d.kind, &d.token)) != seen.map(|d| (d.kind, &d.token)) {
         return Ok(Step::Failed {
-            message: "It changed since you confirmed; nothing was pruned.".to_owned(),
+            message: said("Nothing was pruned", "It changed since you confirmed."),
             detail: String::new(),
             hints: Vec::new(),
         });
@@ -1617,33 +1649,43 @@ pub(crate) async fn prune(ctx: &OpCtx<'_>, dangers: &[Danger]) -> Result<Step> {
         .filter(|w| !after.iter().any(|a| a.path == w.path))
         .map(|w| w.path.as_str())
         .collect();
-    let mut message = if pruned.is_empty() {
-        "Nothing to prune: every worktree git lists has its folder.".to_owned()
-    } else {
-        format!(
-            "Pruned {}: {}.",
-            if pruned.len() == 1 {
-                "1 stale worktree entry, whose folder was gone".to_owned()
-            } else {
-                format!(
-                    "{} stale worktree entries, whose folders were gone",
-                    pruned.len()
-                )
-            },
-            explain::file_list(&pruned)
-        )
-    };
     // git never calls a locked worktree prunable, even with its folder gone.
     let locked = after
         .iter()
         .filter(|w| w.locked && !w.is_main && !Path::new(&w.path).is_dir())
         .count();
+    let mut message = if pruned.is_empty() && locked > 0 {
+        "Nothing to prune".to_owned()
+    } else if pruned.is_empty() {
+        said(
+            "Nothing to prune",
+            "Every worktree git lists has its folder.",
+        )
+    } else {
+        let gone = pruned.iter().map(crate::notice::path).collect::<Vec<_>>();
+        let gone: Vec<&str> = gone.iter().map(String::as_str).collect();
+        said(
+            if pruned.len() == 1 {
+                "Pruned 1 worktree whose folder was gone".to_owned()
+            } else {
+                format!("Pruned {} worktrees whose folders were gone", pruned.len())
+            },
+            format!("{}.", explain::file_list(&gone)),
+        )
+    };
     if locked > 0 {
-        message.push_str(&format!(
-            " {} locked, so git keeps {}.",
-            count(locked, "missing worktree is", "missing worktrees are"),
-            if locked == 1 { "it" } else { "them" }
-        ));
+        message = add_note(
+            &message,
+            &format!(
+                "{} locked, so git keeps {}.",
+                crate::notice::capitalized(&count(
+                    locked,
+                    "missing worktree is",
+                    "missing worktrees are"
+                )),
+                if locked == 1 { "it" } else { "them" }
+            ),
+        );
     }
     Ok(Step::Done(message))
 }

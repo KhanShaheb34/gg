@@ -2,6 +2,7 @@
 // Every change to the tabs (or the active one) is saved as the session.
 
 import { startMark } from "../perf/startMarks";
+import type { Rich } from "../notice";
 import { shortenPath } from "../format";
 import { api, CoreError, onEvent } from "../ipc";
 import { applyTheme, nextTheme, onSystemThemeChange, type ThemeSetting } from "../theme";
@@ -10,24 +11,25 @@ import { setLogOpen } from "./commandLog.svelte";
 import { disposeRepoView, findRepoView, repoView } from "./repo.svelte";
 
 export type Tab = { repoId: number; path: string; name: string };
-export type ToastKind = "info" | "error";
+export type ToastKind = "success" | "info" | "error";
 /**
  * A button on a notice. Clicking it dismisses the notice, unless `keepOpen` (then `run`
  * dismisses it when done). `danger`: it destroys something.
  */
 export type ToastAction = { label: string; run: () => void | Promise<void>; danger?: boolean; keepOpen?: boolean };
 /**
- * A notice. A persistent one stays until dismissed. `note` says more under the message;
- * `detail` (git's own text, say) shows
- * below the message, or behind a disclosure with `foldDetail`. `actions` are buttons on it;
- * `link` a quieter one after them ("Show log").
+ * A notice. A persistent one stays until dismissed. `message` is its headline (what happened,
+ * in a few words); `note` the quieter line under it (the one detail worth having, or what to do
+ * next); each plain text or parts with names set off. `detail` (git's own text, say) shows
+ * below them, or behind a disclosure with `foldDetail`. `actions` are buttons on it; `link` a
+ * quieter one after them ("Show log").
  */
 export type Toast = {
   id: number;
   kind: ToastKind;
-  message: string;
-  /** A sentence under the message, in its own words (not git's output). */
-  note?: string;
+  message: Rich;
+  /** The line under the headline, in its own words (not git's output). */
+  note?: Rich;
   detail?: string;
   foldDetail?: boolean;
   persistent?: boolean;
@@ -89,9 +91,9 @@ export const app = $state({
 
 let nextToastId = 1;
 
-/** Shows a toast; the Toast component dismisses it after a while. */
-export function toast(kind: ToastKind, message: string, detail?: string): void {
-  app.toasts.push(detail ? { id: nextToastId++, kind, message, detail } : { id: nextToastId++, kind, message });
+/** Shows a toast, a headline (with `note` under it); the Toast component dismisses it after a while. */
+export function toast(kind: ToastKind, message: Rich, note?: Rich): void {
+  app.toasts.push(note ? { id: nextToastId++, kind, message, note } : { id: nextToastId++, kind, message });
 }
 
 /**
@@ -148,7 +150,7 @@ function reportSettingsProblem(problem: string): void {
           }
           dismissToast(id);
           app.settingsProblem = null;
-          toast("info", "Settings reset: saving again.");
+          toast("info", "Settings reset", "They are being saved again.");
         },
       },
     ],
@@ -159,7 +161,11 @@ export function dismissToast(id: number): void {
   app.toasts = app.toasts.filter((t) => t.id !== id);
 }
 
-/** Reports a failed core call: git missing switches the app to its no-git panel. */
+/**
+ * Reports a failed core call: `prefix` ("Could not save the theme") as the headline and why
+ * under it, else why alone; what the core quotes (git's text) folded below. git missing
+ * switches the app to its no-git panel instead.
+ */
 export function reportError(e: unknown, prefix?: string): void {
   if (e instanceof CoreError && e.code === "git_not_found") {
     app.gitMissing = true;
@@ -167,7 +173,14 @@ export function reportError(e: unknown, prefix?: string): void {
   }
   const message = e instanceof Error ? e.message : String(e);
   const detail = e instanceof CoreError ? (e.detail ?? undefined) : undefined;
-  toast("error", prefix ? `${prefix}: ${message}` : message, detail);
+  const why = message.charAt(0).toUpperCase() + message.slice(1);
+  notify({
+    kind: "error",
+    message: prefix ?? message,
+    note: prefix ? why : undefined,
+    detail,
+    foldDetail: detail !== undefined,
+  });
 }
 
 /**
@@ -224,7 +237,8 @@ function noteWorktreeNotMadeActive(opened: OpenedRepo): void {
   const here = shortenPath(opened.activeWorktree, app.homeDir);
   notify({
     kind: "info",
-    message: `${there} could not be made the active worktree of ${opened.name} while an operation runs there: the tab still works in ${here}.`,
+    message: `${there} could not be made active`,
+    note: `An operation runs in ${opened.name}: the tab still works in ${here}.`,
     persistent: true,
   });
 }
@@ -259,7 +273,8 @@ function addTab(snapshot: RepoSnapshot, rank?: number): void {
     const at = app.tabs.findIndex((t) => (sessionRank.get(t.repoId) ?? Infinity) > rank);
     app.tabs.splice(at < 0 ? app.tabs.length : at, 0, tab);
   }
-  repoView(snapshot.repoId, snapshot).onNotice = (message, detail) => toast("error", message, detail);
+  repoView(snapshot.repoId, snapshot).onNotice = (message, note, detail) =>
+    notify({ kind: "error", message, note, detail, foldDetail: detail !== undefined });
   const held = heldErrors.get(snapshot.repoId);
   heldErrors.delete(snapshot.repoId);
   for (const { error, prs } of held ?? []) showRepoError(error, prs, snapshot.name);
@@ -292,10 +307,20 @@ function onRepoError(repoId: number, error: CoreErrorDto, prs: boolean): void {
  */
 function showRepoError(error: CoreErrorDto, prs: boolean, name: string): void {
   if (!prs) {
-    reportError(new CoreError(error), name);
+    if (error.code === "git_not_found") {
+      reportError(new CoreError(error));
+      return;
+    }
+    notify({
+      kind: "error",
+      message: error.message,
+      note: `In ${name}.`,
+      detail: error.detail ?? undefined,
+      foldDetail: error.detail !== null,
+    });
     return;
   }
-  notify({ kind: "info", message: `${name}: ${error.message}`, detail: error.detail ?? undefined, foldDetail: true, persistent: true });
+  notify({ kind: "info", message: `Pull requests are not shown for ${name}`, note: error.message, detail: error.detail ?? undefined, foldDetail: true, persistent: true });
 }
 
 /** Opens the repository at `path` in a tab and activates it; failures become toasts. */

@@ -19,6 +19,11 @@ const DEFAULTS: Settings = {
   dateFormat: "standard",
   checkForUpdates: true,
   openPrTabAfterPush: true,
+  aiTool: "auto",
+  aiModels: {},
+  aiCommitPrompt: null,
+  aiPrPrompt: null,
+  aiNoticeSeen: [],
 };
 
 describe("saving a setting", () => {
@@ -50,6 +55,25 @@ describe("saving a setting", () => {
     expect(app.settings.editorCommand).toBe("code -w");
     await vi.advanceTimersByTimeAsync(s.SAVED_FOR_MS);
     expect(field.status).toBe("idle");
+  });
+
+  it("a flush while the save after the pause is still out waits for it (Test then runs what was typed)", async () => {
+    let answer: (s: Settings) => void = () => {};
+    vi.mocked(ipc.api.updateSettings).mockImplementation(
+      (patch) => new Promise((resolve) => (answer = () => resolve({ ...DEFAULTS, ...patch } as Settings))),
+    );
+    const field = new s.SettingField("terminalCommand", s.TEXT_DELAY_MS);
+    field.set("kitty --directory {path}");
+    await vi.advanceTimersByTimeAsync(s.TEXT_DELAY_MS);
+    expect(ipc.api.updateSettings).toHaveBeenCalledTimes(1);
+    let flushed = false;
+    const flush = field.flush().then((ok) => (flushed = ok));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(flushed).toBe(false);
+    answer(DEFAULTS);
+    await flush;
+    expect(flushed).toBe(true);
+    expect(app.settings.terminalCommand).toBe("kitty --directory {path}");
   });
 
   it("two settings changed at once both stay, whichever answer comes last (found in the real app)", async () => {

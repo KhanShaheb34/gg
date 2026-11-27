@@ -8,7 +8,7 @@ everyday actions on them.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/graph-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screens/graph-light.png">
-  <img alt="gg showing a repository's commit graph: coloured lanes on the left, branch, remote and tag labels beside each commit's subject, then date, author and short hash columns, and the side panel on the right, on its Worktrees tab" src="docs/screens/graph-light.png" width="1280">
+  <img alt="gg showing a repository's commit graph: coloured lanes on the left, branch, remote and tag labels beside each commit's subject, then date, author and short hash columns, the side panel on the right, on its Worktrees tab, the ↑1 push count in the toolbar, and the status bar along the bottom with the repository's folder" src="docs/screens/graph-light.png" width="1280">
 </picture>
 
 ## Why
@@ -163,6 +163,16 @@ branch's own commits change since it left its base (the pull request's base, els
 branch it was created from, as the pull request form offers it): each file with its folder,
 lines added and removed, and its status.
 
+**Generate with AI.** The sparkle beside the message (or ⌘G in it) writes a commit message
+from the files you tick, and beside a pull request's title it writes the title and
+description from the branch's commits and changes. It uses the AI command-line tool you
+already have, signed in to your own account: [Claude Code](https://code.claude.com/docs/en/setup)
+or [Codex](https://developers.openai.com/codex/cli), so it costs nothing beyond your own plan
+with it. The text lands in the field for you to edit; Undo (or ⌘Z in the field) puts back
+what was there, and nothing is committed or created by it. The tool, its model and the
+prompts are in Settings → AI. What is sent, and to whom, is under
+[privacy](#how-it-works-and-privacy).
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/committed-on-branch-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screens/committed-on-branch-light.png">
@@ -194,6 +204,12 @@ write is kept while gg runs if it fails or you look elsewhere. After you push a 
 pull request, the tab opens by itself (a setting). Open pull requests show as markers beside
 their branches and worktrees. Without `gh`, gg pushes the branch and opens GitHub's compare
 page instead. gg never reads or stores a GitHub token.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pr-reply-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/pr-reply-light.png">
+  <img alt="A reply being written in the code comment's thread on README.md:3 in the Pull request tab, under grace's question and ada's answer, with Resolve and Reply buttons below the box" src="docs/screens/pr-reply-light.png" width="640">
+</picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pr-create-dark.png">
@@ -329,6 +345,18 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
   does: your IP address, and a user agent naming the updater. Turn the checks off in
   Settings → About. Otherwise the network is git talking to your own remotes, and `gh` when you
   use pull requests.
+- **Generate with AI** sends something off your machine only when you click it, and gg does
+  not send it: it runs the Claude Code or Codex you installed, which sends the prompt to its
+  provider (Anthropic or OpenAI) under your account, as it does in your terminal. The prompt
+  holds the branch's name, the list of files and their diff (for a commit, only the ticked
+  files; for a pull request, the branch's commits and diff since its base, and the title and
+  description as the form has them), cut to about 200 KB; binary files are named, never read.
+  It goes on the tool's standard input, never on a command line or into the command log. The
+  tool runs in a temporary folder, never in the repository, with no tools (Claude Code) or
+  with its commands, image viewer, web search and your `config.toml` (its MCP servers) off and its sandbox read-only
+  (Codex), so it cannot change the repository or read other files; it keeps no session. gg
+  never reads, stores or passes on a token for it. A small notice says this before a tool's
+  first use.
 - Updates are signed. gg installs one only if its signature verifies with the public key
   built into the app and was made for the version offered; anything else is refused and
   nothing is installed. See [SECURITY.md](SECURITY.md#updates).
@@ -340,6 +368,7 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 - macOS 12 or later. (Windows and Linux builds exist; see [Install](#windows-and-linux).)
 - git 2.29 or later. With an older git, gg says so once and skips the background fetch.
 - Optional: the GitHub CLI `gh`, signed in, for pull requests.
+- Optional: Claude Code or Codex, signed in, for Generate with AI.
 
 ## Build from source
 
@@ -420,10 +449,11 @@ Security issues: see [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-[MIT](LICENSE).
+[MIT](LICENSE). Parts come from other projects; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Credits
 
-gg is inspired by the Git Graph extension for VS Code.
+gg is inspired by the Git Graph extension for VS Code. Generate with AI's prompts come from
+[Orca](https://github.com/stablyai/orca).
 
 Built by [Shakirul](https://shakirul.com).

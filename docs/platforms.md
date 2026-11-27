@@ -21,6 +21,7 @@ are **compiled, not run**. This page says what was verified where, as of Novembe
 | Children: no terminal, stdin null, the whole process tree ended by Stop, a time limit or the app's exit | Built and tested (session + process group, `setsid`/`killpg`; the git and login-shell spawn paths set libSystem's libnotify up before they fork, against the race of a fork with its first use, which libSystem's fork handler in the child aborts on) | Compiled (same Unix code); CI | Compiled: a job object per child (`CREATE_SUSPENDED`, assigned, resumed; kill on close), `CREATE_NO_WINDOW`; CI test `the_whole_tree_ends_with_the_job` |
 | Finding git, gh, ssh, the editor and terminal on `PATH` (absolute folders only, never the current one) | Built and tested | Compiled; CI | Unit-tested logic (`PATHEXT`, quoted entries, `.exe`/`.com` only, a `.cmd` shim said not run); compiled |
 | `PATH` for children | The login shell's (`$SHELL -ilc`) | The login shell's | The app's own (inherited); no login shell |
+| Generate with AI: finding `claude` and `codex`, running one, Cancel and the time limit | Built and tested against a stand-in (`gg-fake-ai`), and by hand with the real Claude Code 2.1 (a message, a pull request's details, Cancel, a large diff) and Codex 0.163 (signed out only) | Same Unix code; the stand-in's tests in CI | A program (`claude.exe`) first; an npm shim (`codex.cmd`, `claude.cmd`) is run too (its arguments are fixed words, a checked model name and a path of gg's; Rust's standard library quotes them for `cmd.exe`, or refuses): lookup unit-tested; the stand-in's tests (as `.exe`) in CI; a real tool not run |
 | The `gg` command: the launcher | Built and tested (`tests/launcher.rs`) | Same script; CI | `gg.cmd`: static checks and fill-in tests on the Mac; run through cmd only in CI (`tests/launcher_windows.rs`) |
 | The `gg` command: install / uninstall / what else is `gg` | Built and tested | Compiled; CI | Unit-tested logic (folders of the user's own on `PATH`, `where`-style lookup); compiled |
 | Working-tree watch | Built and tested (one recursive FSEvents watch) | Folder-by-folder mode built and tested on the Mac (FSEvents, non-recursive); inotify itself only in CI | Compiled (one recursive watch); CI |
@@ -53,7 +54,10 @@ are **compiled, not run**. This page says what was verified where, as of Novembe
   among them) again (R19). When only a `git.cmd` shim is found, gg says so and names it. VS
   Code's `code` on `PATH` is `code.cmd` (Cursor's `cursor.cmd`): gg runs the `Code.exe`
   (`Cursor.exe`) it starts, found beside it, instead; when that is not there, the message
-  names the `.exe` to set as the editor.
+  names the `.exe` to set as the editor. The one exception is Generate with AI's tools, which
+  npm installs only as shims (`codex.cmd`): gg runs those, since nothing of the user's or the
+  repository's is on their command line (the prompt goes on stdin), and Rust's standard
+  library quotes the rest for `cmd.exe` or refuses to start it.
 - **Stop can leave locks behind**: git is ended at once, so besides `index.lock` a ref lock
   (`refs/heads/<branch>.lock`, `packed-refs.lock`) may stay; gg offers to remove only a stale
   `index.lock`, and git's own message names any other lock.

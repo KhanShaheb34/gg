@@ -70,12 +70,29 @@ export class SettingField<K extends keyof Settings> {
     return this.#pending !== null;
   }
 
-  /** Saves the waiting value now; whether the field is saved (nothing waiting counts). */
+  /** A save under way, for a flush that comes meanwhile to wait for. */
+  #inflight: Promise<boolean> | null = null;
+
+  /**
+   * Saves the waiting value now; whether the field is saved (nothing waiting counts). A save
+   * already under way (its pause ended a moment ago) is waited for: what was typed is saved
+   * once this resolves.
+   */
   async flush(): Promise<boolean> {
     if (this.#timer !== null) clearTimeout(this.#timer);
     this.#timer = null;
     const pending = this.#pending;
-    if (pending === null) return this.status !== "error";
+    if (pending === null) return this.#inflight ? this.#inflight : this.status !== "error";
+    const run = this.#save(pending);
+    this.#inflight = run;
+    try {
+      return await run;
+    } finally {
+      if (this.#inflight === run) this.#inflight = null;
+    }
+  }
+
+  async #save(pending: { value: Settings[K] }): Promise<boolean> {
     this.#pending = null;
     const seq = ++this.#seq;
     this.status = "saving";

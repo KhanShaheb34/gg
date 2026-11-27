@@ -288,8 +288,9 @@ for (const [prefix, width, height] of SIZES)
     // The default window: the side panel on its Worktrees tab, as in the graph's shot.
     if (width >= 1000) await showWorktrees(page);
 
-    // A commit's menu with the reset submenu open, the hard reset under the pointer.
-    await grid.locator('[role="row"]', { hasText: "Plugin sandboxing" }).locator(".subject").click({ button: "right" });
+    // A commit's menu with the reset submenu open, the hard reset under the pointer. Opened at
+    // the start of the subject, so the menu covers the details' author line (an email address).
+    await grid.locator('[role="row"]', { hasText: "Plugin sandboxing" }).locator(".subject").click({ button: "right", position: { x: 2, y: 8 } });
     await page.getByRole("menuitem", { name: /^Reset main to here$/ }).hover();
     await page.getByRole("menuitem", { name: "Hard: discard all changes" }).hover();
     await shot("menu-commit");
@@ -1398,6 +1399,15 @@ for (const [prefix, width, height] of SIZES)
       await expect(tab.getByTestId("pr-check")).toHaveCount(4);
     }
     await shot("pr-tab-details");
+
+    // A reply being written in the code comment's thread, beside Resolve (the README's).
+    if (prefix === "") {
+      const thread = tab.locator('[data-testid="pr-comment"][data-kind="thread"]', { hasText: "README.md" });
+      const field = thread.getByTestId("pr-reply-box-field");
+      await field.fill("Both say `pnpm` now: the install step and the build section.");
+      await thread.getByTestId("pr-reply-box-send").scrollIntoViewIfNeeded();
+      await shot("pr-tab-reply");
+    }
   });
 }
 

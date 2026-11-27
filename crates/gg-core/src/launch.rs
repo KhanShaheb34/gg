@@ -45,6 +45,10 @@ pub enum AppLink {
     Source,
     /// The settings file, shown in the file manager.
     SettingsFile,
+    /// Claude Code's install page, in the browser.
+    InstallClaude,
+    /// Codex's install page, in the browser.
+    InstallCodex,
 }
 
 /// gg's home page.
@@ -171,6 +175,14 @@ impl RepoManager {
         match link {
             AppLink::Home => self.start(url_plan(os, HOME_PAGE), None),
             AppLink::Source => self.start(url_plan(os, SOURCE_PAGE), None),
+            AppLink::InstallClaude => {
+                let page = crate::ai::tools::adapter(crate::dto::AiTool::Claude).install_url();
+                self.start(url_plan(os, page), None)
+            }
+            AppLink::InstallCodex => {
+                let page = crate::ai::tools::adapter(crate::dto::AiTool::Codex).install_url();
+                self.start(url_plan(os, page), None)
+            }
             AppLink::SettingsFile => {
                 let shown = if settings_file.is_file() {
                     settings_file

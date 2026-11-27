@@ -3,6 +3,9 @@
 
 import { isTauri } from "./platform";
 import type {
+  AiOutcome,
+  AiTask,
+  AiTools,
   AppState,
   BodyHits,
   BranchFiles,
@@ -309,7 +312,17 @@ export const api = {
   /** Puts every setting back to its default ("Reset to defaults"); the settings after. */
   restoreDefaultSettings: () => call<Settings>("restore_default_settings"),
   /** Opens gg's home page or source code in the browser, or shows the settings file in the file manager. */
-  openAppLink: (link: "home" | "source" | "settingsFile") => call<{ note: string | null }>("open_app_link", { link }),
+  openAppLink: (link: "home" | "source" | "settingsFile" | "installClaude" | "installCodex") =>
+    call<{ note: string | null }>("open_app_link", { link }),
+  /**
+   * The command-line AI tools as found now: `versions` also asks each its version (the
+   * settings); `recheck` reads the login shell's PATH again first ("Check again").
+   */
+  aiTools: (options: { versions?: boolean; recheck?: boolean } = {}) => call<AiTools>("ai_tools", options),
+  /** Writes what `task` asks for with the tool the settings choose; `requestId` names it for `aiCancel`. */
+  aiGenerate: (repoId: number, requestId: string, task: AiTask) => call<AiOutcome>("ai_generate", { repoId, requestId, task }),
+  /** Cancels generation `requestId`: the tool ends, with what it started. */
+  aiCancel: (requestId: string) => call<boolean>("ai_cancel", { requestId }),
   /** Moves an unreadable settings file aside, so settings are saved again. */
   async resetSettings(): Promise<void> {
     await call("reset_settings");

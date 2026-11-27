@@ -842,7 +842,12 @@ export type FakeAi = {
   /** Answers each call with `stdout` (and `stderr`), exiting with `code`, after `sleepMs`. */
   reply(name: "claude" | "codex", code: number, stdout: string, stderr?: string, sleepMs?: number): void;
   /** Each call's arguments and what it read on stdin, oldest first. */
-  calls(name: "claude" | "codex"): { argv: string[]; stdin: string; done: boolean }[];
+  calls(name: "claude" | "codex"): { argv: string[]; stdin: string; done: boolean; pid: number }[];
+  /**
+   * Waits until call `i` (0 = first) of `name` has ended, however it ended (it answered, or was
+   * ended), and says whether it answered: a call ended by Cancel never does.
+   */
+  ended(name: "claude" | "codex", i: number): Promise<{ answered: boolean }>;
 };
 
 function fakeAi(home: string): FakeAi {
@@ -866,13 +871,35 @@ function fakeAi(home: string): FakeAi {
       writeFileSync(path.join(dir, "reply.code"), String(code));
       writeFileSync(path.join(dir, "reply.sleep"), String(sleepMs));
     },
+    async ended(name, i) {
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const call = this.calls(name)[i];
+        if (call && !alive(call.pid)) return { answered: this.calls(name)[i].done };
+        if (Date.now() > deadline) throw new Error(`${name} call ${i} did not end`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    },
     calls(name) {
-      const out: { argv: string[]; stdin: string; done: boolean }[] = [];
+      const out: { argv: string[]; stdin: string; done: boolean; pid: number }[] = [];
       for (let i = 1; existsSync(path.join(state(name), "calls", String(i), "argv")); i++) {
         const c = path.join(state(name), "calls", String(i));
         const argv = readFileSync(path.join(c, "argv"), "utf8").split("\0");
         argv.pop();
-        out.push({ argv, stdin: readFileSync(path.join(c, "stdin"), "utf8"), done: existsSync(path.join(c, "done")) });
+        out.push({
+          argv,
+          stdin: readFileSync(path.join(c, "stdin"), "utf8"),
+          done: existsSync(path.join(c, "done")),
+          pid: Number(readFileSync(path.join(c, "pid"), "utf8")),
+        });
       }
       return out;
     },

@@ -92,12 +92,12 @@ test("only the ticked files are sent; with none ticked the button says why and d
   await expect(aiButton(page)).toHaveAttribute("title", "Tick the files to describe.");
   // Playwright waits for an aria-disabled button; a click still reaches it, and does nothing.
   await aiButton(page).click({ force: true });
-  await page.waitForTimeout(300);
-  expect(gg.ai.calls("claude")).toHaveLength(0);
-  // One ticked: only it is sent.
+  await expect(aiButton(page)).toHaveAttribute("data-state", "blocked");
+  // One ticked: only it is sent, and this is the tool's only run (the click before ran none).
   await page.getByRole("listbox", { name: "Changed files" }).locator('[data-path="todo.md"]').click();
   await aiButton(page).click();
   await expect(message(page)).toHaveValue("Update the todo");
+  expect(gg.ai.calls("claude")).toHaveLength(1);
   const { stdin } = gg.ai.calls("claude")[0];
   expect(stdin).toContain("todo.md");
   expect(stdin).not.toContain("src/app.ts");
@@ -105,7 +105,8 @@ test("only the ticked files are sent; with none ticked the button says why and d
 
 test("Cancel ends the tool: the field is as it was, unlocked", async ({ gg }) => {
   const { page } = gg;
-  gg.ai.reply("claude", 0, "Too late\n", "", 30_000);
+  // Soon enough that a tool Cancel left running would answer before the test ends.
+  gg.ai.reply("claude", 0, "Too late\n", "", 3_000);
   await commitPanel(gg);
   await message(page).fill("draft");
   const before = (await aiButton(page).boundingBox())!;
@@ -124,8 +125,9 @@ test("Cancel ends the tool: the field is as it was, unlocked", async ({ gg }) =>
   await expect(message(page)).toHaveValue("draft");
   await expect(message(page)).not.toHaveAttribute("readonly", "");
   await expect(problem(page)).toHaveCount(0);
-  await page.waitForTimeout(500);
-  expect(gg.ai.calls("claude")[0].done).toBe(false);
+  // The tool's process is gone, and it never answered: it was ended, not left to finish.
+  expect(await gg.ai.ended("claude", 0)).toEqual({ answered: false });
+  await expect(message(page)).toHaveValue("draft");
 });
 
 test("Escape in the message cancels too, and leaves the panel open", async ({ gg }) => {
@@ -362,16 +364,17 @@ test("a generation belongs to the form, not to the panel showing it: shown again
 
   // Cancelled from a form shown again: nothing of it lands, the tool is ended.
   await panel.getByTestId("pr-title").fill("My own title");
-  gg.ai.reply("claude", 0, JSON.stringify({ title: "Too late", body: "x" }), "", 30_000);
+  // Soon enough that a tool Cancel left running would answer before the test ends.
+  gg.ai.reply("claude", 0, JSON.stringify({ title: "Too late", body: "x" }), "", 3_000);
   await panel.getByTestId("pr-ai").click();
   await expect.poll(() => gg.ai.calls("claude").length).toBe(2);
   await page.getByTestId("side-tab-worktrees").click();
   await page.getByTestId("side-tab-pr").click();
   await panel.getByTestId("pr-ai-cancel").click();
   await expect(panel.getByTestId("pr-ai")).toHaveAttribute("data-state", "ready");
+  // The tool's process is gone, and it never answered; nothing of it lands.
+  expect(await gg.ai.ended("claude", 1)).toEqual({ answered: false });
   await expect(panel.getByTestId("pr-title")).toHaveValue("My own title");
-  await page.waitForTimeout(500);
-  expect(gg.ai.calls("claude")[1].done).toBe(false);
 });
 
 test("the commit message's generation outlives the panel too: its answer is in the field when the Commit tab shows again", async ({ gg }) => {

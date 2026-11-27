@@ -17,6 +17,17 @@ as the rest of the site does. Anything else stops the script with the line it is
 the newest entry here is not the version in public/latest.json.
 -->
 
+## 0.5.3 (2026-11-27)
+
+Commit messages and pull request text written by the AI tool you already use, shorter toasts, and a fix for graph lines that could go missing.
+
+### What changed
+
+- **Generate with AI.** The sparkle beside the commit message (or ⌘G in it) writes a commit message from the files you ticked. Beside a pull request's title it writes the title and description from the branch. gg runs the Claude Code or Codex you already installed and signed in to, so there is no key to enter and nothing to pay beyond your own plan. Nothing leaves your machine until you click it; the tool runs with its tools switched off and keeps no session. Cancel stops it, ⌘Z puts back what you had, and **Settings › AI** picks the tool and the model. Codex has so far been tested signed out only; reports are welcome.
+- **Shorter toasts.** Every message is now a short headline with a note under it. Branches and commits show as chips, raw links are gone (Open and Copy link remain), and a failure keeps its **Show log**.
+- **A pull request's default title comes from the branch's name.** `sam/fix-login-error-wording` becomes "Fix login error wording". A branch with one commit used to get that commit's subject; it now gets the branch-name title too.
+- **Fixed: the graph's lines could go missing**, leaving only the dots, until gg was restarted. This happened when the system restarted the process that draws for gg.
+
 ## 0.5.2 (2026-11-26)
 
 A status bar at the bottom of the window, and a quieter header.

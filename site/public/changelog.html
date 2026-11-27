@@ -60,11 +60,27 @@
     <p class="lede">What changed in each release of gg, newest first. Each version links to its release on GitHub, with the downloads for every system and their checksums.</p>
   </section>
 
+  <article class="block release" id="v0.5.3" aria-labelledby="v0.5.3-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.5.3-title"><a class="ref ref-tag" href="#v0.5.3"><span class="sr-only">gg </span>v0.5.3</a></h2>
+      <span class="ref ref-latest">latest</span>
+      <p class="release-meta"><time datetime="2026-11-27">27 November 2026</time><a href="/github/releases/tag/v0.5.3">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">Commit messages and pull request text written by the AI tool you already use, shorter toasts, and a fix for graph lines that could go missing.</p>
+    <h3>What changed</h3>
+    <ul class="changes">
+      <li><b>Generate with AI.</b> The sparkle beside the commit message (or ⌘G in it) writes a commit message from the files you ticked. Beside a pull request's title it writes the title and description from the branch. gg runs the Claude Code or Codex you already installed and signed in to, so there is no key to enter and nothing to pay beyond your own plan. Nothing leaves your machine until you click it; the tool runs with its tools switched off and keeps no session. Cancel stops it, ⌘Z puts back what you had, and <b>Settings › AI</b> picks the tool and the model. Codex has so far been tested signed out only; reports are welcome.</li>
+      <li><b>Shorter toasts.</b> Every message is now a short headline with a note under it. Branches and commits show as chips, raw links are gone (Open and Copy link remain), and a failure keeps its <b>Show log</b>.</li>
+      <li><b>A pull request's default title comes from the branch's name.</b> <code>sam/fix-login-error-wording</code> becomes "Fix login error wording". A branch with one commit used to get that commit's subject; it now gets the branch-name title too.</li>
+      <li><b>Fixed: the graph's lines could go missing</b>, leaving only the dots, until gg was restarted. This happened when the system restarted the process that draws for gg.</li>
+    </ul>
+  </article>
+
   <article class="block release" id="v0.5.2" aria-labelledby="v0.5.2-title">
     <span class="node" aria-hidden="true"></span>
     <header class="release-head">
       <h2 class="release-version" id="v0.5.2-title"><a class="ref ref-tag" href="#v0.5.2"><span class="sr-only">gg </span>v0.5.2</a></h2>
-      <span class="ref ref-latest">latest</span>
       <p class="release-meta"><time datetime="2026-11-26">26 November 2026</time><a href="/github/releases/tag/v0.5.2">Downloads on GitHub</a></p>
     </header>
     <p class="release-lede">A status bar at the bottom of the window, and a quieter header.</p>

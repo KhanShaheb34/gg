@@ -21,7 +21,7 @@
     inbox,
     inboxPrSource,
   } from "../state/inbox.svelte";
-  import { showDialog } from "../state/overlays.svelte";
+  import { overlays, showDialog } from "../state/overlays.svelte";
   import { clock } from "../state/prs.svelte";
   import { findRepoView } from "../state/repo.svelte";
   import type { InboxPr, InboxRepoMatch } from "../types";
@@ -71,7 +71,9 @@
   });
 
   function onKeydown(e: KeyboardEvent) {
-    if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
+    // A dialog or menu takes its own Escape.
+    if (overlays.dialog || overlays.menu) return;
     // A field's own Escape (a reply being written) is its own.
     const target = e.target as HTMLElement | null;
     if (target?.closest("input, textarea, [contenteditable]")) return;
@@ -85,8 +87,9 @@
 
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="pr-page" data-testid="inbox-pr-page" onkeydown={onKeydown}>
+<svelte:window onkeydown={onKeydown} />
+
+<div class="pr-page" data-testid="inbox-pr-page">
   <header class="bar">
     <div class="bar-inner">
     <button class="back" type="button" bind:this={back} onclick={backToList} title="Back to the pull requests (Esc)" data-testid="inbox-back">

@@ -226,7 +226,7 @@ fn transition_refused(
                     "{} is inside {}, which is a link to another folder now; git does not look \
                      inside it.",
                     path(file),
-                    path(link.to_string())
+                    path(&link)
                 ),
             ));
         }

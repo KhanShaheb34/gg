@@ -445,7 +445,10 @@ mod tests {
             Some("merge: 01234567 - not something we can merge")
         );
         // Not a word of its own, or not 40 digits: as it is.
-        assert_eq!(short_hashes(&format!("x{hash} abc12345")), format!("x{hash} abc12345"));
+        assert_eq!(
+            short_hashes(&format!("x{hash} abc12345")),
+            format!("x{hash} abc12345")
+        );
         let long = format!("error: {}", "x".repeat(400));
         let line = telling_line(&long).unwrap();
         assert_eq!(line.chars().count(), MAX_QUOTED);

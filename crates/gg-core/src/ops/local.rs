@@ -258,10 +258,8 @@ pub(crate) fn stopped_without_conflicts(kind: InProgressKind) -> String {
             let what = kind_name(kind);
             said(
                 format!("The {what} stopped without conflicts"),
-                format!(
-                    "It is still in progress: continue it, or abort it. Why git stopped is in \
-                     the log."
-                ),
+                "It is still in progress: continue it, or abort it. Why git stopped is in the \
+                 log.",
             )
         }
     }

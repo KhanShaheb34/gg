@@ -496,7 +496,9 @@ async fn cancel_ends_the_tool() {
     let s = setup(&["claude"]).await;
     s.repo.write("README.md", "# changed\n");
     s.tools.reply("claude", 0, "Too late\n", "");
-    s.tools.set("claude", "reply.sleep", "30000");
+    // Short enough that a tool Cancel left running would answer (and mark `done`) well within
+    // the wait below; Cancel comes long before.
+    s.tools.set("claude", "reply.sleep", "2000");
     let m = s.m.clone();
     let (id, task) = (s.id, s.commit_task(&["README.md"]));
     let running = tokio::spawn(async move {
@@ -512,12 +514,49 @@ async fn cancel_ends_the_tool() {
         .unwrap()
         .unwrap();
     assert_eq!(failure(&out).0, AiFailureKind::Cancelled);
-    assert!(started.elapsed() < Duration::from_secs(5));
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    // Past the time the tool would have answered in: it never did.
+    tokio::time::sleep(Duration::from_millis(3000)).await;
     assert!(
         !s.tools.calls("claude")[0].done,
         "the tool was ended, not left to answer"
     );
+}
+
+/// Cancel while gg is still reading the repository (git blocked: its config includes a FIFO
+/// no one writes to) is the Cancelled outcome, not an error, and the tool never runs.
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_while_reading_the_repository_is_cancelled() {
+    let s = setup(&["claude"]).await;
+    s.repo.write("README.md", "# changed\n");
+    let fifo = s.repo.path().join("..").join("config-fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    s.repo
+        .git(&["config", "include.path", &fifo.to_string_lossy()]);
+    let m = s.m.clone();
+    let (id, task) = (s.id, s.commit_task(&["README.md"]));
+    let running = tokio::spawn(async move {
+        m.ai_generate(id, "req-r", task, &settings(AiToolChoice::Auto))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(s.m.ai_cancel("req-r"));
+    let out = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("ends at once")
+        .unwrap()
+        .expect("an outcome, not an error");
+    assert_eq!(failure(&out).0, AiFailureKind::Cancelled);
+    assert!(s.tools.calls("claude").is_empty());
 }
 
 #[tokio::test]
@@ -660,11 +699,19 @@ async fn a_program_inside_the_repository_is_never_run() {
 async fn binary_contents_are_never_sent_whatever_the_attributes_say() {
     let s = setup(&["claude"]).await;
     s.repo.write(".gitattributes", "*.bin diff\n");
-    s.repo
-        .write("key.bin", b"SECRET-OLD\0\x01\x02\n".as_slice());
+    // The NUL bytes are at the start, the change well past git's three lines of context: the
+    // changed lines hold no NUL, so the file as a whole tells it is binary.
+    let key = |secret: &str| {
+        let mut bytes = b"\0\0HEADER\n".to_vec();
+        for i in 0..8 {
+            bytes.extend_from_slice(format!("padding {i}\n").as_bytes());
+        }
+        bytes.extend_from_slice(format!("{secret}\n").as_bytes());
+        bytes
+    };
+    s.repo.write("key.bin", key("SECRET-OLD"));
     s.repo.commit_all("Add the key");
-    s.repo
-        .write("key.bin", b"SECRET-NEW\0\x01\x02\n".as_slice());
+    s.repo.write("key.bin", key("SECRET-NEW"));
     s.tools.reply("claude", 0, "Rotate the key\n", "");
     let out = s
         .generate(s.commit_task(&["key.bin"]), &settings(AiToolChoice::Auto))
@@ -742,7 +789,11 @@ async fn no_filter_runs_while_gathering() {
         .since(0)
         .into_iter()
         .filter(|r| r.op_title.is_some() && r.program == "git")
-        .filter(|r| r.args.iter().any(|a| a == "status" || a == "diff"))
+        .filter(|r| {
+            r.args
+                .iter()
+                .any(|a| a == "status" || a == "--literal-pathspecs")
+        })
         .collect();
     assert_eq!(generation.len(), 2, "{generation:?}");
     for r in &generation {

@@ -8,7 +8,8 @@
 //!
 //! - `version`: what `--version` prints (else a made-up version).
 //! - each call is recorded in `calls/<n>/` (n from 1): `argv` (arguments, each ended by NUL),
-//!   `stdin`, `cwd`, `env` (`NAME=value` lines), `started`, and `done` once it answered.
+//!   `stdin`, `cwd`, `env` (`NAME=value` lines), `pid` (its process id), `started`, and `done`
+//!   once it answered.
 //! - the answer is `reply.out` on stdout and `reply.err` on stderr, then exit `reply.code`
 //!   (0 when missing), after waiting `reply.sleep` milliseconds. With
 //!   `--output-last-message <file>` (Codex), `reply.last` (else `reply.out`) is written there.
@@ -74,6 +75,7 @@ fn main() {
     let mut stdin = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut stdin);
     let _ = fs::write(call.join("stdin"), &stdin);
+    let _ = fs::write(call.join("pid"), std::process::id().to_string());
     let _ = fs::write(call.join("started"), "");
 
     if dir.join("reply.echo").exists() {

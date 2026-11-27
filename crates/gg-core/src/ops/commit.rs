@@ -292,10 +292,13 @@ pub(crate) async fn refused(
         .iter()
         .find(|e| !e.committable && is_ticked(e, &ticked))
     {
-        return Ok(Some(format!(
-            "Nothing was committed: the name of {} is not valid UTF-8, which gg cannot hand \
-             back to git exactly; commit it in a terminal.",
-            odd.path
+        return Ok(Some(said(
+            "Nothing was committed",
+            format!(
+                "The name of {} is not valid UTF-8, which gg cannot hand back to git exactly; \
+                 commit it in a terminal.",
+                path(&odd.path)
+            ),
         )));
     }
     if in_progress == Some(InProgressKind::Merge) {

@@ -1509,12 +1509,14 @@ async fn a_name_that_is_not_utf8_is_listed_but_not_committable() {
         )
         .await;
     assert_eq!(out.status, OpStatus::Failed, "{out:#?}");
-    assert!(
-        out.message.starts_with("Nothing was committed:"),
-        "{}",
-        out.message
+    assert_eq!(
+        out.message,
+        format!(
+            "Nothing was committed. The name of {} is not valid UTF-8, which gg cannot hand \
+             back to git exactly; commit it in a terminal.",
+            bad.path
+        )
     );
-    assert!(out.message.contains("not valid UTF-8"), "{}", out.message);
     assert!(h.writes_since(mark).is_empty());
 }
 

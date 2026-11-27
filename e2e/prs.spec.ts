@@ -232,7 +232,7 @@ test("a branch with one already: the tab shows it, the focus on Open; Refresh as
   await expect(page.locator("[data-notices] .toast", { hasText: "502" })).toHaveCount(0);
   await error.getByRole("button", { name: "Open the compare page" }).click();
   // With the form's title and description: nothing typed is lost.
-  const page_ = "https://github.com/octo/cat/compare/main...docs/readme?expand=1&title=Explain%20the%20parser&body=-%20Explain%20the%20parser";
+  const page_ = "https://github.com/octo/cat/compare/main...docs/readme?expand=1&title=Readme&body=-%20Explain%20the%20parser";
   await expect.poll(() => gg.launches().some((l) => l.includes(page_))).toBe(true);
   // Show log opens the command log at gh's entry.
   await error.getByRole("button", { name: "Show log" }).click();

@@ -45,3 +45,16 @@ export async function openExternal(repoId: number, request: ExternalRequest): Pr
     reportError(e);
   }
 }
+
+/**
+ * Opens an https page in the browser for no repository (the Pull requests page): a pull
+ * request's page (`url`, on a GitHub host only), or any link (`link`). The core's note is
+ * shown once; an error is reported.
+ */
+export async function openWebPage(target: "url" | "link", url: string): Promise<void> {
+  try {
+    showNote((await api.openWeb(target, url)).note);
+  } catch (e) {
+    reportError(e);
+  }
+}

@@ -163,6 +163,223 @@ pub struct PrSuggestion {
     pub needs_push: bool,
 }
 
+/// Which group of the Pull requests page a pull request is in. Each is in one only: the
+/// user's own first, then those waiting for the user's review, then the rest (mentioned or
+/// assigned). Serialized snake_case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxGroup {
+    /// Opened by the user.
+    Mine,
+    /// The user's review is requested (directly or through a team).
+    Review,
+    /// The user is mentioned in it or assigned to it.
+    Involved,
+}
+
+/// How a pull request's checks stand on its latest commit, as GitHub sums them up.
+/// Serialized lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxChecks {
+    /// No checks (or GitHub did not say).
+    None,
+    Passing,
+    Failing,
+    /// Some still run or wait.
+    Running,
+}
+
+/// What happened on a pull request since the user last looked at it in gg. Serialized
+/// lowercase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxActivity {
+    /// Nothing new.
+    #[default]
+    None,
+    /// Not opened in gg since it first showed on the page.
+    New,
+    /// Comments, reviews or (on someone else's) commits since it was last opened in gg.
+    Updated,
+}
+
+/// One pull request of the Pull requests page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxPr {
+    /// `host/owner/name#number`, lowercase: what the page and "last seen" know it by.
+    pub key: String,
+    pub group: InboxGroup,
+    /// The GitHub host (`github.com`, or an enterprise host).
+    pub host: String,
+    /// Its repository's owner and name.
+    pub owner: String,
+    pub name: String,
+    pub number: u32,
+    pub title: String,
+    /// Its page (`https://` on its host).
+    pub url: String,
+    pub draft: bool,
+    /// Its head and base branches.
+    pub head: String,
+    pub base: String,
+    /// The repository its head branch is in (`owner/name`), when GitHub says (a deleted
+    /// fork: none).
+    pub head_repo: Option<String>,
+    /// Its head branch is in another repository than its base (a fork).
+    pub cross: bool,
+    /// Who opened it (`None`: a deleted account).
+    pub author: Option<String>,
+    pub updated_at_ms: Option<i64>,
+    pub checks: InboxChecks,
+    pub review: ReviewDecision,
+    /// The user is mentioned in it, or assigned to it (whatever its group).
+    pub mentioned: bool,
+    pub assigned: bool,
+    pub activity: InboxActivity,
+    /// Open, merged or closed, as its details last said (a pinned one may be gone from the
+    /// lists).
+    #[serde(default)]
+    pub state: InboxState,
+    /// It conflicts with its base (its details say GitHub cannot merge it as it is).
+    #[serde(default)]
+    pub conflict: bool,
+    /// Its checks, review decision and activity have been read (`pr_inbox_details`); until
+    /// then they read as none.
+    #[serde(default)]
+    pub details: bool,
+    /// The user pinned it to the top.
+    #[serde(default)]
+    pub pinned: bool,
+    /// It is in one of the lists now (false: a pinned one no list has any more).
+    #[serde(default = "yes")]
+    pub listed: bool,
+}
+
+/// A pull request's state, as its details say. Serialized lowercase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxState {
+    #[default]
+    Open,
+    Merged,
+    Closed,
+}
+
+/// How the Pull requests page groups its list. Serialized lowercase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxGroupBy {
+    /// Yours, waiting for your review, mentioned or assigned.
+    #[default]
+    Role,
+    /// By repository.
+    Repository,
+    /// By what needs attention first (failing checks, changes requested, …).
+    Status,
+}
+
+/// Why a host's pull requests could not be loaded. Serialized snake_case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxProblem {
+    /// The GitHub CLI is not installed.
+    NoGh,
+    /// `gh` is not signed in to the host.
+    SignedOut,
+    /// GitHub's rate limit was reached.
+    RateLimited,
+    /// The host could not be reached.
+    Offline,
+    /// Anything else (`message` says what).
+    Failed,
+}
+
+/// How one GitHub host's pull requests stand on the page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxHost {
+    pub host: String,
+    /// The account `gh` is signed in with there (its active one), as last answered.
+    pub login: Option<String>,
+    /// Why the last load failed; the pull requests shown for it are then as of `loadedAtMs`.
+    pub problem: Option<InboxProblem>,
+    /// That reason in one plain line.
+    pub message: Option<String>,
+    /// `gh`'s own words, when it said something.
+    pub detail: Option<String>,
+    /// A group had more pull requests than were read (100 each).
+    pub partial: bool,
+    /// When its pull requests were last loaded (unix ms); `None`: never.
+    pub loaded_at_ms: Option<i64>,
+}
+
+/// The Pull requests page: the pull requests of every host, each in its group (the user's,
+/// review requested, mentioned or assigned; each group newest first), and how each host
+/// stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrInbox {
+    pub prs: Vec<InboxPr>,
+    pub hosts: Vec<InboxHost>,
+    /// `gh` was asked for this answer (false: from what gg kept of the last one).
+    pub fresh: bool,
+    /// The pinned pull requests' keys, in the order they were pinned.
+    pub pins: Vec<String>,
+    /// How the page groups its list, as the user last chose.
+    pub group_by: InboxGroupBy,
+    /// Which state of the page this is: it grows with each change, so an answer older than
+    /// one already shown can be told and left out.
+    pub version: u64,
+}
+
+/// One file a pull request changes (`inbox_pr_files`), as the Commit tab's "Committed on
+/// branch" lists one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFile {
+    pub path: String,
+    /// Its path before, for a rename or a copy.
+    pub old_path: Option<String>,
+    /// `A`, `M`, `D`, `R`, `C` or `T`.
+    pub status: char,
+    /// Lines added and removed (`None` both: GitHub gave no count, as for a binary file).
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+}
+
+/// The files a pull request changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFiles {
+    pub files: Vec<PrFile>,
+    /// More than GitHub lists (it lists at most 3000): `files` is the first of them.
+    pub truncated: bool,
+}
+
+/// An open repository that has a pull request's repository as a remote (`inbox_repo_match`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxRepoMatch {
+    pub repo_id: u32,
+    /// The remote that names the pull request's head repository, if one does: its branch
+    /// can be checked out from there.
+    pub head_remote: Option<String>,
+}
+
+/// What a write from the Pull requests page did (`inbox_pr_write`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxWritten {
+    /// It was sent.
+    pub done: bool,
+    /// What happened, as one plain sentence.
+    pub message: String,
+    /// `gh`'s own output, on failure.
+    pub detail: Option<String>,
+}
+
 /// What `pr_details` gives of one pull request, as `gh` knows it now: where it stands for
 /// merging, its checks, and its comments (read-only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

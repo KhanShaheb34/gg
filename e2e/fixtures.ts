@@ -725,7 +725,9 @@ export function cliFolders(home: string, extra = 0): string[] {
  * for that kind of call (`pr-list`, `pr-list-head` with `--head`, `repo-view`, `pr-create`,
  * `auth-token`, `pr-view`, `api-graphql`; a pull request's own `pr-view-<n>` and
  * `api-graphql-<n>` first, when set; the Pull request tab's writes: `gql-reply`, `gql-resolve`,
- * `gql-unresolve` (`gh api graphql` with that mutation) and `pr-comment`), else prints nothing.
+ * `gql-unresolve` (`gh api graphql` with that mutation) and `pr-comment`; the Pull requests
+ * page's query, `gql-inbox`, or `gql-inbox-<host>` for `GH_HOST` `<host>`, its dots as `_`),
+ * else prints nothing.
  * A call that exits 0 then puts the answers set for it with `then` in place (what GitHub
  * answers once it has the write). `ssh -G` says the host it is asked about is itself.
  */
@@ -734,15 +736,26 @@ PATH=/usr/bin:/bin
 export PATH
 d="$(cd "$(dirname "$0")/.." && pwd)/gh"
 i=1
-while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
+while ! mkdir "$d/calls/$i" 2>/dev/null; do
+  # The test's folder is gone (a call the devserver started as it was stopped, in a process
+  # group of its own, that outlived it): nothing to record into. Never try forever: such a
+  # loop outlives the test and takes the machine's time from every test after it.
+  if [ ! -d "$d/calls" ]; then exit 1; fi
+  i=$((i+1))
+done
 for a in "$@"; do printf '%s\\0' "$a"; done > "$d/calls/$i/argv"
 cat > "$d/calls/$i/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
 if [ "$key" = api-graphql ]; then
-  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; esac; done
+  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; esac; done
   if grep -q addPullRequestReviewThreadReply "$d/calls/$i/stdin"; then key=gql-reply; fi
 fi
+case "$key" in gql-inbox*) if [ -n "$GH_HOST" ]; then
+  h="$(printf '%s' "$GH_HOST" | tr . _)"
+  if [ -f "$d/replies/$key-$h.code" ]; then key="$key-$h"; fi
+fi;; esac
+if [ "$1" = api ] && [ "$2" = --hostname ]; then case "$5" in repos/*/files*) key=api-files; n="$(printf '%s' "$5" | sed 's#.*/pulls/\\([0-9]*\\)/files.*#\\1#')"; if [ -f "$d/replies/api-files-$n.code" ]; then key="api-files-$n"; fi;; esac; fi
 n=""
 if [ "$key" = pr-view ]; then n="$3"; fi
 if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in n=*) n="\${a#n=}";; esac; done; fi
@@ -912,6 +925,8 @@ export type FakeGh = {
   reply(key: string, code: number, stdout: string, stderr?: string): void;
   /** Makes calls of `key` wait `secs` seconds before answering. */
   slow(key: string, secs: number): void;
+  /** Calls of `key` answer at once again. */
+  fast(key: string): void;
   /** Once a call of `key` exits 0, calls of each key of `then` answer (exit 0) with its text. */
   then(key: string, then: Record<string, string>): void;
   /** Each call's arguments so far, oldest first. */
@@ -936,6 +951,9 @@ function fakeGh(home: string): FakeGh {
     },
     slow(key, secs) {
       writeFileSync(path.join(dir, "replies", `${key}.sleep`), String(secs));
+    },
+    fast(key) {
+      rmSync(path.join(dir, "replies", `${key}.sleep`), { force: true });
     },
     then(key, then) {
       const into = path.join(dir, "replies", `${key}.then`);
@@ -1023,6 +1041,9 @@ export function startDevserver(
       fakeTools(home),
       // Updating gg: the stand-in only, answering from files (see FakeUpdates); nothing is downloaded.
       ...(binary === DEVSERVER ? ["--fake-updates", updatesDir(home)] : []),
+      // The Pull requests page: no floor between its loads, and clones from local folders
+      // (`<home>/remotes/<owner>/<name>.git`), never the network.
+      ...(binary === DEVSERVER ? ["--inbox-every-ms", "0", "--clone-source", path.join(home, "remotes")] : []),
       ...extraArgs,
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
@@ -1263,7 +1284,9 @@ export const test = base.extend<{ gg: GG; ggShellSetup: string; ggShellName: str
       await use({ page, home: root, repoPath, folder, git, gitAt, launches, gh: fakeGh(root), ai: fakeAi(root), updates: fakeUpdates(root), relaunch });
     } finally {
       if (server) await stopDevserver(server);
-      rmSync(root, { recursive: true, force: true });
+      // A tool the devserver started may still be writing what it was asked (a fake gh's record
+      // of a call), in a process group of its own: retried until it is done.
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   },
 });

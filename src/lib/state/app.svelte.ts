@@ -85,6 +85,11 @@ export const app = $state({
   homeDir: null as string | null,
   /** The command-log entries asked for last ("Show log" on a notice): from id `from` on. */
   logRequest: null as { repoId: number; from: number } | null,
+  /**
+   * The Pull requests page shows instead of the active repository (state/inbox.svelte.ts).
+   * Showing a repository's tab puts it away; the active tab stays what it was.
+   */
+  inboxOpen: false,
   /** The `gg` terminal command, as last read (see state/cli.svelte.ts). */
   cli: { installed: null, link: null, shadowedBy: null, candidates: [], shadowConflict: null, turnOff: null, shellLine: null } as CliState,
 });
@@ -343,8 +348,10 @@ export async function openViaPicker(): Promise<void> {
 }
 
 /** Makes `repoId` the active tab, refreshing it first if the window was away meanwhile. */
-function show(repoId: number): void {
+function show(repoId: number, keepPage = false): void {
   app.activeRepoId = repoId;
+  // At start, a tab of the session that opens while the Pull requests page shows stays behind it.
+  if (!keepPage) app.inboxOpen = false;
   // A choice made while the session is reopened stands.
   restoreTarget = null;
   const view = repoView(repoId);
@@ -352,7 +359,12 @@ function show(repoId: number): void {
 }
 
 export function activate(repoId: number): void {
-  if (app.activeRepoId === repoId || !app.tabs.some((t) => t.repoId === repoId)) return;
+  if (!app.tabs.some((t) => t.repoId === repoId)) return;
+  if (app.activeRepoId === repoId) {
+    // The Pull requests page goes; the tab was the active one all along.
+    app.inboxOpen = false;
+    return;
+  }
   show(repoId);
   saveSession();
 }
@@ -538,7 +550,7 @@ export async function init(): Promise<void> {
     addTab(snapshot, rank);
     startMark("tab-added");
     if (restoreTarget === path) {
-      show(snapshot.repoId);
+      show(snapshot.repoId, true);
       app.restoring = false;
     }
   };
@@ -569,7 +581,7 @@ export async function init(): Promise<void> {
   };
   await Promise.all(launch ? [...reopen, openLaunch(launch)] : reopen);
   // The tab to show could not be opened (or there was none): the first one.
-  if (app.activeRepoId === null && app.tabs.length > 0) show(app.tabs[0].repoId);
+  if (app.activeRepoId === null && app.tabs.length > 0) show(app.tabs[0].repoId, true);
   restoreTarget = null;
   app.restoring = false;
   app.sessionReopened = true;

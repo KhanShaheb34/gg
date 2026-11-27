@@ -71,6 +71,71 @@ export type PrSuggestion = {
   needsPush: boolean;
 };
 /**
+ * One pull request of the Pull requests page (`pr_inbox`). Each is in one group: the user's
+ * own, review requested, or mentioned or assigned (`involved`). `key`: `host/owner/name#number`,
+ * lowercase. `activity`: since it was last opened in gg (`new`: never opened since it first
+ * showed).
+ */
+export type InboxPr = {
+  key: string;
+  group: InboxGroup;
+  host: string;
+  owner: string;
+  name: string;
+  number: number;
+  title: string;
+  url: string;
+  draft: boolean;
+  head: string;
+  base: string;
+  headRepo: string | null;
+  cross: boolean;
+  author: string | null;
+  updatedAtMs: number | null;
+  checks: InboxChecks;
+  review: ReviewDecision;
+  mentioned: boolean;
+  assigned: boolean;
+  activity: "none" | "new" | "updated";
+  /** As its details last said (a pinned one may be merged or closed). */
+  state: "open" | "merged" | "closed";
+  /** It conflicts with its base (as its details last said). */
+  conflict: boolean;
+  /** Its checks, review decision and activity have been read (until then they read as none). */
+  details: boolean;
+  pinned: boolean;
+  /** In one of the lists now (false: a pinned one no list has any more). */
+  listed: boolean;
+};
+export type InboxGroupBy = "role" | "repository" | "status";
+export type InboxGroup = "mine" | "review" | "involved";
+export type InboxChecks = "none" | "passing" | "failing" | "running";
+export type InboxProblem = "no_gh" | "signed_out" | "rate_limited" | "offline" | "failed";
+/** How one GitHub host stands on the page: its account, and why its last load failed (its pull requests then as of `loadedAtMs`). */
+export type InboxHost = {
+  host: string;
+  login: string | null;
+  problem: InboxProblem | null;
+  message: string | null;
+  detail: string | null;
+  partial: boolean;
+  loadedAtMs: number | null;
+};
+/** The Pull requests page; `fresh`: gh was asked for it (else what gg kept). */
+/** `version` grows with each change in the core: an answer with a lower one is older than one shown. */
+export type PrInbox = { prs: InboxPr[]; hosts: InboxHost[]; fresh: boolean; pins: string[]; groupBy: InboxGroupBy; version: number };
+/** The files a pull request changes (GitHub lists 3000 at most: `truncated`). */
+export type PrFiles = { files: FileChange[]; truncated: boolean };
+/** An open repository that has a pull request's repository as a remote; `headRemote`: the remote its head branch is on, if any. */
+export type InboxRepoMatch = { repoId: number; headRemote: string | null };
+/** What a write from the Pull requests page did. */
+export type InboxWritten = { done: boolean; message: string; detail: string | null };
+/** How a clone ended. */
+export type Cloned = { status: "done" | "failed" | "stopped"; path: string | null; message: string; detail: string | null };
+/** `clone-progress` event: the latest progress line of a clone. */
+export type CloneProgress = { cloneId: string; line: string };
+
+/**
  * What `pr_details` gives of one pull request, as gh knows it now (read when the Pull request
  * tab shows it; at most once every 10 s per pull request in the core). Comments are oldest
  * first, the newest 200; bodies are untrusted Markdown with HTML in it.

@@ -39,6 +39,7 @@
   import MiddleText from "./MiddleText.svelte";
   import PullRequestForm from "./PullRequestForm.svelte";
   import PullRequestView from "./PullRequestView.svelte";
+  import { repoPrSource } from "../state/prSource.svelte";
 
   let { view, branch }: { view: RepoView; branch: string | null } = $props();
 
@@ -256,7 +257,7 @@
   {/if}
 
   {#if shown.kind === "pr"}
-    <PullRequestView {view} pr={shown.pr} {stale} />
+    <PullRequestView source={repoPrSource(view)} pr={shown.pr} {stale} />
   {:else if shown.kind === "form"}
     {#key shown.branch}
       <PullRequestForm

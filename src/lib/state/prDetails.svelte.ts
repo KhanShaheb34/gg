@@ -58,14 +58,22 @@ function messageOf(e: unknown): string {
  * stays shown while it loads; a failure keeps it and says why (never a notice: polls would
  * repeat it). `background`: a poll, which the Refresh button does not show.
  */
-export async function loadDetails(repoId: number, root: string, number: number, background = false): Promise<void> {
-  const e = entry(root, number);
+export function loadDetails(repoId: number, root: string, number: number, background = false): Promise<void> {
+  return loadDetailsWith(root, number, () => api.prDetails(repoId, number), background);
+}
+
+/**
+ * As loadDetails, for pull request `number` kept under `key` (a repository's folder; for the
+ * Pull requests page, its repository's `inbox:host/owner/name`), its details asked with `ask`.
+ */
+export async function loadDetailsWith(key: string, number: number, ask: () => Promise<PrDetails>, background = false): Promise<void> {
+  const e = entry(key, number);
   const n = ++e.asked;
   e.loading = true;
   e.background = background;
   e.askedAt = Date.now();
   try {
-    const d = await api.prDetails(repoId, number);
+    const d = await ask();
     if (n !== e.asked) return;
     e.data = d;
     e.error = null;

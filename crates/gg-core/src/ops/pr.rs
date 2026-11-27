@@ -19,7 +19,7 @@
 
 use crate::dto::{OpHint, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::gh::{GhFailure, already_exists, created_url, number_of, unavailable_message};
+use crate::gh::{Gh, GhFailure, already_exists, created_url, number_of, unavailable_message};
 use crate::git::names::check_branch_name;
 use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::hosts::compare_url;
@@ -427,6 +427,23 @@ pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Resu
             });
         }
     };
+    let step = send(&gh, &|line| ctx.step(line), number, what).await?;
+    if matches!(step, Step::Done(_)) {
+        // The tab's next load asks gh, whatever the floor between loads says.
+        ctx.manager.forget_pr_details(ctx.repo, number);
+    }
+    Ok(step)
+}
+
+/// Writes `what` to pull request `number` of the repository `gh` names, saying each step to
+/// `step`: `Step::Done` once `gh` took it, else `Step::Failed` with why. The Pull request tab
+/// and the Pull requests page write the same way.
+pub(crate) async fn send(
+    gh: &Gh,
+    step: &(dyn Fn(&str) + Send + Sync),
+    number: u32,
+    what: Write<'_>,
+) -> Result<Step> {
     let n = number.to_string();
     let (query, thread_field);
     let (args, stdin, verb, done): (Vec<&str>, StdinPolicy, &str, String) = match what {
@@ -435,7 +452,7 @@ pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Resu
                 "query": REPLY_MUTATION,
                 "variables": { "thread": thread, "body": body },
             });
-            ctx.step("Sending the reply…");
+            step("Sending the reply…");
             (
                 vec!["api", "graphql", "--input", "-"],
                 StdinPolicy::Bytes(request.to_string().into_bytes()),
@@ -451,7 +468,7 @@ pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Resu
             };
             query = format!("query={mutation}");
             thread_field = format!("thread={thread}");
-            ctx.step(if resolved {
+            step(if resolved {
                 "Resolving the conversation…"
             } else {
                 "Unresolving the conversation…"
@@ -472,7 +489,7 @@ pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Resu
             )
         }
         Write::Comment { body } => {
-            ctx.step("Sending the comment…");
+            step("Sending the comment…");
             (
                 vec!["pr", "comment", &n, "--repo", gh.repo(), "--body-file", "-"],
                 StdinPolicy::Bytes(body.as_bytes().to_vec()),
@@ -497,8 +514,6 @@ pub(crate) async fn write(ctx: &OpCtx<'_>, number: u32, what: Write<'_>) -> Resu
                     out.text(),
                 ));
             }
-            // The tab's next load asks gh, whatever the floor between loads says.
-            ctx.manager.forget_pr_details(ctx.repo, number);
             Ok(Step::Done(done))
         }
         Err(GhFailure::Failed { message, detail }) => Ok(failed(

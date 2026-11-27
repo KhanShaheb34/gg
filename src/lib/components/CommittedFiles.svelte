@@ -22,7 +22,7 @@
   import { branchFilesKey, branchFilesOf, loadBranchFiles } from "../state/branchFiles.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { panelState } from "../state/worktrees.svelte";
-  import type { FileChange } from "../types";
+  import FileChangeList from "./FileChangeList.svelte";
 
   type Props = {
     view: RepoView;
@@ -67,35 +67,6 @@
 
   const uid = Math.random().toString(36).slice(2, 8);
 
-  const STATUS_NAMES: Record<FileChange["status"], string> = {
-    M: "Modified",
-    A: "Added",
-    D: "Deleted",
-    R: "Renamed",
-    C: "Copied",
-    T: "Type changed",
-  };
-
-  /** "src/lib/a.ts" → ["a.ts", "src/lib"]. */
-  function split(p: string): [string, string] {
-    const i = p.lastIndexOf("/");
-    return i < 0 ? [p, ""] : [p.slice(i + 1), p.slice(0, i)];
-  }
-
-  const binary = (f: FileChange) => f.additions === null && f.deletions === null;
-
-  function rowTitle(f: FileChange): string {
-    const p = f.oldPath === null ? f.path : `${f.oldPath} → ${f.path}`;
-    const counts = binary(f) ? "binary" : `+${f.additions ?? 0} −${f.deletions ?? 0}`;
-    return `${STATUS_NAMES[f.status]}: ${p} (${counts})`;
-  }
-
-  function rowLabel(f: FileChange): string {
-    const p = visibleText(f.oldPath === null ? f.path : `${f.oldPath} to ${f.path}`);
-    const counts = binary(f) ? "binary" : `${f.additions ?? 0} added, ${f.deletions ?? 0} deleted`;
-    return `${STATUS_NAMES[f.status].toLowerCase()}, ${p}, ${counts}`;
-  }
-
   const headerTitle = $derived(
     data
       ? `The files ${data.branch}'s commits change since it left ${data.base} (at ${shortHash(data.mergeBase)}): committed work only, not the changes above`
@@ -128,27 +99,15 @@
     </button>
     {#if error !== null}{@render failure(error)}{/if}
     {#if open}
-      <ul class="list" id="cb-list-{uid}" aria-label="Files committed on {data.branch}" data-testid="branch-files-list">
-        {#each data.files as f (f.path)}
-          {@const [name, folder] = split(f.path)}
-          <li class="row" title={rowTitle(f)} aria-label={rowLabel(f)} data-path={f.path} data-status={f.status} data-testid="branch-file">
-            <span class="name" class:deleted={f.status === "D"} dir="auto">{visibleText(name)}</span>
-            <span class="where">
-              {#if folder}<span class="folder" dir="auto">{visibleText(folder)}</span>{/if}
-              {#if f.oldPath !== null}<span class="from" dir="auto">← {visibleText(f.oldPath)}</span>{/if}
-            </span>
-            {#if !binary(f)}
-              <span class="counts" aria-hidden="true"
-                ><span class="add">+{f.additions ?? 0}</span><span class="del">−{f.deletions ?? 0}</span></span
-              >
-            {/if}
-            <span class="status s-{f.status}" aria-hidden="true">{f.status}</span>
-          </li>
-        {/each}
-        {#if data.total > data.files.length}
-          <li class="more" data-testid="branch-files-more">and {groupDigits(data.total - data.files.length)} more</li>
-        {/if}
-      </ul>
+      <FileChangeList
+        id="cb-list-{uid}"
+        label="Files committed on {data.branch}"
+        files={data.files}
+        more={data.total - data.files.length}
+        testid="branch-file"
+        listTestid="branch-files-list"
+        moreTestid="branch-files-more"
+      />
     {/if}
   </section>
 {:else if error !== null}
@@ -292,115 +251,10 @@
     text-overflow: ellipsis;
   }
 
-  .list {
+  /* The list scrolls inside the panel rather than pushing the message out of sight. */
+  .committed :global(.file-list) {
     flex: 1 1 auto;
     min-height: 0;
-    margin: 0;
-    padding: 0 0 4px;
     overflow-y: auto;
-    list-style: none;
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    height: 24px;
-    padding: 0 10px 0 24px;
-    font-size: var(--fs-sm);
-    cursor: default;
-  }
-
-  .row:hover {
-    background: var(--bg-hover);
-  }
-
-  .name {
-    flex: 0 1 auto;
-    min-width: 2.5em;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    unicode-bidi: isolate;
-  }
-
-  .name.deleted {
-    color: var(--text-muted);
-    text-decoration: line-through;
-    text-decoration-color: color-mix(in srgb, var(--danger) 55%, transparent);
-  }
-
-  .where {
-    display: flex;
-    gap: 6px;
-    flex: 1 1 0;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--text-faint);
-    font-size: var(--fs-xs);
-    white-space: nowrap;
-  }
-
-  .folder,
-  .from {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    unicode-bidi: isolate;
-  }
-
-  .counts {
-    display: flex;
-    gap: 5px;
-    flex: none;
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .add {
-    color: var(--success);
-  }
-
-  .del {
-    color: var(--danger);
-  }
-
-  .status {
-    display: inline-grid;
-    place-items: center;
-    flex: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-    background: color-mix(in srgb, currentColor 13%, transparent);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  /* The app's file colours (ChangedFiles, the commit list above): A green, M amber, D red, R blue. */
-  .s-A {
-    color: var(--success);
-  }
-
-  .s-M,
-  .s-T {
-    color: var(--warning);
-  }
-
-  .s-D {
-    color: var(--danger);
-  }
-
-  .s-R,
-  .s-C {
-    color: var(--info);
-  }
-
-  .more {
-    padding: 4px 12px 2px 24px;
-    color: var(--text-muted);
-    font-size: var(--fs-xs);
   }
 </style>

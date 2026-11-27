@@ -194,6 +194,105 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   remote names a `*.ghe.com` host gets gh's requests with it. gg removes the enterprise
   token variables (`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`) for every host other
   than github.com, but leaves these two to gh.
+- **The Pull requests page** (its icon at the left of the tab bar, or ⌘⇧I; Ctrl+Shift+I
+  on Windows and Linux) is about you rather than one repository, and works with no repository
+  open. It lists, in three groups, your open pull requests, those waiting for your review
+  (asked of you or of a team you are in), and those you are mentioned in or assigned to; each
+  pull request is in one group only, the first that has it, and one of the third says which of
+  the two it is. Each row: its title, its repository (`owner/name`; left out when grouped by
+  repository, whose heading names it), its number, who opened it and when it last changed, and
+  its review decision (Approved, Changes requested, Review required). Each row starts with the
+  pull request's state as an icon, in a column of its own, its colour saying what it needs:
+  red when something needs attention (checks failing, a conflict with its base, changes
+  requested), amber while checks run, green when they all pass, grey when there are none to
+  speak of; a draft's is the draft icon, muted; a pinned one merged or closed since has the
+  merged or closed icon. The icon's tooltip says why in words ("Checks failing · merge
+  conflict", "Checks running", "Draft · checks failing"…), so the colour is never all there is
+  to it. A dot on that icon, and a bolder title, say something happened since you last opened
+  that pull request in gg: it showed up since (one of yours never counts as new), or it has
+  more comments or reviews (unless the latest is yours), or, on someone else's, new commits;
+  the icon's tooltip says which of these it is. When you point at a row (or select it), **Open
+  in browser** and the pin show at its end; their room is kept, so nothing beside them moves.
+  The first time the page loads, what it lists is the starting point: nothing is marked. A
+  dot on the page's button says some row has one. What was seen is kept in gg's own config
+  folder (`pr-inbox.json`, with the list as last loaded and the folder you last cloned into),
+  never in a repository. The page's button is the pull request icon alone, at the left of the
+  tab bar, before the repositories' tabs; while the page shows it is highlighted, and a dot on
+  it says some pull request has something new.
+
+  **Group by** in the page's header arranges the list by **Role** (the three groups above, the
+  default), by **Repository** (each repository with its newest first), or by **Status**, what
+  needs attention first, by the same rules as the icons: Needs attention (checks failing, a
+  conflict, changes requested), Checks running, Checks passing, No checks, Drafts (and Not read
+  yet, for a moment, before a row's details come). The choice is kept in gg's config. A pull request not updated for more than a month
+  (by when it was last updated, never when it was opened) is *old*: by role or status, the old
+  ones leave their groups for one section at the very end, **Older than a month**, with their
+  count, folded until you open it; by repository, each repository's old ones are behind **Show
+  N older**, and a repository whose pull requests are all old is left out, behind **Show N more
+  repositories** at the end. What you unfold stays unfolded while gg runs.
+
+  **Pin** a pull request to keep it at the top: the pin on its row (it shows when you point at
+  the row or select it), **P** on the selected row, **Pin to top** in its menu (right-click,
+  Shift+F10 or the menu key), or **Pin** on its page. Pinned ones are in a **Pinned** section
+  first, in every grouping and whatever their age, and not again below. Pins are kept in gg's
+  config across restarts; one that is merged or closed since (no list has it any more) stays,
+  with its state, until you unpin it.
+
+  The list as last loaded shows at once, even after a restart; `gh` is asked again behind it,
+  the Refresh button turning meanwhile, and only while the page shows: when it opens (unless
+  it was asked in the last 30 seconds), when the window comes back to the front (unless in the
+  last 2 minutes), and on Refresh (or ⌘R on the page); the core never asks more than once
+  every 10 seconds. What gg asks, in two steps so the list shows as soon as it can: first one
+  `gh api graphql` per GitHub host, with one read-only query of four searches (`author:@me`,
+  `review-requested:@me`, `mentions:@me`, `assignee:@me`, open pull requests in repositories
+  that are not archived, the newest 100 of each; when a group has more, the page says the
+  newest 100 are shown) asking only what a row's text needs; the rows show then. Then one more
+  read-only `gh api graphql` per host, by the rows' ids (100 at most each), for the state,
+  checks, review decision and activity of the rows that show: pinned ones and those not old;
+  an old one's only when it is unfolded. What was read stays in gg's config with the list, so
+  the next time the page opens it shows everything at once. The hosts are
+  github.com and the GitHub hosts of the open repositories' remotes, as the Pull request tab
+  tells them (github.com and `*.ghe.com` by name, another host only when `gh` has credentials
+  stored for it), and those of the last load while they still are; each is asked as the
+  account `gh` has active there, and the page names it ("@octo"). Without a list it says why
+  in one box, with Refresh: `gh` not installed (with a link to get it), not signed in, GitHub's
+  rate limit reached, GitHub not reachable, an empty list, or `gh`'s own words. A list loaded
+  before stays when a reload fails, "as of 14:05", with a quiet line naming the host and why.
+  Rows are drawn only where you look, so hundreds scroll as smoothly as ten; in a narrow
+  window each row keeps one line. The list's scroll bar is at the window's edge (the rows are
+  centred), as the pull request's page's is. In the list, ↑ ↓, Page Up/Down, Home and End move
+  the selection (through the pull requests and the rows that fold and unfold), Enter opens it
+  (or folds), O opens it in the browser and P pins it. The selection shows only while the list
+  has the focus: Escape, or a click on no row, puts it away, and the keys go on from it.
+
+  A pull request opens on a page of its own, never in a repository's side panel (that
+  repository may be on another branch): what the Pull request tab shows (its state, branches,
+  checks, comments and reviews, with reply, resolve and comment, Open in browser and Copy
+  link), read and written with the same `gh` commands, naming its repository; and, under the
+  checks, **Files changed**: the files it changes, named only (no diff), as the Commit tab's
+  Committed on branch lists them (status letter, folder, a rename's old path, lines added and
+  removed, the count and totals in the header), read with `gh api --paginate
+  repos/<owner>/<name>/pulls/<number>/files` (every page; GitHub lists 3,000 at most, and the
+  section says so when there are more). It folds like Checks; closed when there are more than
+  50. Esc, ⌘[ or ⌘← (Ctrl on Windows and Linux; not ⌘← in a text field, where it moves the
+  caret), or the **‹** at the top, goes back to the list where you were; ⌘] or ⌘→ goes forward
+  again to the pull request you just left. Its pin is an icon beside the other buttons. The page
+  keeps its place while gg runs: going to the repository (or its worktree) and back to the
+  Pull requests page shows the pull request you left, and Esc from there goes back to the list
+  as you left it. When its repository is
+  open in gg (a remote of a tab's repository names it, by its address), **Go to repository**
+  shows that tab, and a second button checks out its branch there, only when you click it,
+  with gg's own checkout and its confirmations (uncommitted changes, a merge in progress):
+  **Check out** a local branch of that name, or the remote's branch as a new local one that
+  tracks it; **Fetch and check out** when the branch is not fetched yet (it is fetched into a
+  local branch of that name, then checked out); **Go to its worktree** when another worktree
+  has it checked out; **Checked out** when it is the current branch. A fork's branch is
+  offered only when a remote names the fork (and a local branch of that name only when it
+  follows that remote's). When the repository is not open, **Clone and open…** asks for the
+  folder to clone into (the last one used, else the folder of your most recent repository),
+  clones it with git into a new folder named after the repository (`https://` or `ssh`, as
+  `gh config get git_protocol` says for the host), shows git's progress with Stop, and opens
+  it in a tab. A folder of that name already there is refused, never touched.
 - **Generate with AI**: the sparkle beside the commit message (⌘G in it) writes a commit
   message from the ticked files; beside a pull request's title (⌘G in the title or the
   description) it writes the title and description, and whether it looks like a draft, from
@@ -366,6 +465,7 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘P | The branch picker: switch branch, or create one |
 | ⌘K | The side panel's Commit tab, its message focused |
 | ⌘⇧P | The side panel's Pull request tab, for the current branch |
+| ⌘⇧I (Ctrl+Shift+I) | The Pull requests page, across repositories; again, back from it |
 | ⌘Enter | Commit what is ticked (in the commit message) |
 | ⌘G, ⌘Z | Generate with AI; undo what it wrote (in the commit message, a pull request's title or description) |
 | Space, ⌘A | Tick or untick a file, tick all (in the commit panel's list) |
@@ -375,7 +475,10 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | ⌘⌥1…⌘⌥9 (Ctrl+Shift+1…9) | Make a worktree active, by its place in the side panel |
 
 In the command log: ↑/↓, Home/End move between rows, Enter or Space opens one, C copies its
-command line.
+command line. On the Pull requests page: ↑/↓, Page Up/Down, Home/End select a pull request,
+Enter opens it, O opens it in the browser, P pins it, Esc puts the selection away; on a pull
+request's page Esc, ⌘[ or ⌘← goes back to the list and ⌘] or ⌘→ forward again; ⌘R loads the
+page again.
 
 ## The `gg` command
 

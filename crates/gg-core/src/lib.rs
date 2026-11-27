@@ -12,6 +12,7 @@ pub mod gh;
 pub mod git;
 pub mod graph;
 pub mod hosts;
+pub mod inbox;
 pub mod launch;
 mod mask;
 pub mod notice;
@@ -120,6 +121,7 @@ impl Core {
             let repos = RepoManager::new(runner, sink.clone());
             repos.set_fetch_interval(store.settings().fetch_interval_secs);
             repos.set_worktree_memory(Arc::new(StoreMemory(store.clone())));
+            repos.set_inbox_store(Arc::new(inbox::InboxStore::load(&config_dir)));
             repos
         });
         let login_path = repos.as_ref().ok().and_then(|r| r.login_path());
@@ -220,6 +222,25 @@ impl Core {
     pub fn set_pr_details_every(&self, every: std::time::Duration) {
         if let Ok(repos) = self.repos() {
             repos.set_pr_details_every(every);
+        }
+    }
+
+    /// Makes clones of the Pull requests page come from `<dir>/<owner>/<name>.git`, a local
+    /// folder: for the devserver's end-to-end runs only (the `tool-path` feature, never in the
+    /// app).
+    #[cfg(feature = "tool-path")]
+    pub fn set_clone_source(&self, dir: Option<PathBuf>) {
+        if let Ok(repos) = self.repos() {
+            repos.set_clone_source(dir);
+        }
+    }
+
+    /// Sets the least time between two loads of the Pull requests page instead of 10 s: for
+    /// the devserver's end-to-end runs only.
+    #[cfg(feature = "tool-path")]
+    pub fn set_inbox_every(&self, every: std::time::Duration) {
+        if let Ok(repos) = self.repos() {
+            repos.set_inbox_every(every);
         }
     }
 

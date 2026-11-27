@@ -14,6 +14,8 @@
   import TabBar from "./lib/components/TabBar.svelte";
   import Toast from "./lib/components/Toast.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
+  import InboxPage from "./lib/components/InboxPage.svelte";
+  import { backToList, closeInbox, forwardToPr, refreshInbox, toggleInbox } from "./lib/state/inbox.svelte";
   import { detailsRoom, panelRoom } from "./lib/detailsLayout";
   import { shortHash, shortenPath } from "./lib/format";
   import MiddleText from "./lib/components/MiddleText.svelte";
@@ -93,6 +95,12 @@
     const pinned = panel.prFor;
     if (pinned === null || snap.generation < 0) return;
     if (pinned === snap.head.branch || !snap.branches.includes(pinned)) panel.prFor = null;
+  });
+
+  // The Pull requests page asks gh again when the window comes back to the front (past a
+  // floor: see refreshInbox), only while it shows.
+  $effect(() => {
+    if (windowState.focused && windowState.visible && app.inboxOpen) void refreshInbox("focus");
   });
 
   // The Commit tab, shown, holds the worktree it shows (see holdCommit).
@@ -264,7 +272,17 @@
     // A dialog is modal: nothing behind it changes while it is open.
     if (overlays.dialog) return;
     if (app.gitMissing && !["close", "settings", "help"].includes(shortcut.kind)) return;
-    const view = active ? repoView(active.repoId) : null;
+    // On the Pull requests page, a repository's own shortcuts do nothing (its tab is behind
+    // the page); Refresh loads the page again and Close puts it away.
+    const view = active && !app.inboxOpen ? repoView(active.repoId) : null;
+    if (app.inboxOpen && shortcut.kind === "refresh") {
+      void refreshInbox("user");
+      return;
+    }
+    if (app.inboxOpen && shortcut.kind === "close") {
+      closeInbox();
+      return;
+    }
     switch (shortcut.kind) {
       case "open":
         void openViaPicker();
@@ -298,11 +316,21 @@
       case "pullRequest":
         if (view) openPullRequestTab(view, null, true);
         break;
+      case "inbox":
+        toggleInbox();
+        break;
+      case "back":
+        // The Pull requests page's history: nothing elsewhere.
+        if (app.inboxOpen) backToList();
+        break;
+      case "forward":
+        if (app.inboxOpen) forwardToPr();
+        break;
       case "branches":
         if (view) openBranchPicker(view.repoId);
         break;
       case "sidePanel":
-        if (active) {
+        if (view && active) {
           // Hidden from inside it (its header has no Hide button): the focus goes to the graph,
           // not to the page.
           const inside = document.activeElement?.closest('[data-region="side-panel"]') != null;
@@ -311,7 +339,7 @@
         }
         break;
       case "log":
-        if (active) setLogOpen(!logPrefs.open, true);
+        if (view) setLogOpen(!logPrefs.open, true);
         break;
       case "settings":
         openSettings();
@@ -320,7 +348,7 @@
         openShortcuts();
         break;
       case "worktree":
-        switchWorktree(shortcut.index);
+        if (view) switchWorktree(shortcut.index);
         break;
       default: {
         const unhandled: never = shortcut;
@@ -343,6 +371,8 @@
         <Mark size={36} />
         <p class="notice-text">Git was not found. Install git and restart.</p>
       </section>
+    {:else if app.inboxOpen}
+      <InboxPage />
     {:else if active}
       <div class="repo" id="repo-panel" role="tabpanel" aria-labelledby="tab-{active.repoId}" data-testid="repo-view">
         {#key active.repoId}
@@ -533,7 +563,7 @@
       <Welcome />
     {/if}
   </main>
-  {#if active && activeWorktree && statusBar.shown && !app.gitMissing}
+  {#if active && activeWorktree && statusBar.shown && !app.gitMissing && !app.inboxOpen}
     <StatusBar view={repoView(active.repoId)} path={activeWorktree.fullPath} />
   {/if}
   </div>

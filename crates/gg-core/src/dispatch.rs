@@ -304,6 +304,92 @@ struct PerfMarkArgs {
     ms: f64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrInboxArgs {
+    /// Ask gh again (at most once every 10 s); else what gg kept.
+    #[serde(default)]
+    refresh: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxKeyArgs {
+    key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxKeysArgs {
+    keys: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxPinArgs {
+    key: String,
+    pinned: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxGroupByArgs {
+    group_by: crate::dto::InboxGroupBy,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxPrArgs {
+    host: String,
+    owner: String,
+    name: String,
+    number: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxWriteArgs {
+    host: String,
+    owner: String,
+    name: String,
+    /// `pr_reply`, `pr_resolve` or `pr_comment`, as the Pull request tab sends it.
+    request: OpRequest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxMatchArgs {
+    host: String,
+    owner: String,
+    name: String,
+    /// The pull request's head repository, `owner/name`.
+    #[serde(default)]
+    head_repo: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenWebArgs {
+    target: External,
+    url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CloneArgs {
+    clone_id: String,
+    host: String,
+    owner: String,
+    name: String,
+    parent: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CloneCancelArgs {
+    clone_id: String,
+}
+
 impl Core {
     /// Runs command `cmd` with `args` (a JSON object) and returns its result as JSON. The
     /// commands and their arguments and results are the Commands table of the boundary
@@ -459,6 +545,91 @@ impl Core {
             "pr_details" => {
                 let a: PrDetailsArgs = parse(cmd, args)?;
                 to_json(self.repos()?.pr_details(a.repo_id, a.number).await?)
+            }
+            "pr_inbox" => {
+                let a: PrInboxArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_inbox(a.refresh).await?)
+            }
+            "pr_inbox_seen" => {
+                let a: InboxKeyArgs = parse(cmd, args)?;
+                self.repos()?.pr_inbox_seen(&a.key).await?;
+                Ok(Value::Null)
+            }
+            "pr_inbox_details" => {
+                let a: InboxKeysArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_inbox_details(&a.keys).await?)
+            }
+            "pr_inbox_pin" => {
+                let a: InboxPinArgs = parse(cmd, args)?;
+                to_json(self.repos()?.pr_inbox_pin(&a.key, a.pinned).await?)
+            }
+            "pr_inbox_group_by" => {
+                let a: InboxGroupByArgs = parse(cmd, args)?;
+                self.repos()?.pr_inbox_group_by(a.group_by).await?;
+                Ok(Value::Null)
+            }
+            "inbox_pr_files" => {
+                let a: InboxPrArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .inbox_pr_files(&a.host, &a.owner, &a.name, a.number)
+                        .await?,
+                )
+            }
+            "inbox_pr_details" => {
+                let a: InboxPrArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .inbox_pr_details(&a.host, &a.owner, &a.name, a.number)
+                        .await?,
+                )
+            }
+            "inbox_pr_write" => {
+                let a: InboxWriteArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .inbox_pr_write(&a.host, &a.owner, &a.name, &a.request)
+                        .await?,
+                )
+            }
+            "inbox_repo_match" => {
+                let a: InboxMatchArgs = parse(cmd, args)?;
+                to_json(
+                    self.repos()?
+                        .inbox_repo_match(&a.host, &a.owner, &a.name, a.head_repo.as_deref())
+                        .await?,
+                )
+            }
+            "open_web" => {
+                let a: OpenWebArgs = parse(cmd, args)?;
+                let repos = self.repos()?;
+                let hosts = repos.inbox_host_names();
+                to_json(OpenedExternal {
+                    note: repos.open_web(a.target, &a.url, &hosts)?,
+                })
+            }
+            "clone_parent" => {
+                let NoArgs {} = parse(cmd, args)?;
+                to_json(self.repos()?.clone_parent())
+            }
+            "clone_repo" => {
+                let a: CloneArgs = parse(cmd, args)?;
+                let repos = self.repos()?.clone();
+                // On its own task, so a caller that goes away does not leave git cloning
+                // unseen: it ends, or Cancel ends it.
+                let run = tokio::spawn(async move {
+                    repos
+                        .clone_repo(&a.clone_id, &a.host, &a.owner, &a.name, &a.parent)
+                        .await
+                });
+                let cloned = run.await.map_err(|e| {
+                    CoreError::new(ErrorCode::Io, "The clone failed").with_detail(e.to_string())
+                })??;
+                to_json(cloned)
+            }
+            "clone_cancel" => {
+                let a: CloneCancelArgs = parse(cmd, args)?;
+                to_json(self.repos()?.clone_cancel(&a.clone_id))
             }
             "set_window_focused" => {
                 let a: FocusArgs = parse(cmd, args)?;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repeatable, SHORTCUT_GROUPS, SHORTCUT_KINDS, SHORTCUT_TABLE, shortcutFor, shortcutSheet } from "./shortcuts";
+import { keyName, repeatable, SHORTCUT_GROUPS, SHORTCUT_KINDS, SHORTCUT_TABLE, shortcutFor, shortcutSheet } from "./shortcuts";
 
 const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "shiftKey" | "altKey", boolean>> = {}) => ({
   key: k,
@@ -210,6 +210,21 @@ describe("the table", () => {
         }
       }
     }
+  });
+
+  it("back and forward on the Pull requests page: ⌘[ ⌘← and ⌘] ⌘→ (Ctrl elsewhere), never a text field's ⌘← ⌘→", () => {
+    const press = (key: string, meta: boolean, ctrl: boolean) => ({ key, metaKey: meta, ctrlKey: ctrl, shiftKey: false, altKey: false });
+    expect(shortcutFor(press("[", true, false), true)?.kind).toBe("back");
+    expect(shortcutFor(press("ArrowLeft", true, false), true)?.kind).toBe("back");
+    expect(shortcutFor(press("]", true, false), true)?.kind).toBe("forward");
+    expect(shortcutFor(press("ArrowRight", true, false), true)?.kind).toBe("forward");
+    expect(shortcutFor(press("ArrowLeft", false, true), false)?.kind).toBe("back");
+    expect(shortcutFor(press("]", false, true), false)?.kind).toBe("forward");
+    // In a reply box, ⌘← and ⌘→ move the caret; ⌘[ and ⌘] still go back and forward.
+    expect(shortcutFor(press("ArrowLeft", true, false), true, true)).toBeNull();
+    expect(shortcutFor(press("ArrowRight", true, false), true, true)).toBeNull();
+    expect(shortcutFor(press("[", true, false), true, true)?.kind).toBe("back");
+    expect(keyName("ArrowLeft", true)).toBe("←");
   });
 
   it("no two rows of the window's own take the same keys", () => {

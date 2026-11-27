@@ -1,5 +1,7 @@
 <!--
-  A branch's open pull request, in the side panel's Pull request tab: its state (Draft or
+  A pull request in full, in the side panel's Pull request tab (a branch's open pull request)
+  and on the Pull requests page (any of the user's, opened from its list); it reads and writes
+  only through its PrSource, so it is one view in both places. Its state (Draft or
   Open, in the markers' colours), its number, its title in full, base ← head (cut in the
   middle), Open in browser and Copy link, and "as of 14:05" when the list it comes from may be
   out of date. Below it (read-only), what gh says of it now: where it stands for merging and
@@ -13,48 +15,56 @@
   keeps what is shown; a failed one keeps it too and says so in one line, with Retry.
 
   The comments take what the user may write (prCompose.svelte.ts): a reply in a thread,
-  resolving it, a comment on the conversation; their drafts are the panel's (PanelState), so
-  they stay through other tabs and other commits. Each sent, the details load again, the
+  resolving it, a comment on the conversation; their drafts are the source's (the side panel's
+  PanelState, the page's own), so they stay through other tabs and other commits. Each sent, the details load again, the
   comments shown meanwhile.
 -->
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { untrack, type Snippet } from "svelte";
   import { visibleText } from "../format";
   import { mergeWording, POLL_MS, reviewWording, shouldPoll } from "../prDetails";
-  import { app, showLog, windowState } from "../state/app.svelte";
-  import { openExternal } from "../state/editor";
+  import { app, windowState } from "../state/app.svelte";
   import { writesFor } from "../state/prCompose.svelte";
-  import { detailsOf, loadDetails } from "../state/prDetails.svelte";
-  import { clock, copyLink, openPullRequest } from "../state/prs.svelte";
-  import type { RepoView } from "../state/repo.svelte";
-  import { panelState } from "../state/worktrees.svelte";
+  import { detailsOf } from "../state/prDetails.svelte";
+  import type { PrSource } from "../state/prSource.svelte";
+  import { clock, copyLink } from "../state/prs.svelte";
   import type { PullRequest } from "../types";
   import MiddleText from "./MiddleText.svelte";
   import PrChecks from "./PrChecks.svelte";
   import PrComments from "./PrComments.svelte";
+  import PrIcon from "./PrIcon.svelte";
 
   type Props = {
-    view: RepoView;
+    /** Where it comes from: a repository's side panel, or the Pull requests page. */
+    source: PrSource;
     pr: PullRequest;
     /** "as of 14:05" when the list it comes from may be out of date. */
     stale: string | null;
+    /** A section after the checks (the Pull requests page: the files it changes). */
+    more?: Snippet;
+    /** Merged or closed, as the list last said (a pinned one): until its details say. */
+    ended?: "merged" | "closed" | null;
   };
 
-  let { view, pr, stale }: Props = $props();
-  const repoId = $derived(view.repoId);
+  let { source, pr, stale, more, ended = null }: Props = $props();
   const draft = $derived(pr.state === "draft");
-  const root = $derived(view.snapshot.rootPath);
-  const panel = $derived(panelState(view.repoId));
+  const key = $derived(source.key);
+  /** As values, so only a change of them asks again (not each new snapshot they are read from). */
+  const refresh = $derived(source.refresh);
+  const pushedAt = $derived(source.pushed);
   /** As values: a new snapshot (or the same pull request in it, anew) changes neither. */
   const number = $derived(pr.number);
-  const listAt = $derived(view.snapshot.prs.loadedAtMs);
   /** This pull request's details: an answer for another is never shown here. */
-  const entry = $derived(detailsOf(root, number));
+  const entry = $derived(detailsOf(key, number));
   const details = $derived(entry?.data ?? null);
   const status = $derived(details ? mergeWording(details, pr.base) : null);
+  /** Merged or closed, as gh says now (open: neither); while unknown or unread, as the list said. */
+  const done = $derived(
+    details?.state === "merged" || details?.state === "closed" ? details.state : details?.state === "open" ? null : ended,
+  );
   const review = $derived(details ? reviewWording(details.review) : null);
-  /** What the comments can write to this pull request, with the panel's drafts. */
-  const writes = $derived(writesFor(panel.prCompose, { repoId, root, number }, (from) => showLog(repoId, from)));
+  /** What the comments can write to this pull request, with the source's drafts. */
+  const writes = $derived(writesFor(source.compose, source.target(number), (from) => source.showLog(from)));
 
   /** How often a running check is asked about again (tests may make it shorter). */
   function pollMs(): number {
@@ -63,23 +73,22 @@
   }
 
   function load(background = false) {
-    void loadDetails(repoId, root, number, background);
+    void source.load(number, background);
   }
 
   // Asked for when it shows (or its pull request changes), when the user refreshes, and after
   // the list reloads; not for any other change of the repository.
   $effect(() => {
     void number;
-    void root;
-    void panel.prRefresh;
-    void listAt;
+    void key;
+    void refresh;
     untrack(() => load());
   });
 
   // After a push of its branch: at once, and once more when the checks it started are there.
-  let seenPush = untrack(() => panelState(view.repoId).prPushed);
+  let seenPush = untrack(() => source.pushed);
   $effect(() => {
-    const pushed = panel.prPushed;
+    const pushed = pushedAt;
     if (pushed === seenPush) return;
     seenPush = pushed;
     untrack(() => load());
@@ -106,22 +115,16 @@
   /** The core's message without its lead ("Could not load the checks and comments: "), said by the line itself. */
   const reasonOf = (message: string) => message.replace(/^Could not load the checks and comments:\s*/, "");
 
-  const openLink = (url: string) => void openExternal(repoId, { target: "link", url });
-  const openPage = (url: string) => void openExternal(repoId, { target: "url", url });
+  const openLink = (url: string) => source.openLink(url);
+  const openPage = (url: string) => source.openPage(url);
 </script>
 
 <div class="pr-view" data-testid="pr-view">
   <section class="head" aria-label="Pull request #{pr.number}">
     <div class="meta">
-      <span class="state" class:draft data-testid="pr-state">
-        <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden="true">
-          <circle cx="2.4" cy="2" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <circle cx="2.4" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <circle cx="7.6" cy="8" r="1.25" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <path d="M2.4 3.25v3.5M7.6 6.75V4.1c0-.9-.6-1.5-1.5-1.5H4.6" fill="none" stroke="currentColor" stroke-width="1.05" />
-          <path d="M5.7 1.4 4.5 2.6l1.2 1.2" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        {draft ? "Draft" : "Open"}
+      <span class="state" class:draft={draft && !done} class:merged={done === "merged"} class:closed={done === "closed"} data-testid="pr-state" data-state={done ?? (draft ? "draft" : "open")}>
+        <PrIcon kind={done ?? (draft ? "draft" : "open")} size={12} />
+        {done === "merged" ? "Merged" : done === "closed" ? "Closed" : draft ? "Draft" : "Open"}
       </span>
       <span class="number" data-testid="pr-number">#{pr.number}</span>
       {#if stale}
@@ -135,7 +138,7 @@
       <MiddleText class="ref" text={pr.head} keep={14} />
     </p>
     <div class="actions">
-      <button class="button" type="button" data-pr-focus data-testid="pr-open" onclick={() => openPullRequest(repoId, pr)}>Open in browser</button>
+      <button class="button" type="button" data-pr-focus data-testid="pr-open" onclick={() => source.openPage(pr.url)}>Open in browser</button>
       <button class="button" type="button" data-testid="pr-copy" onclick={() => void copyLink(pr.url)}>Copy link</button>
     </div>
   </section>
@@ -151,7 +154,8 @@
         <span class="chip {status.tone}" data-testid="pr-merge-status"><span class="chip-dot" aria-hidden="true"></span>{status.text}</span>
         {#if review}<span class="chip {review.tone}" data-testid="pr-review">{review.text}</span>{/if}
       </div>
-      <PrChecks id="{root}#{number}" checks={details.checks} summary={details.checksSummary} now={Math.max(clock.now, details.loadedAtMs)} onlink={openLink} />
+      <PrChecks id="{key}#{number}" checks={details.checks} summary={details.checksSummary} now={Math.max(clock.now, details.loadedAtMs)} onlink={openLink} />
+      {#if more}{@render more()}{/if}
       <div class="divider" aria-hidden="true"></div>
       <PrComments {details} dateFormat={app.settings.dateFormat} now={clock.now} onpage={openPage} onlink={openLink} {writes} />
     {:else if !entry?.error}
@@ -164,6 +168,10 @@
         <div class="bone-card"><span class="bone w-50"></span><span class="bone w-full"></span><span class="bone w-40"></span></div>
       </div>
       <span class="sr-only" role="status">Loading the checks and comments…</span>
+    {/if}
+    {#if more && entry?.error && !(details && status)}
+      <!-- The details could not be read: the section after the checks has its own read (and Retry). -->
+      {@render more()}
     {/if}
   </div>
 </div>
@@ -214,7 +222,7 @@
     line-height: 18px;
   }
 
-  .state svg {
+  .state :global(svg) {
     display: block;
     flex: none;
     color: color-mix(in srgb, var(--pr) 85%, var(--text));
@@ -227,8 +235,16 @@
     color: var(--text-muted);
   }
 
-  .state.draft svg {
+  .state.draft :global(svg) {
     color: var(--text-faint);
+  }
+
+  .state.merged {
+    --pr: var(--info);
+  }
+
+  .state.closed {
+    --pr: var(--danger);
   }
 
   .number {

@@ -11,11 +11,11 @@ vi.mock("./prDetails.svelte", () => ({
   loadDetails: vi.fn((_repoId: number, _root: string, number: number) => new Promise<void>((resolve) => reloads.push({ number, resolve }))),
 }));
 
-import { sendDraft, setResolved } from "./prCompose.svelte";
+import { repoTarget, sendDraft, setResolved } from "./prCompose.svelte";
 import { PrCompose } from "./prDrafts.svelte";
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
-const target = { repoId: 1, root: "/r", number: 31 };
+const target = repoTarget(1, "/r", 31);
 
 describe("what the Pull request tab writes", () => {
   let c: PrCompose;

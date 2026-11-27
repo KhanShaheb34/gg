@@ -9,6 +9,9 @@
   import { colorIndex, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
   import { activate, app, closeTab, cycleTheme, openViaPicker } from "../state/app.svelte";
+  import { activityCount } from "../inbox";
+  import { inbox, toggleInbox } from "../state/inbox.svelte";
+  import PrIcon from "./PrIcon.svelte";
   import { openSettings } from "../state/settings.svelte";
   import { findRepoView } from "../state/repo.svelte";
 
@@ -16,6 +19,9 @@
   /** Empty space drags the window only where this bar is the title bar (macOS's overlay). */
   const dragRegion = trafficLights ? "" : undefined;
   const openLabel = `Open repository (${isMac() ? "⌘O" : "Ctrl+O"})`;
+  const inboxKeys = isMac() ? "⌘⇧I" : "Ctrl+Shift+I";
+  /** Pull requests with activity since they were last opened in gg: a dot on the page's button. */
+  const fresh = $derived(activityCount(inbox.data));
 
   const themeName = $derived(
     app.settings.theme === "system" ? "System" : app.settings.theme === "light" ? "Light" : "Dark",
@@ -71,10 +77,25 @@
 </script>
 
 <header class="bar" class:traffic-lights={trafficLights} data-tauri-drag-region={dragRegion}>
+  <!-- The Pull requests page: a page of gg's own, not a repository: an icon alone, fixed before
+       the tabs (no colour dot, no close), its dot when a pull request has news. -->
+  <button
+    class="page-btn"
+    class:current={app.inboxOpen}
+    aria-current={app.inboxOpen ? "page" : undefined}
+    aria-label={fresh > 0 ? `Pull requests, ${fresh} with something new` : "Pull requests"}
+    title="Pull requests ({inboxKeys})"
+    data-testid="inbox-button"
+    onclick={toggleInbox}
+  >
+    <PrIcon size={16} />
+    {#if fresh > 0}<span class="page-dot" aria-hidden="true" data-testid="inbox-button-dot"></span>{/if}
+  </button>
   {#if app.tabs.length > 0}
+    <span class="divider" aria-hidden="true"></span>
     <div class="tabs" role="tablist" aria-label="Open repositories" bind:this={list}>
       {#each app.tabs as tab, i (tab.repoId)}
-        {@const selected = tab.repoId === app.activeRepoId}
+        {@const selected = tab.repoId === app.activeRepoId && !app.inboxOpen}
         <!-- The list holds only tabs: the close button is for the mouse (keys: Delete, ⌘W). -->
         <div class="tab" class:selected role="presentation" title={shortenPath(worktreeOf(tab), app.homeDir)}>
           <button
@@ -85,7 +106,7 @@
             aria-selected={selected}
             aria-controls="repo-panel"
             aria-keyshortcuts="Delete"
-            tabindex={selected ? 0 : -1}
+            tabindex={tab.repoId === app.activeRepoId ? 0 : -1}
             onclick={() => activate(tab.repoId)}
             onkeydown={(e) => onTabKeydown(e, i)}
             onauxclick={(e) => onAuxClick(e, tab.repoId)}
@@ -181,6 +202,69 @@
 
   .bar.traffic-lights {
     padding-left: 78px;
+  }
+
+  /* The Pull requests page's button: an icon alone, square, quieter than a tab; open, it
+     takes the selected tab's surface and the accent, so where you are is plain. */
+  .page-btn {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 30px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-muted);
+    transition:
+      background-color 80ms linear,
+      color 80ms linear;
+  }
+
+  .page-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+
+  .page-btn:active {
+    background: var(--bg-pressed);
+  }
+
+  .page-btn.current {
+    background: var(--bg-elevated);
+    border-color: var(--tab-border);
+    box-shadow: var(--shadow-tab);
+    color: var(--accent);
+  }
+
+  .page-btn:focus-visible {
+    outline-offset: -1px;
+  }
+
+  /* Something new on the page: a small dot on the icon's corner. */
+  .page-dot {
+    position: absolute;
+    top: 4px;
+    right: 5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1.5px var(--bg-chrome);
+  }
+
+  .page-btn.current .page-dot {
+    box-shadow: 0 0 0 1.5px var(--bg-elevated);
+  }
+
+  .divider {
+    flex: none;
+    width: 1px;
+    height: 16px;
+    margin: 0 4px;
+    background: var(--border-strong);
   }
 
   .tabs {

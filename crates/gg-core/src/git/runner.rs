@@ -1034,6 +1034,21 @@ impl GitRunner {
             .await
     }
 
+    /// [`GitRunner::run_with_progress`] that also stops when `cancel` is notified, as
+    /// [`GitRunner::run_cancellable`] does (a clone, which reports progress and has Cancel).
+    pub(crate) async fn run_with_progress_cancellable(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        kind: CmdKind,
+        limit: TimeLimit,
+        on_stderr: &(dyn Fn(&[u8]) + Send + Sync),
+        cancel: &tokio::sync::Notify,
+    ) -> Result<std::result::Result<GitOutput, TimedOut>> {
+        self.run_limited(cwd, args, kind, limit, on_stderr, Some(cancel))
+            .await
+    }
+
     async fn run_limited(
         &self,
         cwd: &Path,

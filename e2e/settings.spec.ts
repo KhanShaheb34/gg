@@ -104,6 +104,11 @@ test("settings open from the keys and the gear, save each field as it changes, a
     dateFormat: "standard",
     checkForUpdates: true,
     openPrTabAfterPush: true,
+    aiTool: "auto",
+    aiModels: {},
+    aiCommitPrompt: null,
+    aiPrPrompt: null,
+    aiNoticeSeen: [],
   });
   await expect(page.getByRole("tab", { name: "small" })).toBeVisible();
 });

@@ -273,6 +273,32 @@ struct InstallCliArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AiToolsArgs {
+    /// Also ask each tool found its version (the settings); else only look for them.
+    #[serde(default)]
+    versions: bool,
+    /// Read the login shell's `PATH` again first ("Check again": a tool installed since).
+    #[serde(default)]
+    recheck: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AiGenerateArgs {
+    repo_id: u32,
+    /// The UI's name for this generation, to cancel it by.
+    request_id: String,
+    task: crate::dto::AiTask,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AiCancelArgs {
+    request_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PerfMarkArgs {
     name: String,
     ms: f64,
@@ -622,6 +648,36 @@ impl Core {
                 }
                 installed?;
                 Ok(Value::Null)
+            }
+            "ai_tools" => {
+                let a: AiToolsArgs = parse(cmd, args)?;
+                let settings = self.store.settings();
+                to_json(
+                    self.repos()?
+                        .ai_tools(&settings, a.versions, a.recheck)
+                        .await,
+                )
+            }
+            "ai_generate" => {
+                let a: AiGenerateArgs = parse(cmd, args)?;
+                let settings = self.store.settings();
+                let repos = self.repos()?.clone();
+                // On its own task, so a caller that goes away (a closed HTTP request) does not
+                // leave the tool running unseen: it ends, or Cancel ends it.
+                let run = tokio::spawn(async move {
+                    repos
+                        .ai_generate(a.repo_id, &a.request_id, a.task, &settings)
+                        .await
+                });
+                let outcome = run.await.map_err(|e| {
+                    CoreError::new(ErrorCode::Io, "The generation failed")
+                        .with_detail(e.to_string())
+                })??;
+                to_json(outcome)
+            }
+            "ai_cancel" => {
+                let a: AiCancelArgs = parse(cmd, args)?;
+                to_json(self.repos()?.ai_cancel(&a.request_id))
             }
             "perf_mark" => {
                 let a: PerfMarkArgs = parse(cmd, args)?;

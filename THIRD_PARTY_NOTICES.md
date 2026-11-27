@@ -5,6 +5,12 @@ said here.
 
 ## Orca
 
+The default prompts of Generate with AI (a commit message, and a pull request's title and
+description), the way the diff is cut to fit them, and the way the tool's answer is read
+(`crates/gg-core/src/ai/prompt.rs`) are taken from Orca
+(https://github.com/stablyai/orca: `src/shared/source-control/ai/generation/`), adapted for gg
+as that file says.
+
 The title a new pull request is given from its branch's name (`branch_title` in
 `crates/gg-core/src/gh.rs`) is taken from Orca (https://github.com/stablyai/orca:
 `resolveCreateReviewDraftTitle` in

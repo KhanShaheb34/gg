@@ -35,7 +35,10 @@
   import { runOp } from "../state/ops.svelte";
   import type { RepoView } from "../state/repo.svelte";
   import { closeCommit, commitDrafts, commitPath, makeActive, openCommit, panelState } from "../state/worktrees.svelte";
+  import { cancelGeneration, commitJob, generate, newRequestId } from "../state/ai.svelte";
   import type { FileEntry, HeadInfo, OpRequest } from "../types";
+  import AiGenerate from "./AiGenerate.svelte";
+  import AiProblem from "./AiProblem.svelte";
   import CommittedFiles from "./CommittedFiles.svelte";
   import MiddleText from "./MiddleText.svelte";
 
@@ -317,7 +320,7 @@
       if (files.length === 0) return "Nothing to commit: no file has changed. To commit anyway, tick Commit with no changes.";
       if (chosen.length === 0) return "Tick the files to commit.";
     }
-    if (message.trim() === "") return "Write a commit message.";
+    if (message.trim() === "") return writing !== null ? "Writing the message…" : "Write a commit message.";
     return null;
   });
   const pushReason = $derived(pushTo !== null && "why" in pushTo ? pushTo.why : null);
@@ -328,7 +331,7 @@
     // Only the worktree shown commits, and only while it is the active one: the core refuses
     // a request whose worktree is not active by its turn.
     if (!active || filesHead === null) return;
-    if (reason !== null || pending || (push && (pushTo === null || "why" in pushTo))) return;
+    if (reason !== null || pending || writing !== null || (push && (pushTo === null || "why" in pushTo))) return;
     const request: OpRequest = {
       op: "commit",
       paths: emptyCommit ? [] : chosen.map((f) => f.path),
@@ -361,10 +364,100 @@
     }
   }
 
+  // ---- Generate with AI ----
+
+  /** The worktree's generation, kept outside the panel (see `CommitJob`). */
+  const job = $derived(commitJob(path));
+  /** The generation under way (its request), or null. */
+  const writing = $derived(job.request);
+  const aiFailure = $derived(job.failure);
+  /** The message the last generation replaced, while the field still holds what it wrote. */
+  const undo = $derived(job.undo);
+  let aiControl: AiGenerate | undefined = $state();
+
+  /** Why there is nothing to write a message from now, or null. */
+  const aiBlocked = $derived.by((): string | null => {
+    if (readError !== null) return readError;
+    if (files === null) return "Reading the changed files…";
+    if (files.length === 0) return "Nothing to describe: no file has changed.";
+    if (chosen.length === 0) return "Tick the files to describe.";
+    if (pending !== null) return "Committing…";
+    return null;
+  });
+
+  async function writeMessage() {
+    if (writing !== null || aiBlocked !== null) return;
+    const id = newRequestId();
+    // The worktree's, not this panel's: shown again meanwhile, the panel there sees it, and
+    // the answer lands once.
+    const j = job;
+    const folder = path;
+    j.request = id;
+    j.failure = null;
+    const before = message;
+    const outcome = await generate(view.repoId, id, { kind: "commit", path: folder, paths: chosen.map((f) => f.path) });
+    // Cancelled, or another took its place: nothing of it lands.
+    if (j.request !== id) return;
+    j.request = null;
+    if (outcome.status === "done" && outcome.message !== null) {
+      j.undo = before.trim() !== "" && before !== outcome.message ? { previous: before, generated: outcome.message } : null;
+      // Kept for the worktree at once, and put in the field by the panel showing it.
+      commitDrafts.set(folder, outcome.message);
+      j.delivered = outcome.message;
+    } else if (outcome.status === "failed" && outcome.kind !== "cancelled") {
+      j.failure = outcome;
+    }
+  }
+
+  // An answer for this worktree: in the field, the subject in sight, the caret before it.
+  $effect(() => {
+    const got = job.delivered;
+    if (got === null) return;
+    untrack(() => {
+      message = got;
+      job.delivered = null;
+      void tick().then(() => {
+        field?.focus();
+        field?.setSelectionRange(0, 0);
+        if (field) field.scrollTop = 0;
+      });
+    });
+  });
+
+  function stopWriting() {
+    const id = job.request;
+    if (id === null) return;
+    // Back to the field as it was at once; the tool is ended.
+    job.request = null;
+    void cancelGeneration(id);
+  }
+
+  function undoGenerated() {
+    if (undo === null) return;
+    message = undo.previous;
+    job.undo = null;
+    field?.focus();
+  }
+
+  // Edited since: the generated text is the user's now, and there is no undo.
+  $effect(() => {
+    if (undo !== null && message !== undo.generated) job.undo = null;
+  });
+
   function onMessageKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && (isMac() ? e.metaKey : e.ctrlKey) && !e.isComposing) {
+    const mod = isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    if (e.key === "Enter" && mod && !e.isComposing) {
       e.preventDefault();
       void commit(false);
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "g" && !e.isComposing) {
+      e.preventDefault();
+      void aiControl?.activate();
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "z" && undo !== null && message === undo.generated) {
+      e.preventDefault();
+      undoGenerated();
+    } else if (e.key === "Escape" && writing !== null) {
+      e.preventDefault();
+      stopWriting();
     }
   }
 
@@ -429,7 +522,10 @@
   class="commit"
   data-testid="commit-panel"
   onkeydown={(e) => {
-    if (e.key === "Escape" && !e.defaultPrevented && pending === null) {
+    if (e.key === "Escape" && !e.defaultPrevented && writing !== null) {
+      e.preventDefault();
+      stopWriting();
+    } else if (e.key === "Escape" && !e.defaultPrevented && pending === null) {
       e.preventDefault();
       closeCommit(view);
     }
@@ -581,27 +677,59 @@
   <div class="compose">
     <div class="label-row">
       <label class="field-label" for="cm-{uid}">Message</label>
-      <span class="gauge" class:over={subject.length > SUBJECT_MAX} title="The first line is the summary; {SUBJECT_MAX} characters fit everywhere"
-        >{subject.length}/{SUBJECT_MAX}</span
-      >
+      <span class="row-end">
+        {#if writing !== null}
+          <button type="button" class="mini-link" data-testid="commit-ai-cancel" onclick={stopWriting}>Cancel</button>
+        {:else}
+          {#if undo !== null}
+            <button
+              type="button"
+              class="mini-link"
+              title="Put back the message it replaced ({isMac() ? '⌘Z' : 'Ctrl+Z'} in the message)"
+              data-testid="commit-ai-undo"
+              onclick={undoGenerated}>Undo</button
+            >
+          {/if}
+          <span
+            class="gauge"
+            class:over={subject.length > SUBJECT_MAX}
+            title="The first line is the summary; {SUBJECT_MAX} characters fit everywhere">{subject.length}/{SUBJECT_MAX}</span
+          >
+        {/if}
+        <AiGenerate
+          bind:this={aiControl}
+          kind="commit"
+          blocked={aiBlocked}
+          running={writing !== null}
+          onrun={() => void writeMessage()}
+          oncancel={stopWriting}
+          testid="commit-ai"
+        />
+      </span>
     </div>
     <textarea
       id="cm-{uid}"
       class="text-input message"
+      class:writing={writing !== null}
       rows="4"
-      placeholder={merging ? `Merge ${stopped?.incoming ?? "branch"}` : "Summary of the change"}
+      placeholder={writing !== null ? "Writing a message…" : merging ? `Merge ${stopped?.incoming ?? "branch"}` : "Summary of the change"}
       spellcheck="true"
       bind:value={message}
       bind:this={field}
-      readonly={pending !== null}
+      readonly={pending !== null || writing !== null}
+      aria-busy={writing !== null}
+      oninput={() => (job.failure = null)}
       onkeydown={onMessageKeydown}
       data-testid="commit-message"
     ></textarea>
+    {#if aiFailure !== null && writing === null}
+      <AiProblem failure={aiFailure} repoId={view.repoId} onretry={() => void writeMessage()} testid="commit-ai-problem" />
+    {/if}
     {#if active}
       <div class="buttons">
         <button
           class="button primary"
-          disabled={reason !== null || pending !== null}
+          disabled={reason !== null || pending !== null || writing !== null}
           title="{emptyCommit ? 'Make an empty commit' : 'Commit the ticked files'} ({COMMIT_KEYS})"
           onclick={() => void commit(false)}
           data-testid="commit-button">{pending === "commit" ? "Committing…" : "Commit"}</button
@@ -609,7 +737,7 @@
         {#if pushTo !== null}
           <button
             class="button"
-            disabled={reason !== null || pushReason !== null || pending !== null}
+            disabled={reason !== null || pushReason !== null || pending !== null || writing !== null}
             onclick={() => void commit(true)}
             data-testid="commit-push-button"
           >
@@ -932,6 +1060,41 @@
 
   .label-row .field-label {
     margin: 0;
+  }
+
+  /* The gauge (or Undo, Cancel) and the AI button: one line, as tall as the button, so
+     nothing moves when it turns into a spinner. */
+  .row-end {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    margin: -4px -4px -4px 0;
+  }
+
+  .mini-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-size: var(--fs-xs);
+    font-weight: 550;
+  }
+
+  .mini-link:hover {
+    text-decoration: underline;
+  }
+
+  .mini-link:focus-visible {
+    border-radius: 3px;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  /* Locked while the tool writes: as it looks, a little quieter. */
+  .message.writing {
+    color: var(--text-muted);
+    cursor: progress;
   }
 
   .gauge {

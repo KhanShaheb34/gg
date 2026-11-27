@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::dto::{
-    DEFAULT_WORKTREE_PATTERN, DateFormat, Recent, RepoPrefs, Session, Settings, Theme,
+    AiTool, AiToolChoice, DEFAULT_WORKTREE_PATTERN, DateFormat, Recent, RepoPrefs, Session,
+    Settings, Theme,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 
@@ -51,6 +52,17 @@ pub struct SettingsPatch {
     pub date_format: Option<DateFormat>,
     pub check_for_updates: Option<bool>,
     pub open_pr_tab_after_push: Option<bool>,
+    pub ai_tool: Option<AiToolChoice>,
+    /// Each tool's model to set (tool id → model; `""` runs the tool's own default); `null`
+    /// goes back to gg's default for that tool.
+    pub ai_models: Option<BTreeMap<String, Option<String>>>,
+    /// `Some(None)` (JSON `null`), or a blank template, goes back to gg's default.
+    #[serde(default, deserialize_with = "present")]
+    pub ai_commit_prompt: Option<Option<String>>,
+    /// `Some(None)` (JSON `null`), or a blank template, goes back to gg's default.
+    #[serde(default, deserialize_with = "present")]
+    pub ai_pr_prompt: Option<Option<String>>,
+    pub ai_notice_seen: Option<Vec<AiTool>>,
 }
 
 /// A change to [`RepoPrefs`]: only the fields present are changed.
@@ -367,6 +379,16 @@ impl Store {
         if let Some(Some(command)) = &patch.terminal_command {
             crate::launch::check_terminal_command(command)?;
         }
+        for (tool, model) in patch.ai_models.iter().flatten() {
+            crate::ai::check_model_setting(tool, model.as_deref())?;
+        }
+        for prompt in [&patch.ai_commit_prompt, &patch.ai_pr_prompt]
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            crate::ai::check_prompt(prompt)?;
+        }
         if let Some(pattern) = &patch.worktree_pattern
             && !pattern.trim().is_empty()
         {
@@ -406,6 +428,30 @@ impl Store {
             }
             if let Some(open) = patch.open_pr_tab_after_push {
                 data.settings.open_pr_tab_after_push = open;
+            }
+            if let Some(tool) = patch.ai_tool {
+                data.settings.ai_tool = tool;
+            }
+            for (tool, model) in patch.ai_models.unwrap_or_default() {
+                match model {
+                    Some(model) => data
+                        .settings
+                        .ai_models
+                        .insert(tool, model.trim().to_owned()),
+                    None => data.settings.ai_models.remove(&tool),
+                };
+            }
+            if let Some(prompt) = patch.ai_commit_prompt {
+                // A blank template means gg's default, like `null`.
+                data.settings.ai_commit_prompt = prompt.filter(|p| !p.trim().is_empty());
+            }
+            if let Some(prompt) = patch.ai_pr_prompt {
+                data.settings.ai_pr_prompt = prompt.filter(|p| !p.trim().is_empty());
+            }
+            if let Some(mut seen) = patch.ai_notice_seen {
+                seen.sort();
+                seen.dedup();
+                data.settings.ai_notice_seen = seen;
             }
             if let Some(pattern) = patch.worktree_pattern {
                 // A blank pattern means the default.
@@ -564,6 +610,11 @@ impl StoreData {
                     .unwrap_or(defaults.check_for_updates),
                 open_pr_tab_after_push: field(settings, "openPrTabAfterPush")
                     .unwrap_or(defaults.open_pr_tab_after_push),
+                ai_tool: field(settings, "aiTool").unwrap_or(defaults.ai_tool),
+                ai_models: field(settings, "aiModels").unwrap_or(defaults.ai_models),
+                ai_commit_prompt: field(settings, "aiCommitPrompt"),
+                ai_pr_prompt: field(settings, "aiPrPrompt"),
+                ai_notice_seen: list(settings, "aiNoticeSeen"),
             },
             repo_prefs,
         })
@@ -614,6 +665,11 @@ impl StoreData {
                     "dateFormat",
                     "checkForUpdates",
                     "openPrTabAfterPush",
+                    "aiTool",
+                    "aiModels",
+                    "aiCommitPrompt",
+                    "aiPrPrompt",
+                    "aiNoticeSeen",
                 ],
             )
             || lost_prefs
@@ -649,6 +705,23 @@ impl StoreData {
         if !valid_worktree_pattern(&self.settings.worktree_pattern) {
             self.settings.worktree_pattern = DEFAULT_WORKTREE_PATTERN.to_owned();
         }
+        // A model gg would refuse to set (hand-edited) is not run: the default instead.
+        self.settings
+            .ai_models
+            .retain(|tool, model| crate::ai::check_model_setting(tool, Some(model)).is_ok());
+        for prompt in [
+            &mut self.settings.ai_commit_prompt,
+            &mut self.settings.ai_pr_prompt,
+        ] {
+            if prompt
+                .as_deref()
+                .is_some_and(|p| p.trim().is_empty() || crate::ai::check_prompt(p).is_err())
+            {
+                *prompt = None;
+            }
+        }
+        self.settings.ai_notice_seen.sort();
+        self.settings.ai_notice_seen.dedup();
         self
     }
 }
@@ -1515,6 +1588,71 @@ mod tests {
             .update_settings(patch(serde_json::json!({ "checkForUpdates": false })))
             .unwrap();
         assert!(store.restore_default_settings().unwrap().check_for_updates);
+    }
+
+    /// "Generate with AI": the tool, each tool's model, the two prompt templates and the
+    /// first-use notices seen are kept across a reload; a model that could be read as an
+    /// option, an unknown tool or an overlong template is refused, and nothing changes; a
+    /// blank template, or `null`, is gg's default again; a hand-edited bad model is dropped.
+    #[test]
+    fn ai_settings_are_kept_and_checked() {
+        use crate::dto::{AiTool, AiToolChoice};
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        let s = store.settings();
+        assert_eq!(s.ai_tool, AiToolChoice::Auto);
+        assert!(s.ai_models.is_empty());
+        assert_eq!(s.ai_commit_prompt, None);
+        let s = store
+            .update_settings(patch(serde_json::json!({
+                "aiTool": "codex",
+                "aiModels": {"claude": "sonnet", "codex": ""},
+                "aiCommitPrompt": "{basePrompt}\nUse Conventional Commits.",
+                "aiNoticeSeen": ["codex", "claude", "codex"],
+            })))
+            .unwrap();
+        assert_eq!(s.ai_tool, AiToolChoice::Codex);
+        assert_eq!(
+            s.ai_models.get("claude").map(String::as_str),
+            Some("sonnet")
+        );
+        assert_eq!(s.ai_notice_seen, [AiTool::Claude, AiTool::Codex]);
+        let again = Store::load(config.path()).settings();
+        assert_eq!(again, s);
+        for bad in [
+            serde_json::json!({"aiModels": {"claude": "--dangerously-skip-permissions"}}),
+            serde_json::json!({"aiModels": {"claude": "@/etc/passwd"}}),
+            serde_json::json!({"aiModels": {"gemini": "x"}}),
+            serde_json::json!({"aiPrPrompt": "x".repeat(crate::ai::MAX_TEMPLATE + 1)}),
+        ] {
+            let err = store.update_settings(patch(bad.clone())).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{bad}");
+        }
+        assert_eq!(store.settings(), s, "nothing changed");
+        let s = store
+            .update_settings(patch(serde_json::json!({
+                "aiModels": {"claude": null},
+                "aiCommitPrompt": "  ",
+            })))
+            .unwrap();
+        assert_eq!(s.ai_models.get("claude"), None);
+        assert_eq!(s.ai_commit_prompt, None);
+        assert!(
+            serde_json::from_value::<SettingsPatch>(serde_json::json!({"aiTool": "gemini"}))
+                .is_err()
+        );
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"aiModels": {"claude": "-p", "codex": "gpt-5.5"}, "aiTool": "nope"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path()).settings();
+        assert_eq!(edited.ai_tool, AiToolChoice::Auto);
+        assert_eq!(edited.ai_models.get("claude"), None);
+        assert_eq!(
+            edited.ai_models.get("codex").map(String::as_str),
+            Some("gpt-5.5")
+        );
     }
 
     /// Showing the Pull request tab after a push: on by default, turned off and on, kept

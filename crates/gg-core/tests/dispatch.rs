@@ -782,7 +782,7 @@ async fn launch_path_is_reported() {
             "recents": [],
             "session": {"tabs": [], "active": null},
             "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null, "terminalCommand": null,
-                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true},
+                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []},
             "launchPath": null,
             "homeDir": home,
             "settingsProblem": null,
@@ -813,7 +813,7 @@ async fn session_and_settings_persist() {
     assert_eq!(
         settings,
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []})
     );
     let err = h
         .fail(
@@ -839,7 +839,7 @@ async fn session_and_settings_persist() {
     assert_eq!(
         state["settings"],
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []})
     );
 }
 
@@ -860,7 +860,7 @@ async fn settings_go_back_to_their_defaults() {
     let settings = h.call("restore_default_settings", json!({})).await;
     let defaults = json!({"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                           "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
-                          "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true});
+                          "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []});
     assert_eq!(settings, defaults);
     let err = h
         .fail("restore_default_settings", json!({"keep": "theme"}))

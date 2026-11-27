@@ -3,6 +3,7 @@
 //! [`Core`] is the one entry point the transports (the Tauri app and the dev server) use:
 //! [`Core::dispatch`] takes a command name and JSON arguments and returns JSON.
 
+pub mod ai;
 pub mod cli;
 mod dispatch;
 pub mod dto;

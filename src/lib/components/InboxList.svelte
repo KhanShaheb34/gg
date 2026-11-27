@@ -29,16 +29,27 @@
   let scrollTop = $state(inbox.scrollTop);
   let viewH = $state(600);
   const range = $derived(visibleRange(layout.rows, scrollTop, viewH));
-  const shown = $derived(layout.rows.slice(range[0], range[1]));
   /** The selected pull request's place, as the cursor's key finds it in the list now. */
   const at = $derived.by(() => {
     const i = prs.findIndex((p) => p.key === inbox.cursor);
     return i < 0 ? null : i;
   });
 
+  /**
+   * The rows drawn: those in view, and the selected one wherever it is, so the list's
+   * aria-activedescendant always names a row that is there.
+   */
+  const shown = $derived.by(() => {
+    const rows = layout.rows.slice(range[0], range[1]);
+    if (at === null) return rows;
+    const active = rowOfIndex(layout.rows, at);
+    return active && !rows.includes(active) ? [...rows, active] : rows;
+  });
   onMount(() => {
     if (!box) return;
     box.scrollTop = inbox.scrollTop;
+    // Read back: a shorter list than before clamps it.
+    onScroll();
     const observer = new ResizeObserver(() => {
       if (box) viewH = box.clientHeight;
     });

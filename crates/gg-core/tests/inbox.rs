@@ -127,9 +127,11 @@ async fn the_page_is_one_query_per_host_read_into_groups() {
     let calls = s.gh.calls_of(&["api", "graphql"]);
     assert_eq!(calls.len(), 1);
     let call = &calls[0];
-    assert_eq!(call.argv.len(), 6, "{:?}", call.argv);
-    assert!(call.argv[3].starts_with("query=query GgInbox($first:Int!)"));
-    assert_eq!(call.argv[4..], ["-F", "first=100"]);
+    assert_eq!(call.argv.len(), 8, "{:?}", call.argv);
+    // The host named, whatever gh's own default is.
+    assert_eq!(call.argv[2..4], ["--hostname", "github.com"]);
+    assert!(call.argv[5].starts_with("query=query GgInbox($first:Int!)"));
+    assert_eq!(call.argv[6..], ["-F", "first=100"]);
     assert!(!call.env.iter().any(|e| e.starts_with("GH_HOST=")));
     assert!(!call.env.iter().any(|e| e.starts_with("GH_REPO=")));
     assert!(call.env.iter().any(|e| e == "GH_PROMPT_DISABLED=1"));
@@ -296,6 +298,8 @@ async fn enterprise_hosts_of_open_repositories_are_asked_too() {
     assert_eq!(hosts, ["github.com", "ghe.example"]);
     assert_eq!(page.prs.len(), 1);
     assert_eq!(page.prs[0].key, "ghe.example/team/app#3");
+    // Both answered on the page's first load: nothing is new on either host.
+    assert!(page.prs.iter().all(|p| p.activity == InboxActivity::None));
     let ghe_call =
         s.gh.calls_of(&["api", "graphql"])
             .into_iter()
@@ -497,6 +501,18 @@ async fn clone_into_a_new_folder() {
             .unwrap_err();
     assert_eq!(e.code, ErrorCode::PathMissing);
     assert!(!s.h.m.clone_cancel("nothing-running"));
+    // While gg restarts to update, no clone starts.
+    let other = parent_path.join("other");
+    std::fs::create_dir(&other).unwrap();
+    s.h.m.begin_restart().unwrap();
+    let e =
+        s.h.m
+            .clone_repo("c5", "github.com", "octo", "cat", &other)
+            .await
+            .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Busy);
+    assert!(!other.join("cat").exists());
+    s.h.m.end_restart();
 }
 
 /// A pull request's page opens only on a GitHub host the page knows; a link anywhere, https

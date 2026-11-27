@@ -1887,6 +1887,12 @@ impl RepoManager {
                 ),
             ));
         }
+        if self.clone_running() {
+            return Err(CoreError::new(
+                ErrorCode::Busy,
+                "gg cannot restart while a repository is being cloned. Restart once it is done.",
+            ));
+        }
         *restarting = true;
         Ok(())
     }

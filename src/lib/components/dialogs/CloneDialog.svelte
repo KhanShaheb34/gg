@@ -29,7 +29,8 @@
     return cut > 0 ? path.slice(0, cut) : path;
   }
 
-  let parent = $state(app.recents[0] ? parentOf(app.recents[0].path) : (app.homeDir ?? ""));
+  const guessed = app.recents[0] ? parentOf(app.recents[0].path) : (app.homeDir ?? "");
+  let parent = $state(guessed);
   let running = $state(false);
   let line = $state("");
   let failed = $state<{ message: string; detail: string | null } | null>(null);
@@ -42,7 +43,8 @@
     void api
       .cloneParent()
       .then((p) => {
-        if (p && !running) parent = p;
+        // Only while the field is as it opened: a folder typed or chosen meanwhile stays.
+        if (p && !running && parent === guessed) parent = p;
       })
       .catch(() => {});
   });

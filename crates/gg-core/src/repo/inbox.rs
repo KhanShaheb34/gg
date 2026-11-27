@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{Notify, OnceCell};
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use crate::dto::{
@@ -51,8 +51,8 @@ const PROGRESS_EVERY_MS: u128 = 100;
 pub(crate) struct InboxState {
     /// What gg keeps of the page (`pr-inbox.json`); none until the app gives it.
     store: Mutex<Option<Arc<InboxStore>>>,
-    /// The load running, or the last one, and when it started.
-    load: Mutex<Option<(Instant, Arc<OnceCell<()>>)>>,
+    /// The load running, or the last one: when it started, and whether it has ended.
+    load: Mutex<Option<(Instant, tokio::sync::watch::Receiver<bool>)>>,
     /// Each pull request's last (or running) load of its details, by key.
     details: Mutex<HashMap<String, DetailsLoad>>,
     /// The clones running, by the UI's id, each with its Cancel.
@@ -125,26 +125,28 @@ impl RepoManager {
             return Ok(store.data().page(false));
         }
         let every = self.inbox_every();
-        let cell = {
+        // The load running, or the last one when it ended less than the floor ago; else a new
+        // one, on its own task: a caller that goes away (a closed HTTP request) neither stops
+        // it halfway nor lets the next request start a second one beside it.
+        let mut done = {
             let mut load = lock(&self.inbox.load);
             match &*load {
-                Some((started, cell)) if cell.get().is_none() || started.elapsed() < every => {
-                    cell.clone()
+                Some((started, done)) if !*done.borrow() || started.elapsed() < every => {
+                    done.clone()
                 }
                 _ => {
-                    let cell = Arc::new(OnceCell::new());
-                    *load = Some((Instant::now(), cell.clone()));
-                    cell
+                    let (tx, rx) = tokio::sync::watch::channel(false);
+                    *load = Some((Instant::now(), rx.clone()));
+                    let (m, kept) = (self.clone(), store.clone());
+                    tokio::spawn(async move {
+                        m.load_inbox(kept).await;
+                        let _ = tx.send(true);
+                    });
+                    rx
                 }
             }
         };
-        let (m, kept) = (self.clone(), store.clone());
-        cell.get_or_init(|| async move {
-            // On its own task: a caller that goes away (a closed HTTP request) does not
-            // stop it halfway.
-            let _ = tokio::spawn(async move { m.load_inbox(kept).await }).await;
-        })
-        .await;
+        let _ = done.wait_for(|ended| *ended).await;
         Ok(store.data().page(true))
     }
 
@@ -166,7 +168,10 @@ impl RepoManager {
             let (problem, message) = problem_of(&GhFailure::NoGh, "github.com");
             let _ = tokio::task::spawn_blocking(move || {
                 store.change(|d| {
-                    for host in &hosts {
+                    // Every host shown says it, those of the last load too (without gh they
+                    // cannot be told GitHub, but their list stays, as of then).
+                    let kept: Vec<String> = d.hosts.keys().cloned().collect();
+                    for host in hosts.iter().chain(kept.iter()) {
                         d.take_failure(host, problem, message.clone(), None);
                     }
                 });
@@ -206,9 +211,12 @@ impl RepoManager {
         let now = unix_ms();
         let _ = tokio::task::spawn_blocking(move || {
             store.change(|d| {
+                // The page's first load is the starting point for every host's answer,
+                // whichever answered first.
+                let first = !d.started;
                 for (host, answer) in answers {
                     match answer {
-                        Ok(answer) => d.take_answer(&host, answer, now),
+                        Ok(answer) => d.take_answer(&host, answer, now, first),
                         // A host only an open repository (or the last load) named, which gh
                         // is not signed in to now: no longer asked.
                         Err((InboxProblem::SignedOut, _, _))
@@ -513,14 +521,22 @@ impl RepoManager {
                 parent.display()
             )));
         }
+        // Counted in at once (refused while gg restarts to update, and holding a restart off
+        // until it ends), so a Stop before git starts is kept: git then never starts.
+        let cancel = Arc::new(Notify::new());
+        self.admit(|| {
+            lock(&self.inbox.clones).insert(clone_id.to_owned(), cancel.clone());
+        })?;
+        let _registered = Registered {
+            manager: self,
+            id: clone_id,
+        };
         if !self.is_github_host(host).await {
             return Err(bad(format!(
                 "{host} is not a GitHub host gh is signed in to."
             )));
         }
         let url = self.clone_url(host, owner, name).await;
-        let cancel = Arc::new(Notify::new());
-        lock(&self.inbox.clones).insert(clone_id.to_owned(), cancel.clone());
         let progress = CloneProgress {
             manager: self,
             id: clone_id,
@@ -538,7 +554,6 @@ impl RepoManager {
                 &cancel,
             )
             .await;
-        lock(&self.inbox.clones).remove(clone_id);
         let repo = format!("{owner}/{name}");
         match ran? {
             Ok(out) if out.code == 0 => {
@@ -582,6 +597,11 @@ impl RepoManager {
                 detail: Some(gave_up.stderr).filter(|d| !d.trim().is_empty()),
             }),
         }
+    }
+
+    /// Whether a clone runs (restarting gg to update waits until it ends).
+    pub(crate) fn clone_running(&self) -> bool {
+        !lock(&self.inbox.clones).is_empty()
     }
 
     /// Stops clone `clone_id` if it runs: git is ended with what it started (it removes the
@@ -670,7 +690,17 @@ async fn ask_inbox(
     host: &str,
 ) -> std::result::Result<crate::inbox::Answer, (InboxProblem, String, Option<String>)> {
     let (query, first) = (format!("query={QUERY}"), format!("first={PER_SEARCH}"));
-    let args = ["api", "graphql", "-f", &query, "-F", &first];
+    // The host named: gh's own default may be another (one signed in to alone).
+    let args = [
+        "api",
+        "graphql",
+        "--hostname",
+        host,
+        "-f",
+        &query,
+        "-F",
+        &first,
+    ];
     match gh.run(&args, CmdKind::Read, StdinPolicy::Null).await {
         Ok(Ok(out)) => crate::inbox::parse_answer(&out.stdout, host).map_err(|why| {
             let problem = problem_of_text(&why).unwrap_or(InboxProblem::Failed);
@@ -730,5 +760,17 @@ impl CloneProgress<'_> {
             "clone-progress",
             serde_json::json!({ "cloneId": self.id, "line": line }),
         );
+    }
+}
+
+/// A running clone's entry in the manager, removed when the clone ends however it ends.
+struct Registered<'a> {
+    manager: &'a RepoManager,
+    id: &'a str,
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        lock(&self.manager.inbox.clones).remove(self.id);
     }
 }

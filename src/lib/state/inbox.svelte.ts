@@ -45,9 +45,6 @@ export const inbox = $state({
   scrollTop: 0,
 });
 
-/** The drafts of replies and comments written on the page, in memory only (as the side panel's). */
-const compose = new PrCompose();
-
 let kept = false;
 
 /** Shows the page: what gg kept at once, then gh is asked (unless it was in the last 30 s). */
@@ -146,7 +143,9 @@ export function inboxPrSource(pr: InboxPr): PrSource {
     key,
     load,
     target,
-    compose,
+    // Its repository's own drafts (they are kept by pull request number), in memory only, as
+    // the side panel's are.
+    compose: new PrCompose(),
     showLog: () => {},
     openPage: (url) => void openWebPage("url", url),
     openLink: (url) => void openWebPage("link", url),

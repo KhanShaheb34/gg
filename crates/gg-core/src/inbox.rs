@@ -364,11 +364,10 @@ pub(crate) struct CachedHost {
 }
 
 impl InboxData {
-    /// Takes host `host`'s answer, loaded at `now`: its list replaces the last one; the first
-    /// time the page loads, all it lists counts as seen; the user's own pull requests are seen
-    /// as they first show.
-    pub(crate) fn take_answer(&mut self, host: &str, answer: Answer, now: i64) {
-        let first = !self.started;
+    /// Takes host `host`'s answer, loaded at `now`, as part of a load that is the page's first
+    /// (`first`: what it lists counts as seen, whichever host answers first) or not: its list
+    /// replaces the last one; the user's own pull requests are seen as they first show.
+    pub(crate) fn take_answer(&mut self, host: &str, answer: Answer, now: i64, first: bool) {
         for e in &answer.entries {
             if (first || e.own) && !self.seen.contains_key(&e.pr.key) {
                 self.seen.insert(
@@ -507,7 +506,9 @@ pub(crate) fn activity(e: &Entry, seen: Option<&Seen>) -> InboxActivity {
     };
     let comments = e.seen.comments > seen.comments && !e.own_last_comment;
     let reviews = e.seen.reviews > seen.reviews && !e.own_last_review;
-    let commits = !e.own && seen.head.is_some() && e.seen.head != seen.head;
+    // A change seen both times: a commit missing from one answer is no news.
+    let commits =
+        !e.own && matches!((&seen.head, &e.seen.head), (Some(was), Some(now)) if was != now);
     if comments || reviews || commits {
         InboxActivity::Updated
     } else {
@@ -848,6 +849,10 @@ mod tests {
             activity(&entry(k, true, 2, 1, "b2"), Some(&seen)),
             InboxActivity::None
         );
+        // A head missing from the answer is no new commit.
+        let mut headless = entry(k, false, 2, 1, "a1");
+        headless.seen.head = None;
+        assert_eq!(activity(&headless, Some(&seen)), InboxActivity::None);
         // Fewer comments (one deleted): nothing.
         assert_eq!(
             activity(&entry(k, false, 1, 1, "a1"), Some(&seen)),
@@ -866,7 +871,7 @@ mod tests {
             ],
             partial: false,
         };
-        data.take_answer("github.com", first, 100);
+        data.take_answer("github.com", first, 100, true);
         let page = data.page(true);
         assert!(page.fresh);
         assert!(page.prs.iter().all(|p| p.activity == InboxActivity::None));
@@ -883,7 +888,7 @@ mod tests {
             ],
             partial: true,
         };
-        data.take_answer("github.com", next, 200);
+        data.take_answer("github.com", next, 200, false);
         let page = data.page(true);
         let of = |n: u32| page.prs.iter().find(|p| p.number == n).unwrap().activity;
         assert_eq!(of(1), InboxActivity::Updated);
@@ -912,6 +917,7 @@ mod tests {
                 partial: false,
             },
             100,
+            true,
         );
         data.take_failure(
             "github.com",
@@ -926,7 +932,7 @@ mod tests {
         assert_eq!(host.loaded_at_ms, Some(100));
         assert_eq!(host.detail.as_deref(), Some("dial tcp"));
         // Loaded again: the problem goes.
-        data.take_answer("github.com", Answer::default(), 200);
+        data.take_answer("github.com", Answer::default(), 200, false);
         assert_eq!(data.page(true).hosts[0].problem, None);
     }
 
@@ -949,6 +955,7 @@ mod tests {
                 ..Answer::default()
             },
             1,
+            true,
         );
         data.take_answer(
             "ghe.example",
@@ -957,6 +964,7 @@ mod tests {
                 ..Answer::default()
             },
             1,
+            true,
         );
         let page = data.page(true);
         let order: Vec<u32> = page.prs.iter().map(|p| p.number).collect();
@@ -984,6 +992,7 @@ mod tests {
                 ..Answer::default()
             },
             10_000,
+            true,
         );
         assert_eq!(data.seen.len(), MAX_SEEN_GONE + 1);
         assert!(data.seen.contains_key("github.com/octo/cat#1"));
@@ -1003,6 +1012,7 @@ mod tests {
                     partial: false,
                 },
                 5,
+                true,
             );
             d.clone_parent = Some("/work".into());
         });

@@ -4,6 +4,7 @@
 mod base;
 mod branch_files;
 mod fetch;
+mod inbox;
 mod loader;
 mod manager;
 mod pr_details;

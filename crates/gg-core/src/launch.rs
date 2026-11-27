@@ -167,6 +167,38 @@ impl RepoManager {
         self.start(plan, Some(setting))
     }
 
+    /// Opens web page `url` in the browser for the Pull requests page, which is about no one
+    /// repository: `url` (a pull request's page) only on github.com or a GitHub host the page
+    /// lists (`hosts`), `link` (a link in a comment, a check's page) anywhere; each an
+    /// `https://` address written out again as [`RepoManager::open_external`] does.
+    pub fn open_web(
+        &self,
+        target: External,
+        url: &str,
+        hosts: &[String],
+    ) -> Result<Option<String>> {
+        let os = std::env::consts::OS;
+        let bad = |message: &str| CoreError::new(ErrorCode::BadRequest, message.to_owned());
+        if url.len() > MAX_LINK_LEN {
+            return Err(bad("Not opened: the web address is too long."));
+        }
+        let url = web_address(url)?;
+        if url.len() > MAX_LINK_LEN {
+            return Err(bad("Not opened: the web address is too long."));
+        }
+        match target {
+            External::Link => {}
+            External::Url => {
+                let host = web_host(&url);
+                if host != "github.com" && !hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
+                    return Err(bad(&format!("Not opened: {host} is not a GitHub host.")));
+                }
+            }
+            _ => return Err(bad("Only a web page is opened from here.")),
+        }
+        self.start(url_plan(os, &url), None)
+    }
+
     /// Opens `link`: gg's home page or source code in the browser, or the settings file
     /// `settings_file` in the file manager (its folder when no setting was saved yet;
     /// `path_missing` when that is not there either). Returns a note for the user, if any.

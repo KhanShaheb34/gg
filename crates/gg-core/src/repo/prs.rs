@@ -17,7 +17,7 @@ use crate::dto::{PrState, PrStatus, PrSuggestion, PrUnavailable, RepoSnapshot};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::gh::{
     Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, branch_title, parse_default_branch,
-    parse_list, ssh_hostname, tool_on, unavailable_message,
+    parse_list, ssh_hostname, tool_on, tool_on_any, unavailable_message,
 };
 use crate::git::runner::{CmdKind, GitRunner, StdinPolicy};
 use crate::hosts::{RemoteRepo, compare_url, is_known_github, is_plain_host};
@@ -312,15 +312,24 @@ impl RepoManager {
     /// `gh` or `ssh`; else on the login shell's. A test build without a tool `PATH` runs
     /// none.
     fn tool_program(&self, repo: &Repo, name: &str) -> Option<(PathBuf, Option<OsString>)> {
+        self.tool_program_at(Some(&repo.root), name)
+    }
+
+    /// [`RepoManager::tool_program`] for no repository (`root` `None`: the Pull requests
+    /// page), else for the folder `root` (never a program inside it).
+    pub(crate) fn tool_program_at(
+        &self,
+        root: Option<&std::path::Path>,
+        name: &str,
+    ) -> Option<(PathBuf, Option<OsString>)> {
         let tool_path = lock(&self.tool_path).clone();
         #[cfg(any(test, feature = "testutil"))]
         tool_path.as_ref()?;
-        let program = tool_on(
-            name,
-            tool_path.as_ref(),
-            self.login_path().as_ref(),
-            &repo.root,
-        )?;
+        let login = self.login_path();
+        let program = match root {
+            Some(root) => tool_on(name, tool_path.as_ref(), login.as_ref(), root)?,
+            None => tool_on_any(name, tool_path.as_ref(), login.as_ref())?,
+        };
         Some((program, tool_path))
     }
 
@@ -383,7 +392,7 @@ impl RepoManager {
         (out.code == 0).then(|| ssh_hostname(&out.text())).flatten()
     }
 
-    fn gh_limit(&self) -> Duration {
+    pub(crate) fn gh_limit(&self) -> Duration {
         Duration::from_millis(
             self.gh_timeout_ms
                 .load(std::sync::atomic::Ordering::Relaxed),

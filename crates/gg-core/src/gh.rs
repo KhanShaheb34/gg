@@ -69,6 +69,22 @@ pub(crate) fn tool_on(
     }
 }
 
+/// [`tool_on`] for no repository: the first program `name` on the tool `PATH`'s first
+/// folder, else on `login` (the login shell's `PATH`), in an absolute entry.
+pub(crate) fn tool_on_any(
+    name: &str,
+    tool_path: Option<&OsString>,
+    login: Option<&OsString>,
+) -> Option<PathBuf> {
+    match tool_path {
+        Some(tool_path) => {
+            let first = std::env::split_paths(tool_path).next()?.into_os_string();
+            crate::launch::find_program(OsStr::new(name), Some(&first))
+        }
+        None => crate::launch::find_program(OsStr::new(name), login),
+    }
+}
+
 /// Program `name` (`gh`, `ssh`; `.exe` on Windows), found on `path` (the login shell's
 /// `PATH`, else the app's): the first in an absolute entry, unless it lies inside the
 /// repository at `root` (a program of the repository's never runs).

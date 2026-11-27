@@ -453,7 +453,8 @@ impl EventSink for RecordingSink {
 /// [`FakeGh::path`]) that records each call (its arguments, its environment, its working
 /// folder, what it read on stdin, whether it had a terminal) and answers with what the test
 /// set for that kind of call: `pr-list`, `pr-list-head` (with `--head`), `pr-create`,
-/// `repo-view`, `auth-token`. Unset, it prints nothing and exits 0. A call can also run a
+/// `repo-view`, `auth-token`, `gql-inbox` (the Pull requests page's query; `gql-inbox-<host>`
+/// for `GH_HOST` `<host>`, its dots as `_`, when set). Unset, it prints nothing and exits 0. A call can also run a
 /// shell script first ([`FakeGh::run_on`]), as `gh` runs `git`; its output is recorded.
 #[cfg(unix)]
 pub struct FakeGh {
@@ -502,6 +503,11 @@ if (: < /dev/tty) 2>/dev/null; then echo yes > "$c/tty"; fi
 cat > "$c/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
+if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in *GgInbox*) key=gql-inbox;; esac; done; fi
+if [ "$key" = gql-inbox ] && [ -n "$GH_HOST" ]; then
+  h="$(printf '%s' "$GH_HOST" | tr . _)"
+  if [ -f "$d/replies/gql-inbox-$h.code" ]; then key="gql-inbox-$h"; fi
+fi
 r="$d/replies/$key"
 if [ -f "$r.run" ]; then sh "$r.run" > "$c/ran" 2>&1; fi
 if [ -f "$r.sleep" ]; then sleep "$(cat "$r.sleep")"; fi

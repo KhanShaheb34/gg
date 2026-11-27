@@ -122,7 +122,7 @@ fn parse(url: &str) -> Option<(RemoteRepo, Option<String>)> {
 
 /// Whether `word` is a plain owner or repository name: letters, digits, `.`, `_`, `-`; not
 /// `.` or `..`, not starting with `-` (it is put into `gh` arguments and web addresses).
-fn is_plain_word(word: &str) -> bool {
+pub(crate) fn is_plain_word(word: &str) -> bool {
     !word.is_empty()
         && word != "."
         && word != ".."

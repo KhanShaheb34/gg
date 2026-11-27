@@ -184,6 +184,9 @@ pub struct RepoManager {
     /// Tests only: how long comparing a branch with the remote's branches may take.
     #[cfg(any(test, feature = "testutil"))]
     pub(super) nearest_limit: Mutex<Option<Duration>>,
+    /// The Pull requests page (`repo/inbox.rs`): what gg keeps of it, its load running or
+    /// last done, each pull request's details as last loaded from it, the clones running.
+    pub(super) inbox: super::inbox::InboxState,
 }
 
 /// Tests only: a point in the core where the next task to pass stops. `reached` is
@@ -788,6 +791,7 @@ impl RepoManager {
             nearest_limit: Mutex::new(None),
             #[cfg(any(test, feature = "testutil"))]
             details_loads: AtomicU64::new(0),
+            inbox: super::inbox::InboxState::default(),
         })
     }
 

@@ -9,12 +9,12 @@
 
 pub(crate) mod commit;
 mod danger;
-mod explain;
+pub(crate) mod explain;
 mod local;
 mod lock;
 mod network;
 pub(crate) mod order;
-mod pr;
+pub(crate) mod pr;
 mod progress;
 mod stash;
 mod worktree;
@@ -222,7 +222,7 @@ impl<'a> Progress<'a> {
 
 /// Adds `chunk` to the unfinished line `partial`; returns the last non-empty line the chunk
 /// finished (git redraws progress lines ending them with `\r`), if any.
-fn latest_line(partial: &mut String, chunk: &[u8]) -> Option<String> {
+pub(crate) fn latest_line(partial: &mut String, chunk: &[u8]) -> Option<String> {
     partial.push_str(&String::from_utf8_lossy(chunk));
     let end = partial.rfind(['\r', '\n'])?;
     let latest = partial[..end]

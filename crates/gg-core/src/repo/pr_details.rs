@@ -9,6 +9,7 @@
 //! that load failed, a new one starts once the 10 s are up. Asked while a load runs, the
 //! request waits for that load's answer rather than starting another.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use tokio::time::Instant;
 
 use crate::dto::{PrDetails, PrUnavailable};
 use crate::error::{CoreError, ErrorCode, Result};
-use crate::gh::{GhFailure, unavailable_message};
+use crate::gh::{Gh, GhFailure, unavailable_message};
 use crate::git::runner::{CmdKind, StdinPolicy};
 use crate::pr_details::{THREADS_QUERY, VIEW_FIELDS, assemble, parse_threads, parse_view};
 use crate::repo::fetch::unix_ms;
@@ -42,7 +43,7 @@ enum Plan {
 }
 
 /// Said when the details cannot be asked for: why, as for the list, or gh's own reason.
-fn unloaded(reason: PrUnavailable, failure: Option<&GhFailure>) -> CoreError {
+pub(crate) fn unloaded(reason: PrUnavailable, failure: Option<&GhFailure>) -> CoreError {
     let message = match (reason, failure) {
         (PrUnavailable::Failed, Some(GhFailure::Failed { message, .. })) => {
             format!("Could not load the checks and comments: {message}")
@@ -53,6 +54,56 @@ fn unloaded(reason: PrUnavailable, failure: Option<&GhFailure>) -> CoreError {
     let mut error = CoreError::new(ErrorCode::Io, message);
     error.detail = failure.map(GhFailure::detail).filter(|d| !d.is_empty());
     error
+}
+
+/// The answer of the load of `key` in `loads`: the running one's, or the last one's when it
+/// worked less than `every` ago; else (after waiting out `every` since a failed one) a new
+/// one, `load`'s.
+pub(crate) async fn cached<K, F, Fut>(
+    loads: &std::sync::Mutex<HashMap<K, DetailsLoad>>,
+    key: K,
+    every: Duration,
+    load: F,
+) -> Result<PrDetails>
+where
+    K: std::hash::Hash + Eq + Clone,
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<PrDetails>>,
+{
+    loop {
+        let plan = {
+            let mut loads = lock(loads);
+            let last = loads.get(&key);
+            match last.map(|l| (l, l.answer.get())) {
+                // Running (or never finished): its answer is this one's too.
+                Some((l, None)) => Plan::Take(l.answer.clone()),
+                Some((l, Some(Ok(_)))) if l.started.elapsed() < every => {
+                    Plan::Take(l.answer.clone())
+                }
+                Some((l, Some(Err(_)))) if l.started.elapsed() < every => {
+                    Plan::Wait(every.saturating_sub(l.started.elapsed()))
+                }
+                _ => {
+                    let answer = Arc::new(OnceCell::new());
+                    loads.insert(
+                        key.clone(),
+                        DetailsLoad {
+                            started: Instant::now(),
+                            answer: answer.clone(),
+                        },
+                    );
+                    Plan::Take(answer)
+                }
+            }
+        };
+        match plan {
+            Plan::Take(answer) => {
+                let loaded = answer.get_or_init(|| Box::pin(load())).await;
+                return loaded.clone();
+            }
+            Plan::Wait(wait) => tokio::time::sleep(wait).await,
+        }
+    }
 }
 
 impl RepoManager {
@@ -69,54 +120,26 @@ impl RepoManager {
             ));
         }
         let repo = self.get(repo_id)?;
-        let every = self.pr_details_every();
-        loop {
-            let plan = {
-                let mut loads = lock(&repo.pr_details);
-                let last = loads.get(&number);
-                match last.map(|l| (l, l.answer.get())) {
-                    // Running (or never finished): its answer is this one's too.
-                    Some((l, None)) => Plan::Take(l.answer.clone()),
-                    Some((l, Some(Ok(_)))) if l.started.elapsed() < every => {
-                        Plan::Take(l.answer.clone())
-                    }
-                    Some((l, Some(Err(_)))) if l.started.elapsed() < every => {
-                        Plan::Wait(every.saturating_sub(l.started.elapsed()))
-                    }
-                    _ => {
-                        let answer = Arc::new(OnceCell::new());
-                        loads.insert(
-                            number,
-                            DetailsLoad {
-                                started: Instant::now(),
-                                answer: answer.clone(),
-                            },
-                        );
-                        Plan::Take(answer)
-                    }
-                }
-            };
-            match plan {
-                Plan::Take(answer) => {
-                    let loaded = answer
-                        .get_or_init(|| Box::pin(self.load_details(&repo, number)))
-                        .await;
-                    return loaded.clone();
-                }
-                Plan::Wait(wait) => tokio::time::sleep(wait).await,
-            }
-        }
+        cached(&repo.pr_details, number, self.pr_details_every(), || {
+            self.load_details(&repo, number)
+        })
+        .await
     }
 
     /// Reads pull request `number`'s details from `gh` (see the module comment).
     async fn load_details(&self, repo: &Arc<Repo>, number: u32) -> Result<PrDetails> {
-        #[cfg(any(test, feature = "testutil"))]
-        self.details_loads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (gh, _facts) = self
             .gh_for_list(repo)
             .await
             .map_err(|(reason, failure, _)| unloaded(reason, failure.as_ref()))?;
+        self.details_from(&gh, number).await
+    }
+
+    /// Reads pull request `number` of the repository `gh` names (see the module comment).
+    pub(crate) async fn details_from(&self, gh: &Gh, number: u32) -> Result<PrDetails> {
+        #[cfg(any(test, feature = "testutil"))]
+        self.details_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let n = number.to_string();
         let view_args = ["pr", "view", &n, "--repo", gh.repo(), "--json", VIEW_FIELDS];
         let (owner, name) = gh.owner_and_name();
@@ -172,7 +195,7 @@ impl RepoManager {
 
     /// Least time between two loads of a pull request's details (see
     /// [`RepoManager::set_pr_details_every`]).
-    fn pr_details_every(&self) -> Duration {
+    pub(crate) fn pr_details_every(&self) -> Duration {
         #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
         if let Some(every) = *lock(&self.pr_details_every) {
             return every;

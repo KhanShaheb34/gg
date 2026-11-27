@@ -3,6 +3,7 @@
 
 mod base;
 mod branch_files;
+pub mod clone;
 mod fetch;
 mod inbox;
 mod loader;

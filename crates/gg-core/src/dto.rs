@@ -1084,6 +1084,9 @@ pub struct Settings {
     pub ai_pr_prompt: Option<String>,
     /// The tools whose first-use notice (what is sent, and to whom) the user went on from.
     pub ai_notice_seen: Vec<AiTool>,
+    /// The folder the Clone dialog clones into by default (a full path); `None` is the
+    /// platform's (`AppState::clone_dir_default`). Made only when a clone goes there.
+    pub clone_dir: Option<String>,
 }
 
 /// A command-line AI tool gg can run for "Generate with AI" (see [`crate::ai`]). Serialized
@@ -1255,6 +1258,7 @@ impl Default for Settings {
             ai_commit_prompt: None,
             ai_pr_prompt: None,
             ai_notice_seen: Vec::new(),
+            clone_dir: None,
         }
     }
 }
@@ -2062,6 +2066,9 @@ pub struct AppState {
     pub launch_path: Option<String>,
     /// The user's home folder, so the UI can show paths as `~/...`.
     pub home_dir: Option<String>,
+    /// The folder clones go into when the settings name none (`~/Developer` on macOS,
+    /// `~/Projects` elsewhere); `None` without a home folder.
+    pub clone_dir_default: Option<String>,
     /// Why settings and the session are not being saved (the settings file exists but could
     /// not be read); `None` when they are. `reset_settings` moves the file aside.
     pub settings_problem: Option<String>,
@@ -2179,6 +2186,7 @@ mod tests {
             settings: Settings::default(),
             launch_path: Some("/l".into()),
             home_dir: Some("/h".into()),
+            clone_dir_default: Some("/h/Developer".into()),
             settings_problem: None,
             settings_file: "/c/state.json".into(),
             git_problem: None,
@@ -2205,9 +2213,11 @@ mod tests {
                 "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                              "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
                              "dateFormat": "standard", "checkForUpdates": true,
-                             "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []},
+                             "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": [],
+                             "cloneDir": null},
                 "launchPath": "/l",
                 "homeDir": "/h",
+                "cloneDirDefault": "/h/Developer",
                 "settingsProblem": null,
                 "settingsFile": "/c/state.json",
                 "gitProblem": null,

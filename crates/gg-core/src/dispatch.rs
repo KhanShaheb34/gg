@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Core;
+use crate::clone::CloneSource;
 use crate::dto::{AppState, Confirmed, OpRequest, Session, ViewOptions};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::git::runner::LogFilter;
@@ -378,10 +379,40 @@ struct OpenWebArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CloneArgs {
     clone_id: String,
-    host: String,
-    owner: String,
-    name: String,
+    /// A repository on a GitHub host (`host`, `owner` and `name`), or `link`, as typed.
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    link: Option<String>,
     parent: PathBuf,
+    /// The folder's name in `parent`; the repository's name when absent.
+    #[serde(default)]
+    folder: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CloneLinkArgs {
+    link: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CloneDestArgs {
+    parent: PathBuf,
+    folder: String,
+}
+
+/// What `clone_link` says of a link: what it names, or why it is refused.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClonedLink {
+    link: Option<crate::clone::LinkInfo>,
+    problem: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -612,14 +643,70 @@ impl Core {
                 let NoArgs {} = parse(cmd, args)?;
                 to_json(self.repos()?.clone_parent())
             }
+            "clone_link" => {
+                let a: CloneLinkArgs = parse(cmd, args)?;
+                to_json(match crate::clone::read_link(&a.link) {
+                    Ok((_, info)) => ClonedLink {
+                        link: Some(info),
+                        problem: None,
+                    },
+                    Err(problem) => ClonedLink {
+                        link: None,
+                        problem: Some(problem),
+                    },
+                })
+            }
+            "clone_dest" => {
+                let a: CloneDestArgs = parse(cmd, args)?;
+                let checked = tokio::task::spawn_blocking(move || {
+                    crate::clone::check_dest(&a.parent, &a.folder)
+                })
+                .await
+                .map_err(|e| {
+                    CoreError::new(ErrorCode::Io, "Could not look at the folder")
+                        .with_detail(e.to_string())
+                })?;
+                to_json(checked)
+            }
+            "clone_repos" => {
+                let NoArgs {} = parse(cmd, args)?;
+                to_json(self.repos()?.clone_repos().await)
+            }
+            "clone_known" => {
+                let NoArgs {} = parse(cmd, args)?;
+                let recents = self.store.recents().into_iter().map(|r| r.path).collect();
+                to_json(self.repos()?.clone_known(recents).await)
+            }
             "clone_repo" => {
                 let a: CloneArgs = parse(cmd, args)?;
+                let (source, named) = match (a.host, a.owner, a.name, a.link) {
+                    (Some(host), Some(owner), Some(name), None) => {
+                        let source = CloneSource::Repo {
+                            host,
+                            owner,
+                            name: name.clone(),
+                        };
+                        (source, name)
+                    }
+                    (None, None, None, Some(link)) => {
+                        let (source, info) = crate::clone::read_link(&link)
+                            .map_err(|why| CoreError::new(ErrorCode::BadRequest, why))?;
+                        (source, info.folder)
+                    }
+                    _ => {
+                        return Err(CoreError::new(
+                            ErrorCode::BadRequest,
+                            "A clone takes a repository (host, owner and name) or a link.",
+                        ));
+                    }
+                };
+                let folder = a.folder.unwrap_or(named);
                 let repos = self.repos()?.clone();
                 // On its own task, so a caller that goes away does not leave git cloning
                 // unseen: it ends, or Cancel ends it.
                 let run = tokio::spawn(async move {
                     repos
-                        .clone_repo(&a.clone_id, &a.host, &a.owner, &a.name, &a.parent)
+                        .clone_repo(&a.clone_id, &source, &a.parent, folder.trim())
                         .await
                 });
                 let cloned = run.await.map_err(|e| {
@@ -929,6 +1016,11 @@ impl Core {
             settings: self.store.settings(),
             launch_path: self.launch_path.clone(),
             home_dir: home_dir(),
+            clone_dir_default: home_dir().map(|home| {
+                crate::clone::default_clone_dir(Path::new(&home))
+                    .to_string_lossy()
+                    .into_owned()
+            }),
             settings_problem: self.store.problem(),
             settings_file: self.store.file().to_string_lossy().into_owned(),
             git_problem: self.repos().ok().and_then(|r| r.git_problem()),

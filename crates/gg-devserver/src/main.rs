@@ -16,8 +16,9 @@
 //! `--pr-details-every-ms <ms>` sets the least time between two loads of a pull request's
 //! checks and comments (10 s otherwise), for the UI's tests of its polling;
 //! `--inbox-every-ms <ms>` the least time between two loads of the Pull requests page.
-//! `--clone-source <dir>` makes the page's clones come from `<dir>/<owner>/<name>.git`, a
-//! local folder, never the network.
+//! `--clone-source <dir>` makes clones come from `<dir>/<owner>/<name>.git`, a local folder,
+//! never the network; `--clone-hook <program>` has that folder answer through the program
+//! (git's `--upload-pack`; it runs `git upload-pack "$@"`), so a test can hold a clone halfway.
 
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
@@ -35,7 +36,8 @@ const USAGE: &str = "usage: gg-devserver [--port <port>] --config-dir <dir> [--o
                      [--record-launches <file>] [--cli-path <PATH>] \
                      [--cli-shell <program>] [--tool-path <PATH>] \
                      [--fake-updates <dir>] [--pr-details-every-ms <ms>] \
-                     [--inbox-every-ms <ms>] [--clone-source <dir>]";
+                     [--inbox-every-ms <ms>] [--clone-source <dir>] \
+                     [--clone-hook <program>]";
 const DEFAULT_PORT: u16 = 1421;
 
 #[derive(Debug, PartialEq)]
@@ -63,6 +65,8 @@ struct Args {
     inbox_every: Option<std::time::Duration>,
     /// The folder the Pull requests page's clones come from (`<dir>/<owner>/<name>.git`).
     clone_source: Option<PathBuf>,
+    /// What the clone source answers through (git's `--upload-pack`).
+    clone_hook: Option<PathBuf>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -80,6 +84,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let mut pr_details_every = None;
     let mut inbox_every = None;
     let mut clone_source = None;
+    let mut clone_hook = None;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -131,6 +136,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
                 inbox_every = Some(std::time::Duration::from_millis(ms));
             }
             "--clone-source" => clone_source = Some(PathBuf::from(value()?)),
+            "--clone-hook" => clone_hook = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unknown argument: {flag}")),
         }
     }
@@ -148,6 +154,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         pr_details_every,
         inbox_every,
         clone_source,
+        clone_hook,
     })
 }
 
@@ -229,6 +236,9 @@ async fn main() -> ExitCode {
     if args.clone_source.is_some() {
         core.set_clone_source(args.clone_source);
     }
+    if args.clone_hook.is_some() {
+        core.set_clone_hook(args.clone_hook);
+    }
     if let Some(dir) = args.fake_updates {
         core.set_update_backend(Arc::new(FakeUpdates::new(dir)));
     }
@@ -290,6 +300,7 @@ mod tests {
                 pr_details_every: None,
                 inbox_every: None,
                 clone_source: None,
+                clone_hook: None,
             }
         );
         assert_eq!(
@@ -320,6 +331,8 @@ mod tests {
                 "0",
                 "--clone-source",
                 "/fake/remotes",
+                "--clone-hook",
+                "/fake/hook",
             ])
             .unwrap(),
             Args {
@@ -336,6 +349,7 @@ mod tests {
                 pr_details_every: Some(std::time::Duration::from_millis(250)),
                 inbox_every: Some(std::time::Duration::ZERO),
                 clone_source: Some("/fake/remotes".into()),
+                clone_hook: Some("/fake/hook".into()),
             }
         );
         assert!(parse(&["--config-dir", "/c", "--pr-details-every-ms", "soon"]).is_err());

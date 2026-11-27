@@ -742,7 +742,7 @@ cat > "$d/calls/$i/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
 if [ "$key" = api-graphql ]; then
-  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; esac; done
+  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; *GgRepos*) key=gql-repos;; esac; done
   if grep -q addPullRequestReviewThreadReply "$d/calls/$i/stdin"; then key=gql-reply; fi
 fi
 case "$key" in gql-inbox*) if [ -n "$GH_HOST" ]; then

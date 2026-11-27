@@ -78,6 +78,12 @@ export class LanesCanvas {
       this.canvasRatio = ratio;
     }
 
+    // The frame is drawn between save() and restore(): when WebKit's GPU process restarts
+    // (it is killed under memory pressure, or crashes), the context there comes back with its
+    // fill settings but without its stroke settings, and setting a property to the value it
+    // already has sends nothing. Every frame after that drew the dots and no lines, until the
+    // app was restarted. A restore() sends the whole state again.
+    ctx.save();
     // Cleared in device pixels, the whole backing store.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -166,6 +172,7 @@ export class LanesCanvas {
         ctx.fill();
       }
     }
+    ctx.restore();
     return real;
   }
 }

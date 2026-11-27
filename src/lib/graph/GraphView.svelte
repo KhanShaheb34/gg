@@ -647,6 +647,14 @@
     };
     watchRatio();
 
+    // A canvas whose GPU process restarted is blank until it is drawn again, and nothing says
+    // that it happened: drawn again when the window comes back to the front or is shown, and
+    // when the pointer comes over the graph.
+    const redraw = () => schedule();
+    window.addEventListener("focus", redraw);
+    document.addEventListener("visibilitychange", redraw);
+    scroller.addEventListener("pointerenter", redraw);
+
     // Back to where this tab was.
     const start = view.pendingScroll ?? view.scrollTop;
     view.pendingScroll = null;
@@ -658,6 +666,9 @@
       if (view.onChange === onViewChange) view.onChange = null;
       if (probe) view.onGenerationShown = null;
       resize.disconnect();
+      window.removeEventListener("focus", redraw);
+      document.removeEventListener("visibilitychange", redraw);
+      scroller?.removeEventListener("pointerenter", redraw);
       theme.disconnect();
       ratioQuery?.removeEventListener("change", onRatio);
       if (rafId !== 0) cancelAnimationFrame(rafId);

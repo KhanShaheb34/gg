@@ -301,7 +301,7 @@ test("a pull request's title and description are written from the branch; the ba
   await page.getByRole("grid", { name: "Commits" }).locator('[data-ref="fix/typo"]').first().locator(".name").click({ button: "right" });
   await page.getByRole("menuitem", { name: "Create pull request…" }).click();
   const panel = page.getByTestId("pr-panel");
-  await expect(panel.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await expect(panel.getByTestId("pr-title")).toHaveValue("Typo");
   await expect(panel.getByTestId("pr-base")).toHaveValue("main");
   await panel.getByTestId("pr-ai").click();
   await expect(panel.getByTestId("pr-title")).toHaveValue("Fix the README typo");
@@ -311,9 +311,9 @@ test("a pull request's title and description are written from the branch; the ba
   const { stdin } = gg.ai.calls("claude")[0];
   expect(stdin).toContain("Head branch: fix/typo");
   expect(stdin).toContain("Current base: main");
-  expect(stdin).toContain("Current title: Fix a typo in the README");
+  expect(stdin).toContain("Current title: Typo");
   await panel.getByTestId("pr-ai-undo").click();
-  await expect(panel.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await expect(panel.getByTestId("pr-title")).toHaveValue("Typo");
   await expect(panel.getByTestId("pr-draft")).not.toBeChecked();
 });
 
@@ -347,7 +347,7 @@ test("a generation belongs to the form, not to the panel showing it: shown again
   await page.getByRole("grid", { name: "Commits" }).locator('[data-ref="fix/typo"]').first().locator(".name").click({ button: "right" });
   await page.getByRole("menuitem", { name: "Create pull request…" }).click();
   const panel = page.getByTestId("pr-panel");
-  await expect(panel.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await expect(panel.getByTestId("pr-title")).toHaveValue("Typo");
   await panel.getByTestId("pr-ai").click();
   await expect(panel.getByTestId("pr-ai")).toHaveAttribute("data-state", "running");
   // Another tab, then back: the form is made again, and still waits for it.

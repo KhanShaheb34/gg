@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use crate::dto::{PrState, PrStatus, PrSuggestion, PrUnavailable, RepoSnapshot};
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::gh::{
-    Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, humanise, parse_default_branch,
+    Gh, GhFailure, LIST_LIMIT, PR_FIELDS, PrData, RemoteFacts, branch_title, parse_default_branch,
     parse_list, ssh_hostname, tool_on, unavailable_message,
 };
 use crate::git::runner::{CmdKind, GitRunner, StdinPolicy};
@@ -448,8 +448,9 @@ impl RepoManager {
     }
 
     /// What to offer for a new pull request of local branch `branch` (see [`PrSuggestion`]):
-    /// the title is the commit's subject when the branch has one commit not on the base, else
-    /// the branch's name as words; the description lists the subjects; the base is the
+    /// the title is the branch's name as words, as Orca makes it ([`branch_title`]:
+    /// `sam/fix-login-error-wording` → `Fix login error wording`), however many commits it
+    /// has; the description lists the commits' subjects; the base is the
     /// branch's own (`repo/base.rs`: the one its last pull request went into, the branch it was
     /// created from, the nearest by history, while still on the remote; for the default branch
     /// only the first), else the repository's default branch (`gh repo view`, kept for
@@ -612,10 +613,7 @@ impl RepoManager {
             }
             _ => Vec::new(),
         };
-        let title = match subjects.as_slice() {
-            [only] => only.clone(),
-            _ => humanise(branch),
-        };
+        let title = branch_title(branch);
         let body = subjects
             .iter()
             .map(|s| format!("- {s}"))

@@ -189,9 +189,10 @@ prompts are in Settings → AI. What is sent, and to whom, is under
 
 Through the GitHub CLI [`gh`](https://cli.github.com), signed in. The side panel's **Pull
 request** tab (⌘⇧P) is about the current branch: it shows the branch's open pull request, or
-the form to make one, with a title and description suggested from its commits, the branch it
-goes into (by default the one it was created from: a branch cut from `staging` goes into
-`staging`), and Create as draft; it pushes the branch first when it needs to, and says so.
+the form to make one, with a title made from the branch's name (`sam/fix-login-error-wording`
+gives "Fix login error wording"), a description listing its commits, the branch it goes into
+(by default the one it was created from: a branch cut from `staging` goes into `staging`),
+and Create as draft; it pushes the branch first when it needs to, and says so.
 **Create pull request…** on a branch or worktree shows the tab for that branch. Under an open
 pull request the tab shows where it stands (Ready to merge, Checks failing,
 Conflicts with main, Approved…), its checks as they run (asked again every 15 s while one

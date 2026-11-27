@@ -590,10 +590,10 @@ async fn loads_go_with_fetches_and_user_refreshes_at_most_once_a_minute() {
     assert_eq!(s.gh.calls().len(), 2);
 }
 
-/// `pr_suggest`: one commit's subject as the title, or the branch name as words; the
-/// subjects as the description; the branch's own base (here the one it was made from), else
-/// gh's default branch, else the remote's HEAD, else main; `existing` asked of gh for that
-/// branch.
+/// `pr_suggest`: the branch name as words for the title, with one commit as with several (as
+/// Orca does); the subjects as the description; the branch's own base (here the one it was
+/// made from), else gh's default branch, else the remote's HEAD, else main; `existing` asked
+/// of gh for that branch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn suggestions_come_from_the_commits_and_the_base_from_what_is_known() {
     let s = setup().await;
@@ -610,7 +610,10 @@ async fn suggestions_come_from_the_commits_and_the_base_from_what_is_known() {
             .pr_suggest(s.id, "fix/pr_loading-state")
             .await
             .unwrap();
-    assert_eq!(one.title, "Load pull requests after a fetch");
+    assert_eq!(
+        one.title, "Pr loading state",
+        "the branch's name, not the commit's subject"
+    );
     assert_eq!(one.body, "- Load pull requests after a fetch");
     assert_eq!(one.base, "main");
     assert_eq!(one.existing, None);

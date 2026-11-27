@@ -11,6 +11,13 @@ description), the way the diff is cut to fit them, and the way the tool's answer
 (https://github.com/stablyai/orca: `src/shared/source-control/ai/generation/`), adapted for gg
 as that file says.
 
+The title a new pull request is given from its branch's name (`branch_title` in
+`crates/gg-core/src/gh.rs`) is taken from Orca (https://github.com/stablyai/orca:
+`resolveCreateReviewDraftTitle` in
+`src/shared/source-control/hosted-review/hosted-review-create-seed.ts`, with
+`humanizeBranchSlug` and `normalizeHostedReviewHeadRef`), adapted for gg as that function
+says.
+
 ```text
 MIT License
 

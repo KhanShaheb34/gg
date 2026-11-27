@@ -440,7 +440,7 @@ Method, all numbers, the misses, and how to reproduce them:
 
 ## Status
 
-gg is at version 0.5.2. It is used every day on macOS. The Windows and Linux builds are built
+gg is at version 0.5.3. It is used every day on macOS. The Windows and Linux builds are built
 and tested on CI on every change, but have not been used for real yet.
 
 ## Contributing

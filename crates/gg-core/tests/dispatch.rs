@@ -2264,7 +2264,7 @@ async fn pull_requests_via_dispatch() {
         .call("pr_suggest", json!({ "repoId": id, "branch": "topic" }))
         .await;
     assert_eq!(suggested["base"], "develop");
-    assert_eq!(suggested["title"], "Topic work");
+    assert_eq!(suggested["title"], "Topic", "the branch's name as words");
     assert_eq!(
         suggested["compareUrl"],
         "https://github.com/octo/cat/compare/develop...topic?expand=1"

@@ -712,16 +712,36 @@ pub(crate) fn ssh_hostname(text: &str) -> Option<String> {
     is_plain_host(&host).then_some(host)
 }
 
-/// `branch` as a title: its last part, words split at `-` and `_`, the first capitalised
-/// (`feature/fix-pr_loading` → `Fix pr loading`).
-pub(crate) fn humanise(branch: &str) -> String {
-    let last = branch.rsplit('/').next().unwrap_or(branch);
-    let words = last.replace(['-', '_'], " ");
-    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+/// A new pull request's title made from its branch's name, as Orca makes it
+/// (github.com/stablyai/orca: `resolveCreateReviewDraftTitle` in
+/// `src/shared/source-control/hosted-review/hosted-review-create-seed.ts`, with
+/// `humanizeBranchSlug` and `normalizeHostedReviewHeadRef`), MIT-licensed: see
+/// THIRD_PARTY_NOTICES.md. The name without `refs/heads/` or `refs/remotes/<remote>/`; its
+/// part after the last `/` (`sam/` and `feature/` go); `_` read as `-`; the words between the
+/// `-`s joined by single spaces; the first letter capitalised, the rest left as written
+/// (`sam/fix-login-error-wording` → `Fix login error wording`, `ABC-12-fix` → `ABC 12 fix`).
+/// Nothing left (`fix/`, `topic/--`): the name itself. Orca's taking off of a linked Jira
+/// issue's key is not ported: gg links no issue to a branch.
+pub(crate) fn branch_title(branch: &str) -> String {
+    let name = branch.trim();
+    let name = name.strip_prefix("refs/heads/").unwrap_or(name);
+    let name = match name
+        .strip_prefix("refs/remotes/")
+        .and_then(|r| r.split_once('/'))
+    {
+        Some((remote, rest)) if !remote.is_empty() => rest,
+        _ => name,
+    };
+    let leaf = name.rsplit('/').next().unwrap_or(name).replace('_', "-");
+    let words = leaf
+        .split('-')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut chars = words.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => branch.to_owned(),
+        None => name.to_owned(),
     }
 }
 
@@ -864,11 +884,35 @@ mod tests {
         assert_eq!(ssh_hostname("hostname $(id)\n"), None);
     }
 
+    /// A pull request's default title from its branch's name, as Orca makes it.
     #[test]
     fn branch_names_read_as_titles() {
-        assert_eq!(humanise("feature/fix-pr_loading"), "Fix pr loading");
-        assert_eq!(humanise("readme"), "Readme");
-        assert_eq!(humanise("ümlaut-fix"), "Ümlaut fix");
+        // The owner's prefix goes; the words are joined; the first is capitalised.
+        assert_eq!(
+            branch_title("sam/fix-login-error-wording"),
+            "Fix login error wording"
+        );
+        assert_eq!(branch_title("feature/fix-pr_loading"), "Fix pr loading");
+        // Only the part after the last slash.
+        assert_eq!(branch_title("sam/feature/add-search"), "Add search");
+        assert_eq!(branch_title("readme"), "Readme");
+        assert_eq!(branch_title("ümlaut-fix"), "Ümlaut fix");
+        // `_` is a separator too; runs of separators make one space, none at the ends.
+        assert_eq!(branch_title("fix__the--parser_"), "Fix the parser");
+        assert_eq!(branch_title("-_leading"), "Leading");
+        // The rest is left as written: capitals, digits, a ticket's id.
+        assert_eq!(branch_title("ABC-123-fix-crash"), "ABC 123 fix crash");
+        assert_eq!(branch_title("sam/abc-123-fix-crash"), "Abc 123 fix crash");
+        assert_eq!(branch_title("bump-v2.1.0"), "Bump v2.1.0");
+        assert_eq!(branch_title("use-gRPC-API"), "Use gRPC API");
+        // A ref's full name reads as its branch's.
+        assert_eq!(branch_title("refs/heads/sam/fix-it"), "Fix it");
+        assert_eq!(branch_title("refs/remotes/origin/sam/fix-it"), "Fix it");
+        // Nothing left after the last slash, or only separators: the name itself.
+        assert_eq!(branch_title("fix/"), "fix/");
+        assert_eq!(branch_title("topic/--"), "topic/--");
+        assert_eq!(branch_title("refs/heads/__"), "__");
+        assert_eq!(branch_title(""), "");
     }
 
     fn facts(remotes: &[(&str, &str)], config: &[(&str, &str)]) -> RemoteFacts {

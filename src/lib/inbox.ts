@@ -1,14 +1,16 @@
-// The Pull requests page's list, as plain functions: its rows (a heading per group, then its
-// pull requests; fixed heights, so hundreds scroll as a window of rows), which rows a scroll
-// position shows, moving through them with the keyboard, how a row's checks and review read,
-// what the page says when it has no list, and when its list is out of date.
+// The Pull requests page's list, as plain functions: its rows (pinned ones first, then the
+// groups the user chose: by role, by repository or by status; pull requests not updated for a
+// month apart, folded), at fixed heights so hundreds scroll as a window of rows; which rows a
+// scroll position shows; moving through them with the keyboard; how a row's checks and review
+// read; what the page says when it has no list, and when its list is out of date.
 
 import { clockTime, formatClock, relativeTime, type DateFormat } from "./format";
-import type { InboxChecks, InboxGroup, InboxHost, InboxPr, InboxProblem, PrInbox, ReviewDecision } from "./types";
+import type { InboxChecks, InboxGroup, InboxGroupBy, InboxHost, InboxPr, InboxProblem, PrInbox, ReviewDecision } from "./types";
 
-/** A group's heading row, and a pull request's row, in pixels. */
+/** A section's heading row, a pull request's row, and a "Show N more" row, in pixels. */
 export const HEAD_H = 34;
 export const ROW_H = 56;
+export const MORE_H = 36;
 
 export const GROUP_TITLES: Record<InboxGroup, string> = {
   mine: "Your pull requests",
@@ -16,44 +18,180 @@ export const GROUP_TITLES: Record<InboxGroup, string> = {
   involved: "Mentioned or assigned",
 };
 
+/** A pull request not updated for longer than this is old: apart, folded (by its `updatedAt`, never when it was opened). */
+export const OLD_AFTER_MS = 30 * 24 * 3_600_000;
+
+/** Whether `pr` was last updated more than a month before `now` (one never said to be updated is not old). */
+export function isOld(pr: InboxPr, now: number): boolean {
+  return pr.updatedAtMs !== null && now - pr.updatedAtMs > OLD_AFTER_MS;
+}
+
+/** What a pull request needs, by status, in the order they need attention. */
+export type Status = "failing" | "changes" | "review" | "running" | "approved" | "draft" | "quiet" | "unknown";
+export const STATUS_ORDER: Status[] = ["failing", "changes", "review", "running", "approved", "draft", "quiet", "unknown"];
+export const STATUS_TITLES: Record<Status, string> = {
+  failing: "Checks failing",
+  changes: "Changes requested",
+  review: "Review required",
+  running: "Checks running",
+  approved: "Approved",
+  draft: "Drafts",
+  quiet: "No checks or review",
+  unknown: "Not read yet",
+};
+
+/** Where `pr` goes when grouped by status: a draft is a draft; else failing checks first, then the review, then running checks. */
+export function statusOf(pr: InboxPr): Status {
+  if (pr.draft) return "draft";
+  if (!pr.details) return "unknown";
+  if (pr.checks === "failing") return "failing";
+  if (pr.review === "changes_requested") return "changes";
+  if (pr.review === "review_required") return "review";
+  if (pr.checks === "running") return "running";
+  if (pr.review === "approved") return "approved";
+  return "quiet";
+}
+
+/** What is unfolded: the old ones (by role or status), each repository's older ones, the repositories with only old ones. */
+export type Unfolded = { older: boolean; repos: ReadonlySet<string>; moreRepos: boolean };
+export const FOLDED: Unfolded = { older: false, repos: new Set(), moreRepos: false };
+
+/** A toggle row's action. */
+export type Toggle = { kind: "older" } | { kind: "repo"; repo: string } | { kind: "repos" };
+
 export type InboxRow =
-  | { kind: "head"; group: InboxGroup; count: number; top: number }
-  | { kind: "pr"; pr: InboxPr; index: number; top: number };
+  | { kind: "head"; id: string; title: string; count: number; top: number; toggle: null }
+  | { kind: "head"; id: string; title: string; count: number; top: number; toggle: Toggle; open: boolean; index: number }
+  | { kind: "pr"; pr: InboxPr; index: number; top: number }
+  | { kind: "more"; id: string; label: string; toggle: Toggle; top: number; index: number };
+
+/** The rows that take the keyboard's selection: pull requests and the rows that fold and unfold. */
+export type Item = Extract<InboxRow, { index: number }>;
+
+const repoOf = (pr: InboxPr) => `${pr.owner}/${pr.name}`;
+const newestFirst = (a: InboxPr, b: InboxPr) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0);
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /**
- * The list's rows for `prs` (grouped and in order, as the core gives them): each group that
- * has any, its heading then its pull requests, with where each starts; and the list's height.
- * `index`: the pull request's place among the pull requests alone (what the keyboard moves).
+ * The list's rows for `prs` (as the core gives them: each in its role's group, newest first),
+ * grouped `by`, at `now`, with `unfolded` open: the pinned ones first (in `pins`' order, whatever
+ * their age, not again below); then by role or status, each group of the ones updated in the
+ * last month, and one "Older than a month" section at the end, folded by default; by
+ * repository, each repository with one updated in the last month, its older ones behind "Show N
+ * older", and the repositories with only older ones behind "Show N more repositories" at the
+ * end. Each row with where it starts, and the list's height; `items`: the rows the keyboard
+ * moves through, in order.
  */
-export function rowsOf(prs: InboxPr[]): { rows: InboxRow[]; height: number } {
+export function layoutOf(
+  prs: InboxPr[],
+  by: InboxGroupBy,
+  now: number,
+  unfolded: Unfolded = FOLDED,
+  pins: string[] = [],
+): { rows: InboxRow[]; items: Item[]; height: number } {
   const rows: InboxRow[] = [];
+  const items: Item[] = [];
   let top = 0;
-  let group: InboxGroup | null = null;
-  prs.forEach((pr, index) => {
-    if (pr.group !== group) {
-      group = pr.group;
-      const count = prs.filter((p) => p.group === pr.group).length;
-      rows.push({ kind: "head", group: pr.group, count, top });
-      top += HEAD_H;
-    }
-    rows.push({ kind: "pr", pr, index, top });
+  const head = (id: string, title: string, count: number) => {
+    rows.push({ kind: "head", id, title, count, top, toggle: null });
+    top += HEAD_H;
+  };
+  const toggleHead = (id: string, title: string, count: number, toggle: Toggle, open: boolean) => {
+    const row: InboxRow = { kind: "head", id, title, count, top, toggle, open, index: items.length };
+    rows.push(row);
+    items.push(row);
+    top += HEAD_H;
+  };
+  const pr = (p: InboxPr) => {
+    const row: InboxRow = { kind: "pr", pr: p, index: items.length, top };
+    rows.push(row);
+    items.push(row);
     top += ROW_H;
-  });
-  return { rows, height: top };
+  };
+  const more = (id: string, label: string, toggle: Toggle) => {
+    const row: InboxRow = { kind: "more", id, label, toggle, top, index: items.length };
+    rows.push(row);
+    items.push(row);
+    top += MORE_H;
+  };
+
+  const pinnedKeys = new Set(pins);
+  const pinned = pins.map((k) => prs.find((p) => p.key === k)).filter((p): p is InboxPr => p !== undefined);
+  if (pinned.length > 0) {
+    head("pinned", "Pinned", pinned.length);
+    pinned.forEach(pr);
+  }
+  const rest = prs.filter((p) => !pinnedKeys.has(p.key) && p.listed);
+  const recent = rest.filter((p) => !isOld(p, now));
+  const old = rest.filter((p) => isOld(p, now)).sort(newestFirst);
+
+  if (by === "repository") {
+    const repos = new Map<string, InboxPr[]>();
+    for (const p of [...rest].sort(newestFirst)) {
+      const list = repos.get(repoOf(p)) ?? [];
+      list.push(p);
+      repos.set(repoOf(p), list);
+    }
+    const quiet: [string, InboxPr[]][] = [];
+    for (const [repo, list] of repos) {
+      const fresh = list.filter((p) => !isOld(p, now));
+      const stale = list.filter((p) => isOld(p, now));
+      if (fresh.length === 0) {
+        quiet.push([repo, list]);
+        continue;
+      }
+      head(`repo:${repo}`, repo, list.length);
+      fresh.forEach(pr);
+      if (stale.length > 0) {
+        if (unfolded.repos.has(repo)) {
+          stale.forEach(pr);
+          more(`less:${repo}`, "Hide the older ones", { kind: "repo", repo });
+        } else {
+          more(`older:${repo}`, `Show ${plural(stale.length, "older one", "older ones")}`, { kind: "repo", repo });
+        }
+      }
+    }
+    if (quiet.length > 0) {
+      if (unfolded.moreRepos) {
+        for (const [repo, list] of quiet) {
+          head(`repo:${repo}`, repo, list.length);
+          list.forEach(pr);
+        }
+        more("repos", "Hide the repositories with only older ones", { kind: "repos" });
+      } else {
+        more("repos", `Show ${plural(quiet.length, "more repository", "more repositories")} (only older ones)`, { kind: "repos" });
+      }
+    }
+  } else {
+    const groups: [string, string, InboxPr[]][] =
+      by === "role"
+        ? (["mine", "review", "involved"] as InboxGroup[]).map((g) => [g, GROUP_TITLES[g], recent.filter((p) => p.group === g)])
+        : STATUS_ORDER.map((st) => [st, STATUS_TITLES[st], recent.filter((p) => statusOf(p) === st).sort(newestFirst)]);
+    for (const [id, title, list] of groups) {
+      if (list.length === 0) continue;
+      head(id, title, list.length);
+      list.forEach(pr);
+    }
+    if (old.length > 0) {
+      toggleHead("older", "Older than a month", old.length, { kind: "older" }, unfolded.older);
+      if (unfolded.older) old.forEach(pr);
+    }
+  }
+  return { rows, items, height: top };
 }
+
+/** The height of row `r`. */
+export const heightOf = (r: InboxRow) => (r.kind === "head" ? HEAD_H : r.kind === "pr" ? ROW_H : MORE_H);
 
 /** The rows `[start, end)` that show between `scrollTop` and `scrollTop + height`, `overscan` px more on each side. */
 export function visibleRange(rows: InboxRow[], scrollTop: number, height: number, overscan = 300): [number, number] {
   const from = scrollTop - overscan;
   const to = scrollTop + height + overscan;
-  // The first row that ends below `from` (rows are in order of `top`).
   let lo = 0;
   let hi = rows.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    const r = rows[mid];
-    const bottom = r.top + (r.kind === "head" ? HEAD_H : ROW_H);
-    if (bottom <= from) lo = mid + 1;
+    if (rows[mid].top + heightOf(rows[mid]) <= from) lo = mid + 1;
     else hi = mid;
   }
   let end = lo;
@@ -61,10 +199,14 @@ export function visibleRange(rows: InboxRow[], scrollTop: number, height: number
   return [lo, end];
 }
 
-/** The row of pull request `index` (its place among the pull requests), if any. */
-export function rowOfIndex(rows: InboxRow[], index: number): (InboxRow & { kind: "pr" }) | null {
-  for (const r of rows) if (r.kind === "pr" && r.index === index) return r;
-  return null;
+/** The pull requests the rows show (what their details are read for). */
+export function shownPrs(rows: InboxRow[]): InboxPr[] {
+  return rows.flatMap((r) => (r.kind === "pr" ? [r.pr] : []));
+}
+
+/** The key the keyboard's selection is kept by: a pull request's key, or a toggle row's id. */
+export function itemKey(item: Item): string {
+  return item.kind === "pr" ? item.pr.key : `toggle:${item.id}`;
 }
 
 /**

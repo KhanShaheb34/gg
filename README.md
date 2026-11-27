@@ -238,7 +238,9 @@ across every repository on GitHub, open in gg or not: each with its repository, 
 checks, review decision, and a dot on its open or draft icon when something happened since you
 last opened it in gg.
 It shows what it last loaded at once and asks `gh` again behind it, only while you look at
-it. A pull request opens on its own page, as the Pull request tab shows one, with reply and
+it: the list first, then the checks and reviews of the rows that show. Group it by role,
+repository or status; pull requests not updated for a month fold away at the end; pin the
+ones you want at the top. A pull request opens on its own page, as the Pull request tab shows one, with reply and
 resolve; from there **Go to repository** and **Check out** its branch in the repository open
 in gg, or **Clone and open** one that is not.
 

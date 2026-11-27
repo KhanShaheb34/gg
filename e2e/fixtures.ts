@@ -749,7 +749,7 @@ case "$key" in gql-inbox*) if [ -n "$GH_HOST" ]; then
   h="$(printf '%s' "$GH_HOST" | tr . _)"
   if [ -f "$d/replies/$key-$h.code" ]; then key="$key-$h"; fi
 fi;; esac
-if [ "$1" = api ] && [ "$2" = --hostname ]; then case "$5" in repos/*/files*) key=api-files; n="$(printf '%s' "$5" | sed 's#.*/pulls/\([0-9]*\)/files.*#\1#')"; if [ -f "$d/replies/api-files-$n.code" ]; then key="api-files-$n"; fi;; esac; fi
+if [ "$1" = api ] && [ "$2" = --hostname ]; then case "$5" in repos/*/files*) key=api-files; n="$(printf '%s' "$5" | sed 's#.*/pulls/\\([0-9]*\\)/files.*#\\1#')"; if [ -f "$d/replies/api-files-$n.code" ]; then key="api-files-$n"; fi;; esac; fi
 n=""
 if [ "$key" = pr-view ]; then n="$3"; fi
 if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in n=*) n="\${a#n=}";; esac; done; fi
@@ -919,6 +919,8 @@ export type FakeGh = {
   reply(key: string, code: number, stdout: string, stderr?: string): void;
   /** Makes calls of `key` wait `secs` seconds before answering. */
   slow(key: string, secs: number): void;
+  /** Calls of `key` answer at once again. */
+  fast(key: string): void;
   /** Once a call of `key` exits 0, calls of each key of `then` answer (exit 0) with its text. */
   then(key: string, then: Record<string, string>): void;
   /** Each call's arguments so far, oldest first. */
@@ -943,6 +945,9 @@ function fakeGh(home: string): FakeGh {
     },
     slow(key, secs) {
       writeFileSync(path.join(dir, "replies", `${key}.sleep`), String(secs));
+    },
+    fast(key) {
+      rmSync(path.join(dir, "replies", `${key}.sleep`), { force: true });
     },
     then(key, then) {
       const into = path.join(dir, "replies", `${key}.then`);

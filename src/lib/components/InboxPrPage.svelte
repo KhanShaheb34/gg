@@ -20,6 +20,7 @@
     goToRepo,
     inbox,
     inboxPrSource,
+    setPinned,
   } from "../state/inbox.svelte";
   import { overlays, showDialog } from "../state/overlays.svelte";
   import { clock } from "../state/prs.svelte";
@@ -28,6 +29,7 @@
   import CloneDialog from "./dialogs/CloneDialog.svelte";
   import MiddleText from "./MiddleText.svelte";
   import PullRequestView from "./PullRequestView.svelte";
+  import PrFilesSection from "./PrFilesSection.svelte";
 
   type Props = { pr: InboxPr };
   let { pr }: Props = $props();
@@ -102,6 +104,17 @@
       <MiddleText text="{pr.owner}/{pr.name}" keep={10} />
     </span>
     <div class="actions" data-testid="inbox-pr-actions">
+      <button
+        class="button"
+        class:on={pr.pinned}
+        type="button"
+        aria-pressed={pr.pinned}
+        title={pr.pinned ? "Unpin it from the top of the list" : "Pin it to the top of the list, whatever its age"}
+        data-testid="inbox-pr-pin"
+        onclick={() => void setPinned(pr, !pr.pinned)}
+      >
+        {pr.pinned ? "Pinned" : "Pin"}
+      </button>
       {#if match}
         <button class="button" type="button" data-testid="inbox-go-to-repo" title="Show {repoName ?? 'the repository'}'s tab" onclick={() => goToRepo(match!.repoId)}>
           Go to repository
@@ -131,10 +144,14 @@
     </div>
     </div>
   </header>
-  <div class="scroll">
+  <div class="scroll" data-testid="inbox-pr-scroll">
     <div class="column">
       {#key pr.key}
-        <PullRequestView {source} pr={shown} {stale} />
+        <PullRequestView {source} pr={shown} {stale}>
+          {#snippet more()}
+            <PrFilesSection {pr} />
+          {/snippet}
+        </PullRequestView>
       {/key}
     </div>
   </div>
@@ -238,6 +255,11 @@
 
   .button:disabled {
     color: var(--text-faint);
+  }
+
+  .button.on {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+    color: var(--accent);
   }
 
   .button:focus-visible,

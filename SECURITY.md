@@ -37,12 +37,13 @@ gg runs git on repositories that may come from anyone, so these matter most:
 - **Updates.** Any way to make gg install something that is not a release signed with gg's
   key, an older release, or to make it fetch updates from anywhere but the release on
   GitHub (see below).
-- **The Pull requests page.** gg asks `gh` only read-only questions for it (one GraphQL
-  query of four searches per GitHub host, and a pull request's details as the Pull request
-  tab reads them), only while the page shows, never in the background; it writes to a pull
+- **The Pull requests page.** gg asks `gh` only read-only questions for it (per GitHub host,
+  one GraphQL query of four searches, then one by node id for the rows shown; a pull request's
+  details as the Pull request tab reads them, and its files from the REST API), only while the
+  page shows, never in the background; it writes to a pull
   request (a reply, resolving a thread, a comment) and clones a repository only on the
   user's click, and keeps what it shows and what was seen only in its own config folder
-  (`pr-inbox.json`), never in a repository. Any way for it to ask a host that is not GitHub
+  (`pr-inbox.json`: the list, what was seen, pins, the grouping), never in a repository. Any way for it to ask a host that is not GitHub
   (github.com, `*.ghe.com`, or a host `gh` has credentials stored for), to send a token
   anywhere, to open a page off a GitHub host as a pull request's page, to clone into a folder
   that is already there, or to write to a repository without the user asking, is in scope.

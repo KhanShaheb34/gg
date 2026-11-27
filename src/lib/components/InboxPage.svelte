@@ -5,14 +5,17 @@
   shows at once; while gh is asked again the Refresh button turns, nothing else waits. Without
   a list it says why in one box (gh missing or signed out, the rate limit, no connection, empty);
   with one, a host that failed is a quiet line above it, and the list is "as of" when it loaded.
-  A pull request opens on its own page (InboxPrPage).
+  A pull request opens on its own page (InboxPrPage). The header groups the list by role,
+  repository or status (kept in gg's config). Each part spans the page's width, so the list's
+  scroll bar is at the window's edge; what is in them is centred.
 -->
 <script lang="ts">
   import { tick } from "svelte";
-  import { hostNotes, inboxStale, pageState } from "../inbox";
+  import { hostNotes, inboxStale, layoutOf, pageState } from "../inbox";
   import { isMac } from "../platform";
   import { app } from "../state/app.svelte";
-  import { inbox, refreshInbox, showInboxPr } from "../state/inbox.svelte";
+  import { inbox, refreshInbox, setGroupBy, setPinned, showInboxPr, toggle, unfoldedNow } from "../state/inbox.svelte";
+  import Segmented from "./Segmented.svelte";
   import { clock } from "../state/prs.svelte";
   import { openWebPage } from "../state/editor";
   import type { InboxPr } from "../types";
@@ -31,6 +34,10 @@
       .join(", "),
   );
   const partial = $derived((inbox.data?.hosts ?? []).some((h) => h.partial));
+  /** The list's rows: as grouped, folded and pinned now (old by the minute clock). */
+  const layout = $derived(
+    layoutOf(inbox.data?.prs ?? [], inbox.groupBy, clock.now, unfoldedNow(), inbox.data?.pins ?? []),
+  );
 
   let page: HTMLElement | undefined = $state();
 
@@ -63,6 +70,17 @@
       <h1 id="inbox-title">Pull requests</h1>
       {#if accounts}<span class="who" data-testid="inbox-accounts">{accounts}</span>{/if}
       <span class="spacer"></span>
+      <Segmented
+        label="Group by"
+        testid="inbox-group-by"
+        value={inbox.groupBy}
+        options={[
+          { value: "role", label: "Role", title: "Yours, waiting for your review, mentioned or assigned" },
+          { value: "repository", label: "Repository", title: "By repository, newest first" },
+          { value: "status", label: "Status", title: "What needs attention first: failing checks, changes requested, review required…" },
+        ]}
+        onchange={setGroupBy}
+      />
       {#if stale}<span class="stale" data-testid="inbox-stale" title="When the list was last loaded: refresh to load it again">{stale}</span>{/if}
       <button
         class="icon-btn"
@@ -94,7 +112,7 @@
     {/if}
 
     {#if now.kind === "list"}
-      <InboxList prs={inbox.data?.prs ?? []} onopen={open} />
+      <InboxList {layout} onopen={open} ontoggle={toggle} onpin={(pr, pinned) => void setPinned(pr, pinned)} />
       {#if partial}
         <p class="partial" data-testid="inbox-partial">The newest 100 of each group are shown.</p>
       {/if}
@@ -137,13 +155,13 @@
 </section>
 
 <style>
+  /* The page spans the window: each part centres what it holds, so the list's scroll bar is at
+     the window's edge. */
   .inbox {
     display: flex;
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    max-width: 960px;
-    margin: 0 auto;
     background: var(--bg);
   }
 
@@ -152,7 +170,10 @@
     align-items: center;
     gap: 10px;
     flex: none;
+    width: 100%;
+    max-width: 960px;
     height: 44px;
+    margin: 0 auto;
     padding: 0 10px 0 16px;
   }
 
@@ -162,6 +183,12 @@
     color: var(--text);
     font-size: 15px;
     font-weight: 650;
+  }
+
+  @media (max-width: 600px) {
+    .who {
+      display: none;
+    }
   }
 
   .who {
@@ -194,7 +221,9 @@
     align-items: flex-start;
     gap: 8px;
     flex: none;
-    margin: 0 12px 6px;
+    width: calc(100% - 24px);
+    max-width: 936px;
+    margin: 0 auto 6px;
     padding: 7px 10px;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
@@ -222,7 +251,9 @@
 
   .partial {
     flex: none;
-    margin: 0;
+    width: 100%;
+    max-width: 960px;
+    margin: 0 auto;
     padding: 6px 16px 8px;
     color: var(--text-faint);
     font-size: var(--fs-xs);
@@ -302,6 +333,9 @@
   .skeleton {
     display: flex;
     flex-direction: column;
+    width: 100%;
+    max-width: 960px;
+    margin: 0 auto;
     padding: 0 8px;
   }
 

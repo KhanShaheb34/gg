@@ -97,7 +97,15 @@ export type InboxPr = {
   mentioned: boolean;
   assigned: boolean;
   activity: "none" | "new" | "updated";
+  /** As its details last said (a pinned one may be merged or closed). */
+  state: "open" | "merged" | "closed";
+  /** Its checks, review decision and activity have been read (until then they read as none). */
+  details: boolean;
+  pinned: boolean;
+  /** In one of the lists now (false: a pinned one no list has any more). */
+  listed: boolean;
 };
+export type InboxGroupBy = "role" | "repository" | "status";
 export type InboxGroup = "mine" | "review" | "involved";
 export type InboxChecks = "none" | "passing" | "failing" | "running";
 export type InboxProblem = "no_gh" | "signed_out" | "rate_limited" | "offline" | "failed";
@@ -112,7 +120,9 @@ export type InboxHost = {
   loadedAtMs: number | null;
 };
 /** The Pull requests page; `fresh`: gh was asked for it (else what gg kept). */
-export type PrInbox = { prs: InboxPr[]; hosts: InboxHost[]; fresh: boolean };
+export type PrInbox = { prs: InboxPr[]; hosts: InboxHost[]; fresh: boolean; pins: string[]; groupBy: InboxGroupBy };
+/** The files a pull request changes (GitHub lists 3000 at most: `truncated`). */
+export type PrFiles = { files: FileChange[]; truncated: boolean };
 /** An open repository that has a pull request's repository as a remote; `headRemote`: the remote its head branch is on, if any. */
 export type InboxRepoMatch = { repoId: number; headRemote: string | null };
 /** What a write from the Pull requests page did. */

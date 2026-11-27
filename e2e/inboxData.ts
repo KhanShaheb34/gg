@@ -20,7 +20,48 @@ export type Node = {
   oid?: string;
   minutesAgo?: number;
   host?: string;
+  /** As the list's lean query gives it: no checks, review or activity (those come with the details). */
+  lean?: boolean;
+  /** Its state, in the details' answer. */
+  state?: "OPEN" | "MERGED" | "CLOSED";
 };
+
+/** A pull request's node id, as the fixtures make it. */
+export const idOf = (n: Pick<Node, "number" | "repo">) => `PR_${(n.repo ?? "octo/cat").replace("/", "_")}_${n.number}`;
+
+/** The details' part of a node: state, draft, checks, review, activity. */
+function detailsOf(n: Node) {
+  return {
+    state: n.state ?? "OPEN",
+    reviewDecision: n.review === undefined ? "REVIEW_REQUIRED" : n.review,
+    comments: { totalCount: n.comments ?? 1, nodes: [{ author: { login: n.lastCommenter ?? "ada" } }] },
+    reviews: { totalCount: n.reviews ?? 0, nodes: [] },
+    commits: { nodes: [{ commit: { oid: n.oid ?? "a1", statusCheckRollup: n.checks === null ? null : { state: n.checks ?? "SUCCESS" } } }] },
+  };
+}
+
+/** The details' answer (`gql-inbox-details`) for `nodes`, by their ids. */
+export function detailsAnswer(nodes: Node[]) {
+  return { data: { nodes: nodes.map((n) => ({ id: idOf(n), isDraft: n.draft ?? false, ...detailsOf(n) })) } };
+}
+
+/** Makes the fake gh answer the details' query with `nodes`' details. */
+export function replyDetails(gg: GG, nodes: Node[]): void {
+  gg.gh.reply("gql-inbox-details", 0, JSON.stringify(detailsAnswer(nodes)));
+}
+
+/** The details' queries the fake gh had so far: the ids each asked about. */
+export function detailsCalls(gg: GG): string[][] {
+  return gg.gh
+    .calls()
+    .filter((c) => c[0] === "api" && c[1] === "graphql" && c.some((a) => a.includes("GgInboxDetails")))
+    .map((c) => c.filter((a) => a.startsWith("ids[]=")).map((a) => a.slice(6)));
+}
+
+/** A pull request's files as `gh api --paginate …/files` gives them: one JSON array per page. */
+export function replyFiles(gg: GG, number: number, pages: object[][], code = 0, stderr = ""): void {
+  gg.gh.reply(`api-files-${number}`, code, pages.map((p) => JSON.stringify(p)).join("\n"), stderr);
+}
 
 /** One pull request node of the answer. */
 export function node(n: Node) {
@@ -28,7 +69,8 @@ export function node(n: Node) {
   const [owner, name] = repo.split("/");
   const headRepo = n.headRepo === undefined ? repo : n.headRepo;
   const host = n.host ?? "github.com";
-  return {
+  const lean = {
+    id: idOf(n),
     number: n.number,
     title: n.title ?? `Change ${n.number}`,
     url: `https://${host}/${repo}/pull/${n.number}`,
@@ -40,11 +82,8 @@ export function node(n: Node) {
     repository: { owner: { login: owner }, name },
     headRepository: headRepo === null ? null : { owner: { login: headRepo.split("/")[0] }, name: headRepo.split("/")[1] },
     author: { login: n.author ?? "ada" },
-    reviewDecision: n.review === undefined ? "REVIEW_REQUIRED" : n.review,
-    comments: { totalCount: n.comments ?? 1, nodes: [{ author: { login: n.lastCommenter ?? "ada" } }] },
-    reviews: { totalCount: n.reviews ?? 0, nodes: [] },
-    commits: { nodes: [{ commit: { oid: n.oid ?? "a1", statusCheckRollup: n.checks === null ? null : { state: n.checks ?? "SUCCESS" } } }] },
   };
+  return n.lean ? lean : { ...lean, ...detailsOf(n) };
 }
 
 /** The page's answer: the signed-in account and each group's pull requests. */
@@ -68,7 +107,7 @@ export function replyInbox(gg: GG, groups: Parameters<typeof inboxAnswer>[0]): v
 
 /** The page's queries the fake gh had so far. */
 export function inboxCalls(gg: GG): string[][] {
-  return gg.gh.calls().filter((c) => c[0] === "api" && c[1] === "graphql" && c.some((a) => a.includes("GgInbox")));
+  return gg.gh.calls().filter((c) => c[0] === "api" && c[1] === "graphql" && c.some((a) => a.includes("GgInbox(")));
 }
 
 /** A day's mix: two of yours, three to review, two mentioning you. */

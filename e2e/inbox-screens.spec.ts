@@ -4,7 +4,7 @@
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test, type GG } from "./fixtures";
-import { MIX, replyInbox } from "./inboxData";
+import { MIX, replyFiles, replyInbox } from "./inboxData";
 import { answer, comment, review, run, threads, view } from "./prDetailsData";
 
 const OUT = process.env.GG_SCREENS_DIR ?? path.resolve(import.meta.dirname, "..", ".screens");
@@ -46,6 +46,29 @@ for (const theme of ["light", "dark"] as const) {
     await page.getByTestId("inbox-refresh").click();
     await expect(page.getByTestId("inbox-pr")).toHaveCount(8);
     await shoot(page, "list", theme);
+    // Old ones (not updated for a month) folded at the end; one pinned.
+    const DAY = 24 * 60;
+    replyInbox(gg, {
+      ...MIX,
+      review: [{ ...MIX.review[0], comments: 4 }, ...MIX.review.slice(1)],
+      mentioned: [...MIX.mentioned, { number: 9, repo: "hub/elk", title: "Move the docs to the new site", author: "grace", minutesAgo: 50 * DAY }],
+      assigned: [...MIX.assigned, { number: 8, repo: "hub/dog", title: "Try the new parser behind a flag", author: "mia", minutesAgo: 40 * DAY, draft: true }],
+    });
+    await page.getByTestId("inbox-refresh").click();
+    await expect(page.locator('[data-testid="inbox-group"][data-group="older"]')).toBeVisible();
+    const typo = page.locator('[data-testid="inbox-pr"][data-key="github.com/octo/cat#31"]');
+    await typo.hover();
+    await typo.getByTestId("inbox-pin").click();
+    await expect(page.locator('[data-testid="inbox-group"][data-group="pinned"]')).toBeVisible();
+    await shoot(page, "list-pinned-older", theme);
+    await page.locator('[data-testid="inbox-group"][data-group="older"]').click();
+    await shoot(page, "list-older-open", theme);
+    await page.getByTestId("inbox-group-by").getByRole("radio", { name: "Repository" }).click();
+    await shoot(page, "list-by-repository", theme);
+    await page.getByTestId("inbox-group-by").getByRole("radio", { name: "Status" }).click();
+    await shoot(page, "list-by-status", theme);
+    await page.getByTestId("inbox-group-by").getByRole("radio", { name: "Role" }).click();
+    await page.locator('[data-testid="inbox-group"][data-group="older"]').click();
 
     // A row selected from the keyboard.
     await page.getByRole("listbox", { name: "Pull requests" }).focus();
@@ -77,8 +100,17 @@ for (const theme of ["light", "dark"] as const) {
       }),
       conv,
     );
+    replyFiles(gg, 42, [
+      [
+        { filename: "src/search/index.ts", status: "modified", additions: 48, deletions: 12, changes: 60, patch: "@@" },
+        { filename: "src/search/cache.ts", status: "added", additions: 64, deletions: 0, changes: 64, patch: "@@" },
+        { filename: "docs/search.md", previous_filename: "docs/find.md", status: "renamed", additions: 3, deletions: 1, changes: 4, patch: "@@" },
+        { filename: "src/search/legacy.ts", status: "removed", additions: 0, deletions: 120, changes: 120, patch: "@@" },
+      ],
+    ]);
     await page.locator('[data-testid="inbox-pr"][data-key="github.com/hub/dog#42"]').click();
     await expect(page.getByTestId("pr-status")).toBeVisible();
+    await expect(page.getByTestId("pr-file")).toHaveCount(4);
     await shoot(page, "pr-page", theme);
 
     // Its repository is open here: Go to repository and Check out.

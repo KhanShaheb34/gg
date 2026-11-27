@@ -15,6 +15,7 @@ import type {
   CommitDetails,
   Confirmed,
   CoreErrorDto,
+  InboxGroupBy,
   InboxRepoMatch,
   InboxWritten,
   InputField,
@@ -22,6 +23,7 @@ import type {
   OpenedRepo,
   OpRequest,
   PrDetails,
+  PrFiles,
   PrInbox,
   PrSuggestion,
   Recent,
@@ -364,6 +366,17 @@ export const api = {
   prDetails: (repoId: number, number: number) => call<PrDetails>("pr_details", { repoId, number }),
   /** The Pull requests page: as gg kept it, or (`refresh`) asked of gh first (at most once every 10 s). */
   prInbox: (refresh = false) => call<PrInbox>("pr_inbox", refresh ? { refresh } : {}),
+  /** Reads the details (state, checks, review, activity) of the page's pull requests `keys`; the page after. */
+  prInboxDetails: (keys: string[]) => call<PrInbox>("pr_inbox_details", { keys }),
+  /** Pins (or unpins) the page's pull request `key` to its top; the page after. */
+  prInboxPin: (key: string, pinned: boolean) => call<PrInbox>("pr_inbox_pin", { key, pinned }),
+  /** Keeps how the page groups its list. */
+  async prInboxGroupBy(groupBy: InboxGroupBy): Promise<void> {
+    await call("pr_inbox_group_by", { groupBy });
+  },
+  /** The files a pull request changes, by its repository's name. */
+  inboxPrFiles: (host: string, owner: string, name: string, number: number) =>
+    call<PrFiles>("inbox_pr_files", { host, owner, name, number }),
   /** Records the page's pull request `key` as seen now (its page was opened). */
   async prInboxSeen(key: string): Promise<void> {
     await call("pr_inbox_seen", { key });

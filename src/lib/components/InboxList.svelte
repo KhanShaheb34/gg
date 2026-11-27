@@ -1,39 +1,45 @@
 <!--
-  The Pull requests page's list: a heading per group (yours, waiting for your review,
-  mentioned or assigned), then its pull requests, each one row: its state (open, or a draft,
-  muted) as an icon in a column of its own, with a dot on it when something happened since it was
-  last opened in gg (its title then bolder); its title, its repository and number, who opened it
-  and when it changed, its checks and its review decision. Rows are fixed in height and only
-  those in view (and a few screens around) are drawn, so hundreds scroll as smoothly as ten.
+  The Pull requests page's list: the pinned ones first, then the groups the user chose (by role,
+  repository or status), the ones not updated for a month apart and folded; each pull request
+  one row: its state (open, a draft muted, merged or closed for a pinned one gone from the lists)
+  as an icon in a column of its own, with a dot on it when something happened since it was last
+  opened in gg (its title then bolder); its title, its repository and number, who opened it and
+  when it changed, its checks and its review decision, and a pin on hover, focus or selection.
+  Rows are fixed in height and only those in view (and a few screens around) are drawn, so
+  hundreds scroll as smoothly as ten. The list scrolls the page's whole width: its scroll bar
+  is at the window's edge; the rows are centred within it.
 
-  One focus stop: ↑ ↓, Page Up/Down, Home and End move the selection (aria-activedescendant),
-  Enter or a click opens the pull request. The selection and the scroll position are kept while
-  a pull request's page shows.
+  One focus stop: ↑ ↓, Page Up/Down, Home and End move the selection (aria-activedescendant)
+  through the pull requests and the rows that fold and unfold; Enter or a click opens the one
+  selected (or folds); P pins it; Shift+F10, the menu key or a right-click opens its menu.
+  The selection and the scroll position are kept while a pull request's page shows.
 -->
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { relativeTime } from "../format";
-  import { checksOf, GROUP_TITLES, HEAD_H, involvedWhy, moveTo, reviewOf, ROW_H, rowOfIndex, rowsOf, visibleRange } from "../inbox";
-  import { clock } from "../state/prs.svelte";
-  import { inbox } from "../state/inbox.svelte";
+  import { checksOf, involvedWhy, itemKey, moveTo, reviewOf, ROW_H, visibleRange, HEAD_H, type InboxRow, type Item, type Toggle } from "../inbox";
+  import { clock, copyLink } from "../state/prs.svelte";
+  import { inbox, openInBrowser } from "../state/inbox.svelte";
+  import { openMenu } from "../state/overlays.svelte";
   import type { InboxPr } from "../types";
   import PrIcon from "./PrIcon.svelte";
 
   type Props = {
-    prs: InboxPr[];
+    layout: { rows: InboxRow[]; items: Item[]; height: number };
     onopen: (pr: InboxPr) => void;
+    ontoggle: (t: Toggle) => void;
+    onpin: (pr: InboxPr, pinned: boolean) => void;
   };
 
-  let { prs, onopen }: Props = $props();
+  let { layout, onopen, ontoggle, onpin }: Props = $props();
 
-  const layout = $derived(rowsOf(prs));
   let box: HTMLDivElement | undefined = $state();
   let scrollTop = $state(inbox.scrollTop);
   let viewH = $state(600);
   const range = $derived(visibleRange(layout.rows, scrollTop, viewH));
-  /** The selected pull request's place, as the cursor's key finds it in the list now. */
+  /** The selected item's place, as the cursor's key finds it in the list now. */
   const at = $derived.by(() => {
-    const i = prs.findIndex((p) => p.key === inbox.cursor);
+    const i = layout.items.findIndex((it) => itemKey(it) === inbox.cursor);
     return i < 0 ? null : i;
   });
 
@@ -44,9 +50,10 @@
   const shown = $derived.by(() => {
     const rows = layout.rows.slice(range[0], range[1]);
     if (at === null) return rows;
-    const active = rowOfIndex(layout.rows, at);
+    const active = layout.items[at];
     return active && !rows.includes(active) ? [...rows, active] : rows;
   });
+
   onMount(() => {
     if (!box) return;
     box.scrollTop = inbox.scrollTop;
@@ -66,41 +73,88 @@
     inbox.scrollTop = box.scrollTop;
   }
 
-  /** Brings row `index` into view, as little as it takes. */
+  const heightOf = (r: InboxRow) => (r.kind === "pr" ? ROW_H : r.kind === "head" ? HEAD_H : 36);
+
+  /** Brings item `index` into view, as little as it takes (with its section's heading, for the first of one). */
   function reveal(index: number) {
-    const r = rowOfIndex(layout.rows, index);
+    const r = layout.items[index];
     if (!r || !box) return;
-    // The group's heading too, for the first of a group.
-    const top = r.index === 0 || prs[r.index - 1]?.group !== r.pr.group ? r.top - HEAD_H : r.top;
+    const before = layout.rows[layout.rows.indexOf(r) - 1];
+    const top = before && before.kind === "head" && before.toggle === null ? before.top : r.top;
     if (top < box.scrollTop) box.scrollTop = top;
-    else if (r.top + ROW_H > box.scrollTop + box.clientHeight) box.scrollTop = r.top + ROW_H - box.clientHeight;
+    else if (r.top + heightOf(r) > box.scrollTop + box.clientHeight) box.scrollTop = r.top + heightOf(r) - box.clientHeight;
+  }
+
+  function activate(item: Item) {
+    inbox.cursor = itemKey(item);
+    if (item.kind === "pr") onopen(item.pr);
+    else ontoggle(item.toggle);
+  }
+
+  /** The menu of pull request `pr`, at `point`. */
+  function menu(pr: InboxPr, point: { x: number; y: number }, keyboard: boolean) {
+    inbox.cursor = pr.key;
+    openMenu(
+      point,
+      [
+        { id: "open", label: "Open" },
+        { id: "pin", label: pr.pinned ? "Unpin" : "Pin to top" },
+        { separator: true },
+        { id: "browser", label: "Open in browser" },
+        { id: "copy", label: "Copy link" },
+      ],
+      (id) => {
+        if (id === "open") onopen(pr);
+        else if (id === "pin") onpin(pr, !pr.pinned);
+        else if (id === "browser") openInBrowser(pr.url);
+        else if (id === "copy") void copyLink(pr.url);
+      },
+      { keyboard },
+    );
   }
 
   function onKeydown(e: KeyboardEvent) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const item = at === null ? null : layout.items[at];
     if (e.key === "Enter" || e.key === " ") {
-      if (at !== null) {
+      if (item) {
         e.preventDefault();
-        onopen(prs[at]);
+        activate(item);
+      }
+      return;
+    }
+    if ((e.key === "p" || e.key === "P") && !e.shiftKey && item?.kind === "pr") {
+      e.preventDefault();
+      onpin(item.pr, !item.pr.pinned);
+      return;
+    }
+    if ((e.key === "F10" && e.shiftKey) || e.key === "ContextMenu") {
+      if (item?.kind === "pr" && box) {
+        e.preventDefault();
+        const el = box.querySelector<HTMLElement>(`#inbox-item-${item.index}`);
+        const r = (el ?? box).getBoundingClientRect();
+        menu(item.pr, { x: r.left + 40, y: r.bottom - 6 }, true);
       }
       return;
     }
     const page = Math.max(1, Math.floor((box?.clientHeight ?? ROW_H) / ROW_H) - 1);
-    const next = moveTo(at, e.key, prs.length, page);
+    const next = moveTo(at, e.key, layout.items.length, page);
     if (next === null) return;
     e.preventDefault();
-    inbox.cursor = prs[next].key;
+    inbox.cursor = itemKey(layout.items[next]);
     void tick().then(() => reveal(next));
   }
 
   function onFocus() {
     // Focus with nothing selected selects the first.
-    if (at === null && prs.length > 0) inbox.cursor = prs[0].key;
+    if (at === null && layout.items.length > 0) inbox.cursor = itemKey(layout.items[0]);
     if (at !== null) reveal(at);
   }
 
   /** "2 h ago", from the minute clock. */
   const when = (ms: number | null) => (ms === null ? null : relativeTime(ms, clock.now));
+  const kindOf = (pr: InboxPr) => (pr.state === "merged" ? "merged" : pr.state === "closed" ? "closed" : pr.draft ? "draft" : "open");
+  const STATE_WORDS = { open: "Open", draft: "Draft", merged: "Merged", closed: "Closed" } as const;
 </script>
 
 <div
@@ -108,7 +162,7 @@
   role="listbox"
   tabindex="0"
   aria-label="Pull requests"
-  aria-activedescendant={at === null ? undefined : `inbox-pr-${at}`}
+  aria-activedescendant={at === null ? undefined : `inbox-item-${at}`}
   data-testid="inbox-list"
   data-inbox-focus
   bind:this={box}
@@ -117,57 +171,94 @@
   onfocus={onFocus}
 >
   <div class="space" style:height="{layout.height}px">
-    {#each shown as row (row.kind === "head" ? `h:${row.group}` : row.pr.key)}
-      {#if row.kind === "head"}
-        <div class="head" role="presentation" style:top="{row.top}px" data-testid="inbox-group" data-group={row.group}>
-          <h2>{GROUP_TITLES[row.group]}</h2>
+    {#each shown as row (row.kind === "pr" ? row.pr.key : `${row.kind}:${row.id}`)}
+      {#if row.kind === "head" && row.toggle === null}
+        <div class="head" class:repo={row.id.startsWith("repo:")} role="presentation" style:top="{row.top}px" data-testid="inbox-group" data-group={row.id}>
+          <h2>{row.title}</h2>
           <span class="count">{row.count}</span>
         </div>
-      {:else}
+      {:else if row.kind === "head" && row.toggle !== null}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <div
+          class="head fold"
+          class:open={row.open}
+          class:selected={row.index === at}
+          role="option"
+          id="inbox-item-{row.index}"
+          tabindex="-1"
+          aria-selected={row.index === at}
+          aria-label="{row.title}, {row.count}, {row.open ? 'shown' : 'hidden'}"
+          style:top="{row.top}px"
+          data-testid="inbox-group"
+          data-group={row.id}
+          data-open={row.open}
+          onclick={() => activate(row)}
+        >
+          <span class="chevron" aria-hidden="true"></span>
+          <h2>{row.title}</h2>
+          <span class="count">{row.count}</span>
+        </div>
+      {:else if row.kind === "more"}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <div
+          class="more"
+          class:selected={row.index === at}
+          role="option"
+          id="inbox-item-{row.index}"
+          tabindex="-1"
+          aria-selected={row.index === at}
+          style:top="{row.top}px"
+          data-testid="inbox-more"
+          data-id={row.id}
+          onclick={() => activate(row)}
+        >
+          <span class="more-label">{row.label}</span>
+        </div>
+      {:else if row.kind === "pr"}
         {@const pr = row.pr}
         {@const checks = checksOf(pr.checks)}
         {@const review = reviewOf(pr.review)}
         {@const why = involvedWhy(pr)}
         {@const changed = when(pr.updatedAtMs)}
+        {@const kind = kindOf(pr)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
           class="row"
           class:selected={row.index === at}
           class:fresh={pr.activity !== "none"}
+          class:pinned={pr.pinned}
           role="option"
-          id="inbox-pr-{row.index}"
+          id="inbox-item-{row.index}"
           tabindex="-1"
           aria-selected={row.index === at}
-          aria-label="{pr.title}, {pr.owner}/{pr.name} #{pr.number}{pr.draft ? ', draft' : ''}{checks ? `, ${checks.text}` : ''}{review ? `, ${review.text}` : ''}{pr.activity === 'new'
+          aria-label="{pr.title}, {pr.owner}/{pr.name} #{pr.number}{kind !== 'open' ? `, ${STATE_WORDS[kind].toLowerCase()}` : ''}{checks ? `, ${checks.text}` : ''}{review ? `, ${review.text}` : ''}{pr.activity === 'new'
             ? ', new'
             : pr.activity === 'updated'
               ? ', new activity'
-              : ''}"
+              : ''}{pr.pinned ? ', pinned' : ''}"
           style:top="{row.top}px"
           data-testid="inbox-pr"
           data-key={pr.key}
           data-activity={pr.activity}
-          onclick={() => {
-            inbox.cursor = pr.key;
-            onopen(pr);
+          onclick={() => activate(row)}
+          oncontextmenu={(e) => {
+            e.preventDefault();
+            menu(pr, { x: e.clientX, y: e.clientY }, false);
           }}
         >
           <!-- Its state, as GitHub's lists show it, in a column of its own so every title starts at
                one edge; something new since it was last opened: a dot on it (and the title bolder). -->
           <span
-            class="state"
-            class:draft={pr.draft}
+            class="state s-{kind}"
             title={pr.activity === "new"
-              ? `${pr.draft ? "Draft" : "Open"} · new since you last looked`
+              ? `${STATE_WORDS[kind]} · new since you last looked`
               : pr.activity === "updated"
-                ? `${pr.draft ? "Draft" : "Open"} · new comments, reviews or commits since you last looked`
-                : pr.draft
-                  ? "Draft"
-                  : "Open"}
+                ? `${STATE_WORDS[kind]} · new comments, reviews or commits since you last looked`
+                : STATE_WORDS[kind]}
             data-testid="inbox-state-icon"
-            data-state={pr.draft ? "draft" : "open"}
+            data-state={kind}
           >
-            <PrIcon kind={pr.draft ? "draft" : "open"} />
+            <PrIcon {kind} />
             {#if pr.activity !== "none"}<span class="unread" aria-hidden="true" data-testid="inbox-unread"></span>{/if}
           </span>
           <div class="main">
@@ -197,6 +288,31 @@
                 <span class="long">{review.text}</span><span class="short">{review.short}</span>
               </span>
             {/if}
+            <!-- Pin: on hover, focus or selection; always on a pinned one. Mouse only (P from the keyboard). -->
+            <button
+              class="pin"
+              class:on={pr.pinned}
+              type="button"
+              tabindex="-1"
+              aria-hidden="true"
+              title={pr.pinned ? "Unpin (P)" : "Pin to top (P)"}
+              data-testid="inbox-pin"
+              onclick={(e) => {
+                e.stopPropagation();
+                onpin(pr, !pr.pinned);
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M9.6 2.2 13.8 6.4l-1.2.6-2.1 2.1.1 2.9-1.2 1.2-2.6-2.6-3.3 3.3M5.1 7.1 7.9 4.3l.6-1.2z"
+                  fill={pr.pinned ? "currentColor" : "none"}
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linejoin="round"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
           </div>
         </div>
       {/if}
@@ -220,13 +336,17 @@
     box-shadow: inset 0 0 0 2px var(--focus-ring);
   }
 
+  /* The rows, centred in the list's whole width (its scroll bar at the window's edge). */
   .space {
     position: relative;
     width: 100%;
+    max-width: 960px;
+    margin: 0 auto;
   }
 
   .head,
-  .row {
+  .row,
+  .more {
     position: absolute;
     left: 0;
     right: 0;
@@ -286,8 +406,16 @@
     color: var(--success);
   }
 
-  .state.draft {
+  .state.s-draft {
     color: var(--text-faint);
+  }
+
+  .state.s-merged {
+    color: var(--info);
+  }
+
+  .state.s-closed {
+    color: var(--danger);
   }
 
   .unread {
@@ -417,6 +545,103 @@
 
   .short {
     display: none;
+  }
+
+  /* A repository's name as it is written (case matters): not the groups' small capitals. */
+  .head.repo h2 {
+    color: var(--text);
+    font-size: var(--fs-sm);
+    font-weight: 650;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  /* A heading that folds what is under it: its title where the others' are, a chevron in the
+     gutter before it, turning down when open. */
+  .head.fold {
+    border-radius: var(--radius);
+    cursor: default;
+  }
+
+  .head.fold:hover {
+    background: var(--bg-hover);
+  }
+
+  .head.fold.selected {
+    background: var(--bg-selected);
+  }
+
+  .list:focus-visible .head.fold.selected,
+  .list:focus-visible .more.selected {
+    box-shadow: inset 0 0 0 2px var(--focus-ring);
+  }
+
+  .chevron {
+    position: absolute;
+    left: 5px;
+    bottom: 11px;
+    width: 5px;
+    height: 5px;
+    border-right: 1.3px solid var(--text-faint);
+    border-bottom: 1.3px solid var(--text-faint);
+    transform: rotate(-45deg);
+    transition: transform 80ms var(--ease);
+  }
+
+  .head.fold.open .chevron {
+    bottom: 12px;
+    transform: rotate(45deg);
+  }
+
+  /* "Show N older": a quiet line under its repository, aligned with the titles. */
+  .more {
+    display: flex;
+    align-items: center;
+    height: 36px;
+    padding: 0 14px 0 40px;
+    border-radius: var(--radius);
+    color: var(--accent);
+    font-size: var(--fs-sm);
+    font-weight: 550;
+    cursor: default;
+  }
+
+  .more:hover .more-label {
+    text-decoration: underline;
+  }
+
+  .more.selected {
+    background: var(--bg-selected);
+  }
+
+  .pin {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-faint);
+    opacity: 0;
+    transition: opacity 80ms linear;
+  }
+
+  .row:hover .pin,
+  .row.selected .pin,
+  .pin.on {
+    opacity: 1;
+  }
+
+  .pin.on {
+    color: var(--accent);
+  }
+
+  .pin:hover {
+    background: var(--bg-hover);
+    color: var(--text);
   }
 
   /* Narrow: the review says less, what is after the repository goes first. */

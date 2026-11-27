@@ -1,6 +1,8 @@
 // The Pull requests page across repositories: whether it shows (app.inboxOpen), the list as
-// last known (what gg kept shows at once; gh is asked again behind it), the pull request whose
-// page is open, and what that page offers: going to the repository it is open in, checking out
+// last known (what gg kept shows at once; gh is asked again behind it, the list first, then the
+// details of the rows that show), how it is grouped (kept in gg's config), what is unfolded,
+// the pull request whose page is open (kept while the app runs: going to its repository and
+// back finds it there), pins, and what that page offers: going to the repository it is open in, checking out
 // its branch there (gg's own checkout, only when asked), cloning it, its details and writes
 // (PullRequestView, through inboxPrSource).
 //
@@ -9,8 +11,8 @@
 // core asks gh at most once every 10 s whatever the page does.
 
 import { api } from "../ipc";
-import { inboxKey } from "../inbox";
-import type { InboxPr, InboxRepoMatch, PrInbox, PullRequest } from "../types";
+import { inboxKey, layoutOf, shownPrs, type Toggle, type Unfolded } from "../inbox";
+import type { InboxGroupBy, InboxPr, InboxRepoMatch, PrFiles, PrInbox, PullRequest } from "../types";
 import { activate, app, reportError, toast } from "./app.svelte";
 import { openWebPage } from "./editor";
 import { loadDetailsWith } from "./prDetails.svelte";
@@ -41,33 +43,115 @@ export const inbox = $state({
   pr: null as InboxPr | null,
   /** Grows with each Refresh: the open pull request's details load again. */
   refreshTick: 0,
-  /** The list's scroll position, kept while a pull request's page shows. */
+  /** The list's scroll position, kept while a pull request's page shows and the page is away. */
   scrollTop: 0,
+  /** What is unfolded (while the app runs): the old ones, repositories' older ones, the repositories with only old ones. */
+  unfolded: { older: false, repos: [] as string[], moreRepos: false },
+  /** How the list is grouped (as the core keeps it; changed here at once). */
+  groupBy: "role" as InboxGroupBy,
 });
+
+/** What is unfolded, as the list's layout takes it. */
+export function unfoldedNow(): Unfolded {
+  const u = inbox.unfolded;
+  return { older: u.older, repos: new Set(u.repos), moreRepos: u.moreRepos };
+}
+
+/** The page's rows as they would show now (for what to read the details of). */
+function shownNow(): InboxPr[] {
+  const data = inbox.data;
+  if (!data) return [];
+  return shownPrs(layoutOf(data.prs, inbox.groupBy, Date.now(), unfoldedNow(), data.pins).rows);
+}
+
+/** Takes the core's page: the list, its grouping as kept. */
+/** The user chose a grouping in this run: answers asked for before it do not undo it. */
+let groupChosen = false;
+
+function take(data: PrInbox): void {
+  inbox.data = data;
+  if (groupChosen) data.groupBy = inbox.groupBy;
+  else inbox.groupBy = data.groupBy ?? "role";
+  // The open pull request as the page has it now (a new title, checks), if still there.
+  if (inbox.pr) inbox.pr = data.prs.find((p) => p.key === inbox.pr!.key) ?? inbox.pr;
+}
+
+/** Keys whose details are being read. */
+const reading = new Set<string>();
+
+/**
+ * Reads the details (state, checks, review decision, activity) of `prs`, or of the rows that
+ * show; `all`: again for those read before too (after the list reloads); else only those not
+ * read yet. One request for them all (the core batches them per host).
+ */
+export async function fillDetails(prs: InboxPr[] = shownNow(), all = false): Promise<void> {
+  const keys = prs.filter((p) => (all || !p.details) && !reading.has(p.key)).map((p) => p.key);
+  if (keys.length === 0) return;
+  keys.forEach((k) => reading.add(k));
+  try {
+    take(await api.prInboxDetails(keys));
+  } catch {
+    // The rows say nothing more until the next try.
+  } finally {
+    keys.forEach((k) => reading.delete(k));
+  }
+}
+
+/** Groups the list `by` (kept in gg's config); the rows it shows have their details read. */
+export function setGroupBy(by: InboxGroupBy): void {
+  groupChosen = true;
+  inbox.groupBy = by;
+  if (inbox.data) inbox.data.groupBy = by;
+  api.prInboxGroupBy(by).catch(() => {});
+  void fillDetails();
+}
+
+/** Folds or unfolds what `t` names; the rows it shows have their details read. */
+export function toggle(t: Toggle): void {
+  const u = inbox.unfolded;
+  if (t.kind === "older") u.older = !u.older;
+  else if (t.kind === "repos") u.moreRepos = !u.moreRepos;
+  else u.repos = u.repos.includes(t.repo) ? u.repos.filter((r) => r !== t.repo) : [...u.repos, t.repo];
+  void fillDetails();
+}
+
+/** Pins `pr` to the top (or unpins it), kept in gg's config. */
+export async function setPinned(pr: InboxPr, pinned: boolean): Promise<void> {
+  try {
+    take(await api.prInboxPin(pr.key, pinned));
+  } catch (e) {
+    reportError(e, pinned ? "Could not pin the pull request" : "Could not unpin the pull request");
+    return;
+  }
+  // A pinned one shows whatever its age: its details too.
+  if (pinned) void fillDetails();
+}
 
 let kept = false;
 
 /** Shows the page: what gg kept at once, then gh is asked (unless it was in the last 30 s). */
 export function openInbox(): void {
   app.inboxOpen = true;
-  inbox.pr = null;
   if (!kept) {
     kept = true;
     void api
       .prInbox(false)
       .then((data) => {
         // A load that answered meanwhile is newer.
-        if (inbox.data === null) inbox.data = data;
+        if (inbox.data === null) take(data);
+        void fillDetails();
       })
       .catch(() => {});
   }
   void refreshInbox("open");
 }
 
-/** Puts the page away: the active repository shows again (or the welcome page). */
+/**
+ * Puts the page away: the active repository shows again (or the welcome page). What it showed
+ * (a pull request's page, the list's place) is there when it comes back.
+ */
 export function closeInbox(): void {
   app.inboxOpen = false;
-  inbox.pr = null;
 }
 
 /** The page's shortcut: shows it, or from it, goes back. */
@@ -87,22 +171,25 @@ export async function refreshInbox(why: "open" | "focus" | "user"): Promise<void
   inbox.loading = true;
   inbox.askedAt = Date.now();
   try {
-    const data = await api.prInbox(true);
-    inbox.data = data;
+    take(await api.prInbox(true));
     inbox.error = null;
-    // The open pull request as the new list has it (a new title, checks), if still listed.
-    if (inbox.pr) inbox.pr = data.prs.find((p) => p.key === inbox.pr!.key) ?? inbox.pr;
   } catch (e) {
     inbox.error = e instanceof Error ? e.message : String(e);
+    return;
   } finally {
     inbox.loading = false;
   }
+  // The list is there; the details of the rows it shows (and the open one's) come after.
+  const shown = shownNow();
+  const open = inbox.pr;
+  void fillDetails(open && !shown.some((p) => p.key === open.key) ? [...shown, open] : shown, true);
 }
 
 /** Opens `pr`'s page, recording it as seen (its activity marker goes). */
 export function showInboxPr(pr: InboxPr): void {
   inbox.cursor = pr.key;
   inbox.pr = pr;
+  if (!pr.details) void fillDetails([pr]);
   if (pr.activity !== "none") {
     const listed = inbox.data?.prs.find((p) => p.key === pr.key);
     if (listed) listed.activity = "none";
@@ -156,6 +243,30 @@ export function inboxPrSource(pr: InboxPr): PrSource {
   };
   sources.set(key, made);
   return made;
+}
+
+const files = new Map<string, { data: PrFiles | null; error: string | null; loading: boolean }>();
+const filesState = $state({ tick: 0 });
+
+/** What is known of the files of `pr` (read with loadFiles). */
+export function filesOf(pr: InboxPr): { data: PrFiles | null; error: string | null; loading: boolean } | null {
+  void filesState.tick;
+  return files.get(pr.key) ?? null;
+}
+
+/** Reads the files `pr` changes (when its page shows, and on Refresh); a failure keeps what was shown. */
+export async function loadFiles(pr: InboxPr): Promise<void> {
+  const known = files.get(pr.key) ?? { data: null, error: null, loading: false };
+  if (known.loading) return;
+  files.set(pr.key, { ...known, loading: true });
+  filesState.tick++;
+  try {
+    const data = await api.inboxPrFiles(pr.host, pr.owner, pr.name, pr.number);
+    files.set(pr.key, { data, error: null, loading: false });
+  } catch (e) {
+    files.set(pr.key, { data: known.data, error: e instanceof Error ? e.message.replace(/^Could not read the files:\s*/, "") : String(e), loading: false });
+  }
+  filesState.tick++;
 }
 
 /** The first open repository (in tab order) that has `pr`'s repository as a remote, if any. */

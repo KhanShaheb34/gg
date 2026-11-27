@@ -75,11 +75,12 @@ test("the groups come from one gh query, each pull request once, with no reposit
   await expect(page.locator('[data-testid="inbox-pr"][data-activity="none"]')).toHaveCount(7);
   await expect(page.getByTestId("inbox-unread")).toHaveCount(0);
   await expect(page.getByTestId("inbox-accounts")).toHaveText("@octo");
-  // One query, for github.com, nothing else of gh.
+  // One query for the list, for github.com; then one for the details of the rows shown; nothing else of gh.
   const calls = inboxCalls(gg);
   expect(calls).toHaveLength(1);
   expect(calls[0].slice(-2)).toEqual(["-F", "first=100"]);
-  expect(gg.gh.calls()).toHaveLength(1);
+  await expect.poll(() => gg.gh.calls().length).toBe(2);
+  expect(gg.gh.calls()[1].join(" ")).toContain("GgInboxDetails");
   // The page reads as a page: no repository tab is selected, the welcome page is behind it.
   await expect(button(page)).toHaveAttribute("aria-current", "page");
   // An icon alone, named by its label and tooltip.
@@ -177,7 +178,7 @@ test("the keyboard: the shortcut opens the page, arrows and Enter open a pull re
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowDown");
   await expect(row(page, "github.com/hub/dog#42")).toHaveAttribute("aria-selected", "true");
-  await expect(list(page)).toHaveAttribute("aria-activedescendant", "inbox-pr-2");
+  await expect(list(page)).toHaveAttribute("aria-activedescendant", "inbox-item-2");
   await page.keyboard.press("End");
   await expect(row(page, "github.com/hub/owl#5")).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Home");
@@ -261,8 +262,11 @@ test("go to the repository it is open in, and check out its branch there with gg
   await expect(page.getByTestId("active-worktree")).toContainText("docs/readme");
   expect(gg.git("prs", "branch", "--show-current").trim()).toBe("docs/readme");
 
-  // #29's branch is checked out in another worktree: that one is made active instead.
+  // Back on the page: the pull request it was on, as it was left.
   await button(page).click();
+  await expect(page.getByTestId("pr-view-title")).toHaveText("Read the settings file once");
+  // #29's branch is checked out in another worktree: that one is made active instead.
+  await page.getByTestId("inbox-back").click();
   await row(page, "github.com/octo/cat#29").click();
   await expect(checkout).toHaveAttribute("data-plan", "worktree");
   // Go to repository: its tab, nothing changed.
@@ -271,6 +275,7 @@ test("go to the repository it is open in, and check out its branch there with gg
   await expect(page.getByTestId("active-worktree")).toContainText("docs/readme");
   // A repository not open here offers to clone it instead.
   await button(page).click();
+  await page.keyboard.press("Escape");
   await row(page, "github.com/hub/dog#42").click();
   await expect(page.getByTestId("inbox-clone")).toBeVisible();
   await expect(page.getByTestId("inbox-go-to-repo")).toHaveCount(0);
@@ -297,9 +302,10 @@ test("clone and open: into a new folder of the folder chosen, from a local remot
   await expect(page.getByRole("tab", { name: "dog" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("grid", { name: "Commits" }).locator('[data-index="0"] .subject')).not.toBeEmpty();
   expect(gg.gitAt(path.join(into, "dog"), "rev-parse", "--is-inside-work-tree").trim()).toBe("true");
-  // Again: the folder is there already, said in the dialog, nothing touched.
+  // Again: the folder is there already, said in the dialog, nothing touched. The page shows
+  // the pull request it was left on.
   await button(page).click();
-  await row(page, "github.com/hub/dog#42").click();
+  await expect(page.getByTestId("inbox-pr-page")).toBeVisible();
   await expect(page.getByTestId("inbox-go-to-repo")).toHaveCount(0);
   await page.getByTestId("inbox-clone").click();
   await dialog.getByTestId("clone-parent").fill(into);

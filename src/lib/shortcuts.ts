@@ -268,7 +268,9 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
     match: (e, c) => (c.command && e.shiftKey && key(e) === "i" ? { kind: "inbox" } : null),
   },
   { group: "Pull requests", does: "Select the next or previous pull request; the first or last", keys: [["↓"], ["↑"], ["Home"], ["End"]], where: "in the list" },
-  { group: "Pull requests", does: "Open the selected pull request", keys: [["Enter"]], where: "in the list" },
+  { group: "Pull requests", does: "Open the selected pull request (or fold, unfold)", keys: [["Enter"]], where: "in the list" },
+  { group: "Pull requests", does: "Pin the selected pull request to the top, or unpin it", keys: [["P"]], where: "in the list" },
+  { group: "Pull requests", does: "The selected pull request's menu", keys: [["Shift", "F10"], ["Menu"]], where: "in the list" },
   { group: "Pull requests", does: "Back to the list", keys: [["Esc"]], where: "on a pull request's page" },
   { group: "Pull requests", does: "Load the pull requests again", keys: [["Mod", "R"]], where: "on the page" },
 ];

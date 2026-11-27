@@ -20,7 +20,7 @@
   comments shown meanwhile.
 -->
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { untrack, type Snippet } from "svelte";
   import { visibleText } from "../format";
   import { mergeWording, POLL_MS, reviewWording, shouldPoll } from "../prDetails";
   import { app, windowState } from "../state/app.svelte";
@@ -39,9 +39,11 @@
     pr: PullRequest;
     /** "as of 14:05" when the list it comes from may be out of date. */
     stale: string | null;
+    /** A section after the checks (the Pull requests page: the files it changes). */
+    more?: Snippet;
   };
 
-  let { source, pr, stale }: Props = $props();
+  let { source, pr, stale, more }: Props = $props();
   const draft = $derived(pr.state === "draft");
   const key = $derived(source.key);
   /** As values, so only a change of them asks again (not each new snapshot they are read from). */
@@ -152,6 +154,7 @@
         {#if review}<span class="chip {review.tone}" data-testid="pr-review">{review.text}</span>{/if}
       </div>
       <PrChecks id="{key}#{number}" checks={details.checks} summary={details.checksSummary} now={Math.max(clock.now, details.loadedAtMs)} onlink={openLink} />
+      {#if more}{@render more()}{/if}
       <div class="divider" aria-hidden="true"></div>
       <PrComments {details} dateFormat={app.settings.dateFormat} now={clock.now} onpage={openPage} onlink={openLink} {writes} />
     {:else if !entry?.error}

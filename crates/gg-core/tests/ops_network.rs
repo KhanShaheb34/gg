@@ -639,6 +639,43 @@ async fn pull_current_fast_forwards() {
     assert!(out.message.contains("no upstream"), "{}", out.message);
 }
 
+/// A fast-forward to a merge commit the upstream already had makes no merge: the notice says
+/// where it came from, not that it merged; a pull that makes a merge commit says so.
+#[tokio::test]
+async fn pull_says_merged_only_when_it_made_a_merge() {
+    let (repo, _origin, other) = with_remote();
+    other.branch("side");
+    other.checkout("side");
+    other.commit("on the side");
+    other.checkout("main");
+    other.commit("on main");
+    other.git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    other.git(&["push", "-q", "origin", "main"]);
+    let theirs = rev(&other, "HEAD");
+    let h = harness().await;
+    let id = h.open(repo.path()).await.repo_id;
+
+    let out = h.run(id, pull("main", PullMode::Default)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert_eq!(rev(&repo, "HEAD"), theirs, "fast-forwarded to their merge");
+    assert!(
+        out.message.starts_with("Pulled main. From "),
+        "{}",
+        out.message
+    );
+
+    other.commit("more of theirs");
+    other.git(&["push", "-q", "origin", "main"]);
+    repo.commit("mine");
+    let out = h.run(id, pull("main", PullMode::Merge)).await;
+    assert_eq!(out.status, OpStatus::Done, "{out:?}");
+    assert!(
+        out.message.starts_with("Pulled main. Merged from "),
+        "{}",
+        out.message
+    );
+}
+
 /// Diverged with no pull mode configured: git asks for one, so the outcome offers the
 /// choice; merge and rebase then each work.
 #[tokio::test]

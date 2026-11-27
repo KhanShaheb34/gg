@@ -327,24 +327,41 @@ async fn pull_current(ctx: &OpCtx<'_>, branch: &str, mode: PullMode) -> Result<S
         );
         return autostash_note(ctx, Step::Done(done), &out, stash_before).await;
     }
-    // How it came in: a merge commit made, a rebase asked for, else (a fast-forward, or a
-    // rebase the config chose) just where from.
-    let merged = head_commit(ctx).await? != head_before
-        && ctx
-            .read(&["rev-parse", "--verify", "--quiet", "HEAD^2"])
-            .await?
-            .code
-            == 0;
+    // How it came in: a rebase asked for, a merge commit this pull made, else (a
+    // fast-forward, or a rebase the config chose) just where from.
     let from = from.unwrap_or_else(|| "its upstream".to_owned());
-    let how = if merged {
-        format!("Merged from {from}.")
-    } else if mode == PullMode::Rebase {
+    let how = if mode == PullMode::Rebase {
         format!("Rebased onto {from}.")
+    } else if made_a_merge(ctx, head_before.as_deref()).await? {
+        format!("Merged from {from}.")
     } else {
         format!("From {from}.")
     };
     let done = said(format!("Pulled {}", name(branch)), how);
     autostash_note(ctx, Step::Done(done), &out, stash_before).await
+}
+
+/// Whether the pull that just ran here (from `before`) made a merge commit: HEAD moved, has a
+/// second parent, and is not what was fetched nor under it. A fast-forward to a merge commit
+/// the upstream already had makes none.
+async fn made_a_merge(ctx: &OpCtx<'_>, before: Option<&str>) -> Result<bool> {
+    if head_commit(ctx).await?.as_deref() == before {
+        return Ok(false);
+    }
+    let second_parent = ctx
+        .read(&["rev-parse", "--verify", "--quiet", "HEAD^2"])
+        .await?
+        .code
+        == 0;
+    if !second_parent {
+        return Ok(false);
+    }
+    let fetched = ctx
+        .read(&["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"])
+        .await?
+        .code
+        == 0;
+    Ok(!fetched)
 }
 
 /// Whether a pull here may only fast-forward: `pull.ff=only`, or with no `pull.ff`,

@@ -8,7 +8,7 @@ everyday actions on them.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/graph-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screens/graph-light.png">
-  <img alt="gg showing a repository's commit graph: coloured lanes on the left, branch, remote and tag labels beside each commit's subject, then date, author and short hash columns, and the side panel on the right, on its Worktrees tab" src="docs/screens/graph-light.png" width="1280">
+  <img alt="gg showing a repository's commit graph: coloured lanes on the left, branch, remote and tag labels beside each commit's subject, then date, author and short hash columns, the side panel on the right, on its Worktrees tab, the ↑1 push count in the toolbar, and the status bar along the bottom with the repository's folder" src="docs/screens/graph-light.png" width="1280">
 </picture>
 
 ## Why
@@ -194,6 +194,12 @@ write is kept while gg runs if it fails or you look elsewhere. After you push a 
 pull request, the tab opens by itself (a setting). Open pull requests show as markers beside
 their branches and worktrees. Without `gh`, gg pushes the branch and opens GitHub's compare
 page instead. gg never reads or stores a GitHub token.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pr-reply-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screens/pr-reply-light.png">
+  <img alt="A reply being written in the code comment's thread on README.md:3 in the Pull request tab, under grace's question and ada's answer, with Resolve and Reply buttons below the box" src="docs/screens/pr-reply-light.png" width="640">
+</picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screens/pr-create-dark.png">

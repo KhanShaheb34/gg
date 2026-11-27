@@ -60,11 +60,40 @@
     <p class="lede">What changed in each release of gg, newest first. Each version links to its release on GitHub, with the downloads for every system and their checksums.</p>
   </section>
 
+  <article class="block release" id="v0.5.2" aria-labelledby="v0.5.2-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.5.2-title"><a class="ref ref-tag" href="#v0.5.2"><span class="sr-only">gg </span>v0.5.2</a></h2>
+      <span class="ref ref-latest">latest</span>
+      <p class="release-meta"><time datetime="2026-11-26">26 November 2026</time><a href="/github/releases/tag/v0.5.2">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">A status bar at the bottom of the window, and a quieter header.</p>
+    <h3>What changed</h3>
+    <ul class="changes">
+      <li><b>A status bar.</b> A slim bar at the bottom of the window shows the folder you are working in on the left and when the repository was last fetched on the right ("Fetched 2 min ago", with the exact time in its tooltip). Click the folder for <b>Copy path</b> and <b>Reveal in Finder</b> (Show in File Explorer, Open containing folder). The fetch time also notices a fetch or pull you run in a terminal. Hide the bar with <b>View › Status bar</b>.</li>
+      <li><b>A shorter header.</b> The repository's name is no longer repeated under its tab, and the path has moved to the status bar, so the header starts with the branch and holds only things you act on.</li>
+    </ul>
+  </article>
+
+  <article class="block release" id="v0.5.1" aria-labelledby="v0.5.1-title">
+    <span class="node" aria-hidden="true"></span>
+    <header class="release-head">
+      <h2 class="release-version" id="v0.5.1-title"><a class="ref ref-tag" href="#v0.5.1"><span class="sr-only">gg </span>v0.5.1</a></h2>
+      <p class="release-meta"><time datetime="2026-11-26">26 November 2026</time><a href="/github/releases/tag/v0.5.1">Downloads on GitHub</a></p>
+    </header>
+    <p class="release-lede">Answer a pull request's review from the side panel, and pull or push the current branch in one click.</p>
+    <h3>What changed</h3>
+    <ul class="changes">
+      <li><b>Reply, resolve and comment in the Pull request tab.</b> Each review thread has a <b>Reply…</b> box and a <b>Resolve</b> button; a resolved thread has <b>Unresolve</b>; and a box at the end of the comments adds a comment to the conversation. Nothing is sent until you press the button or ⌘↩ (Ctrl+Enter). If sending fails, your text stays in the box with the reason under it. Drafts are kept while you switch tabs or commits, until gg quits. What you are not allowed to do on a pull request is not offered. It all goes through your <code>gh</code>; gg still never reads or stores a GitHub token.</li>
+      <li><b>Pull and push from the toolbar.</b> When the current branch is behind its upstream, a <code>↓9</code> count appears in the toolbar just before Fetch; one click pulls. Ahead, it shows <code>↑2</code> and one click pushes. Diverged, it shows both, each its own button, and pulling asks whether to merge or rebase as before. In sync, nothing shows. The counts update when a fetch lands.</li>
+      <li><b>The upstream is read from git, not guessed.</b> gg now takes each branch's upstream remote and branch from git's configuration, so a remote with a slash in its name can no longer be mistaken for another.</li>
+    </ul>
+  </article>
+
   <article class="block release" id="v0.5.0" aria-labelledby="v0.5.0-title">
     <span class="node" aria-hidden="true"></span>
     <header class="release-head">
       <h2 class="release-version" id="v0.5.0-title"><a class="ref ref-tag" href="#v0.5.0"><span class="sr-only">gg </span>v0.5.0</a></h2>
-      <span class="ref ref-latest">latest</span>
       <p class="release-meta"><time datetime="2026-11-26">26 November 2026</time><a href="/github/releases/tag/v0.5.0">Downloads on GitHub</a></p>
     </header>
     <p class="release-lede">Pull requests move into the side panel: create one, then follow its checks and comments, without leaving gg.</p>

@@ -29,8 +29,9 @@
     return cut > 0 ? path.slice(0, cut) : path;
   }
 
-  const guessed = app.recents[0] ? parentOf(app.recents[0].path) : (app.homeDir ?? "");
-  let parent = $state(guessed);
+  let parent = $state(app.recents[0] ? parentOf(app.recents[0].path) : (app.homeDir ?? ""));
+  /** The user typed or chose a folder: the one remembered, coming late, does not replace it. */
+  let touched = false;
   let running = $state(false);
   let line = $state("");
   let failed = $state<{ message: string; detail: string | null } | null>(null);
@@ -44,7 +45,7 @@
       .cloneParent()
       .then((p) => {
         // Only while the field is as it opened: a folder typed or chosen meanwhile stays.
-        if (p && !running && parent === guessed) parent = p;
+        if (p && !running && !touched) parent = p;
       })
       .catch(() => {});
   });
@@ -62,7 +63,10 @@
       reportError(e);
       return;
     }
-    if (picked) parent = picked;
+    if (picked) {
+      touched = true;
+      parent = picked;
+    }
   }
 
   async function submit() {
@@ -118,6 +122,7 @@
         class="text-input"
         type="text"
         bind:value={parent}
+        oninput={() => (touched = true)}
         readonly={running}
         autocomplete="off"
         autocapitalize="off"

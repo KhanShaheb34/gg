@@ -57,6 +57,9 @@ pub(crate) struct InboxState {
     details: Mutex<HashMap<String, DetailsLoad>>,
     /// The clones running, by the UI's id, each with its Cancel.
     clones: Mutex<HashMap<String, Arc<Notify>>>,
+    /// Stops asked for clones not running yet (the request may reach the core after its
+    /// Stop): such a clone, when it comes, never starts git. The newest few only.
+    stopped_early: Mutex<std::collections::VecDeque<String>>,
     /// Tests and the devserver only: least time between two loads, instead of 10 s.
     #[cfg(any(test, feature = "testutil", feature = "tool-path"))]
     every: Mutex<Option<Duration>>,
@@ -524,13 +527,36 @@ impl RepoManager {
         // Counted in at once (refused while gg restarts to update, and holding a restart off
         // until it ends), so a Stop before git starts is kept: git then never starts.
         let cancel = Arc::new(Notify::new());
+        let mut taken = false;
         self.admit(|| {
-            lock(&self.inbox.clones).insert(clone_id.to_owned(), cancel.clone());
+            let mut clones = lock(&self.inbox.clones);
+            taken = clones.contains_key(clone_id);
+            if !taken {
+                clones.insert(clone_id.to_owned(), cancel.clone());
+            }
         })?;
+        if taken {
+            return Err(bad("A clone of that name runs already."));
+        }
         let _registered = Registered {
             manager: self,
             id: clone_id,
         };
+        let repo = format!("{owner}/{name}");
+        let stopped = || Cloned {
+            status: "stopped",
+            path: None,
+            message: format!("The clone of {repo} was stopped."),
+            detail: None,
+        };
+        // Stopped before it got here.
+        {
+            let mut early = lock(&self.inbox.stopped_early);
+            if let Some(at) = early.iter().position(|id| id == clone_id) {
+                early.remove(at);
+                return Ok(stopped());
+            }
+        }
         if !self.is_github_host(host).await {
             return Err(bad(format!(
                 "{host} is not a GitHub host gh is signed in to."
@@ -554,7 +580,6 @@ impl RepoManager {
                 &cancel,
             )
             .await;
-        let repo = format!("{owner}/{name}");
         match ran? {
             Ok(out) if out.code == 0 => {
                 if let Ok(store) = self.inbox_store() {
@@ -581,12 +606,7 @@ impl RepoManager {
                     detail: Some(out.stderr).filter(|d| !d.trim().is_empty()),
                 })
             }
-            Err(gave_up) if gave_up.limit == Expired::Cancelled => Ok(Cloned {
-                status: "stopped",
-                path: None,
-                message: format!("The clone of {repo} was stopped."),
-                detail: None,
-            }),
+            Err(gave_up) if gave_up.limit == Expired::Cancelled => Ok(stopped()),
             Err(gave_up) => Ok(Cloned {
                 status: "failed",
                 path: None,
@@ -605,15 +625,24 @@ impl RepoManager {
     }
 
     /// Stops clone `clone_id` if it runs: git is ended with what it started (it removes the
-    /// folder it made). Whether it was running.
+    /// folder it made). Whether it was running; if it was not, a clone of that id that comes
+    /// later is stopped before git starts. A clone git already finished stays done.
     pub fn clone_cancel(&self, clone_id: &str) -> bool {
-        match lock(&self.inbox.clones).get(clone_id) {
-            Some(cancel) => {
-                cancel.notify_one();
-                true
-            }
-            None => false,
+        // Under the clones' lock: a clone registering now is either seen here or sees this.
+        let clones = lock(&self.inbox.clones);
+        if let Some(cancel) = clones.get(clone_id) {
+            cancel.notify_one();
+            return true;
         }
+        // Not running (yet): kept, so one that comes after its Stop never starts.
+        let mut early = lock(&self.inbox.stopped_early);
+        if !early.iter().any(|id| id == clone_id) {
+            early.push_back(clone_id.to_owned());
+            while early.len() > 16 {
+                early.pop_front();
+            }
+        }
+        false
     }
 
     /// The address `owner/name` on `host` is cloned from (see [`Self::clone_repo`]).

@@ -284,7 +284,13 @@ async fn enterprise_hosts_of_open_repositories_are_asked_too() {
     ]);
     s.gh.reply("auth-token", 0, "", "");
     s.h.open(repo.path()).await;
-    s.gh.reply("gql-inbox", 0, &answer(vec![], vec![], vec![]), "");
+    // Someone else's on each host, so the check holds whichever answers first.
+    s.gh.reply(
+        "gql-inbox",
+        0,
+        &answer(vec![], vec![node(9, "octo/cat", "ada", json!({}))], vec![]),
+        "",
+    );
     let mut ghe = node(3, "team/app", "ada", json!({}));
     ghe["url"] = "https://ghe.example/team/app/pull/3".into();
     s.gh.reply(
@@ -296,8 +302,8 @@ async fn enterprise_hosts_of_open_repositories_are_asked_too() {
     let page = s.h.m.pr_inbox(true).await.unwrap();
     let hosts: Vec<&str> = page.hosts.iter().map(|h| h.host.as_str()).collect();
     assert_eq!(hosts, ["github.com", "ghe.example"]);
-    assert_eq!(page.prs.len(), 1);
-    assert_eq!(page.prs[0].key, "ghe.example/team/app#3");
+    assert_eq!(page.prs.len(), 2);
+    assert!(page.prs.iter().any(|p| p.key == "ghe.example/team/app#3"));
     // Both answered on the page's first load: nothing is new on either host.
     assert!(page.prs.iter().all(|p| p.activity == InboxActivity::None));
     let ghe_call =
@@ -501,6 +507,52 @@ async fn clone_into_a_new_folder() {
             .unwrap_err();
     assert_eq!(e.code, ErrorCode::PathMissing);
     assert!(!s.h.m.clone_cancel("nothing-running"));
+    // A Stop that reaches the core before its clone: that clone never starts git.
+    assert!(!s.h.m.clone_cancel("c6"));
+    let early =
+        s.h.m
+            .clone_repo(
+                "c6",
+                "github.com",
+                "octo",
+                "cat",
+                &other_parent(&parent_path),
+            )
+            .await
+            .unwrap();
+    assert_eq!(early.status, "stopped");
+    assert!(!parent_path.join("early/cat").exists());
+    let clones = |log: &gg_core::git::runner::CommandLog| {
+        log.since(0)
+            .into_iter()
+            .filter(|r| r.args.first().is_some_and(|a| a == "clone"))
+            .count()
+    };
+    assert_eq!(clones(&s.h.log), 2, "no git for the stopped one");
+    // One id, one clone: a second with the id of one running is refused at once.
+    s.gh.reply("auth-token", 0, "", "");
+    s.gh.slow("auth-token", 2);
+    let (m, dir) = (s.h.m.clone(), other_parent(&parent_path));
+    let first =
+        tokio::spawn(async move { m.clone_repo("c7", "ghe.example", "octo", "cat", &dir).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let e =
+        s.h.m
+            .clone_repo(
+                "c7",
+                "ghe.example",
+                "octo",
+                "cat",
+                &other_parent(&parent_path),
+            )
+            .await
+            .unwrap_err();
+    assert_eq!(e.code, ErrorCode::BadRequest);
+    assert!(e.message.contains("runs already"), "{}", e.message);
+    // While it runs, gg does not restart.
+    assert_eq!(s.h.m.begin_restart().unwrap_err().code, ErrorCode::Busy);
+    let _ = first.await.unwrap();
+    s.gh.fast("auth-token");
     // While gg restarts to update, no clone starts.
     let other = parent_path.join("other");
     std::fs::create_dir(&other).unwrap();
@@ -528,4 +580,11 @@ async fn web_pages_open_only_where_they_should() {
     assert!(open(External::Link, "https://evil.example/x").is_ok());
     assert!(open(External::Link, "http://evil.example/x").is_err());
     assert!(open(External::Editor, "https://github.com/").is_err());
+}
+
+/// A folder `early` beside the clones (made once), for the clones that must not happen.
+fn other_parent(parent: &Path) -> std::path::PathBuf {
+    let dir = parent.join("early");
+    let _ = std::fs::create_dir(&dir);
+    dir
 }

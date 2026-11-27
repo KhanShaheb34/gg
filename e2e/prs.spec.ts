@@ -145,7 +145,7 @@ test("create: the menu shows the Pull request tab for the branch at once, sugges
   await expect(button(page, "Create PR")).toBeDisabled();
   // Typed while it waits: kept when the suggestion comes.
   await panel(page).getByTestId("pr-body").fill("Typo in the first line.");
-  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Typo");
   await expect(panel(page).getByTestId("pr-body")).toHaveValue("Typo in the first line.");
   await expect(panel(page).getByTestId("pr-base")).toHaveValue("main");
   // The repository it goes into, named; where the branch is pushed first, said.
@@ -188,7 +188,7 @@ test("create: the menu shows the Pull request tab for the branch at once, sugges
   const made = calls.findIndex((c) => c[0] === "pr" && c[1] === "create");
   expect(calls[made]).toEqual([
     "pr", "create", "--repo", "octo/cat", "--head", "fix/typo", "--base", "main",
-    "--title", "Fix a typo in the README", "--body-file", "-", "--draft",
+    "--title", "Typo", "--body-file", "-", "--draft",
   ]);
   expect(gg.gh.stdin(made)).toBe("Typo in the first line.");
   await done.getByRole("button", { name: "Open", exact: true }).click();
@@ -449,7 +449,7 @@ test("what is typed is kept: another tab, the panel hidden, another repository's
   await menuOn(page, "fix/typo", "Create pull request…");
   const title = panel(page).getByTestId("pr-title");
   const body = panel(page).getByTestId("pr-body");
-  await expect(title).toHaveValue("Fix a typo in the README");
+  await expect(title).toHaveValue("Typo");
   await title.fill("Fix the README's first line");
   await body.fill("It said teh.");
   await panel(page).getByTestId("pr-draft").check();
@@ -517,7 +517,7 @@ test("after a push: the tab shows for the branch pushed, without taking the focu
   await dialog(page).getByRole("button", { name: "Push", exact: true }).click();
   await expect(tab(page, "pr")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("pr-branch")).toContainText("fix/typo");
-  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Typo");
   await expect(panel(page).getByTestId("pr-title")).not.toBeFocused();
   await expect(panel(page).getByTestId("push-note")).toHaveCount(0);
 
@@ -557,7 +557,7 @@ test("after Commit & Push on a new branch: the tab shows, about the current bran
   await push.click();
   await expect(tab(page, "pr")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("pr-branch")).toHaveCount(0);
-  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Add notes");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Notes");
 
 });
 
@@ -784,7 +784,7 @@ test("whatever the font's widths: at the least width the view's buttons stack, a
   await grid(page).focus();
   await page.keyboard.press("ControlOrMeta+Shift+P");
   // The form, at the least width.
-  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Typo");
   expect(Math.round((await page.locator('[data-region="side-panel"]').boundingBox())!.width)).toBe(240);
   await expectButtonsFit(page);
   // The view, at the least width: stacked.
@@ -833,7 +833,7 @@ test("in a narrow window the shortcut shows the tab over the graph, and Escape h
   await expect(side).toHaveClass(/overlay/);
   await expect(tab(page, "pr")).toHaveAttribute("aria-selected", "true");
   await expect(panel(page).getByTestId("pr-title")).toBeFocused();
-  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Typo");
   await expect(button(page, "Push and create PR")).toBeInViewport({ ratio: 1 });
   await page.keyboard.press("Escape");
   await expect(side).toHaveCount(0);
@@ -845,7 +845,7 @@ test("a suggestion for another branch that comes late never fills the form shown
   // fix/typo's suggestion, kept.
   await menuOn(page, "fix/typo", "Create pull request…");
   const title = panel(page).getByTestId("pr-title");
-  await expect(title).toHaveValue("Fix a typo in the README");
+  await expect(title).toHaveValue("Typo");
   // docs/readme's is held back by the core.
   let release: () => void = () => {};
   const held = new Promise<void>((r) => (release = r));
@@ -863,16 +863,16 @@ test("a suggestion for another branch that comes late never fills the form shown
   // Back to fix/typo (its suggestion kept) before docs/readme's answer comes.
   await menuOn(page, "fix/typo", "Create pull request…");
   await expect(page.getByTestId("pr-branch")).toContainText("fix/typo");
-  await expect(title).toHaveValue("Fix a typo in the README");
+  await expect(title).toHaveValue("Typo");
   release();
   await page.waitForTimeout(800);
   await expect(page.getByTestId("pr-branch")).toContainText("fix/typo");
-  await expect(title).toHaveValue("Fix a typo in the README");
+  await expect(title).toHaveValue("Typo");
   await expect(panel(page).getByTestId("pr-body")).toHaveValue("- Fix a typo in the README");
   await page.unrouteAll({ behavior: "wait" });
   // docs/readme's, kept when it came, is there when its form shows.
   await menuOn(page, "docs/readme", "Create pull request…");
-  await expect(title).toHaveValue("Explain the parser");
+  await expect(title).toHaveValue("Readme");
 });
 
 test("without gh, a commit made since the suggestion is pushed before the compare page opens (review: the suggestion said nothing to push)", async ({ gg }) => {
@@ -1028,7 +1028,7 @@ test("a branch cut from staging is offered staging as its base, and Committed on
   await page.keyboard.press("ControlOrMeta+Shift+P");
   await expect(panel(page).getByTestId("pr-form")).toBeVisible();
   await expect(panel(page).getByTestId("pr-base")).toHaveValue("staging");
-  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Fix it on staging");
+  await expect(panel(page).getByTestId("pr-title")).toHaveValue("Staging only");
   // Committed on branch agrees: the one commit of its own, against origin/staging.
   await tab(page, "commit").click();
   await expect(page.getByTestId("branch-files-base")).toHaveText("vs origin/staging");

@@ -1273,7 +1273,7 @@ for (const [prefix, width, height] of SIZES)
       await expect(tab.getByTestId("pr-waiting")).toBeVisible();
       await shot("prs-tab-loading");
       await page.clock.runFor(3500);
-      await expect(tab.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+      await expect(tab.getByTestId("pr-title")).toHaveValue("Typo");
       await shot("prs-tab");
 
       // Waiting on the push and gh.
@@ -1347,7 +1347,7 @@ for (const [prefix, width, height] of SIZES)
     await grid.focus();
     await page.keyboard.press("ControlOrMeta+Shift+P");
     const tab = page.getByTestId("pr-panel");
-    await expect(tab.getByTestId("pr-title")).toHaveValue("Fix a typo in the README");
+    await expect(tab.getByTestId("pr-title")).toHaveValue("Typo");
     await expect(tab.getByTestId("pr-body")).not.toHaveValue("");
     await shot("pr-tab-create");
 

@@ -1,6 +1,6 @@
 <!--
   The form that makes a pull request of a local branch, in the side panel's Pull request tab:
-  a title and a description (suggested from the branch's commits by the core's `pr_suggest`;
+  a title and a description (suggested by the core's `pr_suggest`: the branch's name as words, its commits;
   a suggestion that comes late never replaces what the user typed), the base among the base
   repository's branches (the one last used there to begin with), and Create as draft. The
   primary button names the push it makes first when one is needed, and a line above it says

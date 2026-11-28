@@ -648,7 +648,9 @@ impl RepoManager {
                 }
                 format!("{owner}/{name}")
             }
-            CloneSource::Url(url) => url.clone(),
+            // Named by its owner and name when the link has them (a link is long to read).
+            CloneSource::Url(url) => crate::hosts::parse_remote(url)
+                .map_or_else(|| url.clone(), |r| format!("{}/{}", r.owner, r.name)),
         };
         if clone_id.is_empty() || clone_id.len() > 100 {
             return Err(bad("A clone needs a name to be cancelled by."));
@@ -725,11 +727,7 @@ impl RepoManager {
                 let _ = tokio::task::spawn_blocking(move || made.undo()).await;
             }
         };
-        let progress = CloneProgress {
-            manager: self,
-            id: clone_id,
-            state: Mutex::new((String::new(), None)),
-        };
+        let progress = CloneProgress::new(self, clone_id);
         let dest_text = made.dest().to_string_lossy().into_owned();
         let args = clone_args(&url, &dest_text, local, self.clone_hook_args());
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -1018,35 +1016,79 @@ async fn ask_details(
 }
 
 /// Sends the latest progress line of a clone as `clone-progress`, at most every
-/// [`PROGRESS_EVERY_MS`].
-struct CloneProgress<'a> {
-    manager: &'a RepoManager,
-    id: &'a str,
-    /// The unfinished line, and when the last event went.
-    state: Mutex<(String, Option<Instant>)>,
+/// [`PROGRESS_EVERY_MS`]: a line that comes sooner is sent once that time is up, unless a later
+/// one replaces it, so the last line before git goes quiet (a slow host) is always shown.
+struct CloneProgress {
+    sink: Arc<dyn crate::EventSink>,
+    id: String,
+    state: Arc<Mutex<ProgressState>>,
 }
 
-impl CloneProgress<'_> {
-    fn seen(&self, chunk: &[u8]) {
-        let line = {
-            let mut state = lock(&self.state);
-            let Some(line) = crate::ops::latest_line(&mut state.0, chunk) else {
-                return;
-            };
-            if state
-                .1
-                .is_some_and(|at| at.elapsed().as_millis() < PROGRESS_EVERY_MS)
-            {
-                return;
-            }
-            state.1 = Some(Instant::now());
-            line
-        };
-        self.manager.sink.emit(
-            "clone-progress",
-            serde_json::json!({ "cloneId": self.id, "line": line }),
-        );
+#[derive(Default)]
+struct ProgressState {
+    /// The unfinished line.
+    partial: String,
+    /// When the last event went.
+    sent: Option<Instant>,
+    /// A line waiting for its turn, and whether a send of it is due.
+    waiting: Option<String>,
+    due: bool,
+}
+
+impl CloneProgress {
+    fn new(manager: &RepoManager, id: &str) -> Self {
+        Self {
+            sink: manager.sink.clone(),
+            id: id.to_owned(),
+            state: Arc::default(),
+        }
     }
+
+    fn seen(&self, chunk: &[u8]) {
+        let mut state = lock(&self.state);
+        let Some(line) = crate::ops::latest_line(&mut state.partial, chunk) else {
+            return;
+        };
+        let every = Duration::from_millis(PROGRESS_EVERY_MS as u64);
+        let wait = state
+            .sent
+            .map_or(Duration::ZERO, |at| every.saturating_sub(at.elapsed()));
+        if wait.is_zero() {
+            state.sent = Some(Instant::now());
+            state.waiting = None;
+            drop(state);
+            emit_progress(&*self.sink, &self.id, line);
+            return;
+        }
+        state.waiting = Some(line);
+        if state.due {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        state.due = true;
+        let (sink, id, shared) = (self.sink.clone(), self.id.clone(), self.state.clone());
+        runtime.spawn(async move {
+            tokio::time::sleep(wait).await;
+            let line = {
+                let mut state = lock(&shared);
+                state.due = false;
+                state.sent = Some(Instant::now());
+                state.waiting.take()
+            };
+            if let Some(line) = line {
+                emit_progress(&*sink, &id, line);
+            }
+        });
+    }
+}
+
+fn emit_progress(sink: &dyn crate::EventSink, id: &str, line: String) {
+    sink.emit(
+        "clone-progress",
+        serde_json::json!({ "cloneId": id, "line": line }),
+    );
 }
 
 /// A running clone's entry in the manager, removed when the clone ends however it ends.

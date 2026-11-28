@@ -827,7 +827,7 @@ mod tests {
             "ssh://-u@github.com/octo/cat",
             "-oProxyCommand=touch:octo/cat",
             "git@-host:octo/cat",
-            "-git@github.com:octo/cat",
+            "-git@example.com:octo/cat",
             "git@github.com:-octo/cat",
             "git@github.com:",
             "https://github.com/",

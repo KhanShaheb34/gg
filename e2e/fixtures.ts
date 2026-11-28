@@ -736,7 +736,13 @@ PATH=/usr/bin:/bin
 export PATH
 d="$(cd "$(dirname "$0")/.." && pwd)/gh"
 i=1
-while ! mkdir "$d/calls/$i" 2>/dev/null; do i=$((i+1)); done
+while ! mkdir "$d/calls/$i" 2>/dev/null; do
+  # The test's folder is gone (a call the devserver started as it was stopped, in a process
+  # group of its own, that outlived it): nothing to record into. Never try forever: such a
+  # loop outlives the test and takes the machine's time from every test after it.
+  if [ ! -d "$d/calls" ]; then exit 1; fi
+  i=$((i+1))
+done
 for a in "$@"; do printf '%s\\0' "$a"; done > "$d/calls/$i/argv"
 cat > "$d/calls/$i/stdin"
 key="$1-$2"

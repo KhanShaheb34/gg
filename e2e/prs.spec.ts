@@ -6,7 +6,8 @@
 // one already, the signed-out and missing-gh fallback to the compare page, the branch a menu
 // asked for and the way back, what is typed kept, the tab showing after a push (and when it
 // does not), the pull request's own view, the shortcut, and the panel at its least width.
-import { writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, type GG, openFolder, test } from "./fixtures";
@@ -1043,4 +1044,18 @@ test("a branch cut from staging is offered staging as its base, and Committed on
   await expect(page.getByTestId("branch-files-base")).toHaveText("vs origin/staging");
   await expect(page.getByTestId("branch-files-count")).toHaveText("1");
   await expect(page.getByTestId("branch-file")).toHaveAttribute("data-path", "fix.txt");
+});
+
+test("the fake gh started as its test ends, its folder gone, exits at once (never loops on, taking the time of the tests after it)", async ({ gg }) => {
+  test.skip(process.platform === "win32", "runs the fake through sh");
+  const recorded = path.join(gg.home, "gh");
+  const gone = path.join(gg.home, "gh-gone");
+  renameSync(recorded, gone);
+  try {
+    const run = spawnSync("sh", [path.join(gg.home, "tools", "gh"), "pr", "list"], { timeout: 10_000, input: "" });
+    expect(run.error).toBeUndefined();
+    expect(run.status).toBe(1);
+  } finally {
+    renameSync(gone, recorded);
+  }
 });

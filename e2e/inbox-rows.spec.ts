@@ -189,3 +189,18 @@ test("a pull request's page: the pin an icon, a merged pinned one says Merged, t
   await expect(page.getByTestId("pr-state")).toHaveAttribute("data-state", "merged");
   await expect(page.getByTestId("pr-state")).toHaveText("Merged");
 });
+
+test("a pull request's page whose details give a state gg does not know keeps the list's: closed stays Closed", async ({ gg }) => {
+  const { page } = gg;
+  const shut: Node = { number: 5, repo: "hub/dog", state: "CLOSED" };
+  replyInbox(gg, { review: [shut] });
+  replyDetails(gg, [shut]);
+  answer(gg, 5, view(5, { state: "SOMETHING_NEW", comments: [], reviews: [] }));
+  replyFiles(gg, 5, [[]]);
+  await openPage(gg);
+  await expect(row(page, "github.com/hub/dog#5").locator("[data-state]")).toHaveAttribute("data-state", "closed");
+  await row(page, "github.com/hub/dog#5").click();
+  await expect(page.getByTestId("pr-merge-status")).toBeVisible();
+  await expect(page.getByTestId("pr-state")).toHaveAttribute("data-state", "closed");
+  await expect(page.getByTestId("pr-state")).toHaveText("Closed");
+});

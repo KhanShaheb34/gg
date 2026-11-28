@@ -1,4 +1,4 @@
-<!-- Shown when no repository is open: open one, or pick from the recent ones. -->
+<!-- Shown when no repository is open: open one, clone one, or pick from the recent ones. -->
 <script lang="ts">
   import { onMount } from "svelte";
   import { colorIndex, displayFolder, relativeTime, shortenPath } from "../format";
@@ -6,9 +6,11 @@
   import { app, openPath, openViaPicker, removeRecent } from "../state/app.svelte";
   import { folderOf } from "../cli";
   import { openCliDialog, removeCli } from "../state/cli.svelte";
-  import Mark from "./Mark.svelte";
+  import { openClone } from "../state/clone.svelte";
+  import AppIcon from "./AppIcon.svelte";
 
   const shortcut = isMac() ? "⌘O" : "Ctrl+O";
+  const cloneShortcut = isMac() ? "⇧⌘O" : "Ctrl+Shift+O";
   // Only the app learns the path of a dropped folder; a browser page cannot.
   const canDrop = isTauri();
 
@@ -22,7 +24,7 @@
 <section class="welcome" data-testid="welcome" aria-labelledby="welcome-title">
   <div class="column">
     <header class="intro">
-      <div class="tile"><Mark size={34} /></div>
+      <AppIcon size={52} />
       <div>
         <h1 id="welcome-title">gg</h1>
         <p class="lede">Open a repository folder to see its branches and history as a graph.</p>
@@ -42,6 +44,14 @@
         </svg>
         Open repository…
         <kbd>{shortcut}</kbd>
+      </button>
+      <button class="secondary" data-testid="welcome-clone" onclick={() => openClone()}>
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 2v7.2M5.2 6.6 8 9.4l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M2.5 10.2v1.6c0 .8.6 1.4 1.4 1.4h8.2c.8 0 1.4-.6 1.4-1.4v-1.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+        Clone repository…
+        <kbd>{cloneShortcut}</kbd>
       </button>
       {#if canDrop}
         <p class="hint">or drop a folder onto this window</p>
@@ -124,19 +134,6 @@
     gap: 16px;
   }
 
-  .tile {
-    --mark-ground: var(--bg-elevated);
-    display: grid;
-    place-items: center;
-    width: 48px;
-    height: 48px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--bg-elevated);
-    box-shadow: var(--shadow-tab);
-    flex: none;
-  }
-
   h1 {
     font-size: 22px;
     font-weight: 650;
@@ -151,8 +148,9 @@
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 14px;
+    gap: 10px;
     margin-top: 28px;
   }
 
@@ -184,6 +182,44 @@
     outline-offset: 2px;
   }
 
+  .secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 8px 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    color: var(--text);
+    font-weight: 550;
+    box-shadow: var(--shadow-tab);
+    transition: background-color 80ms linear;
+  }
+
+  .secondary svg {
+    color: var(--accent);
+  }
+
+  .secondary:hover {
+    background: color-mix(in srgb, var(--bg-hover) 60%, var(--bg-elevated));
+  }
+
+  .secondary:active {
+    transform: translateY(0.5px);
+    background: var(--bg-pressed);
+  }
+
+  .secondary:focus-visible {
+    outline-offset: 2px;
+  }
+
+  .secondary kbd,
+  :global(:root[data-theme="dark"]) .secondary kbd {
+    background: var(--bg-hover);
+    color: var(--text-muted);
+  }
+
   kbd {
     margin-left: 4px;
     padding: 1px 5px;
@@ -200,6 +236,7 @@
   }
 
   .hint {
+    margin-left: 4px;
     color: var(--text-faint);
     font-size: var(--fs-sm);
   }

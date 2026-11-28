@@ -6,7 +6,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, test, type GG } from "./fixtures";
+import { expect, type GG, openFolder, test } from "./fixtures";
 import { answer, comment, coderabbit, review, run, status, THREADS_22, threads, view, viewCalls } from "./prDetailsData";
 
 test.use({ viewport: { width: 1280, height: 900 }, ggDevserverArgs: ["--pr-details-every-ms", "0"] });
@@ -80,7 +80,7 @@ async function showPr(gg: GG, v: object | null = PASSING(), t: object = talk().t
   await page.goto("/");
   const dir = gg.repoPath("prs");
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.locator("button.pr-chip[data-pr='31']").first()).toBeVisible();
@@ -314,7 +314,7 @@ test("an answer that comes late for another branch's pull request never shows on
   answer(gg, 31, FAILING(), threads([]));
   await page.goto("/");
   page.once("dialog", (dialog) => dialog.accept(gg.repoPath("prs")));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.locator("button.pr-chip[data-pr='31']").first()).toBeVisible();
   await grid(page).focus();

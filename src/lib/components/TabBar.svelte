@@ -1,5 +1,5 @@
 <!--
-  The window's top bar: one tab per open repository, a button to open another, the settings
+  The window's top bar: one tab per open repository, + to open or clone another, the settings
   and the theme toggle. On macOS in the app it doubles as the title bar: empty space drags the window and
   the traffic lights sit in the left inset. On Windows and Linux the window has its system's own
   title bar above it, which drags the window: this bar is only the tabs.
@@ -8,7 +8,8 @@
   import { tick } from "svelte";
   import { colorIndex, shortenPath } from "../format";
   import { isMac, isTauri } from "../platform";
-  import { activate, app, closeTab, cycleTheme, openViaPicker } from "../state/app.svelte";
+  import { activate, app, closeTab, cycleTheme } from "../state/app.svelte";
+  import { openNewTab } from "../state/clone.svelte";
   import { activityCount } from "../inbox";
   import { inbox, toggleInbox } from "../state/inbox.svelte";
   import PrIcon from "./PrIcon.svelte";
@@ -18,7 +19,7 @@
   const trafficLights = isTauri() && isMac();
   /** Empty space drags the window only where this bar is the title bar (macOS's overlay). */
   const dragRegion = trafficLights ? "" : undefined;
-  const openLabel = `Open repository (${isMac() ? "⌘O" : "Ctrl+O"})`;
+  const newTabLabel = `Open or clone a repository (${isMac() ? "⌘T" : "Ctrl+T"})`;
   const inboxKeys = isMac() ? "⌘⇧I" : "Ctrl+Shift+I";
   /** Pull requests with activity since they were last opened in gg: a dot on the page's button. */
   const fresh = $derived(activityCount(inbox.data));
@@ -130,7 +131,14 @@
     </div>
   {/if}
 
-  <button class="icon-btn" aria-label="Open repository" title={openLabel} onclick={openViaPicker}>
+  <button
+    class="icon-btn"
+    aria-label="Open or clone a repository"
+    aria-haspopup="dialog"
+    title={newTabLabel}
+    data-testid="new-tab"
+    onclick={openNewTab}
+  >
     <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
       <path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
     </svg>

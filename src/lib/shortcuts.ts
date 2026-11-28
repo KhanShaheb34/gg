@@ -7,6 +7,8 @@
 
 export type Shortcut =
   | { kind: "open" }
+  | { kind: "newTab" }
+  | { kind: "clone" }
   | { kind: "close" }
   | { kind: "cycle"; delta: 1 | -1 }
   | { kind: "jump"; index: number }
@@ -29,6 +31,8 @@ export type Shortcut =
 /** Every kind of shortcut the window's handler takes (a test checks each has a row). */
 export const SHORTCUT_KINDS = [
   "open",
+  "newTab",
+  "clone",
   "close",
   "cycle",
   "jump",
@@ -97,6 +101,20 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
     keys: [["Mod", "O"]],
     kind: "open",
     match: (e, c) => (c.command && !e.shiftKey && key(e) === "o" ? { kind: "open" } : null),
+  },
+  {
+    group: "Repositories",
+    does: "Clone a repository: by its link, or one of yours",
+    keys: [["Mod", "Shift", "O"]],
+    kind: "clone",
+    match: (e, c) => (c.command && e.shiftKey && key(e) === "o" ? { kind: "clone" } : null),
+  },
+  {
+    group: "Repositories",
+    does: "New tab: open a recent repository, a folder, or clone one (the tab bar's +)",
+    keys: [["Mod", "T"]],
+    kind: "newTab",
+    match: (e, c) => (c.command && !e.shiftKey && key(e) === "t" ? { kind: "newTab" } : null),
   },
   {
     group: "Repositories",

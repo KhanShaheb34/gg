@@ -4,7 +4,7 @@
 import { chmodSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, makeRepo, otherClone, runOp, test } from "./fixtures";
+import { expect, makeRepo, openFolder, otherClone, runOp, test } from "./fixtures";
 import { answer, comment, review, run, threads, view } from "./prDetailsData";
 
 const OUT = path.resolve(import.meta.dirname, "..", ".screens");
@@ -23,7 +23,7 @@ const park = (page: Page) => page.mouse.move(1000, 20);
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toBeVisible();
 }
 
@@ -177,7 +177,7 @@ for (const theme of ["light", "dark"] as const) {
 
     // A folder that is not a repository: the error toast, over the welcome screen.
     page.once("dialog", (dialog) => dialog.accept(gg.folder("plain")));
-    await page.getByRole("button", { name: "Open repository" }).first().click();
+    await openFolder(page);
     await expect(page.getByRole("alert")).toBeVisible();
     await park(page);
     await page.waitForTimeout(250); // the toast's entrance

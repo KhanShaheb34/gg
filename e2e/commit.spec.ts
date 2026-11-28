@@ -9,13 +9,13 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, openFolder, test } from "./fixtures";
 
 test.use({ viewport: { width: 1280, height: 800 } });
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }

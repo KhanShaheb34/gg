@@ -4,7 +4,7 @@
 // answers the details as GitHub would once it has it, so what shows after a write is what the
 // tab loaded again. The core's floor between two loads is 0 ms here (--pr-details-every-ms).
 import type { Locator, Page } from "@playwright/test";
-import { expect, test, type GG } from "./fixtures";
+import { expect, type GG, openFolder, test } from "./fixtures";
 import { answer, comment, threads, view, type ThreadSpec } from "./prDetailsData";
 
 test.use({ viewport: { width: 1280, height: 900 }, ggDevserverArgs: ["--pr-details-every-ms", "0"] });
@@ -53,7 +53,7 @@ async function showPr(gg: GG, v: object = V(), t: object = threads([parser(), to
   answer(gg, 31, v, t);
   await page.goto("/");
   page.once("dialog", (dialog) => dialog.accept(gg.repoPath("prs")));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(grid(page).locator('[data-index="0"] .subject')).not.toBeEmpty();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.locator("button.pr-chip[data-pr='31']").first()).toBeVisible();

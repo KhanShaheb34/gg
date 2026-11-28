@@ -11,14 +11,17 @@ import type {
   BranchFiles,
   CliState,
   Cloned,
+  ClonedLink,
   CommandRecord,
   CommitDetails,
   Confirmed,
   CoreErrorDto,
+  DestCheck,
   InboxGroupBy,
   InboxRepoMatch,
   InboxWritten,
   InputField,
+  KnownRepo,
   OpOutcome,
   OpenedRepo,
   OpRequest,
@@ -27,6 +30,7 @@ import type {
   PrInbox,
   PrSuggestion,
   Recent,
+  RepoList,
   RepoPrefs,
   RepoSnapshot,
   RowsPage,
@@ -50,7 +54,13 @@ export type EventName =
   | "clone-progress"
   | "menu-install-cli"
   | "menu-settings"
-  | "menu-shortcuts";
+  | "menu-shortcuts"
+  | "menu-open"
+  | "menu-clone"
+  | "menu-new-tab";
+
+/** The folder picker's title, and the folder it starts in. */
+export type PickFolder = { title?: string; defaultPath?: string };
 
 /** Files or folders dragged onto the window (Tauri only). `drop` carries their paths. */
 export type FolderDragEvent = { kind: "enter" } | { kind: "leave" } | { kind: "drop"; paths: string[] };
@@ -76,7 +86,7 @@ type Handler = (payload: unknown) => void;
 interface Transport {
   invoke(cmd: string, args: Record<string, unknown>): Promise<unknown>;
   listen(name: EventName, handler: Handler): () => void;
-  pickFolder(): Promise<string | null>;
+  pickFolder(opts?: PickFolder): Promise<string | null>;
   closeWindow(): Promise<void>;
   onFolderDrag(handler: (event: FolderDragEvent) => void): () => void;
 }
@@ -123,11 +133,11 @@ const tauriTransport: Transport = {
     };
   },
 
-  async pickFolder() {
+  async pickFolder(opts) {
     let picked;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      picked = await open({ directory: true, multiple: false });
+      picked = await open({ directory: true, multiple: false, title: opts?.title, defaultPath: opts?.defaultPath });
     } catch (e) {
       throw unreachable("Could not show the folder picker", e);
     }
@@ -257,8 +267,8 @@ const httpTransport: Transport = {
     };
   },
 
-  async pickFolder() {
-    const path = window.prompt("Repository path")?.trim();
+  async pickFolder(opts) {
+    const path = window.prompt(opts?.title ?? "Repository path", opts?.defaultPath ?? "")?.trim();
     return path ? path : null;
   },
 
@@ -392,11 +402,20 @@ export const api = {
     call<InboxRepoMatch[]>("inbox_repo_match", headRepo ? { host, owner, name, headRepo } : { host, owner, name }),
   /** Opens an https page in the browser for no repository: `url` only on a GitHub host the page lists, `link` anywhere. */
   openWeb: (target: "url" | "link", url: string) => call<{ note: string | null }>("open_web", { target, url }),
-  /** The folder the last clone went into, if any. */
-  cloneParent: () => call<string | null>("clone_parent"),
-  /** Clones `owner/name` of `host` into a new folder of `parent`; progress as `clone-progress` events named `cloneId`. */
-  cloneRepo: (cloneId: string, host: string, owner: string, name: string, parent: string) =>
-    call<Cloned>("clone_repo", { cloneId, host, owner, name, parent }),
+  /** What a link typed in the Clone dialog names, or why it is refused (no git, no network). */
+  cloneLink: (link: string) => call<ClonedLink>("clone_link", { link }),
+  /** Where a clone of `folder` into `parent` would go, and why it cannot. */
+  cloneDest: (parent: string, folder: string) => call<DestCheck>("clone_dest", { parent, folder }),
+  /** The user's repositories on github.com through gh, or why not. */
+  cloneRepos: () => call<RepoList>("clone_repos"),
+  /** The repositories gg already has (open, recent), by their remotes. */
+  cloneKnown: () => call<KnownRepo[]>("clone_known"),
+  /**
+   * Clones `from` (a repository on a GitHub host, or a link as typed) into the folder `folder`
+   * of `parent` (made when missing); progress as `clone-progress` events named `cloneId`.
+   */
+  cloneRepo: (cloneId: string, from: { host: string; owner: string; name: string } | { link: string }, parent: string, folder: string) =>
+    call<Cloned>("clone_repo", { cloneId, ...from, parent, folder }),
   /** Stops clone `cloneId` if it runs. */
   cloneCancel: (cloneId: string) => call<boolean>("clone_cancel", { cloneId }),
   async setWindowFocused(focused: boolean): Promise<void> {
@@ -488,5 +507,5 @@ export const api = {
   /** Closes the app's window (Cmd/Ctrl+W with no tab open); nothing in a browser. */
   closeWindow: (): Promise<void> => transport().closeWindow(),
   /** Asks the user for a repository folder; null if cancelled. */
-  pickFolder: (): Promise<string | null> => transport().pickFolder(),
+  pickFolder: (opts?: PickFolder): Promise<string | null> => transport().pickFolder(opts),
 };

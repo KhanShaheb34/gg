@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, test } from "./fixtures";
+import { expect, openFolder, test } from "./fixtures";
 
 test.skip(!process.env.GG_WALK, "set GG_WALK=1 to run the walk");
 
@@ -62,7 +62,7 @@ for (const [size, width, height] of [
       );
       await page.goto("/");
       page.once("dialog", (dialog) => dialog.accept(work));
-      await page.getByRole("button", { name: "Open repository" }).first().click();
+      await openFolder(page);
 
       // The driver.
       let seen = start;
@@ -95,7 +95,7 @@ for (const [size, width, height] of [
             );
           } else if (name === "walk-need gg other") {
             page.once("dialog", (dialog) => dialog.accept(path.join(W, "other")));
-            await page.getByRole("button", { name: "Open repository" }).first().click();
+            await openFolder(page);
           } else if (name.startsWith("walk-shot ") && OUT) {
             mkdirSync(OUT, { recursive: true });
             await page.screenshot({ path: path.join(OUT, `${size}-${theme}-${name.slice(10)}.png`) });

@@ -130,8 +130,43 @@ export type PrFiles = { files: FileChange[]; truncated: boolean };
 export type InboxRepoMatch = { repoId: number; headRemote: string | null };
 /** What a write from the Pull requests page did. */
 export type InboxWritten = { done: boolean; message: string; detail: string | null };
-/** How a clone ended. */
-export type Cloned = { status: "done" | "failed" | "stopped"; path: string | null; message: string; detail: string | null };
+/** How a clone ended; on failure `notice` says it as a headline and the line under it. */
+export type Cloned = {
+  status: "done" | "failed" | "stopped";
+  path: string | null;
+  message: string;
+  notice: Notice | null;
+  detail: string | null;
+};
+/** What a link names (`clone_link`): the repository as owner/name on a host when it names one, and the folder git would make. */
+export type LinkInfo = { host: string | null; owner: string | null; name: string | null; folder: string; shorthand: boolean };
+/** A link read (`clone_link`): what it names, or why it is refused. */
+export type ClonedLink = { link: LinkInfo | null; problem: string | null };
+/** Where a clone would go (`clone_dest`), and why not; `makesParent`: the folder above is made by the clone. */
+export type DestCheck = { path: string; problem: string | null; makesParent: boolean };
+/** One of the user's repositories (`clone_repos`). */
+export type ListedRepo = {
+  host: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  archived: boolean;
+  fork: boolean;
+  description: string | null;
+  pushedAtMs: number | null;
+};
+/** The user's repositories on a host, the most recently pushed to first (100 at most), or why not. */
+export type RepoList = {
+  host: string;
+  login: string | null;
+  repos: ListedRepo[];
+  total: number;
+  problem: InboxProblem | null;
+  message: string | null;
+  detail: string | null;
+};
+/** A repository gg already has (`clone_known`), by one of its remotes; `repoId` when it is open. */
+export type KnownRepo = { path: string; repoId: number | null; host: string; owner: string; name: string };
 /** `clone-progress` event: the latest progress line of a clone. */
 export type CloneProgress = { cloneId: string; line: string };
 
@@ -377,6 +412,8 @@ export type Settings = {
   aiPrPrompt: string | null;
   /** The tools whose first-use notice the user went on from. */
   aiNoticeSeen: AiTool[];
+  /** The folder clones go into by default (a full path); null is the platform's (AppState's cloneDirDefault). */
+  cloneDir: string | null;
 };
 
 /** A command-line AI tool gg can run (the core's `AiTool`). */
@@ -482,6 +519,7 @@ export type AppState = {
   settings: Settings;
   launchPath: string | null;
   homeDir: string | null; // the user's home folder, for showing paths as ~/…
+  cloneDirDefault: string | null; // where clones go when the settings name no folder (~/Developer on macOS, ~/Projects elsewhere)
   settingsProblem: string | null; // why settings are not being saved (unreadable file); null when they are
   settingsFile: string; // the file settings are kept in (it may not exist until something is saved)
   gitProblem: string | null; // the git found is too old (before 2.29), said once; null when it is not

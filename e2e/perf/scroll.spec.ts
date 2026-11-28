@@ -14,7 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import type { ScrollSummary } from "../../src/lib/perf/scrollProbe";
-import { startDevserver, stopDevserver } from "../fixtures";
+import { openFolder, startDevserver, stopDevserver } from "../fixtures";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const REPO = process.env.GG_PERF_R100K ?? path.join(homedir(), ".cache/gg-perf/r100k");
@@ -48,7 +48,7 @@ test("scrolling r100k top to bottom", async ({ page }, info) => {
     }, server.url);
     await page.goto("/");
     page.once("dialog", (dialog) => dialog.accept(REPO));
-    await page.getByRole("button", { name: "Open repository" }).first().click();
+    await openFolder(page);
 
     const handle = await page.waitForFunction(
       () => (window as unknown as { __GG_PROBE__: { summary?: unknown } }).__GG_PROBE__.summary,

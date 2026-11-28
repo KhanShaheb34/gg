@@ -8,6 +8,7 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { expandHome } from "../clone";
   import { conflictWord, lineFailed, linkNote, turnOffCommand } from "../cli";
   import { formatDate, formatDateLong, homeInText, shellQuote, shortenPath, type DateFormat } from "../format";
   import { api } from "../ipc";
@@ -62,6 +63,7 @@
     editor: new SettingField("editorCommand", TEXT_DELAY_MS),
     terminal: new SettingField("terminalCommand", TEXT_DELAY_MS),
     pattern: new SettingField("worktreePattern", TEXT_DELAY_MS),
+    cloneDir: new SettingField("cloneDir", TEXT_DELAY_MS),
     updates: new SettingField("checkForUpdates"),
     prTab: new SettingField("openPrTabAfterPush"),
     aiTool: new SettingField("aiTool"),
@@ -128,6 +130,31 @@
   let editor = $state(untrack(() => app.settings.editorCommand ?? ""));
   let terminal = $state(untrack(() => app.settings.terminalCommand ?? ""));
   let pattern = $state(untrack(() => app.settings.worktreePattern));
+
+  // --- Cloning ------------------------------------------------------------------------
+  /** What the clone location field shows: the folder set, else the platform's. */
+  /** The folder as the field shows it: the home folder as ~. */
+  const shownDir = (dir: string | null) => shortenPath(dir ?? app.cloneDirDefault ?? "", app.homeDir);
+  let cloneDir = $state(untrack(() => shownDir(app.settings.cloneDir)));
+  function setCloneDir(value: string | null) {
+    cloneDir = value ?? shownDir(null);
+    const full = value === null ? "" : expandHome(value, app.homeDir);
+    // The platform's folder, typed or chosen, is the default itself (it follows the platform).
+    fields.cloneDir.set(full === "" || full === app.cloneDirDefault ? null : full);
+  }
+  async function chooseCloneDir() {
+    let picked: string | null;
+    try {
+      picked = await api.pickFolder({ title: "Choose where clones go", defaultPath: expandHome(cloneDir, app.homeDir) || undefined });
+    } catch (e) {
+      notify({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+      return;
+    }
+    if (picked) {
+      setCloneDir(shortenPath(picked, app.homeDir));
+      await fields.cloneDir.flush();
+    }
+  }
 
   // --- The open repository, for the previews and Test ----------------------------------
 
@@ -231,6 +258,7 @@
         editor = app.settings.editorCommand ?? "";
         terminal = app.settings.terminalCommand ?? "";
         pattern = app.settings.worktreePattern;
+        cloneDir = shownDir(app.settings.cloneDir);
         models = {};
         commitPrompt = app.settings.aiCommitPrompt;
         prPrompt = app.settings.aiPrPrompt;
@@ -255,7 +283,7 @@
    * saved (its message is beside it) keeps gg from restarting, so nothing typed is lost.
    */
   async function restartFromHere() {
-    for (const field of [fields.editor, fields.terminal, fields.pattern]) {
+    for (const field of [fields.editor, fields.terminal, fields.pattern, fields.cloneDir]) {
       if (!(await field.flush())) {
         notify({ kind: "info", message: "gg did not restart: a setting you typed could not be saved. Fix it or clear it, then restart." });
         return;
@@ -272,6 +300,7 @@
     ["appearance", "Appearance"],
     ["fetching", "Fetching"],
     ["tools", "Tools"],
+    ["cloning", "Cloning"],
     ["worktrees", "Worktrees"],
     ["prs", "Pull requests"],
     ["ai", "AI"],
@@ -314,6 +343,7 @@
         fields.editor,
         fields.terminal,
         fields.pattern,
+        fields.cloneDir,
         fields.claudeModel,
         fields.codexModel,
         fields.commitPrompt,
@@ -519,6 +549,50 @@
         TERMINAL_DEFAULT,
       )}
       <p class="aside">Run as the program and its arguments, never through a shell. Test opens the open repository’s active worktree.</p>
+    </section>
+
+    <section id="settings-cloning" aria-labelledby="h-cloning">
+      <h3 class="section" id="h-cloning">Cloning</h3>
+      <div class="setting">
+        <div class="name">
+          <label for="settings-clone-dir">Default location</label>
+          {@render status(fields.cloneDir)}
+        </div>
+        <div class="control">
+          <p class="explain">
+            Where Clone repository puts a new clone, in a folder named after the repository. The folder is made when a clone
+            first goes there.
+          </p>
+          <div class="input-row">
+            <input
+              id="settings-clone-dir"
+              class="text-input mono-input"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              value={cloneDir}
+              aria-invalid={fields.cloneDir.status === "error" && fields.cloneDir.error !== null}
+              data-testid="settings-clone-dir"
+              oninput={(e) => setCloneDir(e.currentTarget.value)}
+              onblur={() => void fields.cloneDir.flush()}
+            />
+            <button type="button" class="button" data-testid="settings-clone-dir-choose" onclick={() => void chooseCloneDir()}>Choose…</button>
+          </div>
+          <div class="note">
+            {#if fields.cloneDir.status === "error" && fields.cloneDir.error}
+              <p class="problem" role="alert">{fields.cloneDir.error}</p>
+            {:else if app.settings.cloneDir === null}
+              <p class="hint" data-testid="settings-clone-dir-note">The default: {mac ? "Developer" : "Projects"} in your home folder.</p>
+            {:else}
+              <p class="hint" data-testid="settings-clone-dir-note">
+                <button type="button" class="link-btn small-link" data-testid="settings-clone-dir-reset" onclick={() => setCloneDir(null)}
+                  >Use the default, {shortenPath(app.cloneDirDefault ?? "", app.homeDir)}</button
+                >
+              </p>
+            {/if}
+          </div>
+        </div>
+      </div>
     </section>
 
     <section id="settings-worktrees" aria-labelledby="h-worktrees">

@@ -4,7 +4,7 @@
   import CommitDetails from "./lib/components/CommitDetails.svelte";
   import ConflictBanner from "./lib/components/ConflictBanner.svelte";
   import ContextMenu from "./lib/components/ContextMenu.svelte";
-  import Mark from "./lib/components/Mark.svelte";
+  import AppIcon from "./lib/components/AppIcon.svelte";
   import SidePanel from "./lib/components/SidePanel.svelte";
   import WorktreePanel from "./lib/components/WorktreePanel.svelte";
   import CommitPanel from "./lib/components/CommitPanel.svelte";
@@ -38,6 +38,7 @@
   } from "./lib/state/app.svelte";
   import { openBranchPicker } from "./lib/state/picker";
   import { openCliDialog } from "./lib/state/cli.svelte";
+  import { openClone, openNewTab } from "./lib/state/clone.svelte";
   import { openSettings, openShortcuts } from "./lib/state/settings.svelte";
   import { initUpdates } from "./lib/state/updates.svelte";
   import { logPrefs, setLogOpen } from "./lib/state/commandLog.svelte";
@@ -214,6 +215,10 @@
     const stopCliMenu = onEvent("menu-install-cli", () => fromAppMenu(() => void openCliDialog()));
     const stopSettingsMenu = onEvent("menu-settings", () => fromAppMenu(openSettings));
     const stopShortcutsMenu = onEvent("menu-shortcuts", () => fromAppMenu(openShortcuts));
+    // The File menu's Open Repository…, Clone Repository… and New Tab, as their keys do.
+    const stopOpenMenu = onEvent("menu-open", () => fromAppMenu(() => !app.gitMissing && void openViaPicker()));
+    const stopCloneMenu = onEvent("menu-clone", () => fromAppMenu(() => !app.gitMissing && openClone()));
+    const stopNewTabMenu = onEvent("menu-new-tab", () => fromAppMenu(() => !app.gitMissing && openNewTab()));
     // A push the user asked for may show the side panel's Pull request tab (pullRequest.svelte.ts).
     onUserPush(afterPush);
     // The webview's own context menu (Reload, Inspect…) is not the app's; text fields keep
@@ -235,6 +240,9 @@
       stopCliMenu();
       stopSettingsMenu();
       stopShortcutsMenu();
+      stopOpenMenu();
+      stopCloneMenu();
+      stopNewTabMenu();
       onUserPush(null);
       document.removeEventListener("contextmenu", onContextMenu);
     };
@@ -286,6 +294,12 @@
     switch (shortcut.kind) {
       case "open":
         void openViaPicker();
+        break;
+      case "newTab":
+        openNewTab();
+        break;
+      case "clone":
+        openClone();
         break;
       case "close":
         // With no tab left, Cmd+W closes the window, as in other tabbed apps.
@@ -368,7 +382,7 @@
   <main class="content">
     {#if app.gitMissing}
       <section class="notice" role="alert">
-        <Mark size={36} />
+        <AppIcon size={44} />
         <p class="notice-text">Git was not found. Install git and restart.</p>
       </section>
     {:else if app.inboxOpen}

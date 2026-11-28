@@ -62,6 +62,7 @@ export const app = $state({
     aiCommitPrompt: null,
     aiPrPrompt: null,
     aiNoticeSeen: [],
+    cloneDir: null,
   } as Settings,
   /** The file settings are kept in, as the core says. */
   settingsFile: "",
@@ -83,6 +84,8 @@ export const app = $state({
   gitMissing: false,
   /** The user's home folder, for showing paths as `~/…`. */
   homeDir: null as string | null,
+  /** Where clones go when the settings name no folder (the platform's: ~/Developer, ~/Projects). */
+  cloneDirDefault: null as string | null,
   /** The command-log entries asked for last ("Show log" on a notice): from id `from` on. */
   logRequest: null as { repoId: number; from: number } | null,
   /**
@@ -335,14 +338,21 @@ export async function openPath(path: string): Promise<void> {
   await refreshRecents();
 }
 
+/** The folder picker is up (its key and the menu's may both ask). */
+let picking = false;
+
 /** Asks for a folder and opens it. */
 export async function openViaPicker(): Promise<void> {
+  if (picking) return;
+  picking = true;
   let path;
   try {
     path = await api.pickFolder();
   } catch (e) {
     reportError(e);
     return;
+  } finally {
+    picking = false;
   }
   if (path) await openPath(path);
 }
@@ -535,6 +545,7 @@ export async function init(): Promise<void> {
   app.settingsProblem = state.settingsProblem;
   app.version = state.version;
   app.homeDir = state.homeDir;
+  app.cloneDirDefault = state.cloneDirDefault;
   app.cli = state.cli;
   applyTheme(state.settings.theme);
 

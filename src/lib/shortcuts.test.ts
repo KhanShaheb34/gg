@@ -60,8 +60,15 @@ describe("shortcutFor on macOS (Cmd)", () => {
     expect(mac(key("f", { metaKey: true, shiftKey: true }))).toEqual({ kind: "fetch" });
     expect(mac(key("r", { metaKey: true }))).toEqual({ kind: "refresh" });
     expect(mac(key("r", { metaKey: true, shiftKey: true }))).toBeNull();
-    expect(mac(key("o", { metaKey: true, shiftKey: true }))).toBeNull();
     expect(mac(key("f", { ctrlKey: true }))).toBeNull();
+  });
+
+  it("maps Cmd+T to the + menu and Shift+Cmd+O to Clone", () => {
+    expect(mac(key("t", { metaKey: true }))).toEqual({ kind: "newTab" });
+    expect(mac(key("o", { metaKey: true, shiftKey: true }))).toEqual({ kind: "clone" });
+    expect(mac(key("O", { metaKey: true, shiftKey: true }))).toEqual({ kind: "clone" });
+    expect(mac(key("t", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(mac(key("t", { ctrlKey: true }))).toBeNull();
   });
 });
 
@@ -78,6 +85,8 @@ describe("shortcutFor elsewhere (Ctrl)", () => {
     expect(pc(key("F", { ctrlKey: true, shiftKey: true }))).toEqual({ kind: "fetch" });
     expect(pc(key("r", { ctrlKey: true }))).toEqual({ kind: "refresh" });
     expect(pc(key("r", { metaKey: true }))).toBeNull();
+    expect(pc(key("t", { ctrlKey: true }))).toEqual({ kind: "newTab" });
+    expect(pc(key("O", { ctrlKey: true, shiftKey: true }))).toEqual({ kind: "clone" });
   });
 });
 

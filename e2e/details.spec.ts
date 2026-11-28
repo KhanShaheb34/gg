@@ -4,13 +4,13 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { expect, makeRepo, STATUS_BAR_H, test } from "./fixtures";
+import { expect, makeRepo, openFolder, STATUS_BAR_H, test } from "./fixtures";
 
 test.use({ timezoneId: "UTC" });
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
 }
 

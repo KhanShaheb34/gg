@@ -109,6 +109,7 @@ test("settings open from the keys and the gear, save each field as it changes, a
     aiCommitPrompt: null,
     aiPrPrompt: null,
     aiNoticeSeen: [],
+    cloneDir: null,
   });
   await expect(page.getByRole("tab", { name: "small" })).toBeVisible();
 });

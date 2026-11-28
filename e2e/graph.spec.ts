@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { BIG_COMMITS, bigSubject, closeButton, expect, STATUS_BAR_H, test, viewOption } from "./fixtures";
+import { BIG_COMMITS, bigSubject, closeButton, expect, openFolder, STATUS_BAR_H, test, viewOption } from "./fixtures";
 
 test.use({ timezoneId: "UTC" });
 
@@ -17,7 +17,7 @@ function utcDate(unixSecs: number): string {
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
 }
 

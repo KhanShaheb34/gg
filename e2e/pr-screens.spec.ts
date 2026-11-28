@@ -3,7 +3,7 @@
 //   GG_SCREENS=1 pnpm e2e pr-screens
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { expect, test, type GG } from "./fixtures";
+import { expect, type GG, openFolder, test } from "./fixtures";
 import { answer, comment, coderabbit, review, run, status, threads, view } from "./prDetailsData";
 
 const OUT = process.env.GG_SCREENS_DIR ?? path.resolve(import.meta.dirname, "..", ".screens");
@@ -59,7 +59,7 @@ async function showPr(gg: GG, v: object, t: object) {
   await page.goto("/");
   const dir = gg.repoPath("prs");
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("grid", { name: "Commits" }).locator('[data-index="0"] .subject')).not.toBeEmpty();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("grid", { name: "Commits" }).focus();

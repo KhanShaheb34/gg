@@ -21,12 +21,14 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
+use crate::clone::{CloneSource, check_dest, clone_args, clone_failure, make_dest};
 use crate::dto::{
-    InboxProblem, InboxRepoMatch, InboxWritten, OpRequest, PrDetails, PrInbox, PrUnavailable,
+    InboxProblem, InboxRepoMatch, InboxWritten, Notice, OpRequest, PrDetails, PrInbox,
+    PrUnavailable,
 };
 use crate::error::{CoreError, ErrorCode, Result};
 use crate::gh::{Gh, GhFailure};
-use crate::git::runner::{CmdKind, Expired, StdinPolicy, TimeLimit};
+use crate::git::runner::{CmdKind, Expired, StdinPolicy, TimeLimit, batch_ssh_command};
 use crate::hosts::{RemoteRepo, is_known_github, is_plain_host};
 use crate::inbox::{
     DETAILS_BATCH, DETAILS_QUERY, Details, InboxStore, PER_SEARCH, QUERY, key_of, plain_repo,
@@ -71,6 +73,10 @@ pub(crate) struct InboxState {
     /// folder, instead of the host.
     #[cfg(feature = "tool-path")]
     clone_source: Mutex<Option<PathBuf>>,
+    /// Tests and the devserver only: the program the clone source answers through (it runs
+    /// `git upload-pack "$@"` itself).
+    #[cfg(feature = "tool-path")]
+    clone_hook: Mutex<Option<PathBuf>>,
 }
 
 /// How a clone ended (`clone_repo`). Serialized camelCase.
@@ -83,17 +89,19 @@ pub struct Cloned {
     pub path: Option<String>,
     /// What happened, in one plain line.
     pub message: String,
+    /// What happened, as a headline and the line under it, on failure.
+    pub notice: Option<Notice>,
     /// git's own output, on failure.
     pub detail: Option<String>,
 }
 
 /// The program name of `gh` here.
-fn gh_name() -> &'static str {
+pub(super) fn gh_name() -> &'static str {
     if cfg!(windows) { "gh.exe" } else { "gh" }
 }
 
 /// Where `gh` runs for the page: a folder of no repository.
-fn neutral_dir() -> PathBuf {
+pub(super) fn neutral_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
@@ -618,37 +626,43 @@ impl RepoManager {
         self.inbox_store().ok()?.data().clone_parent
     }
 
-    /// Clones `owner/name` of GitHub host `host` into a new folder `<parent>/<name>` (see the
-    /// module comment), by the protocol `gh` is set to use for git there (`gh config get
-    /// git_protocol`: `ssh`, else `https`). `clone_id` names it for [`Self::clone_cancel`]
-    /// and its `clone-progress` events. Refused (`bad_request`) for a parent that is not an
-    /// existing absolute folder, or a folder of that name already there.
+    /// Clones `source` (see the module comment) into the folder `folder` of `parent`: a
+    /// repository on a GitHub host by the protocol `gh` is set to use for git there (`gh config
+    /// get git_protocol`: `ssh`, else `https`), or an address [`crate::clone::read_link`] kept.
+    /// `clone_id` names it for [`Self::clone_cancel`] and its `clone-progress` events. Refused
+    /// (`bad_request`) for a parent that is not a full path, a folder name that is not one plain
+    /// name, or something not empty there already (see [`crate::clone::check_dest`]). The
+    /// parent folders missing are made; a clone that does not finish (failed, stopped, timed
+    /// out) takes away what it made and nothing else (see [`crate::clone::Made::undo`]).
     pub async fn clone_repo(
         &self,
         clone_id: &str,
-        host: &str,
-        owner: &str,
-        name: &str,
+        source: &CloneSource,
         parent: &Path,
+        folder: &str,
     ) -> Result<Cloned> {
-        if !plain_repo(host, owner, name) {
-            return Err(bad("That is not a repository gg can name."));
-        }
+        let what = match source {
+            CloneSource::Repo { host, owner, name } => {
+                if !plain_repo(host, owner, name) {
+                    return Err(bad("That is not a repository gg can name."));
+                }
+                format!("{owner}/{name}")
+            }
+            // Named by its owner and name when the link has them (a link is long to read).
+            CloneSource::Url(url) => crate::hosts::parse_remote(url)
+                .map_or_else(|| url.clone(), |r| format!("{}/{}", r.owner, r.name)),
+        };
         if clone_id.is_empty() || clone_id.len() > 100 {
             return Err(bad("A clone needs a name to be cancelled by."));
         }
-        if !parent.is_absolute() || !parent.is_dir() {
+        if !parent.is_absolute() {
             return Err(CoreError::new(
                 ErrorCode::PathMissing,
-                format!("{} is not a folder.", parent.display()),
+                format!("{} is not a full path.", parent.display()),
             ));
         }
-        let dest = parent.join(name);
-        if std::fs::symlink_metadata(&dest).is_ok() {
-            return Err(bad(format!(
-                "There is a {name} in {} already. Choose another folder.",
-                parent.display()
-            )));
+        if let Some(problem) = check_dest(parent, folder).problem {
+            return Err(bad(problem));
         }
         // Counted in at once (refused while gg restarts to update, and holding a restart off
         // until it ends), so a Stop before git starts is kept: git then never starts.
@@ -668,11 +682,12 @@ impl RepoManager {
             manager: self,
             id: clone_id,
         };
-        let repo = format!("{owner}/{name}");
+        let shown = crate::notice::name(&what);
         let stopped = || Cloned {
             status: "stopped",
             path: None,
-            message: format!("The clone of {repo} was stopped."),
+            message: format!("The clone of {what} was stopped."),
+            notice: None,
             detail: None,
         };
         // Stopped before it got here.
@@ -683,31 +698,66 @@ impl RepoManager {
                 return Ok(stopped());
             }
         }
-        if !self.is_github_host(host).await {
-            return Err(bad(format!(
-                "{host} is not a GitHub host gh is signed in to."
-            )));
-        }
-        let url = self.clone_url(host, owner, name).await;
-        let progress = CloneProgress {
-            manager: self,
-            id: clone_id,
-            state: Mutex::new((String::new(), None)),
+        let (url, local) = match source {
+            CloneSource::Repo { host, owner, name } => {
+                if !self.is_github_host(host).await {
+                    return Err(bad(format!(
+                        "{host} is not a GitHub host gh is signed in to."
+                    )));
+                }
+                self.clone_url(host, owner, name).await
+            }
+            CloneSource::Url(url) => self.link_url(url),
         };
-        let dest_text = dest.to_string_lossy().into_owned();
-        let ran = self
-            .runner
+        // The folder (and the parents missing), made now: what a clone that does not finish
+        // takes away.
+        let made = {
+            let (parent, folder) = (parent.to_owned(), folder.to_owned());
+            tokio::task::spawn_blocking(move || make_dest(&parent, &folder))
+                .await
+                .map_err(|e| {
+                    CoreError::new(ErrorCode::Io, "The clone failed").with_detail(e.to_string())
+                })?
+                .map_err(bad)?
+        };
+        let made = Arc::new(made);
+        let undo = || {
+            let made = made.clone();
+            async move {
+                let _ = tokio::task::spawn_blocking(move || made.undo()).await;
+            }
+        };
+        let progress = CloneProgress::new(self, clone_id);
+        let dest_text = made.dest().to_string_lossy().into_owned();
+        let args = clone_args(&url, &dest_text, local, self.clone_hook_args());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let has_env = |var: &str| std::env::var_os(var).is_some_and(|v| !v.is_empty());
+        let runner =
+            self.runner
+                .clone()
+                .with_ssh_command(batch_ssh_command(cfg!(windows), has_env, false));
+        let ran = runner
             .run_with_progress_cancellable(
                 parent,
-                &["clone", "--progress", "--", &url, &dest_text],
+                &args,
                 CmdKind::Write,
                 TimeLimit::idle(CLONE_IDLE, CLONE_TOTAL),
                 &|chunk| progress.seen(chunk),
                 &cancel,
             )
             .await;
-        match ran? {
-            Ok(out) if out.code == 0 => {
+        let failed = |said: String, detail: String| {
+            let notice = crate::notice::notice(&said);
+            Cloned {
+                status: "failed",
+                path: None,
+                message: notice.plain(),
+                notice: Some(notice),
+                detail: Some(detail).filter(|d| !d.trim().is_empty()),
+            }
+        };
+        match ran {
+            Ok(Ok(out)) if out.code == 0 => {
                 if let Ok(store) = self.inbox_store() {
                     let parent = parent.to_string_lossy().into_owned();
                     let _ = tokio::task::spawn_blocking(move || {
@@ -718,30 +768,34 @@ impl RepoManager {
                 Ok(Cloned {
                     status: "done",
                     path: Some(dest_text),
-                    message: format!("Cloned {repo}."),
+                    message: format!("Cloned {what}."),
+                    notice: None,
                     detail: None,
                 })
             }
-            Ok(out) => {
-                let why = crate::notice::telling_line(&out.stderr)
-                    .unwrap_or_else(|| format!("git exited with code {}.", out.code));
-                Ok(Cloned {
-                    status: "failed",
-                    path: None,
-                    message: format!("Could not clone {repo}: {why}"),
-                    detail: Some(out.stderr).filter(|d| !d.trim().is_empty()),
-                })
+            Ok(Ok(out)) => {
+                undo().await;
+                Ok(failed(
+                    clone_failure(&shown, &out.stderr, out.code),
+                    out.stderr,
+                ))
             }
-            Err(gave_up) if gave_up.limit == Expired::Cancelled => Ok(stopped()),
-            Err(gave_up) => Ok(Cloned {
-                status: "failed",
-                path: None,
-                message: format!(
-                    "Could not clone {repo}: {}",
-                    crate::ops::explain::timed_out(gave_up.limit).trim()
-                ),
-                detail: Some(gave_up.stderr).filter(|d| !d.trim().is_empty()),
-            }),
+            Ok(Err(gave_up)) if gave_up.limit == Expired::Cancelled => {
+                undo().await;
+                Ok(stopped())
+            }
+            Ok(Err(gave_up)) => {
+                undo().await;
+                let why = crate::ops::explain::timed_out(gave_up.limit);
+                Ok(failed(
+                    crate::notice::said(format!("Could not clone {shown}"), why.trim()),
+                    gave_up.stderr,
+                ))
+            }
+            Err(e) => {
+                undo().await;
+                Err(e)
+            }
         }
     }
 
@@ -775,25 +829,59 @@ impl RepoManager {
         false
     }
 
-    /// The address `owner/name` on `host` is cloned from (see [`Self::clone_repo`]).
-    async fn clone_url(&self, host: &str, owner: &str, name: &str) -> String {
-        #[cfg(feature = "tool-path")]
-        if let Some(dir) = lock(&self.inbox.clone_source).clone() {
-            return dir
-                .join(owner)
-                .join(format!("{name}.git"))
-                .to_string_lossy()
-                .into_owned();
+    /// The address `owner/name` on `host` is cloned from (see [`Self::clone_repo`]), and
+    /// whether it is a folder of the clone source (tests and the devserver only).
+    async fn clone_url(&self, host: &str, owner: &str, name: &str) -> (String, bool) {
+        if let Some(local) = self.clone_source_url(owner, name) {
+            return (local, true);
         }
         let ssh = match self.git_protocol(host).await {
             Some(p) => p == "ssh",
             None => false,
         };
-        if ssh {
+        let url = if ssh {
             format!("git@{host}:{owner}/{name}.git")
         } else {
             format!("https://{host}/{owner}/{name}.git")
+        };
+        (url, false)
+    }
+
+    /// The address a link is cloned from: as [`crate::clone::read_link`] kept it, or (tests and
+    /// the devserver only) the clone source's folder for its `owner/name`; and whether it is
+    /// that folder.
+    fn link_url(&self, url: &str) -> (String, bool) {
+        if let Some(on) = crate::hosts::parse_remote(url)
+            && let Some(local) = self.clone_source_url(&on.owner, &on.name)
+        {
+            return (local, true);
         }
+        (url.to_owned(), false)
+    }
+
+    /// Tests and the devserver only: `owner/name`'s folder in the clone source, as a `file://`
+    /// address (so git clones through its pack protocol, with progress, as from a host).
+    #[allow(unused_variables)]
+    fn clone_source_url(&self, owner: &str, name: &str) -> Option<String> {
+        #[cfg(feature = "tool-path")]
+        if let Some(dir) = lock(&self.inbox.clone_source).clone() {
+            let path = dir.join(owner).join(format!("{name}.git"));
+            return Some(
+                url::Url::from_file_path(&path)
+                    .map_or_else(|()| path.to_string_lossy().into_owned(), |u| u.to_string()),
+            );
+        }
+        None
+    }
+
+    /// Tests and the devserver only: the program the clone source answers through, when one
+    /// is set (git's `--upload-pack`).
+    fn clone_hook_args(&self) -> Option<String> {
+        #[cfg(feature = "tool-path")]
+        if let Some(hook) = lock(&self.inbox.clone_hook).clone() {
+            return Some(hook.to_string_lossy().into_owned());
+        }
+        None
     }
 
     /// What `gh config get git_protocol --host <host>` says, if it says.
@@ -839,6 +927,14 @@ impl RepoManager {
     #[cfg(feature = "tool-path")]
     pub fn set_clone_source(&self, dir: Option<PathBuf>) {
         *lock(&self.inbox.clone_source) = dir;
+    }
+
+    /// Makes the clone source answer through `hook` (git's `--upload-pack`: run with the
+    /// source's path, it runs `git upload-pack "$@"` itself), to slow a clone down or hold it
+    /// halfway (tests and the devserver only).
+    #[cfg(feature = "tool-path")]
+    pub fn set_clone_hook(&self, hook: Option<PathBuf>) {
+        *lock(&self.inbox.clone_hook) = hook;
     }
 }
 
@@ -920,35 +1016,79 @@ async fn ask_details(
 }
 
 /// Sends the latest progress line of a clone as `clone-progress`, at most every
-/// [`PROGRESS_EVERY_MS`].
-struct CloneProgress<'a> {
-    manager: &'a RepoManager,
-    id: &'a str,
-    /// The unfinished line, and when the last event went.
-    state: Mutex<(String, Option<Instant>)>,
+/// [`PROGRESS_EVERY_MS`]: a line that comes sooner is sent once that time is up, unless a later
+/// one replaces it, so the last line before git goes quiet (a slow host) is always shown.
+struct CloneProgress {
+    sink: Arc<dyn crate::EventSink>,
+    id: String,
+    state: Arc<Mutex<ProgressState>>,
 }
 
-impl CloneProgress<'_> {
-    fn seen(&self, chunk: &[u8]) {
-        let line = {
-            let mut state = lock(&self.state);
-            let Some(line) = crate::ops::latest_line(&mut state.0, chunk) else {
-                return;
-            };
-            if state
-                .1
-                .is_some_and(|at| at.elapsed().as_millis() < PROGRESS_EVERY_MS)
-            {
-                return;
-            }
-            state.1 = Some(Instant::now());
-            line
-        };
-        self.manager.sink.emit(
-            "clone-progress",
-            serde_json::json!({ "cloneId": self.id, "line": line }),
-        );
+#[derive(Default)]
+struct ProgressState {
+    /// The unfinished line.
+    partial: String,
+    /// When the last event went.
+    sent: Option<Instant>,
+    /// A line waiting for its turn, and whether a send of it is due.
+    waiting: Option<String>,
+    due: bool,
+}
+
+impl CloneProgress {
+    fn new(manager: &RepoManager, id: &str) -> Self {
+        Self {
+            sink: manager.sink.clone(),
+            id: id.to_owned(),
+            state: Arc::default(),
+        }
     }
+
+    fn seen(&self, chunk: &[u8]) {
+        let mut state = lock(&self.state);
+        let Some(line) = crate::ops::latest_line(&mut state.partial, chunk) else {
+            return;
+        };
+        let every = Duration::from_millis(PROGRESS_EVERY_MS as u64);
+        let wait = state
+            .sent
+            .map_or(Duration::ZERO, |at| every.saturating_sub(at.elapsed()));
+        if wait.is_zero() {
+            state.sent = Some(Instant::now());
+            state.waiting = None;
+            drop(state);
+            emit_progress(&*self.sink, &self.id, line);
+            return;
+        }
+        state.waiting = Some(line);
+        if state.due {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        state.due = true;
+        let (sink, id, shared) = (self.sink.clone(), self.id.clone(), self.state.clone());
+        runtime.spawn(async move {
+            tokio::time::sleep(wait).await;
+            let line = {
+                let mut state = lock(&shared);
+                state.due = false;
+                state.sent = Some(Instant::now());
+                state.waiting.take()
+            };
+            if let Some(line) = line {
+                emit_progress(&*sink, &id, line);
+            }
+        });
+    }
+}
+
+fn emit_progress(sink: &dyn crate::EventSink, id: &str, line: String) {
+    sink.emit(
+        "clone-progress",
+        serde_json::json!({ "cloneId": id, "line": line }),
+    );
 }
 
 /// A running clone's entry in the manager, removed when the clone ends however it ends.

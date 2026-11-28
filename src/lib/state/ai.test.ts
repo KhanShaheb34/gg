@@ -46,6 +46,7 @@ const settings = (patch: Partial<Settings> = {}): Settings => ({
   aiCommitPrompt: null,
   aiPrPrompt: null,
   aiNoticeSeen: [],
+  cloneDir: null,
   ...patch,
 });
 

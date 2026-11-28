@@ -63,6 +63,9 @@ pub struct SettingsPatch {
     #[serde(default, deserialize_with = "present")]
     pub ai_pr_prompt: Option<Option<String>>,
     pub ai_notice_seen: Option<Vec<AiTool>>,
+    /// A full path; `Some(None)` (JSON `null`), or a blank one, goes back to the platform's.
+    #[serde(default, deserialize_with = "present")]
+    pub clone_dir: Option<Option<String>>,
 }
 
 /// A change to [`RepoPrefs`]: only the fields present are changed.
@@ -389,6 +392,15 @@ impl Store {
         {
             crate::ai::check_prompt(prompt)?;
         }
+        if let Some(Some(dir)) = &patch.clone_dir
+            && !dir.trim().is_empty()
+            && !valid_clone_dir(dir)
+        {
+            return Err(CoreError::new(
+                ErrorCode::BadRequest,
+                "The clone location must be a full path (choose a folder).",
+            ));
+        }
         if let Some(pattern) = &patch.worktree_pattern
             && !pattern.trim().is_empty()
         {
@@ -452,6 +464,11 @@ impl Store {
                 seen.sort();
                 seen.dedup();
                 data.settings.ai_notice_seen = seen;
+            }
+            if let Some(dir) = patch.clone_dir {
+                // A blank folder means the platform's, like `null`.
+                data.settings.clone_dir =
+                    dir.map(|d| d.trim().to_owned()).filter(|d| !d.is_empty());
             }
             if let Some(pattern) = patch.worktree_pattern {
                 // A blank pattern means the default.
@@ -615,6 +632,7 @@ impl StoreData {
                 ai_commit_prompt: field(settings, "aiCommitPrompt"),
                 ai_pr_prompt: field(settings, "aiPrPrompt"),
                 ai_notice_seen: list(settings, "aiNoticeSeen"),
+                clone_dir: field(settings, "cloneDir"),
             },
             repo_prefs,
         })
@@ -670,6 +688,7 @@ impl StoreData {
                     "aiCommitPrompt",
                     "aiPrPrompt",
                     "aiNoticeSeen",
+                    "cloneDir",
                 ],
             )
             || lost_prefs
@@ -722,6 +741,15 @@ impl StoreData {
         }
         self.settings.ai_notice_seen.sort();
         self.settings.ai_notice_seen.dedup();
+        // A folder gg would refuse to set (hand-edited): the platform's instead.
+        if self
+            .settings
+            .clone_dir
+            .as_deref()
+            .is_some_and(|d| !valid_clone_dir(d))
+        {
+            self.settings.clone_dir = None;
+        }
         self
     }
 }
@@ -743,6 +771,11 @@ fn copy_aside(dir: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+/// Whether `dir` can be the clone location: a full path, without control characters.
+fn valid_clone_dir(dir: &str) -> bool {
+    Path::new(dir).is_absolute() && !dir.chars().any(char::is_control)
 }
 
 fn valid_fetch_interval(secs: u32) -> bool {
@@ -1653,6 +1686,52 @@ mod tests {
             edited.ai_models.get("codex").map(String::as_str),
             Some("gpt-5.5")
         );
+    }
+
+    /// The clone location: none (the platform's) by default; a full path is kept across a
+    /// reload; a relative one is refused and changes nothing; null or blank goes back to the
+    /// platform's; a hand-edited relative one reads as none.
+    #[test]
+    fn clone_dir_is_a_full_path_or_the_platforms() {
+        let config = tempfile::tempdir().unwrap();
+        let store = Store::load(config.path());
+        assert_eq!(store.settings().clone_dir, None);
+        let full = config.path().join("code").to_string_lossy().into_owned();
+        let s = store
+            .update_settings(patch(serde_json::json!({ "cloneDir": full })))
+            .unwrap();
+        assert_eq!(s.clone_dir.as_deref(), Some(full.as_str()));
+        assert_eq!(
+            Store::load(config.path()).settings().clone_dir.as_deref(),
+            Some(full.as_str())
+        );
+        // Setting it makes no folder: only a clone does.
+        assert!(!config.path().join("code").exists());
+        assert!(
+            store
+                .update_settings(patch(serde_json::json!({ "cloneDir": "code" })))
+                .is_err()
+        );
+        assert_eq!(store.settings().clone_dir.as_deref(), Some(full.as_str()));
+        let s = store
+            .update_settings(patch(serde_json::json!({ "cloneDir": "  " })))
+            .unwrap();
+        assert_eq!(s.clone_dir, None);
+        store
+            .update_settings(patch(serde_json::json!({ "cloneDir": full })))
+            .unwrap();
+        let s = store
+            .update_settings(patch(serde_json::json!({ "cloneDir": null })))
+            .unwrap();
+        assert_eq!(s.clone_dir, None);
+        fs::write(
+            config.path().join("state.json"),
+            r#"{"settings": {"cloneDir": "relative/dir", "theme": "dark"}}"#,
+        )
+        .unwrap();
+        let edited = Store::load(config.path()).settings();
+        assert_eq!(edited.clone_dir, None);
+        assert_eq!(edited.theme, Theme::Dark);
     }
 
     /// Showing the Pull request tab after a push: on by default, turned off and on, kept

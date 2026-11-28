@@ -260,7 +260,14 @@ describe("pickFolder in the browser", () => {
     const prompt = vi.fn(() => "  /some/repo  ");
     vi.stubGlobal("window", { prompt });
     await expect(api.pickFolder()).resolves.toBe("/some/repo");
-    expect(prompt).toHaveBeenCalledWith("Repository path");
+    expect(prompt).toHaveBeenCalledWith("Repository path", "");
+  });
+
+  it("asks with the title and folder given", async () => {
+    const prompt = vi.fn(() => "/h/code");
+    vi.stubGlobal("window", { prompt });
+    await expect(api.pickFolder({ title: "Choose where to clone", defaultPath: "/h/Developer" })).resolves.toBe("/h/code");
+    expect(prompt).toHaveBeenCalledWith("Choose where to clone", "/h/Developer");
   });
 
   it("is null when cancelled or empty", async () => {

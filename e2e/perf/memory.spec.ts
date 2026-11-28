@@ -12,7 +12,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { startDevserver, stopDevserver } from "../fixtures";
+import { openFolder, startDevserver, stopDevserver } from "../fixtures";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const REPO = process.env.GG_PERF_R20K ?? path.join(homedir(), ".cache/gg-perf/r20k");
@@ -43,7 +43,7 @@ test("the page's heap after scrolling r20k top to bottom", async ({ page }, info
     }, server.url);
     await page.goto("/");
     page.once("dialog", (dialog) => dialog.accept(REPO));
-    await page.getByRole("button", { name: "Open repository" }).first().click();
+    await openFolder(page);
     const grid = page.getByRole("grid", { name: "Commits" });
     await expect(grid).toHaveAttribute("aria-rowcount", "20001", { timeout: 60_000 });
     await page.waitForTimeout(1000);

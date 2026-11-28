@@ -112,6 +112,10 @@ afterwards and says which it is.
 
 **The graph**
 
+- Clone a repository by its link (or `owner/name` for GitHub), or pick one of yours from the
+  list `gh` gives, into a folder you choose once in Settings (`~/Developer` on macOS,
+  `~/Projects` elsewhere); git's progress shows with Stop, and the clone opens in its own tab.
+  The tab bar's + (⌘T) opens a recent repository, a folder, or clones one.
 - Each repository in its own tab. Lanes and coloured lines for every branch, with local
   branch, remote branch, tag and stash labels on their commits; ahead and behind counts on
   a branch's label.
@@ -315,6 +319,8 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
 | Keys | Does |
 | --- | --- |
 | ⌘O | Open a repository |
+| ⇧⌘O | Clone a repository: by its link, or one of your repositories through `gh` |
+| ⌘T | The + menu: a recent repository, a folder, or clone one |
 | ⌘F | Search commits (Enter / Shift+Enter: next / previous) |
 | ⌘⇧F | Fetch from all remotes |
 | ⌘R | Refresh (and the pull requests) |
@@ -365,8 +371,8 @@ On Windows and Linux, Ctrl stands for ⌘. Press **?** in the app for the full l
   when there is a new version it downloads it from the same release. These requests carry
   nothing about you, what is on your machine or your repositories beyond what any web request
   does: your IP address, and a user agent naming the updater. Turn the checks off in
-  Settings → About. Otherwise the network is git talking to your own remotes, and `gh` when you
-  use pull requests.
+  Settings → About. Otherwise the network is git talking to your own remotes (and cloning the
+  ones you ask for), and `gh` when you use pull requests or list your repositories to clone.
 - **Generate with AI** sends something off your machine only when you click it, and gg does
   not send it: it runs the Claude Code or Codex you installed, which sends the prompt to its
   provider (Anthropic or OpenAI) under your account, as it does in your terminal. The prompt

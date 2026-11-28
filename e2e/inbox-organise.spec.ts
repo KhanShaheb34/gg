@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, test, type GG } from "./fixtures";
+import { expect, type GG, openFolder, test } from "./fixtures";
 import { detailsCalls, idOf, inboxCalls, replyDetails, replyFiles, replyInbox, type Node } from "./inboxData";
 import { answer, view } from "./prDetailsData";
 
@@ -140,7 +140,7 @@ test("the page keeps its place: a pull request left for its repository is there 
   answer(gg, 25, view(25, { comments: [], reviews: [] }));
   await page.goto("/");
   page.once("dialog", (dialog) => dialog.accept(gg.repoPath("prs")));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("grid", { name: "Commits" }).locator('[data-index="0"] .subject')).not.toBeEmpty();
   await button(page).click();
   await list(page).evaluate((el) => (el.scrollTop = 900));

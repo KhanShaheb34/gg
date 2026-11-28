@@ -37,9 +37,10 @@ function appState(overrides: Partial<AppState> = {}): AppState {
   return {
     recents: [],
     session: { tabs: [], active: null },
-    settings: { theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [] },
+    settings: { theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [], cloneDir: null },
     launchPath: null,
     homeDir: null,
+    cloneDirDefault: null,
     settingsProblem: null,
     settingsFile: "/c/state.json",
     gitProblem: null,
@@ -77,7 +78,7 @@ beforeEach(async () => {
   vi.mocked(ipc.api.openRepo).mockReset().mockImplementation(fakeOpenRepo);
   vi.mocked(ipc.api.updateSettings)
     .mockReset()
-    .mockImplementation(async (patch) => ({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [], ...patch }));
+    .mockImplementation(async (patch) => ({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [], cloneDir: null, ...patch }));
   vi.mocked(ipc.api.removeRecent).mockReset().mockResolvedValue([]);
   vi.mocked(ipc.api.pickFolder).mockReset().mockResolvedValue(null);
   vi.mocked(ipc.api.takeOpenedPaths).mockReset().mockResolvedValue([]);
@@ -394,11 +395,11 @@ describe("init", () => {
   it("takes recents and settings from the stored state", async () => {
     const recents = [{ path: "/r/b", name: "b", lastOpenedMs: 5 }];
     vi.mocked(ipc.api.getAppState).mockResolvedValue(
-      appState({ recents, settings: { theme: "dark", fetchIntervalSecs: 60, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [] } }),
+      appState({ recents, settings: { theme: "dark", fetchIntervalSecs: 60, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [], cloneDir: null } }),
     );
     await s.init();
     expect(s.app.recents).toEqual(recents);
-    expect(s.app.settings).toEqual({ theme: "dark", fetchIntervalSecs: 60, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [] });
+    expect(s.app.settings).toEqual({ theme: "dark", fetchIntervalSecs: 60, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [], cloneDir: null });
   });
 
   it("shows an error toast and stays usable when the core cannot be reached", async () => {
@@ -590,7 +591,7 @@ describe("theme", () => {
     const answers: (() => void)[] = [];
     vi.mocked(ipc.api.updateSettings).mockImplementation(
       (patch) =>
-        new Promise((resolve) => answers.push(() => resolve({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [], ...patch }))),
+        new Promise((resolve) => answers.push(() => resolve({ theme: "system", fetchIntervalSecs: 300, editorCommand: null, terminalCommand: null, worktreePattern: "../{repo}.worktrees/{branch}", dateFormat: "standard", checkForUpdates: true, openPrTabAfterPush: true, aiTool: "auto", aiModels: {}, aiCommitPrompt: null, aiPrPrompt: null, aiNoticeSeen: [], cloneDir: null, ...patch }))),
     );
     const light = s.setTheme("light");
     const dark = s.setTheme("dark");

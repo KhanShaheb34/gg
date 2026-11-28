@@ -22,11 +22,11 @@
     inboxPrSource,
     setPinned,
   } from "../state/inbox.svelte";
-  import { overlays, showDialog } from "../state/overlays.svelte";
+  import { openClone } from "../state/clone.svelte";
+  import { overlays } from "../state/overlays.svelte";
   import { clock } from "../state/prs.svelte";
   import { findRepoView } from "../state/repo.svelte";
   import type { InboxPr, InboxRepoMatch } from "../types";
-  import CloneDialog from "./dialogs/CloneDialog.svelte";
   import MiddleText from "./MiddleText.svelte";
   import PullRequestView from "./PullRequestView.svelte";
   import PrFilesSection from "./PrFilesSection.svelte";
@@ -88,7 +88,7 @@
   }
 
   function cloneAndOpen() {
-    showDialog(CloneDialog, { host: pr.host, owner: pr.owner, name: pr.name });
+    openClone({ repo: { host: pr.host, owner: pr.owner, name: pr.name } });
   }
 
 </script>

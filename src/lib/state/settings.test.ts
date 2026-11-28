@@ -24,6 +24,7 @@ const DEFAULTS: Settings = {
   aiCommitPrompt: null,
   aiPrPrompt: null,
   aiNoticeSeen: [],
+  cloneDir: null,
 };
 
 describe("saving a setting", () => {

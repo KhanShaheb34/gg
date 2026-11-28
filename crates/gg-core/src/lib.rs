@@ -5,6 +5,7 @@
 
 pub mod ai;
 pub mod cli;
+pub mod clone;
 mod dispatch;
 pub mod dto;
 pub mod error;
@@ -232,6 +233,15 @@ impl Core {
     pub fn set_clone_source(&self, dir: Option<PathBuf>) {
         if let Ok(repos) = self.repos() {
             repos.set_clone_source(dir);
+        }
+    }
+
+    /// Makes the clone source answer through `hook` (git's `--upload-pack`), to slow a clone
+    /// down: for the devserver's end-to-end runs only.
+    #[cfg(feature = "tool-path")]
+    pub fn set_clone_hook(&self, hook: Option<PathBuf>) {
+        if let Ok(repos) = self.repos() {
+            repos.set_clone_hook(hook);
         }
     }
 

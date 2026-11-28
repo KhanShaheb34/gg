@@ -3,7 +3,7 @@
 //   GG_SCREENS=1 pnpm e2e inbox-screens
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, test, type GG } from "./fixtures";
+import { expect, type GG, openFolder, test } from "./fixtures";
 import { MIX, replyFiles, replyInbox } from "./inboxData";
 import { answer, comment, review, run, threads, view } from "./prDetailsData";
 
@@ -21,7 +21,7 @@ async function shoot(page: Page, name: string, theme: string) {
 async function openRepo(gg: GG, name: string) {
   const { page } = gg;
   page.once("dialog", (dialog) => dialog.accept(gg.repoPath(name)));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("grid", { name: "Commits" }).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }
 

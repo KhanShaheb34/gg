@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::harness;
+use gg_core::clone::CloneSource;
 use gg_core::dto::{
     InboxActivity, InboxChecks, InboxGroup, InboxProblem, OpRequest, ReviewDecision,
 };
@@ -470,7 +471,12 @@ async fn clone_into_a_new_folder() {
 
     let done =
         s.h.m
-            .clone_repo("c1", "github.com", "octo", "cat", &parent_path)
+            .clone_repo(
+                "c1",
+                &repo("github.com", "octo", "cat"),
+                &parent_path,
+                "cat",
+            )
             .await
             .unwrap();
     assert_eq!(done.status, "done", "{done:?}");
@@ -488,21 +494,31 @@ async fn clone_into_a_new_folder() {
 
     let e =
         s.h.m
-            .clone_repo("c2", "github.com", "octo", "cat", &parent_path)
+            .clone_repo(
+                "c2",
+                &repo("github.com", "octo", "cat"),
+                &parent_path,
+                "cat",
+            )
             .await
             .unwrap_err();
     assert_eq!(e.code, ErrorCode::BadRequest);
     assert!(e.message.contains("already"));
     let missing =
         s.h.m
-            .clone_repo("c3", "github.com", "hub", "dog", &parent_path)
+            .clone_repo("c3", &repo("github.com", "hub", "dog"), &parent_path, "dog")
             .await
             .unwrap();
     assert_eq!(missing.status, "failed");
     assert!(!parent_path.join("dog").exists());
     let e =
         s.h.m
-            .clone_repo("c4", "github.com", "octo", "cat", Path::new("relative"))
+            .clone_repo(
+                "c4",
+                &repo("github.com", "octo", "cat"),
+                Path::new("relative"),
+                "cat",
+            )
             .await
             .unwrap_err();
     assert_eq!(e.code, ErrorCode::PathMissing);
@@ -514,7 +530,7 @@ async fn clone_into_a_new_folder() {
     std::fs::create_dir(&again).unwrap();
     let retried =
         s.h.m
-            .clone_repo("c1", "github.com", "octo", "cat", &again)
+            .clone_repo("c1", &repo("github.com", "octo", "cat"), &again, "cat")
             .await
             .unwrap();
     assert_eq!(retried.status, "done", "{retried:?}");
@@ -524,10 +540,9 @@ async fn clone_into_a_new_folder() {
         s.h.m
             .clone_repo(
                 "c6",
-                "github.com",
-                "octo",
-                "cat",
+                &repo("github.com", "octo", "cat"),
                 &other_parent(&parent_path),
+                "cat",
             )
             .await
             .unwrap();
@@ -544,17 +559,18 @@ async fn clone_into_a_new_folder() {
     s.gh.reply("auth-token", 0, "", "");
     s.gh.slow("auth-token", 2);
     let (m, dir) = (s.h.m.clone(), other_parent(&parent_path));
-    let first =
-        tokio::spawn(async move { m.clone_repo("c7", "ghe.example", "octo", "cat", &dir).await });
+    let first = tokio::spawn(async move {
+        m.clone_repo("c7", &repo("ghe.example", "octo", "cat"), &dir, "cat")
+            .await
+    });
     tokio::time::sleep(Duration::from_millis(500)).await;
     let e =
         s.h.m
             .clone_repo(
                 "c7",
-                "ghe.example",
-                "octo",
-                "cat",
+                &repo("ghe.example", "octo", "cat"),
                 &other_parent(&parent_path),
+                "cat",
             )
             .await
             .unwrap_err();
@@ -570,7 +586,7 @@ async fn clone_into_a_new_folder() {
     s.h.m.begin_restart().unwrap();
     let e =
         s.h.m
-            .clone_repo("c5", "github.com", "octo", "cat", &other)
+            .clone_repo("c5", &repo("github.com", "octo", "cat"), &other, "cat")
             .await
             .unwrap_err();
     assert_eq!(e.code, ErrorCode::Busy);
@@ -591,6 +607,15 @@ async fn web_pages_open_only_where_they_should() {
     assert!(open(External::Link, "https://evil.example/x").is_ok());
     assert!(open(External::Link, "http://evil.example/x").is_err());
     assert!(open(External::Editor, "https://github.com/").is_err());
+}
+
+/// Repository `owner/name` on `host`, to clone.
+fn repo(host: &str, owner: &str, name: &str) -> CloneSource {
+    CloneSource::Repo {
+        host: host.into(),
+        owner: owner.into(),
+        name: name.into(),
+    }
 }
 
 /// A folder `early` beside the clones (made once), for the clones that must not happen.

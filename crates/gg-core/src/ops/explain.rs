@@ -319,7 +319,7 @@ fn fast_forward_only(all: &str) -> bool {
 fn talks_to_a_remote(args: &[&str]) -> bool {
     matches!(
         args.first(),
-        Some(&("push" | "fetch" | "pull" | "ls-remote"))
+        Some(&("push" | "fetch" | "pull" | "ls-remote" | "clone"))
     )
 }
 

@@ -195,11 +195,43 @@ const MENU_INSTALL_CLI: &str = "install-cli";
 const MENU_SETTINGS: &str = "settings";
 const MENU_SHORTCUTS: &str = "shortcuts";
 
+/// The File menu's "New Tab…" (Cmd+T, the tab bar's + menu), "Open Repository…" (Cmd+O) and
+/// "Clone Repository…" (Shift+Cmd+O): the UI acts on the `menu-new-tab`, `menu-open` and
+/// `menu-clone` events, as on their keys.
+const MENU_NEW_TAB: &str = "new-tab";
+const MENU_OPEN: &str = "open";
+const MENU_CLONE: &str = "clone";
+
+/// The File menu's items that open a repository (both platforms).
+fn file_items<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<[tauri::menu::MenuItem<R>; 3]> {
+    use tauri::menu::MenuItem;
+    Ok([
+        MenuItem::with_id(app, MENU_NEW_TAB, "New Tab…", true, Some("CmdOrCtrl+T"))?,
+        MenuItem::with_id(
+            app,
+            MENU_OPEN,
+            "Open Repository…",
+            true,
+            Some("CmdOrCtrl+O"),
+        )?,
+        MenuItem::with_id(
+            app,
+            MENU_CLONE,
+            "Clone Repository…",
+            true,
+            Some("CmdOrCtrl+Shift+O"),
+        )?,
+    ])
+}
+
 /// Windows and Linux: the File menu's "Quit".
 #[cfg(not(target_os = "macos"))]
 const MENU_QUIT: &str = "quit";
 
-/// The window's menu on Windows and Linux, which have no app menu bar: File with "Settings…"
+/// The window's menu on Windows and Linux, which have no app menu bar: File with "New Tab…"
+/// (Ctrl+T), "Open Repository…" (Ctrl+O), "Clone Repository…" (Ctrl+Shift+O), "Settings…"
 /// (Ctrl+,), "Install ‘gg’ Command…" and "Quit"; Help with "Keyboard Shortcuts" and "About
 /// gg". No item takes Ctrl+W (the UI closes the active tab with it) nor F1 (the UI's own
 /// shortcut for the shortcuts sheet).
@@ -223,6 +255,7 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>)?;
+    let [new_tab, open, clone] = file_items(app)?;
     let shortcuts = MenuItem::with_id(
         app,
         MENU_SHORTCUTS,
@@ -237,7 +270,16 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
                 app,
                 "File",
                 true,
-                &[&settings, &install_cli, &Item::separator(app)?, &quit],
+                &[
+                    &new_tab,
+                    &open,
+                    &clone,
+                    &Item::separator(app)?,
+                    &settings,
+                    &install_cli,
+                    &Item::separator(app)?,
+                    &quit,
+                ],
             )?,
             &Submenu::with_items(
                 app,
@@ -254,7 +296,8 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
 }
 
 /// The macOS menu bar: Tauri's default with "Settings…" and "Install ‘gg’ Command…" in the
-/// app menu and a Help menu with "Keyboard Shortcuts", minus
+/// app menu, a File menu with "New Tab…", "Open Repository…" and "Clone Repository…", and a
+/// Help menu with "Keyboard Shortcuts", minus
 /// "Close Window", whose Cmd+W would close the whole window; the UI uses Cmd+W to close the
 /// active tab instead (the red traffic light still closes the window).
 #[cfg(target_os = "macos")]
@@ -284,6 +327,7 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
         true,
         None::<&str>,
     )?;
+    let [new_tab, open, clone] = file_items(app)?;
     Menu::with_items(
         app,
         &[
@@ -307,6 +351,7 @@ fn app_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
                     &Item::quit(app, None)?,
                 ],
             )?,
+            &Submenu::with_items(app, "File", true, &[&new_tab, &open, &clone])?,
             &Submenu::with_items(
                 app,
                 "Edit",
@@ -457,6 +502,12 @@ pub fn run() {
             let _ = app.emit("menu-settings", ());
         } else if id == MENU_SHORTCUTS {
             let _ = app.emit("menu-shortcuts", ());
+        } else if id == MENU_NEW_TAB {
+            let _ = app.emit("menu-new-tab", ());
+        } else if id == MENU_OPEN {
+            let _ = app.emit("menu-open", ());
+        } else if id == MENU_CLONE {
+            let _ = app.emit("menu-clone", ());
         }
         #[cfg(not(target_os = "macos"))]
         if id == MENU_QUIT {

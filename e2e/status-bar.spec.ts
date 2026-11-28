@@ -4,11 +4,11 @@
 import { existsSync, utimesSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, makeRepo, test, viewPopover } from "./fixtures";
+import { expect, makeRepo, openFolder, test, viewPopover } from "./fixtures";
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
 }
 

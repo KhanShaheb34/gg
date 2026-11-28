@@ -6,7 +6,7 @@
 // folder), the keyboard, a narrow window and hundreds of rows.
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, test, type GG } from "./fixtures";
+import { expect, type GG, openFolder, test } from "./fixtures";
 import { MIX, inboxCalls, replyInbox, type Node } from "./inboxData";
 import { answer, comment, threads, view } from "./prDetailsData";
 
@@ -29,7 +29,7 @@ async function openPage(gg: GG) {
 async function openRepo(gg: GG, name: string) {
   const { page } = gg;
   page.once("dialog", (dialog) => dialog.accept(gg.repoPath(name)));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("grid", { name: "Commits" }).locator('[data-index="0"] .subject')).not.toBeEmpty();
 }
 
@@ -301,7 +301,7 @@ test("clone and open: into a new folder of the folder chosen, from a local remot
   const dialog = page.getByRole("dialog", { name: "Clone hub/dog" });
   await dialog.getByTestId("clone-parent").fill(into);
   await expect(dialog.getByTestId("clone-hint")).toContainText(`~/${path.relative(gg.home, path.join(into, "dog"))}`);
-  await dialog.getByRole("button", { name: "Clone and open" }).click();
+  await dialog.getByRole("button", { name: "Clone", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   // Its own tab, active.
   await expect(page.getByRole("tab", { name: "dog" })).toHaveAttribute("aria-selected", "true");
@@ -314,8 +314,8 @@ test("clone and open: into a new folder of the folder chosen, from a local remot
   await expect(page.getByTestId("inbox-go-to-repo")).toHaveCount(0);
   await page.getByTestId("inbox-clone").click();
   await dialog.getByTestId("clone-parent").fill(into);
-  await dialog.getByRole("button", { name: "Clone and open" }).click();
   await expect(dialog.getByTestId("clone-hint")).toContainText("already");
+  await expect(dialog.getByRole("button", { name: "Clone", exact: true })).toBeDisabled();
 });
 
 test("a narrow window keeps each row on one line", async ({ gg }) => {

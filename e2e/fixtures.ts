@@ -748,7 +748,7 @@ cat > "$d/calls/$i/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
 if [ "$key" = api-graphql ]; then
-  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; esac; done
+  for a in "$@"; do case "$a" in *unresolveReviewThread*) key=gql-unresolve;; *resolveReviewThread*) key=gql-resolve;; *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; *GgRepos*) key=gql-repos;; esac; done
   if grep -q addPullRequestReviewThreadReply "$d/calls/$i/stdin"; then key=gql-reply; fi
 fi
 case "$key" in gql-inbox*) if [ -n "$GH_HOST" ]; then
@@ -776,12 +776,27 @@ for a in "$@"; do host="$a"; done
 printf 'hostname %s\\n' "$host"
 `;
 
+/**
+ * What the clone source answers through (the devserver's `--clone-hook`, git's `--upload-pack`):
+ * git's own upload-pack, or, while `clone-hold` beside it holds a number of bytes, only that
+ * many bytes of its answer, exactly, for two minutes (a clone held halfway, its progress showing).
+ */
+const CLONE_HOOK = `#!/bin/sh
+d="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$d/clone-hold" ]; then
+  git upload-pack "$@" | perl -e 'my $n = shift; my ($buf, $got) = ("", 0); while ($got < $n) { my $r = sysread(STDIN, $buf, $n - $got); last if !$r; syswrite(STDOUT, $buf); $got += $r } sleep 120; while (sysread(STDIN, $buf, 65536)) { syswrite(STDOUT, $buf) }' "$(cat "$d/clone-hold")"
+  exit
+fi
+exec git upload-pack "$@"
+`;
+
 /** Writes the fake `gh` and `ssh` into `home`; returns the `PATH` the devserver runs them on. */
 function fakeTools(home: string): string {
   const tools = path.join(home, "tools");
   for (const dir of [tools, path.join(home, "gh", "calls"), path.join(home, "gh", "replies")]) mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(tools, "gh"), FAKE_GH, { mode: 0o755 });
   writeFileSync(path.join(tools, "ssh"), FAKE_SSH, { mode: 0o755 });
+  writeFileSync(path.join(tools, "clone-hook"), CLONE_HOOK, { mode: 0o755 });
   // The fakes set their own PATH; nothing else is found here (the core takes gh and ssh from
   // the first folder only).
   return tools;
@@ -1042,8 +1057,10 @@ export function startDevserver(
       // Updating gg: the stand-in only, answering from files (see FakeUpdates); nothing is downloaded.
       ...(binary === DEVSERVER ? ["--fake-updates", updatesDir(home)] : []),
       // The Pull requests page: no floor between its loads, and clones from local folders
-      // (`<home>/remotes/<owner>/<name>.git`), never the network.
-      ...(binary === DEVSERVER ? ["--inbox-every-ms", "0", "--clone-source", path.join(home, "remotes")] : []),
+      // (`<home>/remotes/<owner>/<name>.git`), never the network, through CLONE_HOOK.
+      ...(binary === DEVSERVER
+        ? ["--inbox-every-ms", "0", "--clone-source", path.join(home, "remotes"), "--clone-hook", path.join(home, "tools", "clone-hook")]
+        : []),
       ...extraArgs,
     ],
     // Its own process group, so stopping it also stops whatever it started. Its stdin stays
@@ -1146,6 +1163,15 @@ export function runOp(page: Page, request: Asked): Promise<OpOutcome> {
         : headed;
     return ops.runOp(id, full as OpRequest);
   }, request);
+}
+
+/**
+ * Asks for a folder to open, as a user does: the tab bar's +, then Open folder… (the test
+ * answers the page's path prompt, set up before with `page.once("dialog", …)`).
+ */
+export async function openFolder(page: Page): Promise<void> {
+  await page.getByTestId("new-tab").click();
+  await page.getByTestId("new-tab-open").click();
 }
 
 export function closeButton(page: Page, name: string) {

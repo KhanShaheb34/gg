@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { percentile } from "../../src/lib/perf/scrollProbe";
-import { startDevserver, stopDevserver } from "../fixtures";
+import { openFolder, startDevserver, stopDevserver } from "../fixtures";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 
@@ -67,7 +67,7 @@ async function openRepo(page: Page) {
   }, server.url);
   await page.goto("/");
   page.once("dialog", (dialog) => dialog.accept(repo));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(grid(page)).toHaveAttribute("aria-rowcount", /^2\d{4}$/);
   await expect(grid(page).locator('[role="row"][data-index="0"] .subject')).not.toBeEmpty();
   return server;

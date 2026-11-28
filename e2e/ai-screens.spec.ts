@@ -3,7 +3,7 @@
 // demand: GG_SCREENS=1 pnpm e2e ai-screens
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, type GG, STATUS_BAR_H, test } from "./fixtures";
+import { expect, type GG, openFolder, STATUS_BAR_H, test } from "./fixtures";
 
 const OUT = path.resolve(import.meta.dirname, "..", ".screens");
 
@@ -14,7 +14,7 @@ test.use({ viewport: { width: 900, height: H }, deviceScaleFactor: 2 });
 
 async function open(page: Page, dir: string) {
   page.once("dialog", (dialog) => dialog.accept(dir));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
   await expect(page.getByRole("tab", { name: path.basename(dir), exact: true })).toHaveAttribute("aria-selected", "true");
 }
 

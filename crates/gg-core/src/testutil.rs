@@ -454,7 +454,8 @@ impl EventSink for RecordingSink {
 /// folder, what it read on stdin, whether it had a terminal) and answers with what the test
 /// set for that kind of call: `pr-list`, `pr-list-head` (with `--head`), `pr-create`,
 /// `repo-view`, `auth-token`, `gql-inbox` (the Pull requests page's query; `gql-inbox-<host>`
-/// for `GH_HOST` `<host>`, its dots as `_`, when set). Unset, it prints nothing and exits 0. A call can also run a
+/// for `GH_HOST` `<host>`, its dots as `_`, when set), `gql-repos` (the Clone dialog's list of
+/// the user's repositories). Unset, it prints nothing and exits 0. A call can also run a
 /// shell script first ([`FakeGh::run_on`]), as `gh` runs `git`; its output is recorded.
 #[cfg(unix)]
 pub struct FakeGh {
@@ -503,7 +504,7 @@ if (: < /dev/tty) 2>/dev/null; then echo yes > "$c/tty"; fi
 cat > "$c/stdin"
 key="$1-$2"
 case " $* " in *" --head "*) if [ "$key" = pr-list ]; then key=pr-list-head; fi;; esac
-if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; esac; done; fi
+if [ "$key" = api-graphql ]; then for a in "$@"; do case "$a" in *GgInboxDetails*) key=gql-inbox-details;; *GgInbox*) key=gql-inbox;; *GgRepos*) key=gql-repos;; esac; done; fi
 case "$key" in gql-inbox*) if [ -n "$GH_HOST" ]; then
   h="$(printf '%s' "$GH_HOST" | tr . _)"
   if [ -f "$d/replies/$key-$h.code" ]; then key="$key-$h"; fi

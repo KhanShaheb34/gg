@@ -1,10 +1,10 @@
 import type { Page } from "@playwright/test";
-import { closeButton, expect, test } from "./fixtures";
+import { closeButton, expect, openFolder, test } from "./fixtures";
 
 /** Opens `path` through the "Open repository" button, answering the browser's path prompt. */
 async function openThroughPicker(page: Page, path: string) {
   page.once("dialog", (dialog) => dialog.accept(path));
-  await page.getByRole("button", { name: "Open repository" }).first().click();
+  await openFolder(page);
 }
 
 const tabs = (page: Page) => page.getByRole("tablist", { name: "Open repositories" }).getByRole("tab");
@@ -57,7 +57,7 @@ test("opening the same repository twice keeps one tab", async ({ gg }) => {
   await openThroughPicker(page, gg.repoPath("small"));
   await expect(tabs(page)).toHaveCount(1);
   page.once("dialog", (dialog) => dialog.accept(gg.repoPath("small")));
-  await page.getByRole("button", { name: "Open repository" }).click();
+  await openFolder(page);
   await expect(tabs(page)).toHaveCount(1);
 });
 
@@ -86,7 +86,7 @@ test("keyboard: arrows move between tabs, the shortcut closes one", async ({ gg 
   await openThroughPicker(page, gg.repoPath("small"));
   await expect(tabs(page)).toHaveCount(1);
   page.once("dialog", (dialog) => dialog.accept(gg.repoPath("empty")));
-  await page.getByRole("button", { name: "Open repository" }).click();
+  await openFolder(page);
   await expect(tabs(page)).toHaveText(["small", "empty"]);
   await expect(tabs(page).nth(1)).toHaveAttribute("aria-selected", "true");
 

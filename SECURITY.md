@@ -37,6 +37,13 @@ gg runs git on repositories that may come from anyone, so these matter most:
 - **Updates.** Any way to make gg install something that is not a release signed with gg's
   key, an older release, or to make it fetch updates from anywhere but the release on
   GitHub (see below).
+- **Cloning.** The link typed or pasted in the Clone dialog is untrusted: gg refuses one that
+  starts with `-`, names a `transport::` (`ext::` runs a command), a local path or `file://`,
+  or carries a password, hands the rest to git after `--` with only the https, http, ssh and
+  git transports allowed, and never through a shell. The new folder is one plain name inside
+  the folder chosen, never a path out of it, and a clone that fails or is stopped takes away
+  only what it made. Any way past these is in scope. The list of your repositories is one
+  read-only `gh api graphql` query; gg never reads or stores a token for it.
 - **The Pull requests page.** gg asks `gh` only read-only questions for it (per GitHub host,
   one GraphQL query of four searches, then one by node id for the rows shown; a pull request's
   details as the Pull request tab reads them, and its files from the REST API), only while the

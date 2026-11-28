@@ -5,8 +5,42 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
 
 ## The basics
 
-- Open a repository folder with the + button, ⌘O, by dropping the folder on the window, or
-  by launching the app with the folder as its argument. Open tabs come back at the next start.
+- Open a repository folder with ⌘O, by dropping the folder on the window, or by launching the
+  app with the folder as its argument. Open tabs come back at the next start.
+- The tab bar's **+** (⌘T) opens a menu under it: **Open folder…** (as ⌘O), your recent
+  repositories (type to filter them; one already in a tab says so, and choosing it shows that
+  tab), and **Clone**, from a link or one of your repositories. A link typed or pasted there
+  becomes the Clone row. ↑/↓ and Enter choose, Esc closes and the focus goes back where it was.
+- **Clone repository…** (⇧⌘O, on the start page, in the + menu, or File › Clone Repository…)
+  has two ways in:
+  - **Link**: an `https://` or `ssh` address (`git@host:owner/name.git` too), or `owner/name`
+    for GitHub, cloned by the protocol `gh` is set to use there (`https` without `gh`). A
+    GitHub page's address (a pull request's, a file's) stands for its repository, and a pasted
+    `git clone …` command line is read for its link. What the link names shows under it as
+    you type. A link that starts with `-`, a `transport::` address (`ext::` would run a
+    command), a folder on this computer (`file://`) or a link with a password in it is refused
+    before anything runs; the link is handed to git after `--`, with only the https, http,
+    ssh and git transports allowed.
+  - **Your repositories**: the repositories `gh` lists for your account on github.com (those
+    you own, collaborate on, or reach through an organisation), most recently pushed first,
+    the 100 most recent at most (the list says so when there are more: paste the link of
+    another). Each shows its owner, a lock when private, fork or archived, its description and
+    when it was last pushed. Type to filter, ↑/↓ to choose, Enter to clone. The list is kept
+    while gg runs (the refresh button asks `gh` again). Without `gh`, signed out, past the
+    rate limit or offline, the list says so as the Pull requests page does; a link still
+    clones, with git alone.
+  - A repository gg already has (open in a tab, or among the recent ones, by its remotes) is
+    marked **Open** or **Cloned** and is switched to or opened instead of cloned again.
+  - Under either way: **Into** (the folder from Settings → Cloning, `~/Developer` on macOS and
+    `~/Projects` on Windows and Linux by default; **Choose…** for another) and **Folder name**
+    (the repository's, yours to change), with the path it makes. A folder there that is not
+    empty is refused, with why, before anything starts; a missing parent folder is made only
+    when the clone starts.
+  - While git clones, its own progress (the phase, the percent) shows with **Stop** (or Esc),
+    which ends git and takes away what that clone made, nothing else. Done, the repository
+    opens in a tab of its own and joins the recent ones. A failure (no such repository,
+    credentials, no connection, a full disk) says what happened, with git's output folded
+    under it, and leaves everything as typed for another try.
 - ⌘1…⌘8 go to a tab, ⌘9 to the last one, Ctrl+Tab / Ctrl+Shift+Tab to the next or previous
   one; ⌘W closes the tab (with no tab open, the window). On a focused tab, ←/→ move and
   Delete closes it.
@@ -288,11 +322,9 @@ overview is not enough. On Windows and Linux, Ctrl stands for ⌘ throughout.
   local branch of that name, then checked out); **Go to its worktree** when another worktree
   has it checked out; **Checked out** when it is the current branch. A fork's branch is
   offered only when a remote names the fork (and a local branch of that name only when it
-  follows that remote's). When the repository is not open, **Clone and open…** asks for the
-  folder to clone into (the last one used, else the folder of your most recent repository),
-  clones it with git into a new folder named after the repository (`https://` or `ssh`, as
-  `gh config get git_protocol` says for the host), shows git's progress with Stop, and opens
-  it in a tab. A folder of that name already there is refused, never touched.
+  follows that remote's). When the repository is not open, **Clone and open…** opens the Clone
+  dialog for that repository (see [The basics](#the-basics)): it is cloned by the protocol
+  `gh config get git_protocol` says for the host, into the folder from Settings → Cloning.
 - **Generate with AI**: the sparkle beside the commit message (⌘G in it) writes a commit
   message from the ticked files; beside a pull request's title (⌘G in the title or the
   description) it writes the title and description, and whether it looks like a draft, from
@@ -451,6 +483,8 @@ The same list is in the app: press **?** (⌘/ on macOS, F1 on Windows and Linux
 | Keys | Does |
 | --- | --- |
 | ⌘O | Open a repository |
+| ⇧⌘O | Clone a repository: by its link, or one of yours |
+| ⌘T | New tab: the + menu (a recent repository, a folder, or clone one) |
 | ⌘W | Close the tab (with none open, the window) |
 | Ctrl+Tab, Ctrl+Shift+Tab | Next, previous tab |
 | ⌘1…⌘8, ⌘9 | A tab, the last tab |

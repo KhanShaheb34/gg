@@ -782,9 +782,10 @@ async fn launch_path_is_reported() {
             "recents": [],
             "session": {"tabs": [], "active": null},
             "settings": {"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null, "terminalCommand": null,
-                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []},
+                         "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": [], "cloneDir": null},
             "launchPath": null,
             "homeDir": home,
+            "cloneDirDefault": home.as_ref().map(|h| gg_core::clone::default_clone_dir(std::path::Path::new(h)).to_string_lossy().into_owned()),
             "settingsProblem": null,
             "settingsFile": none.config.path().join("state.json").to_string_lossy(),
             // The git installed here is new enough.
@@ -813,7 +814,7 @@ async fn session_and_settings_persist() {
     assert_eq!(
         settings,
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": [], "cloneDir": null})
     );
     let err = h
         .fail(
@@ -839,7 +840,7 @@ async fn session_and_settings_persist() {
     assert_eq!(
         state["settings"],
         json!({"theme": "dark", "fetchIntervalSecs": 0, "editorCommand": null, "terminalCommand": null,
-               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []})
+               "worktreePattern": "../{repo}.worktrees/{branch}", "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": false, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": [], "cloneDir": null})
     );
 }
 
@@ -860,7 +861,7 @@ async fn settings_go_back_to_their_defaults() {
     let settings = h.call("restore_default_settings", json!({})).await;
     let defaults = json!({"theme": "system", "fetchIntervalSecs": 300, "editorCommand": null,
                           "terminalCommand": null, "worktreePattern": "../{repo}.worktrees/{branch}",
-                          "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": []});
+                          "dateFormat": "standard", "checkForUpdates": true, "openPrTabAfterPush": true, "aiTool": "auto", "aiModels": {}, "aiCommitPrompt": null, "aiPrPrompt": null, "aiNoticeSeen": [], "cloneDir": null});
     assert_eq!(settings, defaults);
     let err = h
         .fail("restore_default_settings", json!({"keep": "theme"}))
